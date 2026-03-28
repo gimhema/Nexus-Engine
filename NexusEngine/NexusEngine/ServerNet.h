@@ -78,6 +78,12 @@ struct OverlappedEx
 
     // accept 완료 전까지 accepted socket 보관
     NxSocket            acceptSocket{ NX_INVALID_SOCKET };
+
+#ifndef _WIN32
+    // Linux epoll: epoll_event.data.ptr = OverlappedEx* 로 저장하므로
+    // Session 역참조를 위해 sessionId 보관 (listen·UDP 소켓은 0)
+    uint64_t            sessionId{ 0 };
+#endif
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -154,6 +160,10 @@ private:
     // ── UDP ───────────────────────────────────────────────────────────────────
     NxSocket     m_udpSocket{ NX_INVALID_SOCKET };
     OverlappedEx m_udpRecvOv;   // 수신 컨텍스트 상시 유지
+
+#ifndef _WIN32
+    OverlappedEx m_tcpAcceptOv; // Linux epoll: listen 소켓 이벤트 컨텍스트
+#endif
 
     // ── 워커 스레드 풀 ────────────────────────────────────────────────────────
     std::vector<std::thread> m_workerThreads;

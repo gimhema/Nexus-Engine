@@ -3,6 +3,7 @@ set(SOURCES
     Server.cpp
     ServerNet.cpp
     Connection.cpp
+    Packets/PacketBase.cpp
 )
 
 set(HEADERS
