@@ -1,12 +1,6 @@
 #pragma once
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <winsock2.h>
-#include <mswsock.h>   // AcceptEx, GetAcceptExSockaddrs
-#include <windows.h>
-#include <ws2tcpip.h>
+#include "Platform/Platform.h"
 
 #include <cstdint>
 #include <functional>
@@ -43,43 +37,51 @@ enum class IOOperation : uint8_t
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// OverlappedEx
+// OverlappedEx / IoContext
 //
-// Windows OVERLAPPED 확장 구조체.
-// IOCP는 OVERLAPPED* 를 반환하므로 이 구조체의 첫 번째 필드여야 함.
+// 비동기 I/O 완료 이벤트에 연결되는 컨텍스트 구조체.
 //
-// 워커 스레드 복원 패턴:
-//   OVERLAPPED* pRaw = ...;                                   // GetQueuedCompletionStatus 반환값
-//   OverlappedEx* pOv = reinterpret_cast<OverlappedEx*>(pRaw); // ← 안전: 첫 필드 보장
-//   Session* session  = reinterpret_cast<Session*>(completionKey);
+// [Windows - IOCP]
+//   GetQueuedCompletionStatus 가 OVERLAPPED* 를 반환.
+//   OVERLAPPED 가 첫 번째 필드여야 reinterpret_cast 가 안전.
+//
+//   복원 패턴:
+//     OVERLAPPED* pRaw = ...;
+//     OverlappedEx* pOv = reinterpret_cast<OverlappedEx*>(pRaw);
+//     Session* session  = reinterpret_cast<Session*>(completionKey);
+//
+// [Linux - epoll]
+//   epoll_event.data.ptr 에 OverlappedEx* 를 저장.
+//   epoll_wait 반환 후 data.ptr 을 캐스팅해 복원.
 // ─────────────────────────────────────────────────────────────────────────────
 struct OverlappedEx
 {
-    OVERLAPPED          overlapped{};           // ← 반드시 첫 번째 필드
-    IOOperation         operation{};
+#ifdef _WIN32
+    OVERLAPPED          overlapped{};           // ← 반드시 첫 번째 필드 (IOCP 패턴)
     WSABUF              wsaBuf{};
     DWORD               flags{ 0 };
+#endif
+
+    IOOperation         operation{};
 
     // UDP 수신 시 원격 주소 (TCP 에서는 미사용)
-    SOCKADDR_STORAGE    remoteAddr{};
-    INT                 remoteAddrLen{ sizeof(SOCKADDR_STORAGE) };
+    sockaddr_storage    remoteAddr{};
+#ifdef _WIN32
+    INT                 remoteAddrLen{ sizeof(sockaddr_storage) };
+#else
+    socklen_t           remoteAddrLen{ sizeof(sockaddr_storage) };
+#endif
 
     // AcceptEx / UDP RecvFrom 용 인라인 버퍼
     // TCP 데이터 수신은 Session::RecvBuffer 를 사용
     uint8_t             buffer[NET_UDP_MAX_PACKET]{};
 
-    // AcceptEx: accept 완료 전까지 accepted socket 보관
-    SOCKET              acceptSocket{ INVALID_SOCKET };
+    // accept 완료 전까지 accepted socket 보관
+    NxSocket            acceptSocket{ NX_INVALID_SOCKET };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PacketHandlerFunc
-//
-// std::function 을 사용하는 이유:
-//   - 람다 (캡처 포함) 등록 가능
-//   - 멤버 함수를 [this](auto s, auto& r){ OnXxx(s,r); } 형태로 등록 가능
-//   - 핸들러 교체·확장 용이
-//   - 패킷 디스패치 빈도 대비 std::function 오버헤드는 무시 가능한 수준
 //
 // 등록 예시:
 //   net.RegisterHandler(CMSG_PLAYER_MOVE,
@@ -92,19 +94,20 @@ using PacketHandlerFunc = std::function<void(std::shared_ptr<Session>, PacketRea
 // ─────────────────────────────────────────────────────────────────────────────
 // NetworkManager
 //
-// IOCP 기반 비동기 TCP + UDP 네트워크 레이어.
+// 비동기 TCP + UDP 네트워크 레이어.
+//   Windows : IOCP (I/O Completion Ports)
+//   Linux   : epoll
 //
 // TCP  : 클라이언트 연결 유지, 로그인/상태/신뢰성 필요 메시지
 // UDP  : 위치 동기화, 이동, 스킬 이펙트 등 빈도 높고 손실 허용 가능한 메시지
 //
 // 스레드 모델:
-//   워커 스레드 N개가 GetQueuedCompletionStatus 루프 실행.
+//   워커 스레드 N개가 완료 이벤트 루프 실행.
 //   핸들러 콜백은 워커 스레드에서 호출됨 → 핸들러 내 공유 데이터 보호 필요.
 //
 // UDP 세션 식별:
 //   UDP 패킷 헤더에 sessionToken(uint64) 포함.
 //   서버는 토큰으로 Session 을 찾아 핸들러 디스패치.
-//   클라이언트는 TCP 로그인 완료 후 발급받은 토큰을 UDP 헤더에 삽입.
 // ─────────────────────────────────────────────────────────────────────────────
 class NetworkManager
 {
@@ -126,33 +129,37 @@ public:
     void RegisterHandler(uint16_t opcode, PacketHandlerFunc handler);
 
     // ── UDP 전송 (fire-and-forget) ────────────────────────────────────────────
-    // 위치 동기화, 스킬 이펙트처럼 빠른 전송이 필요한 경우 사용.
-    // TCP 전송은 Session::Send() 를 통해 처리.
-    void SendUDP(const SOCKADDR_STORAGE& dest, const uint8_t* data, uint16_t length);
+    void SendUDP(const sockaddr_storage& dest, const uint8_t* data, uint16_t length);
 
     // ── 세션 조회 ─────────────────────────────────────────────────────────────
     [[nodiscard]] std::shared_ptr<Session> FindSession(uint64_t sessionId) const;
     void CloseSession(uint64_t sessionId);
 
 private:
-    // ── IOCP ──────────────────────────────────────────────────────────────────
-    HANDLE m_iocpHandle{ INVALID_HANDLE_VALUE };
+    // ── 플랫폼별 I/O 핸들 ────────────────────────────────────────────────────
+#ifdef _WIN32
+    NxHandle                   m_iocpHandle{ NX_INVALID_HANDLE };
+#else
+    NxHandle                   m_epollFd{ NX_INVALID_HANDLE };
+#endif
 
     // ── TCP ───────────────────────────────────────────────────────────────────
-    SOCKET                     m_tcpListenSocket{ INVALID_SOCKET };
+    NxSocket                   m_tcpListenSocket{ NX_INVALID_SOCKET };
+
+#ifdef _WIN32
     LPFN_ACCEPTEX              m_fnAcceptEx{ nullptr };             // 런타임 로드 (WSAIoctl)
     LPFN_GETACCEPTEXSOCKADDRS  m_fnGetAcceptExSockaddrs{ nullptr }; // 런타임 로드
+#endif
 
     // ── UDP ───────────────────────────────────────────────────────────────────
-    SOCKET       m_udpSocket{ INVALID_SOCKET };
-    OverlappedEx m_udpRecvOv;  // 항상 pending 상태 유지 (RecvFrom 루프)
+    NxSocket     m_udpSocket{ NX_INVALID_SOCKET };
+    OverlappedEx m_udpRecvOv;   // 수신 컨텍스트 상시 유지
 
     // ── 워커 스레드 풀 ────────────────────────────────────────────────────────
     std::vector<std::thread> m_workerThreads;
     std::atomic<bool>        m_running{ false };
 
     // ── 패킷 핸들러 맵 ────────────────────────────────────────────────────────
-    // opcode(uint16) → PacketHandlerFunc
     std::unordered_map<uint16_t, PacketHandlerFunc> m_handlerMap;
 
     // ── 세션 테이블 ───────────────────────────────────────────────────────────
@@ -161,34 +168,40 @@ private:
     std::atomic<uint64_t>                                      m_nextSessionId{ 1 };
 
     // ── 내부 초기화 ───────────────────────────────────────────────────────────
+#ifdef _WIN32
     bool InitWinsock();
     bool CreateIOCP();
+#else
+    bool CreateEpoll();
+#endif
     bool SetupTCPListener(uint16_t port);
     bool SetupUDPSocket(uint16_t port);
     bool StartWorkerThreads(uint32_t count);
 
     // ── 비동기 I/O 예약 ───────────────────────────────────────────────────────
+#ifdef _WIN32
     void PostAccept();   // AcceptEx 로 비동기 accept 1건 예약
     void PostUDPRecv();  // WSARecvFrom 으로 UDP 수신 상시 예약
+#else
+    void RegisterAcceptSocket();   // epoll 에 listen 소켓 등록
+    void RegisterUDPSocket();      // epoll 에 UDP 소켓 등록
+#endif
 
-    // ── IOCP 워커 루프 ────────────────────────────────────────────────────────
+    // ── I/O 이벤트 루프 ───────────────────────────────────────────────────────
     // 각 워커 스레드가 이 루프를 실행.
-    // GetQueuedCompletionStatus → OverlappedEx.operation 분기 → On* 호출.
     void WorkerLoop();
 
     // ── 완료 이벤트 핸들러 ────────────────────────────────────────────────────
-    void OnTCPAccept(OverlappedEx* pOv, DWORD bytes);
-    void OnTCPRecv  (OverlappedEx* pOv, DWORD bytes, Session* session);
-    void OnTCPSend  (OverlappedEx* pOv, DWORD bytes, Session* session);
-    void OnUDPRecv  (OverlappedEx* pOv, DWORD bytes);
-    void OnUDPSend  (OverlappedEx* pOv, DWORD bytes);
+    void OnTCPAccept(OverlappedEx* pOv, NxDword bytes);
+    void OnTCPRecv  (OverlappedEx* pOv, NxDword bytes, Session* session);
+    void OnTCPSend  (OverlappedEx* pOv, NxDword bytes, Session* session);
+    void OnUDPRecv  (OverlappedEx* pOv, NxDword bytes);
+    void OnUDPSend  (OverlappedEx* pOv, NxDword bytes);
 
     // ── 패킷 디스패치 ─────────────────────────────────────────────────────────
-    // opcode 로 m_handlerMap 조회 후 핸들러 호출.
-    // 등록된 핸들러가 없으면 경고 로그 후 무시.
     void DispatchPacket(std::shared_ptr<Session> session, PacketReader& reader);
 
     // ── 세션 생명주기 ─────────────────────────────────────────────────────────
-    std::shared_ptr<Session> CreateSession(SOCKET socket);
+    std::shared_ptr<Session> CreateSession(NxSocket socket);
     void                     RemoveSession(uint64_t sessionId);
 };

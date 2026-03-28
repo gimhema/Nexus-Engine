@@ -10,6 +10,7 @@ set(HEADERS
     ServerNet.h
     Connection.h
     Packets/PacketBase.h
+    Platform/Platform.h
 )
 
 add_executable(NexusEngine ${SOURCES} ${HEADERS})

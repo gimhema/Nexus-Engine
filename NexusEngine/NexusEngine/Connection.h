@@ -1,10 +1,6 @@
 #pragma once
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <winsock2.h>
-#include <windows.h>
+#include "Platform/Platform.h"
 
 #include <cstdint>
 #include <atomic>
@@ -74,7 +70,7 @@ struct OverlappedEx;
 class Session : public std::enable_shared_from_this<Session>
 {
 public:
-    Session(SOCKET socket, uint64_t sessionId);
+    Session(NxSocket socket, uint64_t sessionId);
     ~Session();
 
     Session(const Session&)            = delete;
@@ -82,7 +78,7 @@ public:
 
     // ── Identity ─────────────────────────────────────────────────────────────
     [[nodiscard]] uint64_t     GetSessionId() const { return m_sessionId; }
-    [[nodiscard]] SOCKET       GetSocket()    const { return m_socket; }
+    [[nodiscard]] NxSocket     GetSocket()    const { return m_socket; }
 
     // ── State ─────────────────────────────────────────────────────────────────
     [[nodiscard]] SessionState GetState()     const { return m_state.load(); }
@@ -102,13 +98,13 @@ public:
     OverlappedEx* GetSendOv() { return m_sendOv.get(); }
 
     // 최초 WSARecv 를 예약해 수신 루프를 시작
-    void PostRecv(HANDLE iocpHandle);
+    void PostRecv(NxHandle iocpHandle);
 
     // OnTCPSend 완료 후 전송 큐에 남은 데이터를 드레인
-    void FlushSendQueue(HANDLE iocpHandle);
+    void FlushSendQueue(NxHandle iocpHandle);
 
 private:
-    SOCKET                     m_socket{ INVALID_SOCKET };
+    NxSocket                   m_socket{ NX_INVALID_SOCKET };
     uint64_t                   m_sessionId{ 0 };
     std::atomic<SessionState>  m_state{ SessionState::Connected };
 
