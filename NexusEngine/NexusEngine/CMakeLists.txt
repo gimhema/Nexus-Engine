@@ -4,6 +4,9 @@ set(SOURCES
     ServerNet.cpp
     Connection.cpp
     Packets/PacketBase.cpp
+    Game/Logic/GameLogic.cpp
+    Game/User/User.cpp
+    Game/Zone/Zone.cpp
 )
 
 set(HEADERS
@@ -12,6 +15,11 @@ set(HEADERS
     Connection.h
     Packets/PacketBase.h
     Platform/Platform.h
+    Game/Logic/GameLogic.h
+    Game/User/User.h
+    Game/Zone/Zone.h
+    Game/Data/GameDataEntities/EntityBase.h
+    Game/Data/GamePackets/Packet-Example.hpp
 )
 
 add_executable(NexusEngine ${SOURCES} ${HEADERS})
