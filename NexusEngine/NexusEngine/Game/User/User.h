@@ -2,6 +2,27 @@
 
 #include "../Connection.h"
 #include "../GameDataEntities/EntityBase.h"
+#include <unordered_map>
+
+namespace EUser
+{
+    enum USER_STATUS
+    {
+        _DEFAULT = 0,
+        _CONNETED = 1,
+        _WAIT_DISCONNECTED = 2
+    };
+}
+
+struct UserGameData
+{
+    std::unordered_map<EEntity::EID, GameDataEnttiyBase> gameDataContainer;
+};
+
+struct UserProfile
+{
+
+};
 
 class User
 {
@@ -12,6 +33,7 @@ class User
 
     // User Game Logic Info
     public:
+    UserGameData userGameData;
 
     // Constructor & Deconstructor
     public:
