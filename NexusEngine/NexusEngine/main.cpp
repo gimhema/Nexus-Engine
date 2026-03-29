@@ -1,8 +1,8 @@
-#include<iostream>
-
+#include "Server.h"
 
 int main()
 {
-	std::cout << "Hello World!" << std::endl;
-	return 0;
+    Server server;
+    server.Run();
+    return 0;
 }
