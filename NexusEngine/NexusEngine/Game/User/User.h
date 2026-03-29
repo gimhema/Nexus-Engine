@@ -3,6 +3,7 @@
 #include "../Connection.h"
 #include "../GameDataEntities/EntityBase.h"
 #include <unordered_map>
+#include <string>
 
 namespace EUser
 {
@@ -19,19 +20,27 @@ struct UserGameData
     std::unordered_map<EEntity::EID, GameDataEnttiyBase> gameDataContainer;
 };
 
+struct UserIndentification
+{
+    std::string UserID;
+    std::string UserPW;
+};
+
 struct UserProfile
 {
-
+    std::string UserName;
 };
 
 class User
 {
-    // User Connection Info
+    // Private Member
     private:
     uint16_t uId; // 실질적인 유저의 ID, 연결된 소켓의 식별자
     Session UserSession;
+    UserIndentification userIdentification;
+    UserProfile userProfile;
 
-    // User Game Logic Info
+    // Public Member
     public:
     UserGameData userGameData;
 
