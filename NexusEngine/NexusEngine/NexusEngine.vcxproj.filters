@@ -13,6 +13,54 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="소스 파일\Game">
+      <UniqueIdentifier>{88131507-adf2-48c3-91cb-9634cea933e8}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Game">
+      <UniqueIdentifier>{b3e47da1-32ea-4a5f-a5aa-b56c2cb1eec8}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Packets">
+      <UniqueIdentifier>{3d82520d-b816-4129-be56-a2fd55952107}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Packets">
+      <UniqueIdentifier>{c2422e31-0ee8-4a18-8ee5-3f5a6982a47b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Platform">
+      <UniqueIdentifier>{25746864-4379-49c5-bd9b-e4109e680c6f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Platform">
+      <UniqueIdentifier>{210c37da-47b5-45dd-8c7f-e0d7ee349e75}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Game\Data">
+      <UniqueIdentifier>{3388de49-d3c3-4d53-a5af-5adb9bcd7f97}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Game\Logic">
+      <UniqueIdentifier>{6244165f-5e0b-47bd-9728-9ea193d8449a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Game\User">
+      <UniqueIdentifier>{5fede8f9-a60f-47ad-8d6e-58bd4b496ae6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Game\Zone">
+      <UniqueIdentifier>{8c6fc688-8916-42b6-9300-f7eadddffe7b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Game\Data">
+      <UniqueIdentifier>{47e28c8e-a86b-4095-adf8-d2c2017c8a7d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Game\Logic">
+      <UniqueIdentifier>{082c5729-c266-47ef-b5fc-7fa1b0d92969}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Game\Zone">
+      <UniqueIdentifier>{d4792f4a-e7e4-426e-80b0-c4d63f773830}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Game\User">
+      <UniqueIdentifier>{90395eab-b36b-4dc8-a058-99b9266215a9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Game\Data\GameDataEntities">
+      <UniqueIdentifier>{f59b246d-130b-4ec1-b6e9-1ba3668449f8}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Game\Data\GamePackets">
+      <UniqueIdentifier>{4e5b0ccc-8d28-4cfa-ae32-896c4c3f62cf}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -27,6 +75,18 @@
     <ClCompile Include="Connection.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
+    <ClCompile Include="Game\Logic\GameLogic.cpp">
+      <Filter>소스 파일\Game\Logic</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\User\User.cpp">
+      <Filter>소스 파일\Game\User</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Zone\Zone.cpp">
+      <Filter>소스 파일\Game\Zone</Filter>
+    </ClCompile>
+    <ClCompile Include="Packets\PacketBase.cpp">
+      <Filter>소스 파일\Packets</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Server.h">
@@ -38,8 +98,26 @@
     <ClInclude Include="Connection.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
+    <ClInclude Include="Game\Data\GameDataEntities\EntityBase.h">
+      <Filter>헤더 파일\Game\Data\GameDataEntities</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Data\GamePackets\Packet-Example.hpp">
+      <Filter>헤더 파일\Game\Data\GamePackets</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Logic\GameLogic.h">
+      <Filter>헤더 파일\Game\Logic</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\User\User.h">
+      <Filter>헤더 파일\Game\User</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Zone\Zone.h">
+      <Filter>헤더 파일\Game\Zone</Filter>
+    </ClInclude>
+    <ClInclude Include="Platform\Platform.h">
+      <Filter>헤더 파일\Platform</Filter>
+    </ClInclude>
     <ClInclude Include="Packets\PacketBase.h">
-      <Filter>헤더 파일</Filter>
+      <Filter>헤더 파일\Packets</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

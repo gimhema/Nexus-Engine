@@ -134,13 +134,23 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="Connection.cpp" />
+    <ClCompile Include="Game\Logic\GameLogic.cpp" />
+    <ClCompile Include="Game\User\User.cpp" />
+    <ClCompile Include="Game\Zone\Zone.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="Packets\PacketBase.cpp" />
     <ClCompile Include="Server.cpp" />
     <ClCompile Include="ServerNet.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Connection.h" />
+    <ClInclude Include="Game\Data\GameDataEntities\EntityBase.h" />
+    <ClInclude Include="Game\Data\GamePackets\Packet-Example.hpp" />
+    <ClInclude Include="Game\Logic\GameLogic.h" />
+    <ClInclude Include="Game\User\User.h" />
+    <ClInclude Include="Game\Zone\Zone.h" />
     <ClInclude Include="Packets\PacketBase.h" />
+    <ClInclude Include="Platform\Platform.h" />
     <ClInclude Include="Server.h" />
     <ClInclude Include="ServerNet.h" />
   </ItemGroup>

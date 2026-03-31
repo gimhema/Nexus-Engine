@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../Connection.h"
-#include "../GameDataEntities/EntityBase.h"
+#include "../../Connection.h"
+#include "../Data/GameDataEntities/EntityBase.h"
 #include <unordered_map>
 #include <string>
 
