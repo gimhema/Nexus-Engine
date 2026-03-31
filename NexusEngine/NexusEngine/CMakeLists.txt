@@ -4,9 +4,13 @@ set(SOURCES
     ServerNet.cpp
     Connection.cpp
     Packets/PacketBase.cpp
+    Shared/Logger.cpp
     Game/Logic/GameLogic.cpp
     Game/User/User.cpp
     Game/Zone/Zone.cpp
+    Game/Actors/SessionActor.cpp
+    Game/Actors/WorldActor.cpp
+    Game/Actors/ZoneActor.cpp
 )
 
 set(HEADERS
@@ -15,11 +19,19 @@ set(HEADERS
     Connection.h
     Packets/PacketBase.h
     Platform/Platform.h
+    Shared/Logger.h
+    Actor/Mailbox.h
+    Actor/Actor.h
+    Actor/ActorSystem.h
     Game/Logic/GameLogic.h
     Game/User/User.h
     Game/Zone/Zone.h
     Game/Data/GameDataEntities/EntityBase.h
     Game/Data/GamePackets/Packet-Example.hpp
+    Game/Messages/GameMessages.h
+    Game/Actors/SessionActor.h
+    Game/Actors/WorldActor.h
+    Game/Actors/ZoneActor.h
 )
 
 add_executable(NexusEngine ${SOURCES} ${HEADERS})

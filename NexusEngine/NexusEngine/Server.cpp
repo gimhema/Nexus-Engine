@@ -1,6 +1,6 @@
 #include "Server.h"
+#include "Shared/Logger.h"
 
-#include <iostream>
 #include <csignal>
 #include <chrono>
 #include <thread>
@@ -45,16 +45,18 @@ void Server::Run()
     std::signal(SIGTERM, OnSignal);   // kill
 #endif
 
+    // ── 로거 초기화 ──────────────────────────────────────────────────────────
+    Logger::Init("nexus.log", LogLevel::Debug);
+
     // ── NetworkManager 초기화 ────────────────────────────────────────────────
     if (!m_net.Initialize())
     {
-        std::cerr << "[Server] NetworkManager 초기화 실패\n";
+        LOG_ERROR("NetworkManager 초기화 실패");
         g_server = nullptr;
         return;
     }
 
-    std::cout << "[Server] 시작 (TCP:" << NET_TCP_PORT
-              << ", UDP:" << NET_UDP_PORT << ")\n";
+    LOG_INFO("서버 시작 (TCP:{}, UDP:{})", NET_TCP_PORT, NET_UDP_PORT);
 
     // ── 메인 루프 ────────────────────────────────────────────────────────────
     // 실제 I/O 처리는 워커 스레드가 담당.
@@ -64,11 +66,11 @@ void Server::Run()
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     // ── 종료 ─────────────────────────────────────────────────────────────────
-    std::cout << "[Server] 종료 중...\n";
+    LOG_INFO("서버 종료 중...");
     m_net.Shutdown();
+    Logger::Shutdown();
 
     g_server = nullptr;
-    std::cout << "[Server] 종료 완료\n";
 }
 
 void Server::Exit()
