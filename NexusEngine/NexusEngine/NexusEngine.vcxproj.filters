@@ -61,6 +61,24 @@
     <Filter Include="헤더 파일\Game\Data\GamePackets">
       <UniqueIdentifier>{4e5b0ccc-8d28-4cfa-ae32-896c4c3f62cf}</UniqueIdentifier>
     </Filter>
+    <Filter Include="헤더 파일\Actor">
+      <UniqueIdentifier>{CBA3123C-9E4F-4148-9754-C1D8A1D9B08F}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Game\Actors">
+      <UniqueIdentifier>{BC48EC8C-3EE3-4934-B273-FEA8903DF5A6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Game\Actors">
+      <UniqueIdentifier>{EB36E956-A300-4F24-AEB1-4D34B5996A74}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Game\Messages">
+      <UniqueIdentifier>{569CEC54-466D-43D5-83CB-BAFB3878FE17}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Shared">
+      <UniqueIdentifier>{283EC07F-78BD-4A79-80BD-5B77608724E5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Shared">
+      <UniqueIdentifier>{F1D1F5E3-CF05-4437-A2A5-2A1FA40B7F82}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -86,6 +104,18 @@
     </ClCompile>
     <ClCompile Include="Packets\PacketBase.cpp">
       <Filter>소스 파일\Packets</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Actors\SessionActor.cpp">
+      <Filter>소스 파일\Game\Actors</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Actors\WorldActor.cpp">
+      <Filter>소스 파일\Game\Actors</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Actors\ZoneActor.cpp">
+      <Filter>소스 파일\Game\Actors</Filter>
+    </ClCompile>
+    <ClCompile Include="Shared\Logger.cpp">
+      <Filter>소스 파일\Shared</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -118,6 +148,30 @@
     </ClInclude>
     <ClInclude Include="Packets\PacketBase.h">
       <Filter>헤더 파일\Packets</Filter>
+    </ClInclude>
+    <ClInclude Include="Actor\Actor.h">
+      <Filter>헤더 파일\Actor</Filter>
+    </ClInclude>
+    <ClInclude Include="Actor\ActorSystem.h">
+      <Filter>헤더 파일\Actor</Filter>
+    </ClInclude>
+    <ClInclude Include="Actor\Mailbox.h">
+      <Filter>헤더 파일\Actor</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Actors\SessionActor.h">
+      <Filter>헤더 파일\Game\Actors</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Actors\WorldActor.h">
+      <Filter>헤더 파일\Game\Actors</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Actors\ZoneActor.h">
+      <Filter>헤더 파일\Game\Actors</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Messages\GameMessages.h">
+      <Filter>헤더 파일\Game\Messages</Filter>
+    </ClInclude>
+    <ClInclude Include="Shared\Logger.h">
+      <Filter>헤더 파일\Shared</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

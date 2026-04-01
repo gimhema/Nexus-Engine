@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -53,10 +53,8 @@
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
-  <ImportGroup Label="ExtensionSettings">
-  </ImportGroup>
-  <ImportGroup Label="Shared">
-  </ImportGroup>
+  <ImportGroup Label="ExtensionSettings"></ImportGroup>
+  <ImportGroup Label="Shared"></ImportGroup>
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
@@ -141,6 +139,10 @@
     <ClCompile Include="Packets\PacketBase.cpp" />
     <ClCompile Include="Server.cpp" />
     <ClCompile Include="ServerNet.cpp" />
+    <ClCompile Include="Game\Actors\SessionActor.cpp" />
+    <ClCompile Include="Game\Actors\WorldActor.cpp" />
+    <ClCompile Include="Game\Actors\ZoneActor.cpp" />
+    <ClCompile Include="Shared\Logger.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Connection.h" />
@@ -153,8 +155,15 @@
     <ClInclude Include="Platform\Platform.h" />
     <ClInclude Include="Server.h" />
     <ClInclude Include="ServerNet.h" />
+    <ClInclude Include="Actor\Actor.h" />
+    <ClInclude Include="Actor\ActorSystem.h" />
+    <ClInclude Include="Actor\Mailbox.h" />
+    <ClInclude Include="Game\Actors\SessionActor.h" />
+    <ClInclude Include="Game\Actors\WorldActor.h" />
+    <ClInclude Include="Game\Actors\ZoneActor.h" />
+    <ClInclude Include="Game\Messages\GameMessages.h" />
+    <ClInclude Include="Shared\Logger.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
-  <ImportGroup Label="ExtensionTargets">
-  </ImportGroup>
+  <ImportGroup Label="ExtensionTargets"></ImportGroup>
 </Project>
