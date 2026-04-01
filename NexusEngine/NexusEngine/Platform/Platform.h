@@ -32,8 +32,10 @@
     using NxHandle = HANDLE;
     using NxDword  = DWORD;
 
-    inline constexpr NxSocket NX_INVALID_SOCKET = INVALID_SOCKET;
-    inline constexpr NxHandle NX_INVALID_HANDLE = INVALID_HANDLE_VALUE;
+    // INVALID_SOCKET = (SOCKET)(~0), INVALID_HANDLE_VALUE = (HANDLE)(LONG_PTR)-1
+    // 두 값 모두 포인터/정수 캐스트를 포함하므로 constexpr 불가 → const
+    inline const NxSocket NX_INVALID_SOCKET = INVALID_SOCKET;
+    inline const NxHandle NX_INVALID_HANDLE = INVALID_HANDLE_VALUE;
 
 #else // Linux
 
