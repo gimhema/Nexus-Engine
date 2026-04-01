@@ -8,7 +8,7 @@
 // CMSG_ : Client → Server
 // SMSG_ : Server → Client
 // ─────────────────────────────────────────────────────────────────────────────
-enum class Opcode : uint16_t
+enum Opcode : uint16_t
 {
     // ── 인증 ──────────────────────────────────────────────────────────────────
     CMSG_LOGIN          = 0x0001,   // 로그인 요청
@@ -33,7 +33,7 @@ enum class Opcode : uint16_t
 // [사용 예시 — 핸들러 등록]
 //
 //   net.RegisterHandler(
-//       static_cast<uint16_t>(Opcode::CMSG_LOGIN),
+//       static_cast<uint16_t>(CMSG_LOGIN),
 //       [this](std::shared_ptr<Session> s, PacketReader& r) {
 //           OnLogin(s, r);
 //       });
@@ -49,7 +49,7 @@ enum class Opcode : uint16_t
 //
 // [SMSG_LOGIN_RESULT 직렬화 & 전송]
 //
-//   PacketWriter w(static_cast<uint16_t>(Opcode::SMSG_LOGIN_RESULT));
+//   PacketWriter w(static_cast<uint16_t>(SMSG_LOGIN_RESULT));
 //   w.Write<uint8_t>(1);      // 1 = 성공
 //   w.Write<uint64_t>(sessionId);
 //   session->Send(w.Finalize());
@@ -66,7 +66,7 @@ enum class Opcode : uint16_t
 //
 // [SMSG_MOVE_BROADCAST 직렬화 & Zone 브로드캐스트]
 //
-//   PacketWriter w(static_cast<uint16_t>(Opcode::SMSG_MOVE_BROADCAST));
+//   PacketWriter w(static_cast<uint16_t>(SMSG_MOVE_BROADCAST));
 //   w.Write<uint64_t>(movedSessionId);
 //   w.Write<float>(x);
 //   w.Write<float>(y);

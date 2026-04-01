@@ -58,7 +58,7 @@ private:
     do { \
         if (LogLevel::Debug >= Logger::GetMinLevel()) \
             Logger::Write(LogLevel::Debug, \
-                std::format(fmt __VA_OPT__(,) __VA_ARGS__), \
+                std::format(fmt, ##__VA_ARGS__), \
                 std::source_location::current()); \
     } while(0)
 
@@ -66,7 +66,7 @@ private:
     do { \
         if (LogLevel::Info >= Logger::GetMinLevel()) \
             Logger::Write(LogLevel::Info, \
-                std::format(fmt __VA_OPT__(,) __VA_ARGS__), \
+                std::format(fmt, ##__VA_ARGS__), \
                 std::source_location::current()); \
     } while(0)
 
@@ -74,7 +74,7 @@ private:
     do { \
         if (LogLevel::Warn >= Logger::GetMinLevel()) \
             Logger::Write(LogLevel::Warn, \
-                std::format(fmt __VA_OPT__(,) __VA_ARGS__), \
+                std::format(fmt, ##__VA_ARGS__), \
                 std::source_location::current()); \
     } while(0)
 
@@ -82,6 +82,6 @@ private:
     do { \
         if (LogLevel::Error >= Logger::GetMinLevel()) \
             Logger::Write(LogLevel::Error, \
-                std::format(fmt __VA_OPT__(,) __VA_ARGS__), \
+                std::format(fmt, ##__VA_ARGS__), \
                 std::source_location::current()); \
     } while(0)
