@@ -79,6 +79,19 @@ void ZoneActor::Handle(MsgWorld_AddPlayer& msg)
     m_players[msg.sessionId] = ps;
 
     LOG_INFO("ZoneActor {}: 플레이어 추가 sessionId={}", m_zoneId, msg.sessionId);
+
+    // 진입 클라이언트에 스폰 위치 전송
+    SessionActor* sa = FindSessionActor(msg.sessionId);
+    if (sa)
+    {
+        PacketWriter w(SMSG_ENTER_WORLD);
+        w.WriteUInt8(1);                    // 성공
+        w.WriteFloat(msg.spawnPos.x);
+        w.WriteFloat(msg.spawnPos.y);
+        w.WriteFloat(msg.spawnPos.z);
+        MsgZone_SendTcp send{ w.Finalize() };
+        sa->Post(std::move(send));
+    }
 }
 
 void ZoneActor::Handle(MsgSession_Move& msg)
@@ -137,6 +150,7 @@ void ZoneActor::Handle(MsgSession_LeaveZone& msg)
 void ZoneActor::Handle(MsgWorld_RemovePlayer& msg)
 {
     m_players.erase(msg.sessionId);
+    m_sessionActors.erase(msg.sessionId);  // 브로드캐스트 라우팅 제거
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

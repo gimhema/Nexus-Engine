@@ -79,6 +79,7 @@ void WorldActor::Handle(MsgSession_EnterWorld& msg)
     if (!sa) return;
 
     sa->SetZone(zone);
+    zone->RegisterSessionActor(msg.sessionId, sa);  // 브로드캐스트 라우팅 등록
 
     MsgWorld_AddPlayer add;
     add.sessionId     = msg.sessionId;
@@ -118,7 +119,13 @@ void WorldActor::Handle(MsgZone_TeleportRequest& msg)
     SessionActor* sa = FindSession(msg.sessionId);
     if (!sa) return;
 
+    // 기존 모든 존에서 제거 (어느 존에 있는지 별도 추적하지 않으므로 전체 브로드캐스트)
+    MsgWorld_RemovePlayer remove{ msg.sessionId };
+    for (auto& [id, zone] : m_zones)
+        zone->Post(remove);
+
     sa->SetZone(targetZone);
+    targetZone->RegisterSessionActor(msg.sessionId, sa);  // 브로드캐스트 라우팅 등록
 
     MsgWorld_AddPlayer add;
     add.sessionId   = msg.sessionId;

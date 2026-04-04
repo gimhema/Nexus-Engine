@@ -34,12 +34,15 @@ std::shared_ptr<Session> NetworkManager::FindSession(uint64_t sessionId) const
 
 void NetworkManager::CloseSession(uint64_t sessionId)
 {
+    // 세션이 이미 제거된 경우 콜백 중복 호출 방지
     auto session = FindSession(sessionId);
-    if (session)
-        session->SetState(SessionState::Closing);
+    if (!session) return;
+
+    session->SetState(SessionState::Closing);
+    RemoveSession(sessionId);
+
     if (m_onDisconnect)
         m_onDisconnect(sessionId);
-    RemoveSession(sessionId);
 }
 
 void NetworkManager::DispatchPacket(std::shared_ptr<Session> session, PacketReader& reader)
@@ -268,14 +271,14 @@ void NetworkManager::WorkerLoop()
 
         auto* pOv = reinterpret_cast<OverlappedEx*>(pOverlap);
 
-        // I/O 오류 처리
+        // I/O 오류 처리 — bytes=0은 연결 종료 신호
         if (bytes == 0 && pOv->operation != IOOperation::TCP_ACCEPT)
         {
             if (pOv->operation == IOOperation::TCP_RECV ||
                 pOv->operation == IOOperation::TCP_SEND)
             {
                 auto* raw = reinterpret_cast<Session*>(key);
-                if (raw) raw->SetState(SessionState::Closing);
+                if (raw) CloseSession(raw->GetSessionId());
             }
             continue;
         }
