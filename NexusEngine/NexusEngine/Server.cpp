@@ -1,5 +1,6 @@
 #include "Server.h"
 #include "Shared/Logger.h"
+#include "Actor/ActorSystem.h"
 
 #include <csignal>
 #include <chrono>
@@ -48,10 +49,27 @@ void Server::Run()
     // ── 로거 초기화 ──────────────────────────────────────────────────────────
     Logger::Init("nexus.log", LogLevel::Debug);
 
+    // ── ActorSystem (Pooled Actor 스레드 풀) 시작 ────────────────────────────
+    ActorSystem::Instance().Start();
+
+    // ── WorldActor 시작 ──────────────────────────────────────────────────────
+    m_world.Start();
+
+    // ── 기본 Zone 생성 및 등록 (zoneId=1) ────────────────────────────────────
+    constexpr uint32_t DEFAULT_ZONE_ID      = 1;
+    constexpr uint32_t ZONE_TICK_INTERVAL   = 50;   // 50ms = 20Hz
+
+    m_zone = std::make_shared<ZoneActor>(DEFAULT_ZONE_ID, m_world);
+    m_zone->StartWithTick(ZONE_TICK_INTERVAL);
+    m_world.RegisterZone(DEFAULT_ZONE_ID, m_zone);
+
     // ── NetworkManager 초기화 ────────────────────────────────────────────────
     if (!m_net.Initialize())
     {
         LOG_ERROR("NetworkManager 초기화 실패");
+        m_zone->Stop();
+        m_world.Stop();
+        ActorSystem::Instance().Stop();
         g_server = nullptr;
         return;
     }
@@ -65,9 +83,12 @@ void Server::Run()
     while (m_running.load())
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    // ── 종료 ─────────────────────────────────────────────────────────────────
+    // ── 종료 (초기화 역순) ────────────────────────────────────────────────────
     LOG_INFO("서버 종료 중...");
     m_net.Shutdown();
+    m_zone->Stop();
+    m_world.Stop();
+    ActorSystem::Instance().Stop();
     Logger::Shutdown();
 
     g_server = nullptr;

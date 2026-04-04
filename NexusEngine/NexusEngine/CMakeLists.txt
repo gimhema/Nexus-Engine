@@ -6,6 +6,7 @@ set(SOURCES
     Packets/PacketBase.cpp
     Shared/Logger.cpp
     Game/Logic/GameLogic.cpp
+    Game/Data/GameDataEntities/EntityBase.cpp
     Game/User/User.cpp
     Game/Zone/Zone.cpp
     Game/Actors/SessionActor.cpp

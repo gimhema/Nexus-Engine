@@ -1,6 +1,9 @@
 #pragma once
 #include "ServerNet.h"
+#include "Game/Actors/WorldActor.h"
+#include "Game/Actors/ZoneActor.h"
 #include <atomic>
+#include <memory>
 
 class Server
 {
@@ -19,7 +22,10 @@ public:
     void Exit();
 
 private:
-    NetworkManager    m_net;
-    std::atomic<bool> m_running{ false };
+    NetworkManager                   m_net;
+    std::atomic<bool>                m_running{ false };
+
+    WorldActor                       m_world;
+    std::shared_ptr<ZoneActor>       m_zone;   // 기본 존 (zoneId=1)
 };
 
