@@ -45,6 +45,14 @@ void SessionActor::Handle(MsgNet_PacketReceived& msg)
         m_world.Post(std::move(login));
         break;
     }
+    case CMSG_ENTER_WORLD:
+    {
+        MsgSession_EnterWorld enter;
+        enter.sessionId    = m_sessionId;
+        enter.characterId  = reader.ReadUInt32();
+        m_world.Post(std::move(enter));
+        break;
+    }
     case CMSG_MOVE:
     {
         if (!m_zone) break;

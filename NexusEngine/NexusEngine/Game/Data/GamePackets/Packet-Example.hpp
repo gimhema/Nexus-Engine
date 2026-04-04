@@ -7,24 +7,48 @@
 //
 // CMSG_ : Client → Server
 // SMSG_ : Server → Client
+//
+// 값 할당 규칙:
+//   - 그룹 기준값(_BASE)만 직접 지정. 이후 항목은 auto-increment.
+//   - 새 그룹 추가 시 _BASE 하나만 지정하면 이후 값 충돌 없음.
+//   - _BASE 항목은 실제 opcode로 사용하지 않는 더미값.
+//   - 그룹 범위 확인: OPCODE_IN(opcode, GROUP) 매크로 사용.
+//
+// 그룹 범위:
+//   0x0100번대 — 인증 / 접속
+//   0x0200번대 — 이동
+//   0x0300번대 — 채팅
 // ─────────────────────────────────────────────────────────────────────────────
+
+// 그룹 범위 체크 헬퍼 (inclusive, _BASE 제외)
+#define OPCODE_IN(op, group) \
+    ((op) > group##_BASE && (op) < group##_END)
+
 enum Opcode : uint16_t
 {
-    // ── 인증 ──────────────────────────────────────────────────────────────────
-    CMSG_LOGIN          = 0x0001,   // 로그인 요청
-    SMSG_LOGIN_RESULT   = 0x0002,   // 로그인 결과
+    OPCODE_INVALID = 0,
 
-    // ── 이동 (TCP) ────────────────────────────────────────────────────────────
-    CMSG_MOVE           = 0x0101,   // 이동 요청
-    SMSG_MOVE_BROADCAST = 0x0102,   // 주변 플레이어 이동 브로드캐스트
+    // ── 인증 / 접속 (0x0100번대) ──────────────────────────────────────────────
+    _AUTH_BASE      = 0x0100,   // 더미 — 직접 사용 금지
+    CMSG_LOGIN,                 // 로그인 요청            [string accountName][string token]
+    SMSG_LOGIN_RESULT,          // 로그인 결과            [uint8 success][string message]
+    CMSG_ENTER_WORLD,           // 월드 진입 요청         [uint32 characterId]
+    SMSG_ENTER_WORLD,           // 월드 진입 결과         [uint8 success][float x][float y][float z]
+    _AUTH_END,                  // 더미 — 범위 검사용
 
-    // ── 이동 (UDP) ────────────────────────────────────────────────────────────
-    CMSG_MOVE_UDP       = 0x0111,   // 이동 요청 (UDP, 빠른 위치 동기화)
-    SMSG_MOVE_UDP       = 0x0112,   // 이동 브로드캐스트 (UDP)
+    // ── 이동 (0x0200번대) ─────────────────────────────────────────────────────
+    _MOVE_BASE      = 0x0200,   // 더미 — 직접 사용 금지
+    CMSG_MOVE,                  // 이동 요청 (TCP)        [float x][float y][float z][float orientation]
+    SMSG_MOVE_BROADCAST,        // 이동 브로드캐스트 (TCP)[uint64 sessionId][float x][float y][float z][float orientation]
+    CMSG_MOVE_UDP,              // 이동 요청 (UDP)        [float x][float y][float z][float orientation]
+    SMSG_MOVE_UDP,              // 이동 브로드캐스트 (UDP)[uint64 sessionId][float x][float y][float z][float orientation]
+    _MOVE_END,                  // 더미 — 범위 검사용
 
-    // ── 채팅 ──────────────────────────────────────────────────────────────────
-    CMSG_CHAT           = 0x0201,   // 채팅 메시지
-    SMSG_CHAT           = 0x0202,   // 채팅 브로드캐스트
+    // ── 채팅 (0x0300번대) ─────────────────────────────────────────────────────
+    _CHAT_BASE      = 0x0300,   // 더미 — 직접 사용 금지
+    CMSG_CHAT,                  // 채팅 메시지            [string text]
+    SMSG_CHAT,                  // 채팅 브로드캐스트      [uint64 sessionId][string name][string text]
+    _CHAT_END,                  // 더미 — 범위 검사용
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
