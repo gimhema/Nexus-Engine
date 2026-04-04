@@ -13,7 +13,7 @@ echo "[NexusEngine] 빌드 시작 (${CONFIG})"
 cmake -S "$REPO_ROOT" \
       -B "$BUILD_DIR" \
       -DCMAKE_BUILD_TYPE="$CONFIG" \
-      -G "Ninja"
+      -G "Unix Makefiles"
 
 cmake --build "$BUILD_DIR" --config "$CONFIG" --parallel
 
