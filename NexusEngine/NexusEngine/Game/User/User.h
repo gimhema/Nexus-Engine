@@ -35,8 +35,7 @@ class User
 {
     // Private Member
     private:
-    uint16_t uId; // 실질적인 유저의 ID, 연결된 소켓의 식별자
-    Session UserSession;
+    std::shared_ptr<Session> m_session; // 연결된 세션 (ID는 Session::GetSessionId()로 참조)
     UserIndentification userIdentification;
     UserProfile userProfile;
 
@@ -46,10 +45,10 @@ class User
 
     // Constructor & Deconstructor
     public:
-    User();
+    explicit User(std::shared_ptr<Session> session);
     ~User();
 
     // Methods
     public:
-
+    [[nodiscard]] uint64_t GetSessionId() const { return m_session->GetSessionId(); }
 };
