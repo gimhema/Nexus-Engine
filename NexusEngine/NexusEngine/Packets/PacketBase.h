@@ -49,6 +49,12 @@ public:
     uint32_t    Remaining()      const { return m_length - m_pos; }
     bool        IsEOF()          const { return m_pos >= m_length; }
 
+    // 현재 읽기 위치 이후 남은 바이트를 복사 반환 (MsgNet_PacketReceived payload 용)
+    std::vector<uint8_t> GetPayload() const
+    {
+        return { m_data + m_pos, m_data + m_length };
+    }
+
     uint8_t     ReadUInt8();
     uint16_t    ReadUInt16();
     uint32_t    ReadUInt32();

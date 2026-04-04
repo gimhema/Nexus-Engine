@@ -11,6 +11,15 @@
 NetworkManager::NetworkManager()  = default;
 NetworkManager::~NetworkManager() { Shutdown(); }
 
+void NetworkManager::SetCallbacks(OnAcceptFn     onAccept,
+                                  OnDisconnectFn onDisconnect,
+                                  OnPacketFn     onPacket)
+{
+    m_onAccept     = std::move(onAccept);
+    m_onDisconnect = std::move(onDisconnect);
+    m_onPacket     = std::move(onPacket);
+}
+
 void NetworkManager::RegisterHandler(uint16_t opcode, PacketHandlerFunc handler)
 {
     m_handlerMap[opcode] = std::move(handler);
@@ -28,11 +37,20 @@ void NetworkManager::CloseSession(uint64_t sessionId)
     auto session = FindSession(sessionId);
     if (session)
         session->SetState(SessionState::Closing);
+    if (m_onDisconnect)
+        m_onDisconnect(sessionId);
     RemoveSession(sessionId);
 }
 
 void NetworkManager::DispatchPacket(std::shared_ptr<Session> session, PacketReader& reader)
 {
+    // Actor 콜백이 설정된 경우 SessionActor로 라우팅
+    if (m_onPacket)
+    {
+        m_onPacket(session->GetSessionId(), reader.GetOpcode(), reader.GetPayload());
+        return;
+    }
+    // 레거시 fallback: opcode 핸들러 맵
     auto it = m_handlerMap.find(reader.GetOpcode());
     if (it != m_handlerMap.end())
         it->second(session, reader);
@@ -305,6 +323,8 @@ void NetworkManager::OnTCPAccept(OverlappedEx* pOv, NxDword /*bytes*/)
                                  reinterpret_cast<ULONG_PTR>(session.get()),
                                  0);
         session->PostRecv();
+        if (m_onAccept)
+            m_onAccept(session);
     }
 
     PostAccept();
@@ -540,9 +560,15 @@ void NetworkManager::OnTCPAccept(OverlappedEx* /*pOv*/, NxDword /*bytes*/)
 
         auto session = CreateSession(accepted);
         if (!session)
+        {
             ::close(accepted);
+        }
         else
+        {
             session->PostRecv();
+            if (m_onAccept)
+                m_onAccept(session);
+        }
     }
 }
 

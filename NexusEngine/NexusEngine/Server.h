@@ -2,8 +2,11 @@
 #include "ServerNet.h"
 #include "Game/Actors/WorldActor.h"
 #include "Game/Actors/ZoneActor.h"
+#include "Game/Actors/SessionActor.h"
 #include <atomic>
 #include <memory>
+#include <mutex>
+#include <unordered_map>
 
 class Server
 {
@@ -27,5 +30,9 @@ private:
 
     WorldActor                       m_world;
     std::shared_ptr<ZoneActor>       m_zone;   // 기본 존 (zoneId=1)
+
+    // sessionId → SessionActor (워커 스레드에서 접근하므로 mutex 보호)
+    std::mutex                                           m_sessionActorsMutex;
+    std::unordered_map<uint64_t, std::shared_ptr<SessionActor>> m_sessionActors;
 };
 

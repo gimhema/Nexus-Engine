@@ -1,6 +1,7 @@
 #include "Server.h"
 #include "Shared/Logger.h"
 #include "Actor/ActorSystem.h"
+#include "Game/Messages/GameMessages.h"
 
 #include <csignal>
 #include <chrono>
@@ -62,6 +63,46 @@ void Server::Run()
     m_zone = std::make_shared<ZoneActor>(DEFAULT_ZONE_ID, m_world);
     m_zone->StartWithTick(ZONE_TICK_INTERVAL);
     m_world.RegisterZone(DEFAULT_ZONE_ID, m_zone);
+
+    // ── NetworkManager 콜백 설정 ─────────────────────────────────────────────
+    m_net.SetCallbacks(
+        // onAccept: 새 Session → SessionActor 생성 + WorldActor 등록
+        [this](std::shared_ptr<Session> session)
+        {
+            auto sa = std::make_shared<SessionActor>(session, m_world);
+            {
+                std::lock_guard lock(m_sessionActorsMutex);
+                m_sessionActors[session->GetSessionId()] = sa;
+            }
+            m_world.RegisterSession(session->GetSessionId(), sa);
+            LOG_INFO("클라이언트 접속: sessionId={}", session->GetSessionId());
+        },
+        // onDisconnect: SessionActor 해제 + WorldActor에 로그아웃 통보
+        [this](uint64_t sessionId)
+        {
+            {
+                std::lock_guard lock(m_sessionActorsMutex);
+                m_sessionActors.erase(sessionId);
+            }
+            m_world.Post(MsgSession_Logout{ sessionId });
+            LOG_INFO("클라이언트 접속 해제: sessionId={}", sessionId);
+        },
+        // onPacket: 수신 패킷을 SessionActor 메일박스로 전달
+        [this](uint64_t sessionId, uint16_t opcode, std::vector<uint8_t> payload)
+        {
+            std::shared_ptr<SessionActor> sa;
+            {
+                std::lock_guard lock(m_sessionActorsMutex);
+                auto it = m_sessionActors.find(sessionId);
+                if (it == m_sessionActors.end()) return;
+                sa = it->second;
+            }
+            MsgNet_PacketReceived msg;
+            msg.opcode  = opcode;
+            msg.payload = std::move(payload);
+            sa->Post(std::move(msg));
+        }
+    );
 
     // ── NetworkManager 초기화 ────────────────────────────────────────────────
     if (!m_net.Initialize())

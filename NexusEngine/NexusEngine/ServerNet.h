@@ -98,6 +98,19 @@ struct OverlappedEx
 using PacketHandlerFunc = std::function<void(std::shared_ptr<Session>, PacketReader&)>;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 세션 이벤트 콜백
+//
+// OnAcceptFn     : TCP 클라이언트 접속 완료 시 호출 (워커 스레드 컨텍스트)
+// OnDisconnectFn : 세션 종료 시 호출 (워커 스레드 컨텍스트)
+// OnPacketFn     : 완성된 패킷 수신 시 호출 — payload는 헤더 제외 바이트 복사본
+// ─────────────────────────────────────────────────────────────────────────────
+using OnAcceptFn     = std::function<void(std::shared_ptr<Session>)>;
+using OnDisconnectFn = std::function<void(uint64_t sessionId)>;
+using OnPacketFn     = std::function<void(uint64_t sessionId,
+                                          uint16_t opcode,
+                                          std::vector<uint8_t> payload)>;
+
+// ─────────────────────────────────────────────────────────────────────────────
 // NetworkManager
 //
 // 비동기 TCP + UDP 네트워크 레이어.
@@ -130,8 +143,12 @@ public:
                     uint32_t workerCount = NET_WORKER_THREADS);
     void Shutdown();
 
-    // ── 핸들러 등록 ───────────────────────────────────────────────────────────
-    // Initialize() 호출 전 또는 메인 스레드에서만 등록할 것.
+    // ── 세션 이벤트 콜백 등록 (Initialize() 호출 전에 설정) ─────────────────────
+    void SetCallbacks(OnAcceptFn     onAccept,
+                      OnDisconnectFn onDisconnect,
+                      OnPacketFn     onPacket);
+
+    // ── 핸들러 등록 (레거시 — 콜백 미설정 시 fallback) ─────────────────────────
     void RegisterHandler(uint16_t opcode, PacketHandlerFunc handler);
 
     // ── UDP 전송 (fire-and-forget) ────────────────────────────────────────────
@@ -169,8 +186,13 @@ private:
     std::vector<std::thread> m_workerThreads;
     std::atomic<bool>        m_running{ false };
 
-    // ── 패킷 핸들러 맵 ────────────────────────────────────────────────────────
+    // ── 패킷 핸들러 맵 (레거시 fallback) ─────────────────────────────────────
     std::unordered_map<uint16_t, PacketHandlerFunc> m_handlerMap;
+
+    // ── 세션 이벤트 콜백 ──────────────────────────────────────────────────────
+    OnAcceptFn     m_onAccept;
+    OnDisconnectFn m_onDisconnect;
+    OnPacketFn     m_onPacket;
 
     // ── 세션 테이블 ───────────────────────────────────────────────────────────
     mutable std::mutex                                         m_sessionMutex;
