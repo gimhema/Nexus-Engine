@@ -31,8 +31,10 @@ void SessionActor::OnMessage(SessionMessage& msg)
 // ─────────────────────────────────────────────────────────────────────────────
 void SessionActor::Handle(MsgNet_PacketReceived& msg)
 {
-    PacketReader reader(msg.payload.data(),
-                        static_cast<uint16_t>(msg.payload.size()));
+    PacketReader reader = PacketReader::FromPayload(
+        msg.opcode,
+        msg.payload.data(),
+        static_cast<uint32_t>(msg.payload.size()));
 
     switch (msg.opcode)
     {

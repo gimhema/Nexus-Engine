@@ -44,6 +44,9 @@ public:
     // UDP용: sessionToken을 추가로 파싱
     static PacketReader FromUDP(const uint8_t* data, uint32_t length);
 
+    // Payload-only 용: MsgNet_PacketReceived.payload처럼 헤더가 제거된 데이터에서 생성
+    static PacketReader FromPayload(uint16_t opcode, const uint8_t* data, uint32_t length);
+
     uint16_t    GetOpcode()      const { return m_opcode; }
     uint64_t    GetSessionToken()const { return m_sessionToken; }
     uint32_t    Remaining()      const { return m_length - m_pos; }

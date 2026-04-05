@@ -57,13 +57,19 @@ bool NetClient::Connect(const std::string& host, uint16_t port)
 
 void NetClient::Disconnect()
 {
-    if (!m_connected.exchange(false)) return;
+    // 연결 중인 경우에만 소켓 닫기 (recv 루프 언블록)
+    if (m_connected.exchange(false))
+    {
+        closesocket_nx(m_socket);
+        m_socket = NX_INVALID_SOCKET;
+    }
 
-    closesocket_nx(m_socket);
-    m_socket = NX_INVALID_SOCKET;
-
-    if (m_recvThread.joinable())
+    // recv 스레드 내부에서 호출된 경우 self-join 방지
+    if (m_recvThread.joinable() &&
+        m_recvThread.get_id() != std::this_thread::get_id())
+    {
         m_recvThread.join();
+    }
 }
 
 void NetClient::Send(const std::vector<uint8_t>& packet)

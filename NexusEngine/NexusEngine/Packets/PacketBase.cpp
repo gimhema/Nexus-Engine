@@ -19,6 +19,16 @@ PacketReader::PacketReader(const uint8_t* data, uint32_t length)
     m_opcode = hdr->opcode;
 }
 
+PacketReader PacketReader::FromPayload(uint16_t opcode, const uint8_t* data, uint32_t length)
+{
+    PacketReader reader;
+    reader.m_data   = data;
+    reader.m_length = length;
+    reader.m_pos    = 0;   // 헤더 없음 — 바로 payload 시작
+    reader.m_opcode = opcode;
+    return reader;
+}
+
 PacketReader PacketReader::FromUDP(const uint8_t* data, uint32_t length)
 {
     PacketReader reader;
