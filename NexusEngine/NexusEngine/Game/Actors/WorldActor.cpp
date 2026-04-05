@@ -21,24 +21,27 @@ void WorldActor::RegisterZone(uint32_t zoneId, std::shared_ptr<ZoneActor> zone)
     LOG_INFO("Zone 등록: zoneId={}", zoneId);
 }
 
-void WorldActor::RegisterSession(uint64_t sessionId, std::shared_ptr<SessionActor> actor)
-{
-    m_sessions[sessionId] = std::move(actor);
-}
-
-void WorldActor::UnregisterSession(uint64_t sessionId)
-{
-    m_sessions.erase(sessionId);
-}
-
 void WorldActor::OnMessage(WorldMessage& msg)
 {
     std::visit(overloaded{
-        [this](MsgSession_Login& m)         { Handle(m); },
-        [this](MsgSession_EnterWorld& m)    { Handle(m); },
-        [this](MsgSession_Logout& m)        { Handle(m); },
-        [this](MsgZone_TeleportRequest& m)  { Handle(m); },
+        [this](MsgSession_Login& m)            { Handle(m); },
+        [this](MsgSession_EnterWorld& m)       { Handle(m); },
+        [this](MsgSession_Logout& m)           { Handle(m); },
+        [this](MsgZone_TeleportRequest& m)     { Handle(m); },
+        [this](MsgServer_RegisterSession& m)   { Handle(m); },
+        [this](MsgServer_UnregisterSession& m) { Handle(m); },
     }, msg);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+void WorldActor::Handle(MsgServer_RegisterSession& msg)
+{
+    m_sessions[msg.sessionId] = std::move(msg.actor);
+}
+
+void WorldActor::Handle(MsgServer_UnregisterSession& msg)
+{
+    m_sessions.erase(msg.sessionId);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -48,7 +51,7 @@ void WorldActor::Handle(MsgSession_Login& msg)
     // 현재는 항상 성공 처리
     LOG_INFO("WorldActor: 로그인 sessionId={} account={}", msg.sessionId, msg.accountName);
 
-    SessionActor* sa = FindSession(msg.sessionId);
+    auto sa = FindSession(msg.sessionId);
     if (!sa)
     {
         LOG_WARN("WorldActor: SessionActor 없음 sessionId={}", msg.sessionId);
@@ -75,17 +78,19 @@ void WorldActor::Handle(MsgSession_EnterWorld& msg)
         return;
     }
 
-    SessionActor* sa = FindSession(msg.sessionId);
+    auto sa = FindSession(msg.sessionId);
     if (!sa) return;
 
     sa->SetZone(zone);
-    zone->RegisterSessionActor(msg.sessionId, sa);  // 브로드캐스트 라우팅 등록
 
+    // RegisterSessionActor는 ZoneActor 스레드 내에서 처리
+    // MsgWorld_AddPlayer에 weak_ptr을 실어 보내 ZoneActor가 직접 등록
     MsgWorld_AddPlayer add;
     add.sessionId     = msg.sessionId;
     add.characterId   = msg.characterId;
     add.characterName = "Player";       // TODO: DB에서 로드
     add.spawnPos      = { 0.f, 0.f, 0.f };
+    add.sessionActor  = sa;             // weak_ptr — ZoneActor가 Handle 내에서 등록
     zone->Post(std::move(add));
 }
 
@@ -93,8 +98,7 @@ void WorldActor::Handle(MsgSession_Logout& msg)
 {
     LOG_INFO("WorldActor: 로그아웃 sessionId={}", msg.sessionId);
 
-    SessionActor* sa = FindSession(msg.sessionId);
-    if (sa)
+    if (auto sa = FindSession(msg.sessionId))
         sa->ClearZone();
 
     // 모든 Zone에 플레이어 제거 요청
@@ -102,7 +106,7 @@ void WorldActor::Handle(MsgSession_Logout& msg)
     for (auto& [id, zone] : m_zones)
         zone->Post(remove);
 
-    UnregisterSession(msg.sessionId);
+    m_sessions.erase(msg.sessionId);
 }
 
 void WorldActor::Handle(MsgZone_TeleportRequest& msg)
@@ -116,20 +120,20 @@ void WorldActor::Handle(MsgZone_TeleportRequest& msg)
         return;
     }
 
-    SessionActor* sa = FindSession(msg.sessionId);
+    auto sa = FindSession(msg.sessionId);
     if (!sa) return;
 
-    // 기존 모든 존에서 제거 (어느 존에 있는지 별도 추적하지 않으므로 전체 브로드캐스트)
+    // 기존 모든 존에서 제거
     MsgWorld_RemovePlayer remove{ msg.sessionId };
     for (auto& [id, zone] : m_zones)
         zone->Post(remove);
 
     sa->SetZone(targetZone);
-    targetZone->RegisterSessionActor(msg.sessionId, sa);  // 브로드캐스트 라우팅 등록
 
     MsgWorld_AddPlayer add;
-    add.sessionId   = msg.sessionId;
-    add.spawnPos    = msg.targetPos;
+    add.sessionId    = msg.sessionId;
+    add.spawnPos     = msg.targetPos;
+    add.sessionActor = sa;             // weak_ptr — ZoneActor가 Handle 내에서 등록
     targetZone->Post(std::move(add));
 }
 
@@ -140,8 +144,8 @@ ZoneActor* WorldActor::FindZone(uint32_t zoneId) const
     return (it != m_zones.end()) ? it->second.get() : nullptr;
 }
 
-SessionActor* WorldActor::FindSession(uint64_t sessionId) const
+std::shared_ptr<SessionActor> WorldActor::FindSession(uint64_t sessionId) const
 {
     auto it = m_sessions.find(sessionId);
-    return (it != m_sessions.end()) ? it->second.get() : nullptr;
+    return (it != m_sessions.end()) ? it->second : nullptr;
 }

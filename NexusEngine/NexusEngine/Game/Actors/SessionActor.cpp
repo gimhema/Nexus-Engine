@@ -57,35 +57,38 @@ void SessionActor::Handle(MsgNet_PacketReceived& msg)
     }
     case CMSG_MOVE:
     {
-        if (!m_zone) break;
+        auto* zone = m_zone.load(std::memory_order_acquire);
+        if (!zone) break;
         MsgSession_Move move;
         move.sessionId   = m_sessionId;
         move.pos.x       = reader.ReadFloat();
         move.pos.y       = reader.ReadFloat();
         move.pos.z       = reader.ReadFloat();
         move.orientation = reader.ReadFloat();
-        m_zone->Post(std::move(move));
+        zone->Post(std::move(move));
         break;
     }
     case CMSG_MOVE_UDP:
     {
-        if (!m_zone) break;
+        auto* zone = m_zone.load(std::memory_order_acquire);
+        if (!zone) break;
         MsgSession_MoveUdp move;
         move.sessionId   = m_sessionId;
         move.pos.x       = reader.ReadFloat();
         move.pos.y       = reader.ReadFloat();
         move.pos.z       = reader.ReadFloat();
         move.orientation = reader.ReadFloat();
-        m_zone->Post(std::move(move));
+        zone->Post(std::move(move));
         break;
     }
     case CMSG_CHAT:
     {
-        if (!m_zone) break;
+        auto* zone = m_zone.load(std::memory_order_acquire);
+        if (!zone) break;
         MsgSession_Chat chat;
         chat.sessionId = m_sessionId;
         chat.text      = reader.ReadString();
-        m_zone->Post(std::move(chat));
+        zone->Post(std::move(chat));
         break;
     }
     default:

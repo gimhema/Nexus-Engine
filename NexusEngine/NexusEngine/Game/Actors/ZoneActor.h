@@ -4,6 +4,7 @@
 #include "../../Game/Messages/GameMessages.h"
 
 #include <unordered_map>
+#include <memory>
 #include <string>
 #include <cstdint>
 
@@ -41,10 +42,6 @@ public:
 
     [[nodiscard]] uint32_t GetZoneId() const { return m_zoneId; }
 
-    // SessionActor 레퍼런스 등록 — WorldActor가 플레이어 배정 시 호출
-    void RegisterSessionActor(uint64_t sessionId, SessionActor* actor);
-    void UnregisterSessionActor(uint64_t sessionId);
-
 protected:
     void OnMessage(ZoneMessage& msg) override;
     void OnTick()                    override;
@@ -64,13 +61,14 @@ private:
     void BroadcastTcp(uint64_t excludeSessionId, const std::vector<uint8_t>& packet);
     void BroadcastUdp(uint64_t excludeSessionId, const std::vector<uint8_t>& packet);
 
-    [[nodiscard]] SessionActor* FindSessionActor(uint64_t sessionId) const;
+    // weak_ptr 잠금 실패(SessionActor 소멸) 시 nullptr 반환
+    [[nodiscard]] std::shared_ptr<SessionActor> FindSessionActor(uint64_t sessionId) const;
 
-    uint32_t   m_zoneId{};
+    uint32_t    m_zoneId{};
     WorldActor& m_world;
 
-    std::unordered_map<uint64_t, PlayerState>   m_players;        // 게임 상태 (ZoneActor 소유)
-    std::unordered_map<uint64_t, SessionActor*> m_sessionActors;  // 송신용 레퍼런스
+    std::unordered_map<uint64_t, PlayerState>                m_players;        // 게임 상태 (ZoneActor 소유)
+    std::unordered_map<uint64_t, std::weak_ptr<SessionActor>> m_sessionActors; // 송신용 weak 레퍼런스
 
     uint64_t m_tickCount{ 0 };
 };

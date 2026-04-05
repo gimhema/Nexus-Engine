@@ -20,16 +20,6 @@ void ZoneActor::OnStop()
     LOG_INFO("ZoneActor 종료: zoneId={}", m_zoneId);
 }
 
-void ZoneActor::RegisterSessionActor(uint64_t sessionId, SessionActor* actor)
-{
-    m_sessionActors[sessionId] = actor;
-}
-
-void ZoneActor::UnregisterSessionActor(uint64_t sessionId)
-{
-    m_sessionActors.erase(sessionId);
-}
-
 void ZoneActor::OnMessage(ZoneMessage& msg)
 {
     std::visit(overloaded{
@@ -78,19 +68,20 @@ void ZoneActor::Handle(MsgWorld_AddPlayer& msg)
     ps.pos         = msg.spawnPos;
     m_players[msg.sessionId] = ps;
 
+    // SessionActor 등록 — ZoneActor 스레드 내에서 처리해 레이스 방지
+    m_sessionActors[msg.sessionId] = msg.sessionActor;
+
     LOG_INFO("ZoneActor {}: 플레이어 추가 sessionId={}", m_zoneId, msg.sessionId);
 
     // 진입 클라이언트에 스폰 위치 전송
-    SessionActor* sa = FindSessionActor(msg.sessionId);
-    if (sa)
+    if (auto sa = msg.sessionActor.lock())
     {
         PacketWriter w(SMSG_ENTER_WORLD);
-        w.WriteUInt8(1);                    // 성공
+        w.WriteUInt8(1);
         w.WriteFloat(msg.spawnPos.x);
         w.WriteFloat(msg.spawnPos.y);
         w.WriteFloat(msg.spawnPos.z);
-        MsgZone_SendTcp send{ w.Finalize() };
-        sa->Post(std::move(send));
+        sa->Post(MsgZone_SendTcp{ w.Finalize() });
     }
 }
 
@@ -144,6 +135,7 @@ void ZoneActor::Handle(MsgSession_Chat& msg)
 void ZoneActor::Handle(MsgSession_LeaveZone& msg)
 {
     m_players.erase(msg.sessionId);
+    m_sessionActors.erase(msg.sessionId);
     LOG_INFO("ZoneActor {}: 플레이어 퇴장 sessionId={}", m_zoneId, msg.sessionId);
 }
 
@@ -159,26 +151,26 @@ void ZoneActor::Handle(MsgWorld_RemovePlayer& msg)
 // ─────────────────────────────────────────────────────────────────────────────
 void ZoneActor::BroadcastTcp(uint64_t excludeSessionId, const std::vector<uint8_t>& packet)
 {
-    for (auto& [sid, sa] : m_sessionActors)
+    for (auto& [sid, weakSa] : m_sessionActors)
     {
         if (sid == excludeSessionId) continue;
-        MsgZone_SendTcp send{ packet };
-        sa->Post(std::move(send));
+        if (auto sa = weakSa.lock())
+            sa->Post(MsgZone_SendTcp{ packet });
     }
 }
 
 void ZoneActor::BroadcastUdp(uint64_t excludeSessionId, const std::vector<uint8_t>& packet)
 {
-    for (auto& [sid, sa] : m_sessionActors)
+    for (auto& [sid, weakSa] : m_sessionActors)
     {
         if (sid == excludeSessionId) continue;
-        MsgZone_SendUdp send{ packet };
-        sa->Post(std::move(send));
+        if (auto sa = weakSa.lock())
+            sa->Post(MsgZone_SendUdp{ packet });
     }
 }
 
-SessionActor* ZoneActor::FindSessionActor(uint64_t sessionId) const
+std::shared_ptr<SessionActor> ZoneActor::FindSessionActor(uint64_t sessionId) const
 {
     auto it = m_sessionActors.find(sessionId);
-    return (it != m_sessionActors.end()) ? it->second : nullptr;
+    return (it != m_sessionActors.end()) ? it->second.lock() : nullptr;
 }

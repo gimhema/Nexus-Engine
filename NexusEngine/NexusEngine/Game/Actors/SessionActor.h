@@ -4,6 +4,7 @@
 #include "../../Actor/ActorSystem.h"
 #include "../../Game/Messages/GameMessages.h"
 
+#include <atomic>
 #include <memory>
 #include <cstdint>
 
@@ -30,9 +31,10 @@ public:
 
     [[nodiscard]] uint64_t GetSessionId() const { return m_sessionId; }
 
-    // ZoneActor 연결 — WorldActor가 존 배정 후 호출
-    void SetZone(ZoneActor* zone) { m_zone = zone; }
-    void ClearZone()              { m_zone = nullptr; }
+    // ZoneActor 연결 — WorldActor 스레드에서 호출, SessionActor 스레드에서 읽음
+    // atomic으로 동기화
+    void SetZone(ZoneActor* zone) { m_zone.store(zone, std::memory_order_release); }
+    void ClearZone()              { m_zone.store(nullptr, std::memory_order_release); }
 
     // Post 오버라이드 — 메시지 투입 후 자동으로 ActorSystem에 스케줄링
     void Post(SessionMessage msg)
@@ -54,8 +56,8 @@ private:
     void Handle(MsgZone_Disconnect& msg);
     void Handle(MsgWorld_LoginResult& msg);
 
-    std::shared_ptr<Session> m_session;
-    WorldActor&              m_world;
-    ZoneActor*               m_zone{ nullptr };
-    uint64_t                 m_sessionId{ 0 };
+    std::shared_ptr<Session>  m_session;
+    WorldActor&               m_world;
+    std::atomic<ZoneActor*>   m_zone{ nullptr };
+    uint64_t                  m_sessionId{ 0 };
 };

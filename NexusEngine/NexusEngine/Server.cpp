@@ -66,7 +66,7 @@ void Server::Run()
 
     // ── NetworkManager 콜백 설정 ─────────────────────────────────────────────
     m_net.SetCallbacks(
-        // onAccept: 새 Session → SessionActor 생성 + WorldActor 등록
+        // onAccept: 새 Session → SessionActor 생성 + WorldActor에 Post로 등록
         [this](std::shared_ptr<Session> session)
         {
             auto sa = std::make_shared<SessionActor>(session, m_world);
@@ -74,16 +74,18 @@ void Server::Run()
                 std::lock_guard lock(m_sessionActorsMutex);
                 m_sessionActors[session->GetSessionId()] = sa;
             }
-            m_world.RegisterSession(session->GetSessionId(), sa);
+            // RegisterSession 직접 호출 대신 Post — WorldActor 전용 스레드에서 m_sessions 변경
+            m_world.Post(MsgServer_RegisterSession{ session->GetSessionId(), sa });
             LOG_INFO("클라이언트 접속: sessionId={}", session->GetSessionId());
         },
-        // onDisconnect: SessionActor 해제 + WorldActor에 로그아웃 통보
+        // onDisconnect: SessionActor 해제 + WorldActor에 로그아웃/등록해제 통보
         [this](uint64_t sessionId)
         {
             {
                 std::lock_guard lock(m_sessionActorsMutex);
                 m_sessionActors.erase(sessionId);
             }
+            m_world.Post(MsgServer_UnregisterSession{ sessionId });
             m_world.Post(MsgSession_Logout{ sessionId });
             LOG_INFO("클라이언트 접속 해제: sessionId={}", sessionId);
         },

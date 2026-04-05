@@ -8,6 +8,7 @@
 
 // 전방 선언
 class Session;
+class SessionActor;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GameMessages.h
@@ -150,6 +151,7 @@ struct MsgWorld_AddPlayer
     uint32_t    characterId{};
     std::string characterName;
     Vec3        spawnPos;
+    std::weak_ptr<SessionActor> sessionActor;  // ZoneActor 내부 등록용 (ZoneActor→SessionActor 직접 호출 대체)
 };
 
 // 플레이어를 존에서 제거하도록 지시
@@ -195,10 +197,29 @@ using ZoneMessage = std::variant<
     MsgWorld_RemovePlayer
 >;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Server 인프라 → WorldActor (내부 관리용, 게임 로직과 무관)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 새 SessionActor 등록 — 네트워크 워커 스레드 대신 Post()로 전달해 m_sessions 레이스 방지
+struct MsgServer_RegisterSession
+{
+    uint64_t                     sessionId{};
+    std::shared_ptr<SessionActor> actor;
+};
+
+// SessionActor 등록 해제
+struct MsgServer_UnregisterSession
+{
+    uint64_t sessionId{};
+};
+
 // WorldActor가 받는 메시지
 using WorldMessage = std::variant<
     MsgSession_Login,
     MsgSession_EnterWorld,
     MsgSession_Logout,
-    MsgZone_TeleportRequest
+    MsgZone_TeleportRequest,
+    MsgServer_RegisterSession,
+    MsgServer_UnregisterSession
 >;
