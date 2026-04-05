@@ -57,9 +57,15 @@ bool NetClient::Connect(const std::string& host, uint16_t port)
 
 void NetClient::Disconnect()
 {
-    // 연결 중인 경우에만 소켓 닫기 (recv 루프 언블록)
+    // 연결 중인 경우에만 소켓 닫기
+    // shutdown(SHUT_RDWR) 먼저 호출해야 블로킹 중인 recv()가 즉시 반환됨
     if (m_connected.exchange(false))
     {
+#ifdef _WIN32
+        ::shutdown(m_socket, SD_BOTH);
+#else
+        ::shutdown(m_socket, SHUT_RDWR);
+#endif
         closesocket_nx(m_socket);
         m_socket = NX_INVALID_SOCKET;
     }
