@@ -31,26 +31,27 @@ flowchart TD
     Client["클라이언트\nTCP / UDP"]
 
     subgraph NET["네트워크 레이어"]
-        NW["NetworkManager\n워커 스레드 풀 CPU x2"]
+        NW["NetworkManager\n워커 스레드 풀"]
     end
 
-    subgraph GAME["게임 로직 레이어 - Actor 모델"]
-        SA["SessionActor\nPooled\n클라이언트 1개 대응"]
-        WA["WorldActor\nDedicated\n글로벌 싱글턴"]
-        ZA["ZoneActor\nDedicated + Tick 20Hz\n존 상태 독점"]
+    subgraph GAME["게임 로직 레이어"]
+        SA["SessionActor\nPooled"]
+        WA["WorldActor\nDedicated"]
+        ZA["ZoneActor\nDedicated + Tick"]
     end
 
-    Client <-->|"CMSG_* / SMSG_* 바이너리 패킷"| NW
-    NW -->|"MsgNet_PacketReceived"| SA
+    Client -->|"바이너리 패킷 송신"| NW
+    NW -->|"바이너리 패킷 수신"| Client
+    NW -->|"PacketReceived"| SA
 
-    SA -->|"MsgSession_Login / EnterWorld / Logout"| WA
-    SA -->|"MsgSession_Move / Chat"| ZA
+    SA -->|"Login / EnterWorld / Logout"| WA
+    SA -->|"Move / Chat"| ZA
 
-    WA -->|"MsgWorld_LoginResult"| SA
-    WA -->|"MsgWorld_AddPlayer / RemovePlayer"| ZA
+    WA -->|"LoginResult"| SA
+    WA -->|"AddPlayer / RemovePlayer"| ZA
 
-    ZA -->|"MsgZone_SendTcp / SendUdp / Disconnect"| SA
-    ZA -->|"MsgZone_TeleportRequest"| WA
+    ZA -->|"SendTcp / SendUdp / Disconnect"| SA
+    ZA -->|"TeleportRequest"| WA
 ```
 
 ---
@@ -82,12 +83,12 @@ flowchart LR
     MB_WA --> WAT
     MB_ZA --> ZAT
 
-    POOL -->|"MsgSession_*"| MB_WA
-    POOL -->|"MsgSession_*"| MB_ZA
+    POOL -->|"MsgSession"| MB_WA
+    POOL -->|"MsgSession"| MB_ZA
 
-    WAT -->|"MsgWorld_*"| MB_SA
-    WAT -->|"MsgWorld_*"| MB_ZA
-    ZAT -->|"MsgZone_*"| MB_SA
+    WAT -->|"MsgWorld"| MB_SA
+    WAT -->|"MsgWorld"| MB_ZA
+    ZAT -->|"MsgZone"| MB_SA
 ```
 
 > **핵심 원칙**: 각 Actor는 자신의 스레드에서만 상태를 읽고 씁니다.
