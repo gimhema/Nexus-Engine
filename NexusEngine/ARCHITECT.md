@@ -27,37 +27,30 @@
 ## Actor 관계도
 
 ```mermaid
-graph TD
-    Client(["👤 클라이언트\n(TCP/UDP)"])
+flowchart TD
+    Client["클라이언트\nTCP / UDP"]
 
     subgraph NET["네트워크 레이어"]
-        direction TB
-        NW["NetworkManager\n워커 스레드 풀 (CPU×2)"]
+        NW["NetworkManager\n워커 스레드 풀 CPU x2"]
     end
 
-    subgraph GAME["게임 로직 레이어 (Actor 모델)"]
-        direction TB
-        SA["SessionActor\n[Pooled]\n클라이언트 1개 대응\n패킷 파싱 · 송신 위임"]
-        WA["WorldActor\n[Dedicated]\n글로벌 싱글턴\nZone 레지스트리 · 로그인"]
-        ZA["ZoneActor\n[Dedicated + Tick 20Hz]\n존 내 플레이어 상태 독점\n이동 · 채팅 · 브로드캐스트"]
+    subgraph GAME["게임 로직 레이어 - Actor 모델"]
+        SA["SessionActor\nPooled\n클라이언트 1개 대응"]
+        WA["WorldActor\nDedicated\n글로벌 싱글턴"]
+        ZA["ZoneActor\nDedicated + Tick 20Hz\n존 상태 독점"]
     end
 
-    Client <-->|"바이너리 패킷\nCMSG_* / SMSG_*"| NW
+    Client <-->|"CMSG_* / SMSG_* 바이너리 패킷"| NW
+    NW -->|"MsgNet_PacketReceived"| SA
 
-    NW -->|"MsgNet_PacketReceived\n(onAccept / onPacket 콜백)"| SA
-
-    SA -->|"MsgSession_Login\nMsgSession_EnterWorld\nMsgSession_Logout"| WA
-    SA -->|"MsgSession_Move\nMsgSession_MoveUdp\nMsgSession_Chat"| ZA
+    SA -->|"MsgSession_Login / EnterWorld / Logout"| WA
+    SA -->|"MsgSession_Move / Chat"| ZA
 
     WA -->|"MsgWorld_LoginResult"| SA
-    WA -->|"MsgWorld_AddPlayer\nMsgWorld_RemovePlayer"| ZA
+    WA -->|"MsgWorld_AddPlayer / RemovePlayer"| ZA
 
-    ZA -->|"MsgZone_SendTcp\nMsgZone_SendUdp\nMsgZone_Disconnect"| SA
+    ZA -->|"MsgZone_SendTcp / SendUdp / Disconnect"| SA
     ZA -->|"MsgZone_TeleportRequest"| WA
-
-    style NET fill:#1a3a5c,color:#fff,stroke:#2d6a9f
-    style GAME fill:#1a3a2a,color:#fff,stroke:#2d7a4f
-    style Client fill:#3a1a1a,color:#fff,stroke:#9f2d2d
 ```
 
 ---
@@ -65,41 +58,36 @@ graph TD
 ## 스레드 모델
 
 ```mermaid
-graph LR
-    subgraph IO["I/O 워커 스레드 (CPU×2)"]
-        W1["Worker 1"]
-        W2["Worker 2"]
-        Wn["Worker N"]
+flowchart LR
+    subgraph IO["I/O 워커 스레드 - CPU x2"]
+        W["Worker 1..N"]
     end
 
-    subgraph POOL["ActorSystem 스레드 풀 (CPU 코어 수)"]
-        P1["Pool 1"]
-        P2["Pool 2"]
-        Pn["Pool N"]
+    subgraph MB["메일박스 - MPSC lock-free"]
+        MB_SA["SessionActor MB"]
+        MB_WA["WorldActor MB"]
+        MB_ZA["ZoneActor MB"]
     end
 
-    subgraph DEDICATED["전용 스레드"]
-        WAT["WorldActor 스레드\n(조건변수 대기)"]
-        ZAT["ZoneActor 스레드\n(50ms Tick 루프)"]
+    subgraph CONSUMERS["소비자 스레드"]
+        POOL["ActorSystem 풀\nCPU 코어 수"]
+        WAT["WorldActor 전용 스레드\n조건변수 대기"]
+        ZAT["ZoneActor 전용 스레드\n50ms Tick 루프"]
     end
 
-    W1 & W2 & Wn -->|"Post(MsgNet_PacketReceived)"| MB_SA[/"SessionActor\n메일박스"/]
-    MB_SA -->|"Schedule(ProcessMailbox)"| P1 & P2 & Pn
+    W -->|"PacketReceived"| MB_SA
+    W -->|"RegisterSession"| MB_WA
 
-    W1 & W2 & Wn -->|"Post(MsgServer_Register*)"| MB_WA[/"WorldActor\n메일박스"/]
+    MB_SA --> POOL
     MB_WA --> WAT
-
-    P1 & P2 & Pn -->|"Post(MsgSession_*)"| MB_WA
-    P1 & P2 & Pn -->|"Post(MsgSession_*)"| MB_ZA[/"ZoneActor\n메일박스"/]
     MB_ZA --> ZAT
 
-    WAT -->|"Post(MsgWorld_*)"| MB_SA
-    WAT -->|"Post(MsgWorld_*)"| MB_ZA
-    ZAT -->|"Post(MsgZone_*)"| MB_SA
+    POOL -->|"MsgSession_*"| MB_WA
+    POOL -->|"MsgSession_*"| MB_ZA
 
-    style IO fill:#1a2a3a,color:#fff,stroke:#2d5a8f
-    style POOL fill:#1a3a2a,color:#fff,stroke:#2d7a4f
-    style DEDICATED fill:#2a1a3a,color:#fff,stroke:#6d2d9f
+    WAT -->|"MsgWorld_*"| MB_SA
+    WAT -->|"MsgWorld_*"| MB_ZA
+    ZAT -->|"MsgZone_*"| MB_SA
 ```
 
 > **핵심 원칙**: 각 Actor는 자신의 스레드에서만 상태를 읽고 씁니다.
