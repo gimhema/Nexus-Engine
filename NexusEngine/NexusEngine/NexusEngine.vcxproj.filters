@@ -79,6 +79,39 @@
     <Filter Include="헤더 파일\Shared">
       <UniqueIdentifier>{F1D1F5E3-CF05-4437-A2A5-2A1FA40B7F82}</UniqueIdentifier>
     </Filter>
+    <Filter Include="소스 파일\Game\Data\GameDataEntities">
+      <UniqueIdentifier>{F5FEB5E2-F635-425D-AA69-2500E4A13F91}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\NexusClient">
+      <UniqueIdentifier>{E47EEA01-6AFF-48DE-BA48-85AFA811C13E}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\NexusClient\ClientLib">
+      <UniqueIdentifier>{5C544497-C1B0-4D6B-8DB2-E6F8846B1FAE}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\NexusClient">
+      <UniqueIdentifier>{FAE47116-F6E2-4BE1-8435-62068E37A800}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\NexusClient\ClientLib">
+      <UniqueIdentifier>{03FAC159-A76B-407D-955D-841525BE0BAC}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\NexusClient\ClientLib\Packets">
+      <UniqueIdentifier>{AD2E4541-7241-4308-925F-1FEFD95921EE}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\NexusClient\ClientLib\Packets">
+      <UniqueIdentifier>{E5AD7F3A-D103-4D8C-B4EF-FA6DC078242F}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\NexusClient\ClientLib\Platform">
+      <UniqueIdentifier>{E06EDBFB-5440-44F6-B33D-6CE4ADBF979A}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\NexusClient\DummyClient">
+      <UniqueIdentifier>{4D082FC1-E3CA-40F5-9B67-BA1793DFDEAE}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\NexusClient\DummyClient">
+      <UniqueIdentifier>{0D2D685D-2075-45E8-8E9D-8D73D44413CC}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\NexusClient\DummyClient\Packets">
+      <UniqueIdentifier>{A6FAAD10-5479-4BFA-AA5A-9D205537709B}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -116,6 +149,18 @@
     </ClCompile>
     <ClCompile Include="Shared\Logger.cpp">
       <Filter>소스 파일\Shared</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Data\GameDataEntities\EntityBase.cpp">
+      <Filter>소스 파일\Game\Data\GameDataEntities</Filter>
+    </ClCompile>
+    <ClCompile Include="NexusClient\ClientLib\NetClient.cpp">
+      <Filter>소스 파일\NexusClient\ClientLib</Filter>
+    </ClCompile>
+    <ClCompile Include="NexusClient\ClientLib\Packets\PacketBase.cpp">
+      <Filter>소스 파일\NexusClient\ClientLib\Packets</Filter>
+    </ClCompile>
+    <ClCompile Include="NexusClient\DummyClient\main.cpp">
+      <Filter>소스 파일\NexusClient\DummyClient</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -172,6 +217,18 @@
     </ClInclude>
     <ClInclude Include="Shared\Logger.h">
       <Filter>헤더 파일\Shared</Filter>
+    </ClInclude>
+    <ClInclude Include="NexusClient\ClientLib\NetClient.h">
+      <Filter>헤더 파일\NexusClient\ClientLib</Filter>
+    </ClInclude>
+    <ClInclude Include="NexusClient\ClientLib\Packets\PacketBase.h">
+      <Filter>헤더 파일\NexusClient\ClientLib\Packets</Filter>
+    </ClInclude>
+    <ClInclude Include="NexusClient\ClientLib\Platform\Platform.h">
+      <Filter>헤더 파일\NexusClient\ClientLib\Platform</Filter>
+    </ClInclude>
+    <ClInclude Include="NexusClient\DummyClient\Packets\GamePackets.hpp">
+      <Filter>헤더 파일\NexusClient\DummyClient\Packets</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

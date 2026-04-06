@@ -147,6 +147,10 @@
     <ClCompile Include="Game\Actors\WorldActor.cpp" />
     <ClCompile Include="Game\Actors\ZoneActor.cpp" />
     <ClCompile Include="Shared\Logger.cpp" />
+    <ClCompile Include="Game\Data\GameDataEntities\EntityBase.cpp" />
+    <ClCompile Include="NexusClient\ClientLib\NetClient.cpp" />
+    <ClCompile Include="NexusClient\ClientLib\Packets\PacketBase.cpp" />
+    <ClCompile Include="NexusClient\DummyClient\main.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Connection.h" />
@@ -167,6 +171,10 @@
     <ClInclude Include="Game\Actors\ZoneActor.h" />
     <ClInclude Include="Game\Messages\GameMessages.h" />
     <ClInclude Include="Shared\Logger.h" />
+    <ClInclude Include="NexusClient\ClientLib\NetClient.h" />
+    <ClInclude Include="NexusClient\ClientLib\Packets\PacketBase.h" />
+    <ClInclude Include="NexusClient\ClientLib\Platform\Platform.h" />
+    <ClInclude Include="NexusClient\DummyClient\Packets\GamePackets.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets"></ImportGroup>
