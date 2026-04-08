@@ -151,6 +151,7 @@
     <ClCompile Include="NexusClient\ClientLib\NetClient.cpp" />
     <ClCompile Include="NexusClient\ClientLib\Packets\PacketBase.cpp" />
     <ClCompile Include="NexusClient\DummyClient\main.cpp" />
+    <ClCompile Include="Game\Logic\Pawn\Pawn.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Connection.h" />
@@ -175,6 +176,7 @@
     <ClInclude Include="NexusClient\ClientLib\Packets\PacketBase.h" />
     <ClInclude Include="NexusClient\ClientLib\Platform\Platform.h" />
     <ClInclude Include="NexusClient\DummyClient\Packets\GamePackets.hpp" />
+    <ClInclude Include="Game\Logic\Pawn\Pawn.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets"></ImportGroup>

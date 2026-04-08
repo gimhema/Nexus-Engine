@@ -112,6 +112,12 @@
     <Filter Include="헤더 파일\NexusClient\DummyClient\Packets">
       <UniqueIdentifier>{A6FAAD10-5479-4BFA-AA5A-9D205537709B}</UniqueIdentifier>
     </Filter>
+    <Filter Include="소스 파일\Game\Logic\Pawn">
+      <UniqueIdentifier>{36E42044-CE94-4C81-8D0A-76C797563E1B}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Game\Logic\Pawn">
+      <UniqueIdentifier>{70330266-6847-4798-9A16-4CF40F46EC1B}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -161,6 +167,9 @@
     </ClCompile>
     <ClCompile Include="NexusClient\DummyClient\main.cpp">
       <Filter>소스 파일\NexusClient\DummyClient</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Logic\Pawn\Pawn.cpp">
+      <Filter>소스 파일\Game\Logic\Pawn</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -229,6 +238,9 @@
     </ClInclude>
     <ClInclude Include="NexusClient\DummyClient\Packets\GamePackets.hpp">
       <Filter>헤더 파일\NexusClient\DummyClient\Packets</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Logic\Pawn\Pawn.h">
+      <Filter>헤더 파일\Game\Logic\Pawn</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
