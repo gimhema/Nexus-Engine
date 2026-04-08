@@ -223,3 +223,9 @@ using WorldMessage = std::variant<
     MsgServer_RegisterSession,
     MsgServer_UnregisterSession
 >;
+
+using GameMessage = std::variant <
+    SessionMessage,
+    ZoneMessage,
+    WorldMessage
+>;
