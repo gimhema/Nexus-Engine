@@ -15,11 +15,6 @@ namespace EUser
     };
 }
 
-struct UserGameData
-{
-    std::unordered_map<EEntity::EID, GameDataEnttiyBase> gameDataContainer;
-};
-
 struct UserIndentification
 {
     std::string UserID;
@@ -39,9 +34,6 @@ class User
     UserIndentification userIdentification;
     UserProfile userProfile;
 
-    // Public Member
-    public:
-    UserGameData userGameData;
 
     // Constructor & Deconstructor
     public:
