@@ -17,62 +17,77 @@ void ZoneActor::OnStart()
 
 void ZoneActor::OnStop()
 {
-    LOG_INFO("ZoneActor 종료: zoneId={}", m_zoneId);
-}
-
-void ZoneActor::OnMessage(ZoneMessage& msg)
-{
-    std::visit(overloaded{
-        [this](MsgSession_EnterZone& m)      { Handle(m); },
-        [this](MsgSession_Move& m)           { Handle(m); },
-        [this](MsgSession_MoveUdp& m)        { Handle(m); },
-        [this](MsgSession_Chat& m)           { Handle(m); },
-        [this](MsgSession_LeaveZone& m)      { Handle(m); },
-        [this](MsgWorld_AddPlayer& m)        { Handle(m); },
-        [this](MsgWorld_RemovePlayer& m)     { Handle(m); },
-        [this](MsgGameLogic_WorldEvent& m)   { Handle(m); },
-    }, msg);
+    LOG_INFO("ZoneActor 종료: zoneId={} players={} npcs={}",
+             m_zoneId, m_playerPawns.size(), m_npcPawns.size());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Tick — 게임 루프 (50ms = 20Hz)
-// Phase 2/3에서 AI, AOI 갱신, 버프 틱 등을 여기에 추가
+// Tick — 50ms (20Hz)
+// 모든 Pawn의 OnTick()을 순회 호출.
+// Phase 2/3: GridCell AOI, AI FSM, Aura 틱 등 추가 예정.
 // ─────────────────────────────────────────────────────────────────────────────
 void ZoneActor::OnTick()
 {
     ++m_tickCount;
-    // TODO: GridCell AOI 갱신, Creature AI tick, Aura 틱 등
+
+    for (auto& [sid, pawn] : m_playerPawns)
+        pawn->OnTick(m_tickCount);
+
+    for (auto& [pid, pawn] : m_npcPawns)
+        pawn->OnTick(m_tickCount);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 메시지 디스패치
+// ─────────────────────────────────────────────────────────────────────────────
+void ZoneActor::OnMessage(ZoneMessage& msg)
+{
+    std::visit(overloaded{
+        [this](MsgSession_EnterZone&    m) { Handle(m); },
+        [this](MsgSession_Move&         m) { Handle(m); },
+        [this](MsgSession_MoveUdp&      m) { Handle(m); },
+        [this](MsgSession_Chat&         m) { Handle(m); },
+        [this](MsgSession_LeaveZone&    m) { Handle(m); },
+        [this](MsgWorld_AddPlayer&      m) { Handle(m); },
+        [this](MsgWorld_RemovePlayer&   m) { Handle(m); },
+        [this](MsgGameLogic_WorldEvent& m) { Handle(m); },
+    }, msg);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 메시지 핸들러
 // ─────────────────────────────────────────────────────────────────────────────
+
+// 직접 존 진입 경로 (SessionActor → ZoneActor, 또는 텔레포트 후속 처리)
 void ZoneActor::Handle(MsgSession_EnterZone& msg)
 {
-    PlayerState ps;
-    ps.sessionId   = msg.sessionId;
-    ps.characterId = msg.characterId;
-    ps.name        = msg.characterName;
-    ps.pos         = msg.spawnPos;
-    m_players[msg.sessionId] = ps;
+    auto pawn = std::make_unique<PlayerPawn>(
+        msg.characterName,
+        msg.characterId,
+        msg.sessionActor);
 
-    LOG_INFO("ZoneActor {}: 플레이어 진입 sessionId={} name={}", m_zoneId, msg.sessionId, msg.characterName);
+    pawn->SetPos(msg.spawnPos);
+    pawn->OnSpawn();
+
+    m_playerPawns.emplace(msg.sessionId, std::move(pawn));
+    LOG_INFO("ZoneActor {}: 플레이어 진입 sessionId={} name={}",
+             m_zoneId, msg.sessionId, msg.characterName);
 }
 
+// WorldActor 경유 진입 (로그인/텔레포트 — 주 진입 경로)
 void ZoneActor::Handle(MsgWorld_AddPlayer& msg)
 {
-    // WorldActor 경유 진입 (로그인/텔레포트)
-    PlayerState ps;
-    ps.sessionId   = msg.sessionId;
-    ps.characterId = msg.characterId;
-    ps.name        = msg.characterName;
-    ps.pos         = msg.spawnPos;
-    m_players[msg.sessionId] = ps;
+    auto pawn = std::make_unique<PlayerPawn>(
+        msg.characterName,
+        msg.characterId,
+        msg.sessionActor);
 
-    // SessionActor 등록 — ZoneActor 스레드 내에서 처리해 레이스 방지
-    m_sessionActors[msg.sessionId] = msg.sessionActor;
+    pawn->SetPos(msg.spawnPos);
+    pawn->OnSpawn();
 
-    LOG_INFO("ZoneActor {}: 플레이어 추가 sessionId={}", m_zoneId, msg.sessionId);
+    m_playerPawns.emplace(msg.sessionId, std::move(pawn));
+    LOG_INFO("ZoneActor {}: 플레이어 추가 sessionId={} name={}",
+             m_zoneId, msg.sessionId, msg.characterName);
 
     // 진입 클라이언트에 스폰 위치 전송
     if (auto sa = msg.sessionActor.lock())
@@ -88,14 +103,13 @@ void ZoneActor::Handle(MsgWorld_AddPlayer& msg)
 
 void ZoneActor::Handle(MsgSession_Move& msg)
 {
-    auto it = m_players.find(msg.sessionId);
-    if (it == m_players.end()) return;
+    auto* pawn = FindPlayerPawn(msg.sessionId);
+    if (!pawn) return;
 
-    // TODO: 이동 검증 (Phase 2)
-    it->second.pos         = msg.pos;
-    it->second.orientation = msg.orientation;
+    // TODO Phase 2: 이동 검증 (속도, 범위, 충돌)
+    pawn->SetPos(msg.pos);
+    pawn->SetOrientation(msg.orientation);
 
-    // 인근 플레이어에게 브로드캐스트
     PacketWriter w(SMSG_MOVE_BROADCAST);
     w.WriteUInt64(msg.sessionId);
     w.WriteFloat(msg.pos.x).WriteFloat(msg.pos.y).WriteFloat(msg.pos.z);
@@ -105,11 +119,11 @@ void ZoneActor::Handle(MsgSession_Move& msg)
 
 void ZoneActor::Handle(MsgSession_MoveUdp& msg)
 {
-    auto it = m_players.find(msg.sessionId);
-    if (it == m_players.end()) return;
+    auto* pawn = FindPlayerPawn(msg.sessionId);
+    if (!pawn) return;
 
-    it->second.pos         = msg.pos;
-    it->second.orientation = msg.orientation;
+    pawn->SetPos(msg.pos);
+    pawn->SetOrientation(msg.orientation);
 
     PacketWriter w(SMSG_MOVE_UDP);
     w.WriteUInt64(msg.sessionId);
@@ -120,54 +134,35 @@ void ZoneActor::Handle(MsgSession_MoveUdp& msg)
 
 void ZoneActor::Handle(MsgSession_Chat& msg)
 {
-    auto it = m_players.find(msg.sessionId);
-    if (it == m_players.end()) return;
+    auto* pawn = FindPlayerPawn(msg.sessionId);
+    if (!pawn) return;
 
-    LOG_DEBUG("ZoneActor {}: 채팅 [{}] {}", m_zoneId, it->second.name, msg.text);
+    LOG_DEBUG("ZoneActor {}: 채팅 [{}] {}", m_zoneId, pawn->GetName(), msg.text);
 
     PacketWriter w(SMSG_CHAT);
     w.WriteUInt64(msg.sessionId);
-    w.WriteString(it->second.name);
+    w.WriteString(pawn->GetName());
     w.WriteString(msg.text);
-    // 자신 포함 전체 브로드캐스트
-    BroadcastTcp(0, w.Finalize());
+    BroadcastTcp(0, w.Finalize());  // 자신 포함 전체 브로드캐스트
 }
 
 void ZoneActor::Handle(MsgSession_LeaveZone& msg)
 {
-    m_players.erase(msg.sessionId);
-    m_sessionActors.erase(msg.sessionId);
+    auto it = m_playerPawns.find(msg.sessionId);
+    if (it == m_playerPawns.end()) return;
+
+    it->second->OnDespawn();
+    m_playerPawns.erase(it);
     LOG_INFO("ZoneActor {}: 플레이어 퇴장 sessionId={}", m_zoneId, msg.sessionId);
 }
 
 void ZoneActor::Handle(MsgWorld_RemovePlayer& msg)
 {
-    m_players.erase(msg.sessionId);
-    m_sessionActors.erase(msg.sessionId);  // 브로드캐스트 라우팅 제거
-}
+    auto it = m_playerPawns.find(msg.sessionId);
+    if (it == m_playerPawns.end()) return;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 브로드캐스트 헬퍼
-// excludeSessionId = 0 이면 전체 전송
-// ─────────────────────────────────────────────────────────────────────────────
-void ZoneActor::BroadcastTcp(uint64_t excludeSessionId, const std::vector<uint8_t>& packet)
-{
-    for (auto& [sid, weakSa] : m_sessionActors)
-    {
-        if (sid == excludeSessionId) continue;
-        if (auto sa = weakSa.lock())
-            sa->Post(MsgZone_SendTcp{ packet });
-    }
-}
-
-void ZoneActor::BroadcastUdp(uint64_t excludeSessionId, const std::vector<uint8_t>& packet)
-{
-    for (auto& [sid, weakSa] : m_sessionActors)
-    {
-        if (sid == excludeSessionId) continue;
-        if (auto sa = weakSa.lock())
-            sa->Post(MsgZone_SendUdp{ packet });
-    }
+    it->second->OnDespawn();
+    m_playerPawns.erase(it);
 }
 
 void ZoneActor::Handle(MsgGameLogic_WorldEvent& msg)
@@ -176,13 +171,71 @@ void ZoneActor::Handle(MsgGameLogic_WorldEvent& msg)
              m_zoneId, msg.eventName, msg.gameHour);
 
     // TODO Phase 2: 이벤트 종류에 따라 존 상태 변경
-    //   WorldEventId::DayBegin   → 낮 크리처 스폰, 야경 NPC 귀환
-    //   WorldEventId::NightBegin → 밤 크리처 스폰, 야경 NPC 배치
-    //   WorldEventId::DungeonOpen/Close → 던전 입장 포털 활성화/비활성화
+    //   DayBegin/NightBegin → 크리처 스폰 패턴 변경
+    //   DungeonOpen/Close   → 던전 입장 포털 활성화/비활성화 + NPC 스폰
 }
 
-std::shared_ptr<SessionActor> ZoneActor::FindSessionActor(uint64_t sessionId) const
+// ─────────────────────────────────────────────────────────────────────────────
+// NPC 스폰 / 디스폰
+// ─────────────────────────────────────────────────────────────────────────────
+void ZoneActor::SpawnNpc(std::unique_ptr<Pawn> pawn)
 {
-    auto it = m_sessionActors.find(sessionId);
-    return (it != m_sessionActors.end()) ? it->second.lock() : nullptr;
+    pawn->OnSpawn();
+    uint64_t id = pawn->GetPawnId();
+    LOG_DEBUG("ZoneActor {}: NPC 스폰 pawnId={} name={}", m_zoneId, id, pawn->GetName());
+    m_npcPawns.emplace(id, std::move(pawn));
+}
+
+void ZoneActor::DespawnNpc(uint64_t pawnId)
+{
+    auto it = m_npcPawns.find(pawnId);
+    if (it == m_npcPawns.end()) return;
+
+    it->second->OnDespawn();
+    LOG_DEBUG("ZoneActor {}: NPC 디스폰 pawnId={}", m_zoneId, pawnId);
+    m_npcPawns.erase(it);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 브로드캐스트 헬퍼
+// ─────────────────────────────────────────────────────────────────────────────
+void ZoneActor::BroadcastTcp(uint64_t excludeSessionId, const std::vector<uint8_t>& packet)
+{
+    for (auto& [sid, pawn] : m_playerPawns)
+    {
+        if (sid == excludeSessionId) continue;
+        if (auto sa = pawn->GetSession())
+            sa->Post(MsgZone_SendTcp{ packet });
+    }
+}
+
+void ZoneActor::BroadcastUdp(uint64_t excludeSessionId, const std::vector<uint8_t>& packet)
+{
+    for (auto& [sid, pawn] : m_playerPawns)
+    {
+        if (sid == excludeSessionId) continue;
+        if (auto sa = pawn->GetSession())
+            sa->Post(MsgZone_SendUdp{ packet });
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pawn 조회 헬퍼
+// ─────────────────────────────────────────────────────────────────────────────
+PlayerPawn* ZoneActor::FindPlayerPawn(uint64_t sessionId) const
+{
+    auto it = m_playerPawns.find(sessionId);
+    return (it != m_playerPawns.end()) ? it->second.get() : nullptr;
+}
+
+Pawn* ZoneActor::FindNpcPawn(uint64_t pawnId) const
+{
+    auto it = m_npcPawns.find(pawnId);
+    return (it != m_npcPawns.end()) ? it->second.get() : nullptr;
+}
+
+std::shared_ptr<SessionActor> ZoneActor::GetSessionActor(uint64_t sessionId) const
+{
+    auto* pawn = FindPlayerPawn(sessionId);
+    return pawn ? pawn->GetSession() : nullptr;
 }

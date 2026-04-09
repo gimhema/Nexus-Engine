@@ -52,6 +52,7 @@ struct MsgSession_EnterZone
     uint32_t    characterId{};
     std::string characterName;
     Vec3        spawnPos;
+    std::weak_ptr<SessionActor> sessionActor;  // PlayerPawn 세션 바인딩용
 };
 
 // 플레이어 이동 (TCP)
