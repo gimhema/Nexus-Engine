@@ -3,6 +3,7 @@
 #include "Game/Actors/WorldActor.h"
 #include "Game/Actors/ZoneActor.h"
 #include "Game/Actors/SessionActor.h"
+#include "Game/Logic/GameLogic.h"
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -29,7 +30,8 @@ private:
     std::atomic<bool>                m_running{ false };
 
     WorldActor                       m_world;
-    std::shared_ptr<ZoneActor>       m_zone;   // 기본 존 (zoneId=1)
+    std::shared_ptr<ZoneActor>       m_zone;        // 기본 존 (zoneId=1)
+    GameLogic                        m_gameLogic;   // 월드 시간 + 이벤트 루프
 
     // sessionId → SessionActor (워커 스레드에서 접근하므로 mutex 보호)
     std::mutex                                           m_sessionActorsMutex;

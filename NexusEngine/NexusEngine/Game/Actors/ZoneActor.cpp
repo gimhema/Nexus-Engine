@@ -23,13 +23,14 @@ void ZoneActor::OnStop()
 void ZoneActor::OnMessage(ZoneMessage& msg)
 {
     std::visit(overloaded{
-        [this](MsgSession_EnterZone& m)  { Handle(m); },
-        [this](MsgSession_Move& m)       { Handle(m); },
-        [this](MsgSession_MoveUdp& m)    { Handle(m); },
-        [this](MsgSession_Chat& m)       { Handle(m); },
-        [this](MsgSession_LeaveZone& m)  { Handle(m); },
-        [this](MsgWorld_AddPlayer& m)    { Handle(m); },
-        [this](MsgWorld_RemovePlayer& m) { Handle(m); },
+        [this](MsgSession_EnterZone& m)      { Handle(m); },
+        [this](MsgSession_Move& m)           { Handle(m); },
+        [this](MsgSession_MoveUdp& m)        { Handle(m); },
+        [this](MsgSession_Chat& m)           { Handle(m); },
+        [this](MsgSession_LeaveZone& m)      { Handle(m); },
+        [this](MsgWorld_AddPlayer& m)        { Handle(m); },
+        [this](MsgWorld_RemovePlayer& m)     { Handle(m); },
+        [this](MsgGameLogic_WorldEvent& m)   { Handle(m); },
     }, msg);
 }
 
@@ -167,6 +168,17 @@ void ZoneActor::BroadcastUdp(uint64_t excludeSessionId, const std::vector<uint8_
         if (auto sa = weakSa.lock())
             sa->Post(MsgZone_SendUdp{ packet });
     }
+}
+
+void ZoneActor::Handle(MsgGameLogic_WorldEvent& msg)
+{
+    LOG_INFO("ZoneActor {}: 월드 이벤트 [{}] 게임 시각 {:.1f}시",
+             m_zoneId, msg.eventName, msg.gameHour);
+
+    // TODO Phase 2: 이벤트 종류에 따라 존 상태 변경
+    //   WorldEventId::DayBegin   → 낮 크리처 스폰, 야경 NPC 귀환
+    //   WorldEventId::NightBegin → 밤 크리처 스폰, 야경 NPC 배치
+    //   WorldEventId::DungeonOpen/Close → 던전 입장 포털 활성화/비활성화
 }
 
 std::shared_ptr<SessionActor> ZoneActor::FindSessionActor(uint64_t sessionId) const

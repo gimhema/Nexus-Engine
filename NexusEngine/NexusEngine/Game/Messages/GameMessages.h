@@ -9,6 +9,7 @@
 // 전방 선언
 class Session;
 class SessionActor;
+class ZoneActor;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GameMessages.h
@@ -173,6 +174,50 @@ struct MsgZone_TeleportRequest
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// WorldEventId — 게임 세계에서 발생하는 정기 이벤트 식별자
+// 1000번 이상은 사용자 정의 이벤트로 예약
+// ─────────────────────────────────────────────────────────────────────────────
+enum class WorldEventId : uint32_t
+{
+    // 시간 이벤트
+    DayBegin     = 1,    // 낮 시작
+    NightBegin   = 2,    // 밤 시작
+
+    // 던전 이벤트
+    DungeonOpen  = 100,  // 던전 개방
+    DungeonClose = 101,  // 던전 폐쇄
+
+    // 사용자 정의 (1000번부터 자유롭게 추가)
+    UserDefined  = 1000,
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GameLogic → ZoneActor
+// (GameLogic이 ZoneActor들에 브로드캐스트하는 월드 레벨 이벤트)
+// ─────────────────────────────────────────────────────────────────────────────
+struct MsgGameLogic_WorldEvent
+{
+    WorldEventId  eventId{};
+    std::string   eventName;
+    float         gameHour{ 0.f };  // 이벤트 발동 시점의 게임 시각 (0.0–24.0)
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 외부 → GameLogic (존 등록/해제)
+// Server 시작/종료 시 또는 런타임 동적 Zone 생성 시 사용
+// ─────────────────────────────────────────────────────────────────────────────
+struct MsgGameLogic_RegisterZone
+{
+    uint32_t   zoneId{};
+    ZoneActor* zone{ nullptr };  // 소유권 없음 — ZoneActor 소멸 전에 반드시 해제
+};
+
+struct MsgGameLogic_UnregisterZone
+{
+    uint32_t zoneId{};
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Variant 타입 별칭
 // (각 Actor의 Message 타입으로 사용)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -194,7 +239,8 @@ using ZoneMessage = std::variant<
     MsgSession_Chat,
     MsgSession_LeaveZone,
     MsgWorld_AddPlayer,
-    MsgWorld_RemovePlayer
+    MsgWorld_RemovePlayer,
+    MsgGameLogic_WorldEvent     // GameLogic 브로드캐스트 수신
 >;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -224,8 +270,8 @@ using WorldMessage = std::variant<
     MsgServer_UnregisterSession
 >;
 
-using GameMessage = std::variant <
-    SessionMessage,
-    ZoneMessage,
-    WorldMessage
+// GameLogic Actor가 받는 메시지
+using GameLogicMessage = std::variant<
+    MsgGameLogic_RegisterZone,
+    MsgGameLogic_UnregisterZone
 >;

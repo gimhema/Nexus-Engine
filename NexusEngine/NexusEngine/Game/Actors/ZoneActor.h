@@ -56,6 +56,7 @@ private:
     void Handle(MsgSession_LeaveZone& msg);
     void Handle(MsgWorld_AddPlayer& msg);
     void Handle(MsgWorld_RemovePlayer& msg);
+    void Handle(MsgGameLogic_WorldEvent& msg);
 
     // AOI: 인근 플레이어에게 패킷 브로드캐스트 (자신 제외)
     void BroadcastTcp(uint64_t excludeSessionId, const std::vector<uint8_t>& packet);

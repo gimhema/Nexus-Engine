@@ -64,6 +64,22 @@ void Server::Run()
     m_zone->StartWithTick(ZONE_TICK_INTERVAL);
     m_world.RegisterZone(DEFAULT_ZONE_ID, m_zone);
 
+    // ── GameLogic 설정 및 시작 ────────────────────────────────────────────────
+    // 시간 비율: 실 60초 = 게임 1시간 → 하루 = 실 24분
+    constexpr uint32_t GAMELOGIC_TICK_INTERVAL = 1000;  // 1초 tick
+
+    m_gameLogic.SetRealSecondsPerGameHour(60.f);
+    m_gameLogic.SetStartHour(8.0f);
+    m_gameLogic.SetDayNightHours(6.0f, 20.0f);
+
+    m_gameLogic.RegisterEvent({ WorldEventId::DayBegin,     "낮 시작",   6.0f,  true, {} });
+    m_gameLogic.RegisterEvent({ WorldEventId::NightBegin,   "밤 시작",   20.0f, true, {} });
+    m_gameLogic.RegisterEvent({ WorldEventId::DungeonOpen,  "던전 개방", 18.0f, true, {} });
+    m_gameLogic.RegisterEvent({ WorldEventId::DungeonClose, "던전 폐쇄", 23.0f, true, {} });
+
+    m_gameLogic.RegisterZone(DEFAULT_ZONE_ID, m_zone.get());
+    m_gameLogic.StartWithTick(GAMELOGIC_TICK_INTERVAL);
+
     // ── NetworkManager 콜백 설정 ─────────────────────────────────────────────
     m_net.SetCallbacks(
         // onAccept: 새 Session → SessionActor 생성 + WorldActor에 Post로 등록
@@ -129,6 +145,7 @@ void Server::Run()
     // ── 종료 (초기화 역순) ────────────────────────────────────────────────────
     LOG_INFO("서버 종료 중...");
     m_net.Shutdown();
+    m_gameLogic.Stop();
     m_zone->Stop();
     m_world.Stop();
     ActorSystem::Instance().Stop();
