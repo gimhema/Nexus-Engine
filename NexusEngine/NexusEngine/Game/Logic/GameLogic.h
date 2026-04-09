@@ -6,6 +6,11 @@
 
 class GameLogic : public Actor<GameMessage>
 {
+public:
+	GameLogic() = default;
+	~GameLogic() override = default;
+
+public:
 
 
 };
