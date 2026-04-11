@@ -5,6 +5,9 @@ set(SOURCES
     Connection.cpp
     Packets/PacketBase.cpp
     Shared/Logger.cpp
+    Game/Data/GameDataEntities/CharacterEntityData.cpp
+    Game/Data/GameDataEntities/NpcEntityData.cpp
+    Game/Data/GameDataEntities/MonsterEntityData.cpp
     Game/Logic/GameLogic.cpp
     Game/Logic/Pawn/Pawn.cpp
     Game/Logic/Pawn/PlayerPawn.cpp
@@ -34,6 +37,9 @@ set(HEADERS
     Game/Zone/Zone.h
 
     Game/Data/GameDataEntities/EntityBase.h
+    Game/Data/GameDataEntities/CharacterEntityData.h
+    Game/Data/GameDataEntities/NpcEntityData.h
+    Game/Data/GameDataEntities/MonsterEntityData.h
     Game/Data/GamePackets/Packet-Example.hpp
     Game/Messages/GameMessages.h
     Game/Actors/SessionActor.h

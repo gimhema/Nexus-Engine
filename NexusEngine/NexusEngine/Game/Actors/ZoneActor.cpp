@@ -1,5 +1,7 @@
 #include "ZoneActor.h"
 #include "SessionActor.h"
+#include "../Data/GameDataEntities/NpcEntityData.h"
+#include "../Data/GameDataEntities/MonsterEntityData.h"
 
 #include "../../Packets/PacketBase.h"
 #include "../../Shared/Logger.h"
@@ -15,11 +17,16 @@ void ZoneActor::OnStart()
     // Zone 설정에 정의된 NPC/몬스터 초기 스폰
     for (const auto& def : m_zone.GetNpcSpawns())
     {
-        auto pawn = std::make_unique<Pawn>(def.name);
+        // entityType에 따라 적합한 EntityData 생성
+        std::unique_ptr<GameDataEntityBase> data;
+        if (def.entityType == EEntity::EID::MONSTER)
+            data = std::make_unique<MonsterEntityData>(def.maxHp, def.attack, def.defense, def.moveSpeed);
+        else
+            data = std::make_unique<NpcEntityData>(def.maxHp, def.attack, def.defense, def.moveSpeed);
+
+        auto pawn = std::make_unique<Pawn>(def.name, std::move(data));
         pawn->SetPos(def.pos);
         pawn->SetOrientation(def.orientation);
-        pawn->SetMaxHp(def.hp);
-        pawn->SetHp(def.hp);
         SpawnNpc(std::move(pawn));
     }
 

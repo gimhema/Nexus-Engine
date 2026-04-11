@@ -68,8 +68,9 @@ void Server::Run()
         { { 5.f, 0.f, 5.f }, 0.f },
     };
     defaultConfig.npcSpawns = {
-        { { 10.f, 0.f, 10.f }, 0.f, "마을 경비병", 200 },
-        { { -8.f, 0.f, 12.f }, 1.5f, "상인 NPC",   100 },
+        { { 10.f, 0.f, 10.f }, 0.f,  "마을 경비병", 200, 15, 10, 2.f, EEntity::EID::NPC     },
+        { { -8.f, 0.f, 12.f }, 1.5f, "상인 NPC",   100,  5,  2, 1.5f, EEntity::EID::NPC     },
+        { { 20.f, 0.f, -5.f }, 0.f,  "슬라임",      80, 12,  3, 2.5f, EEntity::EID::MONSTER },
     };
 
     m_zone = std::make_shared<ZoneActor>(Zone{ std::move(defaultConfig) }, m_world);

@@ -1,32 +1,31 @@
 #include "Pawn.h"
 
-std::atomic<uint64_t> Pawn::s_pawnIdCounter{ 1 };
+std::atomic<uint64_t> Pawn::s_pawnIdCounter{ 0 };
 
-Pawn::Pawn(std::string name)
+Pawn::Pawn(std::string name, std::unique_ptr<GameDataEntityBase> data)
     : m_name(std::move(name))
+    , m_data(std::move(data))
+    , m_hp(m_data ? m_data->GetMaxHp() : 0)
     , m_pawnId(s_pawnIdCounter.fetch_add(1, std::memory_order_relaxed))
 {}
 
-Pawn::Pawn(std::string name, std::weak_ptr<SessionActor> session)
+Pawn::Pawn(std::string name, std::weak_ptr<SessionActor> session,
+           std::unique_ptr<GameDataEntityBase> data)
     : m_name(std::move(name))
+    , m_data(std::move(data))
+    , m_hp(m_data ? m_data->GetMaxHp() : 0)
     , m_session(std::move(session))
     , m_pawnId(s_pawnIdCounter.fetch_add(1, std::memory_order_relaxed))
 {}
 
-void Pawn::SetMaxHp(int32_t maxHp)
-{
-    m_maxHp = (maxHp > 0) ? maxHp : 1;
-    m_hp    = std::clamp(m_hp, 0, m_maxHp);
-}
-
 void Pawn::ApplyDamage(int32_t amount)
 {
     if (amount <= 0 || !IsAlive()) return;
-    m_hp = std::max(0, m_hp - amount);
+    SetHp(m_hp - amount);
 }
 
 void Pawn::ApplyHeal(int32_t amount)
 {
     if (amount <= 0 || !IsAlive()) return;
-    m_hp = std::min(m_maxHp, m_hp + amount);
+    SetHp(m_hp + amount);
 }
