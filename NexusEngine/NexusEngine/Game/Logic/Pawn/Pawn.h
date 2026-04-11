@@ -72,7 +72,7 @@ public:
     // ── ZoneActor tick에서 호출 ───────────────────────────────────────────
     // tickCount: ZoneActor의 누적 tick 번호. 시간 기반 로직에 활용.
     // 기본 구현은 아무 일도 하지 않음 — 서브클래스에서 오버라이드.
-    virtual void OnTick(uint64_t tickCount) {}
+    virtual void OnTick(uint64_t /*tickCount*/) {}
 
     // ── 생명주기 훅 ──────────────────────────────────────────────────────
     // OnSpawn  : ZoneActor가 Pawn을 존에 배치할 때 호출

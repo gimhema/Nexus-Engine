@@ -6,6 +6,8 @@ set(SOURCES
     Packets/PacketBase.cpp
     Shared/Logger.cpp
     Game/Logic/GameLogic.cpp
+    Game/Logic/Pawn/Pawn.cpp
+    Game/Logic/Pawn/PlayerPawn.cpp
     Game/Data/GameDataEntities/EntityBase.cpp
     Game/User/User.cpp
     Game/Zone/Zone.cpp
@@ -25,6 +27,8 @@ set(HEADERS
     Actor/Actor.h
     Actor/ActorSystem.h
     Game/Logic/GameLogic.h
+    Game/Logic/Pawn/Pawn.h
+    Game/Logic/Pawn/PlayerPawn.h
     Game/User/User.h
     Game/Zone/Zone.h
     Game/Data/GameDataEntities/EntityBase.h
