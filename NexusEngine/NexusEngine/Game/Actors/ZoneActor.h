@@ -3,6 +3,7 @@
 #include "../../Actor/Actor.h"
 #include "../../Game/Messages/GameMessages.h"
 #include "../Logic/Pawn/PlayerPawn.h"
+#include "../Zone/Zone.h"
 
 #include <cstdint>
 #include <memory>
@@ -33,10 +34,11 @@ class WorldActor;
 class ZoneActor : public Actor<ZoneMessage>
 {
 public:
-    explicit ZoneActor(uint32_t zoneId, WorldActor& world);
+    explicit ZoneActor(Zone zone, WorldActor& world);
     ~ZoneActor() override = default;
 
-    [[nodiscard]] uint32_t GetZoneId() const { return m_zoneId; }
+    [[nodiscard]] uint32_t           GetZoneId() const { return m_zone.GetId(); }
+    [[nodiscard]] const std::string& GetName()   const { return m_zone.GetName(); }
 
     // ── NPC/몬스터 스폰 ───────────────────────────────────────────────────
     // pawn의 소유권을 ZoneActor로 이전.
@@ -75,7 +77,7 @@ private:
     [[nodiscard]] std::shared_ptr<SessionActor> GetSessionActor(uint64_t sessionId) const;
 
     // ── 데이터 ───────────────────────────────────────────────────────────
-    uint32_t    m_zoneId{};
+    Zone        m_zone;
     WorldActor& m_world;
 
     // 플레이어블 Pawn — sessionId 키 (이동/채팅 메시지의 sessionId로 즉시 조회)

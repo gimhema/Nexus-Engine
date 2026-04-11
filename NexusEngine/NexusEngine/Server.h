@@ -4,6 +4,7 @@
 #include "Game/Actors/ZoneActor.h"
 #include "Game/Actors/SessionActor.h"
 #include "Game/Logic/GameLogic.h"
+#include "Game/Zone/Zone.h"
 #include <atomic>
 #include <memory>
 #include <mutex>

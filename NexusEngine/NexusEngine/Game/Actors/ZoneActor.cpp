@@ -5,20 +5,32 @@
 #include "../../Shared/Logger.h"
 #include "../Data/GamePackets/Packet-Example.hpp"
 
-ZoneActor::ZoneActor(uint32_t zoneId, WorldActor& world)
-    : m_zoneId(zoneId)
+ZoneActor::ZoneActor(Zone zone, WorldActor& world)
+    : m_zone(std::move(zone))
     , m_world(world)
 {}
 
 void ZoneActor::OnStart()
 {
-    LOG_INFO("ZoneActor 시작: zoneId={}", m_zoneId);
+    // Zone 설정에 정의된 NPC/몬스터 초기 스폰
+    for (const auto& def : m_zone.GetNpcSpawns())
+    {
+        auto pawn = std::make_unique<Pawn>(def.name);
+        pawn->SetPos(def.pos);
+        pawn->SetOrientation(def.orientation);
+        pawn->SetMaxHp(def.hp);
+        pawn->SetHp(def.hp);
+        SpawnNpc(std::move(pawn));
+    }
+
+    LOG_INFO("ZoneActor 시작: zoneId={} name=\"{}\" npc={}",
+             m_zone.GetId(), m_zone.GetName(), m_npcPawns.size());
 }
 
 void ZoneActor::OnStop()
 {
     LOG_INFO("ZoneActor 종료: zoneId={} players={} npcs={}",
-             m_zoneId, m_playerPawns.size(), m_npcPawns.size());
+             m_zone.GetId(), m_playerPawns.size(), m_npcPawns.size());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -71,7 +83,7 @@ void ZoneActor::Handle(MsgSession_EnterZone& msg)
 
     m_playerPawns.emplace(msg.sessionId, std::move(pawn));
     LOG_INFO("ZoneActor {}: 플레이어 진입 sessionId={} name={}",
-             m_zoneId, msg.sessionId, msg.characterName);
+             m_zone.GetId(), msg.sessionId, msg.characterName);
 }
 
 // WorldActor 경유 진입 (로그인/텔레포트 — 주 진입 경로)
@@ -82,21 +94,26 @@ void ZoneActor::Handle(MsgWorld_AddPlayer& msg)
         msg.characterId,
         msg.sessionActor);
 
-    pawn->SetPos(msg.spawnPos);
+    // spawnPos가 원점이면 Zone 설정의 스폰 포인트 순환 사용
+    const Vec3 spawnPos = (msg.spawnPos.x == 0.f && msg.spawnPos.y == 0.f && msg.spawnPos.z == 0.f)
+                        ? m_zone.PickPlayerSpawn()
+                        : msg.spawnPos;
+
+    pawn->SetPos(spawnPos);
     pawn->OnSpawn();
 
     m_playerPawns.emplace(msg.sessionId, std::move(pawn));
     LOG_INFO("ZoneActor {}: 플레이어 추가 sessionId={} name={}",
-             m_zoneId, msg.sessionId, msg.characterName);
+             m_zone.GetId(), msg.sessionId, msg.characterName);
 
-    // 진입 클라이언트에 스폰 위치 전송
+    // 진입 클라이언트에 실제 스폰 위치 전송
     if (auto sa = msg.sessionActor.lock())
     {
         PacketWriter w(SMSG_ENTER_WORLD);
         w.WriteUInt8(1);
-        w.WriteFloat(msg.spawnPos.x);
-        w.WriteFloat(msg.spawnPos.y);
-        w.WriteFloat(msg.spawnPos.z);
+        w.WriteFloat(spawnPos.x);
+        w.WriteFloat(spawnPos.y);
+        w.WriteFloat(spawnPos.z);
         sa->Post(MsgZone_SendTcp{ w.Finalize() });
     }
 }
@@ -106,7 +123,14 @@ void ZoneActor::Handle(MsgSession_Move& msg)
     auto* pawn = FindPlayerPawn(msg.sessionId);
     if (!pawn) return;
 
-    // TODO Phase 2: 이동 검증 (속도, 범위, 충돌)
+    // 존 경계 검증 — 범위 밖 이동은 무시
+    if (!m_zone.IsInBounds(msg.pos))
+    {
+        LOG_WARN("ZoneActor {}: 경계 밖 이동 sessionId={} pos=({},{},{})",
+                 m_zone.GetId(), msg.sessionId, msg.pos.x, msg.pos.y, msg.pos.z);
+        return;
+    }
+
     pawn->SetPos(msg.pos);
     pawn->SetOrientation(msg.orientation);
 
@@ -137,7 +161,7 @@ void ZoneActor::Handle(MsgSession_Chat& msg)
     auto* pawn = FindPlayerPawn(msg.sessionId);
     if (!pawn) return;
 
-    LOG_DEBUG("ZoneActor {}: 채팅 [{}] {}", m_zoneId, pawn->GetName(), msg.text);
+    LOG_DEBUG("ZoneActor {}: 채팅 [{}] {}", m_zone.GetId(), pawn->GetName(), msg.text);
 
     PacketWriter w(SMSG_CHAT);
     w.WriteUInt64(msg.sessionId);
@@ -153,7 +177,7 @@ void ZoneActor::Handle(MsgSession_LeaveZone& msg)
 
     it->second->OnDespawn();
     m_playerPawns.erase(it);
-    LOG_INFO("ZoneActor {}: 플레이어 퇴장 sessionId={}", m_zoneId, msg.sessionId);
+    LOG_INFO("ZoneActor {}: 플레이어 퇴장 sessionId={}", m_zone.GetId(), msg.sessionId);
 }
 
 void ZoneActor::Handle(MsgWorld_RemovePlayer& msg)
@@ -168,7 +192,7 @@ void ZoneActor::Handle(MsgWorld_RemovePlayer& msg)
 void ZoneActor::Handle(MsgGameLogic_WorldEvent& msg)
 {
     LOG_INFO("ZoneActor {}: 월드 이벤트 [{}] 게임 시각 {:.1f}시",
-             m_zoneId, msg.eventName, msg.gameHour);
+             m_zone.GetId(), msg.eventName, msg.gameHour);
 
     // TODO Phase 2: 이벤트 종류에 따라 존 상태 변경
     //   DayBegin/NightBegin → 크리처 스폰 패턴 변경
@@ -182,7 +206,7 @@ void ZoneActor::SpawnNpc(std::unique_ptr<Pawn> pawn)
 {
     pawn->OnSpawn();
     uint64_t id = pawn->GetPawnId();
-    LOG_DEBUG("ZoneActor {}: NPC 스폰 pawnId={} name={}", m_zoneId, id, pawn->GetName());
+    LOG_DEBUG("ZoneActor {}: NPC 스폰 pawnId={} name={}", m_zone.GetId(), id, pawn->GetName());
     m_npcPawns.emplace(id, std::move(pawn));
 }
 
@@ -192,7 +216,7 @@ void ZoneActor::DespawnNpc(uint64_t pawnId)
     if (it == m_npcPawns.end()) return;
 
     it->second->OnDespawn();
-    LOG_DEBUG("ZoneActor {}: NPC 디스폰 pawnId={}", m_zoneId, pawnId);
+    LOG_DEBUG("ZoneActor {}: NPC 디스폰 pawnId={}", m_zone.GetId(), pawnId);
     m_npcPawns.erase(it);
 }
 

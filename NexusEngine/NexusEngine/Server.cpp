@@ -60,7 +60,19 @@ void Server::Run()
     constexpr uint32_t DEFAULT_ZONE_ID      = 1;
     constexpr uint32_t ZONE_TICK_INTERVAL   = 50;   // 50ms = 20Hz
 
-    m_zone = std::make_shared<ZoneActor>(DEFAULT_ZONE_ID, m_world);
+    ZoneConfig defaultConfig;
+    defaultConfig.id   = DEFAULT_ZONE_ID;
+    defaultConfig.name = "기본 존";
+    defaultConfig.playerSpawnPoints = {
+        { { 0.f, 0.f, 0.f }, 0.f },
+        { { 5.f, 0.f, 5.f }, 0.f },
+    };
+    defaultConfig.npcSpawns = {
+        { { 10.f, 0.f, 10.f }, 0.f, "마을 경비병", 200 },
+        { { -8.f, 0.f, 12.f }, 1.5f, "상인 NPC",   100 },
+    };
+
+    m_zone = std::make_shared<ZoneActor>(Zone{ std::move(defaultConfig) }, m_world);
     m_zone->StartWithTick(ZONE_TICK_INTERVAL);
     m_world.RegisterZone(DEFAULT_ZONE_ID, m_zone);
 

@@ -11,6 +11,7 @@ set(SOURCES
     Game/Data/GameDataEntities/EntityBase.cpp
     Game/User/User.cpp
     Game/Zone/Zone.cpp
+
     Game/Actors/SessionActor.cpp
     Game/Actors/WorldActor.cpp
     Game/Actors/ZoneActor.cpp
@@ -31,6 +32,7 @@ set(HEADERS
     Game/Logic/Pawn/PlayerPawn.h
     Game/User/User.h
     Game/Zone/Zone.h
+
     Game/Data/GameDataEntities/EntityBase.h
     Game/Data/GamePackets/Packet-Example.hpp
     Game/Messages/GameMessages.h
