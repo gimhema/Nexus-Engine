@@ -2,6 +2,7 @@
 #include "Shared/Logger.h"
 #include "Actor/ActorSystem.h"
 #include "Game/Messages/GameMessages.h"
+#include "Game/Data/Faction/FactionRegistry.h"
 
 #include <csignal>
 #include <chrono>
@@ -50,6 +51,33 @@ void Server::Run()
     // ── 로거 초기화 ──────────────────────────────────────────────────────────
     Logger::Init("nexus.log", LogLevel::Debug);
 
+    // ── 진영 관계 초기화 ─────────────────────────────────────────────────────
+    {
+        auto& reg = FactionRegistry::Instance();
+        // 두 주요 플레이어 진영은 서로 적대
+        reg.SetRelation(EFactionId::ALLIANCE,       EFactionId::HORDE,          EFactionRelation::HOSTILE);
+        // 얼라이언스 소속 도시들은 서로 우호 (같은 진영 소속이므로 자동 처리되지만 명시)
+        reg.SetRelation(EFactionId::ALLIANCE,       EFactionId::STORMWIND,      EFactionRelation::FRIENDLY);
+        reg.SetRelation(EFactionId::ALLIANCE,       EFactionId::IRONFORGE,      EFactionRelation::FRIENDLY);
+        reg.SetRelation(EFactionId::STORMWIND,      EFactionId::IRONFORGE,      EFactionRelation::FRIENDLY);
+        // 호드 소속 언데드 스컬지는 얼라이언스 도시들에 적대
+        reg.SetRelation(EFactionId::UNDEAD_SCOURGE, EFactionId::ALLIANCE,       EFactionRelation::HOSTILE);
+        reg.SetRelation(EFactionId::UNDEAD_SCOURGE, EFactionId::STORMWIND,      EFactionRelation::HOSTILE);
+        reg.SetRelation(EFactionId::UNDEAD_SCOURGE, EFactionId::IRONFORGE,      EFactionRelation::HOSTILE);
+        reg.SetRelation(EFactionId::UNDEAD_SCOURGE, EFactionId::HORDE,          EFactionRelation::FRIENDLY);
+        // 야생 크리처는 모든 플레이어 진영에 적대
+        reg.SetRelation(EFactionId::CREATURE_WILD,  EFactionId::ALLIANCE,       EFactionRelation::HOSTILE);
+        reg.SetRelation(EFactionId::CREATURE_WILD,  EFactionId::HORDE,          EFactionRelation::HOSTILE);
+        reg.SetRelation(EFactionId::CREATURE_WILD,  EFactionId::STORMWIND,      EFactionRelation::HOSTILE);
+        reg.SetRelation(EFactionId::CREATURE_WILD,  EFactionId::IRONFORGE,      EFactionRelation::HOSTILE);
+        // 중립 상인은 모든 진영에 우호
+        reg.SetRelation(EFactionId::NEUTRAL_MERCHANT, EFactionId::ALLIANCE,     EFactionRelation::FRIENDLY);
+        reg.SetRelation(EFactionId::NEUTRAL_MERCHANT, EFactionId::HORDE,        EFactionRelation::FRIENDLY);
+        reg.SetRelation(EFactionId::NEUTRAL_MERCHANT, EFactionId::STORMWIND,    EFactionRelation::FRIENDLY);
+        reg.SetRelation(EFactionId::NEUTRAL_MERCHANT, EFactionId::IRONFORGE,    EFactionRelation::FRIENDLY);
+        reg.SetRelation(EFactionId::NEUTRAL_MERCHANT, EFactionId::UNDEAD_SCOURGE, EFactionRelation::FRIENDLY);
+    }
+
     // ── ActorSystem (Pooled Actor 스레드 풀) 시작 ────────────────────────────
     ActorSystem::Instance().Start();
 
@@ -68,9 +96,10 @@ void Server::Run()
         { { 5.f, 0.f, 5.f }, 0.f },
     };
     defaultConfig.npcSpawns = {
-        { { 10.f, 0.f, 10.f }, 0.f,  "마을 경비병", 200, 15, 10, 2.f, EEntity::EID::NPC     },
-        { { -8.f, 0.f, 12.f }, 1.5f, "상인 NPC",   100,  5,  2, 1.5f, EEntity::EID::NPC     },
-        { { 20.f, 0.f, -5.f }, 0.f,  "슬라임",      80, 12,  3, 2.5f, EEntity::EID::MONSTER },
+        // pos                    orient  name          hp   atk  def  spd   faction                      aiType              aggro  entityType
+        { { 10.f, 0.f, 10.f }, 0.f,  "마을 경비병", 200, 15, 10, 2.f,  EFactionId::STORMWIND,      EAIType::DEFENSIVE, 0.f,  EEntity::EID::NPC     },
+        { { -8.f, 0.f, 12.f }, 1.5f, "상인 NPC",   100,  5,  2, 1.5f, EFactionId::NEUTRAL_MERCHANT, EAIType::PASSIVE,  0.f,  EEntity::EID::NPC     },
+        { { 20.f, 0.f, -5.f }, 0.f,  "슬라임",      80, 12,  3, 2.5f, EFactionId::CREATURE_WILD,  EAIType::AGGRESSIVE, 5.f, EEntity::EID::MONSTER },
     };
 
     m_zone = std::make_shared<ZoneActor>(Zone{ std::move(defaultConfig) }, m_world);

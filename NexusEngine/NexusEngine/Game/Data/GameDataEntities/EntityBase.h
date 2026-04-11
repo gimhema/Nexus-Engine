@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../Faction/FactionTypes.h"
+
 #include <cstdint>
 
 namespace EEntity
@@ -33,7 +35,10 @@ namespace EEntity
 class GameDataEntityBase
 {
 public:
-    GameDataEntityBase(int32_t maxHp, int32_t attack, int32_t defense, float moveSpeed);
+    GameDataEntityBase(int32_t maxHp, int32_t attack, int32_t defense, float moveSpeed,
+                       EFactionId factionId = EFactionId::NONE,
+                       EAIType    aiType    = EAIType::PASSIVE,
+                       float      aggroRange = 0.f);
     virtual ~GameDataEntityBase() = default;
 
     GameDataEntityBase(const GameDataEntityBase&)            = delete;
@@ -41,21 +46,35 @@ public:
 
     [[nodiscard]] virtual EEntity::EID GetEntityType() const = 0;
 
-    // ── 스탯 조회 ─────────────────────────────────────────────────────────
+    // ── 전투 스탯 조회 ────────────────────────────────────────────────────
     [[nodiscard]] int32_t GetMaxHp()     const { return m_maxHp; }
     [[nodiscard]] int32_t GetAttack()    const { return m_attack; }
     [[nodiscard]] int32_t GetDefense()   const { return m_defense; }
     [[nodiscard]] float   GetMoveSpeed() const { return m_moveSpeed; }
 
-    // ── 스탯 설정 (장비/버프 등에 의한 변화) ────────────────────────────
-    void SetMaxHp(int32_t v)    { m_maxHp    = v; }
-    void SetAttack(int32_t v)   { m_attack   = v; }
-    void SetDefense(int32_t v)  { m_defense  = v; }
+    // ── 전투 스탯 설정 (장비/버프 등에 의한 변화) ────────────────────────
+    void SetMaxHp(int32_t v)    { m_maxHp     = v; }
+    void SetAttack(int32_t v)   { m_attack    = v; }
+    void SetDefense(int32_t v)  { m_defense   = v; }
     void SetMoveSpeed(float v)  { m_moveSpeed = v; }
 
+    // ── 진영 / AI 조회 ────────────────────────────────────────────────────
+    [[nodiscard]] EFactionId GetFactionId()  const { return m_factionId; }
+    [[nodiscard]] EAIType    GetAIType()     const { return m_aiType; }
+    [[nodiscard]] float      GetAggroRange() const { return m_aggroRange; }
+
+    // ── 진영 / AI 설정 ────────────────────────────────────────────────────
+    void SetFactionId (EFactionId v) { m_factionId  = v; }
+    void SetAIType    (EAIType v)    { m_aiType     = v; }
+    void SetAggroRange(float v)      { m_aggroRange = v; }
+
 protected:
-    int32_t m_maxHp{ 100 };
-    int32_t m_attack{ 10 };
-    int32_t m_defense{ 5 };
-    float   m_moveSpeed{ 3.f };
+    int32_t    m_maxHp{ 100 };
+    int32_t    m_attack{ 10 };
+    int32_t    m_defense{ 5 };
+    float      m_moveSpeed{ 3.f };
+
+    EFactionId m_factionId{ EFactionId::NONE };
+    EAIType    m_aiType{ EAIType::PASSIVE };
+    float      m_aggroRange{ 0.f };
 };

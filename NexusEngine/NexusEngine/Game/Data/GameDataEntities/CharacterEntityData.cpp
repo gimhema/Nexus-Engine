@@ -1,14 +1,16 @@
 #include "CharacterEntityData.h"
 
 // 신규 캐릭터 기본 스탯: hp=100, atk=10, def=5, speed=3
-CharacterEntityData::CharacterEntityData()
-    : GameDataEntityBase(100, 10, 5, 3.f)
+// 플레이어는 DEFENSIVE AI (공격받으면 반격)
+CharacterEntityData::CharacterEntityData(EFactionId factionId)
+    : GameDataEntityBase(100, 10, 5, 3.f, factionId, EAIType::DEFENSIVE, 0.f)
     , m_expToNextLevel(CalcExpToNextLevel(1))
 {}
 
 CharacterEntityData::CharacterEntityData(int32_t maxHp, int32_t attack, int32_t defense,
-                                          float moveSpeed, uint32_t level, uint64_t experience)
-    : GameDataEntityBase(maxHp, attack, defense, moveSpeed)
+                                          float moveSpeed, uint32_t level, uint64_t experience,
+                                          EFactionId factionId)
+    : GameDataEntityBase(maxHp, attack, defense, moveSpeed, factionId, EAIType::DEFENSIVE, 0.f)
     , m_level(level)
     , m_experience(experience)
     , m_expToNextLevel(CalcExpToNextLevel(level))

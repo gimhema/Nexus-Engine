@@ -8,6 +8,7 @@ set(SOURCES
     Game/Data/GameDataEntities/CharacterEntityData.cpp
     Game/Data/GameDataEntities/NpcEntityData.cpp
     Game/Data/GameDataEntities/MonsterEntityData.cpp
+    Game/Data/Faction/FactionRegistry.cpp
     Game/Logic/GameLogic.cpp
     Game/Logic/Pawn/Pawn.cpp
     Game/Logic/Pawn/PlayerPawn.cpp
@@ -40,6 +41,8 @@ set(HEADERS
     Game/Data/GameDataEntities/CharacterEntityData.h
     Game/Data/GameDataEntities/NpcEntityData.h
     Game/Data/GameDataEntities/MonsterEntityData.h
+    Game/Data/Faction/FactionTypes.h
+    Game/Data/Faction/FactionRegistry.h
     Game/Data/GamePackets/Packet-Example.hpp
     Game/Messages/GameMessages.h
     Game/Actors/SessionActor.h

@@ -2,6 +2,7 @@
 
 #include "../Messages/GameMessages.h"                   // Vec3
 #include "../Data/GameDataEntities/EntityBase.h"        // EEntity::EID
+#include "../Data/Faction/FactionTypes.h"               // EFactionId, EAIType
 
 #include <cstdint>
 #include <string>
@@ -30,6 +31,11 @@ struct NpcSpawnDef
     int32_t      attack{ 10 };
     int32_t      defense{ 5 };
     float        moveSpeed{ 3.f };
+
+    // 진영 / AI 설정
+    EFactionId   factionId{ EFactionId::NONE };
+    EAIType      aiType{ EAIType::PASSIVE };
+    float        aggroRange{ 0.f };
 
     // NPC(대화/퀘스트) vs MONSTER(전투/드롭)
     EEntity::EID entityType{ EEntity::EID::NPC };

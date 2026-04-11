@@ -19,12 +19,13 @@
 class CharacterEntityData : public GameDataEntityBase
 {
 public:
-    // 신규 캐릭터 기본값으로 생성
-    CharacterEntityData();
+    // 신규 캐릭터 기본값으로 생성 (진영은 캐릭터 생성 시 선택, 임시 기본값 ALLIANCE)
+    explicit CharacterEntityData(EFactionId factionId = EFactionId::ALLIANCE);
 
     // DB에서 로드한 데이터로 생성
     CharacterEntityData(int32_t maxHp, int32_t attack, int32_t defense, float moveSpeed,
-                        uint32_t level, uint64_t experience);
+                        uint32_t level, uint64_t experience,
+                        EFactionId factionId = EFactionId::ALLIANCE);
 
     EEntity::EID GetEntityType() const override { return EEntity::EID::PLAYER; }
 

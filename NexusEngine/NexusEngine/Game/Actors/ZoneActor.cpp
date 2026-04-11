@@ -20,9 +20,11 @@ void ZoneActor::OnStart()
         // entityType에 따라 적합한 EntityData 생성
         std::unique_ptr<GameDataEntityBase> data;
         if (def.entityType == EEntity::EID::MONSTER)
-            data = std::make_unique<MonsterEntityData>(def.maxHp, def.attack, def.defense, def.moveSpeed);
+            data = std::make_unique<MonsterEntityData>(def.maxHp, def.attack, def.defense, def.moveSpeed,
+                                                       def.factionId, def.aiType, def.aggroRange);
         else
-            data = std::make_unique<NpcEntityData>(def.maxHp, def.attack, def.defense, def.moveSpeed);
+            data = std::make_unique<NpcEntityData>(def.maxHp, def.attack, def.defense, def.moveSpeed,
+                                                   def.factionId, def.aiType, def.aggroRange);
 
         auto pawn = std::make_unique<Pawn>(def.name, std::move(data));
         pawn->SetPos(def.pos);
