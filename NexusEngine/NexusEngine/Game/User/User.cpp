@@ -1,13 +1,16 @@
 #include "User.h"
 
+User::User(uint64_t sessionId)
+    : m_sessionId(sessionId)
+{}
 
-User::User(std::shared_ptr<Session> session)
-    : m_session(std::move(session))
+void User::SetIdentification(std::string accountId, std::string token)
 {
+    m_identification.accountId = std::move(accountId);
+    m_identification.token     = std::move(token);
 }
 
-User::~User()
+void User::SetProfile(UserProfile profile)
 {
-
+    m_profile = std::move(profile);
 }
-

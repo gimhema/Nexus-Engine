@@ -41,14 +41,15 @@ void WorldActor::Handle(MsgServer_RegisterSession& msg)
 
 void WorldActor::Handle(MsgServer_UnregisterSession& msg)
 {
+    // 연결이 갑자기 끊긴 경우 User가 남아있을 수 있으므로 함께 정리
+    m_users.erase(msg.sessionId);
     m_sessions.erase(msg.sessionId);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 void WorldActor::Handle(MsgSession_Login& msg)
 {
-    // TODO: AuthDB 검증 (Phase 4)
-    // 현재는 항상 성공 처리
+    // TODO: AuthDB 검증 (Phase 4) — 현재는 항상 성공 처리
     LOG_INFO("WorldActor: 로그인 sessionId={} account={}", msg.sessionId, msg.accountName);
 
     auto sa = FindSession(msg.sessionId);
@@ -57,6 +58,13 @@ void WorldActor::Handle(MsgSession_Login& msg)
         LOG_WARN("WorldActor: SessionActor 없음 sessionId={}", msg.sessionId);
         return;
     }
+
+    // User 생성 및 인증 상태 설정
+    User user(msg.sessionId);
+    user.SetIdentification(msg.accountName, msg.token);
+    user.SetProfile({ msg.accountName });   // TODO: DB에서 캐릭터 이름 로드 (Phase 4)
+    user.SetStatus(EUser::AUTHENTICATED);
+    m_users.emplace(msg.sessionId, std::move(user));
 
     MsgWorld_LoginResult result;
     result.success = true;
@@ -67,6 +75,14 @@ void WorldActor::Handle(MsgSession_Login& msg)
 void WorldActor::Handle(MsgSession_EnterWorld& msg)
 {
     LOG_INFO("WorldActor: 월드 진입 sessionId={} charId={}", msg.sessionId, msg.characterId);
+
+    // 인증되지 않은 세션 차단
+    User* user = FindUser(msg.sessionId);
+    if (!user || !user->IsAuthenticated())
+    {
+        LOG_WARN("WorldActor: 미인증 세션의 월드 진입 시도 sessionId={}", msg.sessionId);
+        return;
+    }
 
     // TODO: CharacterDB에서 캐릭터 로드 (Phase 4)
     // 임시: 기본 존(ID=1)에 스폰
@@ -97,6 +113,15 @@ void WorldActor::Handle(MsgSession_EnterWorld& msg)
 void WorldActor::Handle(MsgSession_Logout& msg)
 {
     LOG_INFO("WorldActor: 로그아웃 sessionId={}", msg.sessionId);
+
+    // User 상태를 WAIT_DISCONNECT로 전환 후 제거
+    if (User* user = FindUser(msg.sessionId))
+    {
+        user->SetStatus(EUser::WAIT_DISCONNECT);
+        LOG_INFO("WorldActor: User 제거 account={} sessionId={}",
+                 user->GetAccountId(), msg.sessionId);
+    }
+    m_users.erase(msg.sessionId);
 
     if (auto sa = FindSession(msg.sessionId))
         sa->ClearZone();
@@ -138,6 +163,12 @@ void WorldActor::Handle(MsgZone_TeleportRequest& msg)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+User* WorldActor::FindUser(uint64_t sessionId)
+{
+    auto it = m_users.find(sessionId);
+    return (it != m_users.end()) ? &it->second : nullptr;
+}
+
 ZoneActor* WorldActor::FindZone(uint32_t zoneId) const
 {
     auto it = m_zones.find(zoneId);

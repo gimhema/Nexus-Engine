@@ -3,6 +3,8 @@
 #include "../../Actor/Actor.h"
 #include "../../Game/Messages/GameMessages.h"
 
+#include "../User/User.h"
+
 #include <unordered_map>
 #include <memory>
 
@@ -43,6 +45,9 @@ private:
     [[nodiscard]] ZoneActor*                    FindZone(uint32_t zoneId) const;
     [[nodiscard]] std::shared_ptr<SessionActor> FindSession(uint64_t sessionId) const;
 
+    [[nodiscard]] User* FindUser(uint64_t sessionId);
+
     std::unordered_map<uint32_t, std::shared_ptr<ZoneActor>>    m_zones;
     std::unordered_map<uint64_t, std::shared_ptr<SessionActor>> m_sessions;
+    std::unordered_map<uint64_t, User>                          m_users;
 };
