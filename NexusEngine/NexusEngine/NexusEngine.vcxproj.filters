@@ -118,6 +118,12 @@
     <Filter Include="헤더 파일\Game\Logic\Pawn">
       <UniqueIdentifier>{70330266-6847-4798-9A16-4CF40F46EC1B}</UniqueIdentifier>
     </Filter>
+    <Filter Include="소스 파일\Game\Data\Faction">
+      <UniqueIdentifier>{0C21A029-CA10-4640-AC26-A2D003DC9C44}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Game\Data\Faction">
+      <UniqueIdentifier>{7BC80556-20B0-4109-88F5-F0DE05CAE23B}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -169,6 +175,21 @@
       <Filter>소스 파일\NexusClient\DummyClient</Filter>
     </ClCompile>
     <ClCompile Include="Game\Logic\Pawn\Pawn.cpp">
+      <Filter>소스 파일\Game\Logic\Pawn</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Data\Faction\FactionRegistry.cpp">
+      <Filter>소스 파일\Game\Data\Faction</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Data\GameDataEntities\CharacterEntityData.cpp">
+      <Filter>소스 파일\Game\Data\GameDataEntities</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Data\GameDataEntities\MonsterEntityData.cpp">
+      <Filter>소스 파일\Game\Data\GameDataEntities</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Data\GameDataEntities\NpcEntityData.cpp">
+      <Filter>소스 파일\Game\Data\GameDataEntities</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Logic\Pawn\PlayerPawn.cpp">
       <Filter>소스 파일\Game\Logic\Pawn</Filter>
     </ClCompile>
   </ItemGroup>
@@ -240,6 +261,24 @@
       <Filter>헤더 파일\NexusClient\DummyClient\Packets</Filter>
     </ClInclude>
     <ClInclude Include="Game\Logic\Pawn\Pawn.h">
+      <Filter>헤더 파일\Game\Logic\Pawn</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Data\Faction\FactionRegistry.h">
+      <Filter>헤더 파일\Game\Data\Faction</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Data\Faction\FactionTypes.h">
+      <Filter>헤더 파일\Game\Data\Faction</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Data\GameDataEntities\CharacterEntityData.h">
+      <Filter>헤더 파일\Game\Data\GameDataEntities</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Data\GameDataEntities\MonsterEntityData.h">
+      <Filter>헤더 파일\Game\Data\GameDataEntities</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Data\GameDataEntities\NpcEntityData.h">
+      <Filter>헤더 파일\Game\Data\GameDataEntities</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Logic\Pawn\PlayerPawn.h">
       <Filter>헤더 파일\Game\Logic\Pawn</Filter>
     </ClInclude>
   </ItemGroup>

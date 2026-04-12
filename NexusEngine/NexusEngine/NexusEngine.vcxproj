@@ -152,6 +152,11 @@
     <ClCompile Include="NexusClient\ClientLib\Packets\PacketBase.cpp" />
     <ClCompile Include="NexusClient\DummyClient\main.cpp" />
     <ClCompile Include="Game\Logic\Pawn\Pawn.cpp" />
+    <ClCompile Include="Game\Data\Faction\FactionRegistry.cpp" />
+    <ClCompile Include="Game\Data\GameDataEntities\CharacterEntityData.cpp" />
+    <ClCompile Include="Game\Data\GameDataEntities\MonsterEntityData.cpp" />
+    <ClCompile Include="Game\Data\GameDataEntities\NpcEntityData.cpp" />
+    <ClCompile Include="Game\Logic\Pawn\PlayerPawn.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Connection.h" />
@@ -177,6 +182,12 @@
     <ClInclude Include="NexusClient\ClientLib\Platform\Platform.h" />
     <ClInclude Include="NexusClient\DummyClient\Packets\GamePackets.hpp" />
     <ClInclude Include="Game\Logic\Pawn\Pawn.h" />
+    <ClInclude Include="Game\Data\Faction\FactionRegistry.h" />
+    <ClInclude Include="Game\Data\Faction\FactionTypes.h" />
+    <ClInclude Include="Game\Data\GameDataEntities\CharacterEntityData.h" />
+    <ClInclude Include="Game\Data\GameDataEntities\MonsterEntityData.h" />
+    <ClInclude Include="Game\Data\GameDataEntities\NpcEntityData.h" />
+    <ClInclude Include="Game\Logic\Pawn\PlayerPawn.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets"></ImportGroup>
