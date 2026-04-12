@@ -111,20 +111,64 @@ void ZoneActor::Handle(MsgWorld_AddPlayer& msg)
     pawn->SetPos(spawnPos);
     pawn->OnSpawn();
 
-    m_playerPawns.emplace(msg.sessionId, std::move(pawn));
-    LOG_INFO("ZoneActor {}: 플레이어 추가 sessionId={} name={}",
-             m_zone.GetId(), msg.sessionId, msg.characterName);
+    // 브로드캐스트에 사용할 폰 정보 — move 전에 캡처
+    const uint64_t pawnId  = pawn->GetPawnId();
+    const uint32_t hp      = static_cast<uint32_t>(pawn->GetHp());
+    const uint32_t maxHp   = static_cast<uint32_t>(pawn->GetMaxHp());
 
-    // 진입 클라이언트에 실제 스폰 위치 전송
     if (auto sa = msg.sessionActor.lock())
     {
-        PacketWriter w(SMSG_ENTER_WORLD);
-        w.WriteUInt8(1);
+        // ── 1. 신규 플레이어에게 본인 폰 정보 전송 ──────────────────────────
+        {
+            PacketWriter w(SMSG_ENTER_WORLD);
+            w.WriteUInt8(1);
+            w.WriteUInt64(pawnId);
+            w.WriteUInt32(msg.characterId);
+            w.WriteString(msg.characterName);
+            w.WriteUInt32(hp);
+            w.WriteUInt32(maxHp);
+            w.WriteFloat(spawnPos.x);
+            w.WriteFloat(spawnPos.y);
+            w.WriteFloat(spawnPos.z);
+            w.WriteFloat(0.f);   // orientation
+            sa->Post(MsgZone_SendTcp{ w.Finalize() });
+        }
+
+        // ── 2. 신규 플레이어에게 기존 플레이어 목록 전송 ────────────────────
+        for (auto& [sid, existing] : m_playerPawns)
+        {
+            PacketWriter w(SMSG_SPAWN_PLAYER);
+            w.WriteUInt64(existing->GetPawnId());
+            w.WriteUInt64(sid);
+            w.WriteString(existing->GetName());
+            w.WriteUInt32(static_cast<uint32_t>(existing->GetHp()));
+            w.WriteUInt32(static_cast<uint32_t>(existing->GetMaxHp()));
+            w.WriteFloat(existing->GetPos().x);
+            w.WriteFloat(existing->GetPos().y);
+            w.WriteFloat(existing->GetPos().z);
+            w.WriteFloat(existing->GetOrientation());
+            sa->Post(MsgZone_SendTcp{ w.Finalize() });
+        }
+    }
+
+    // ── 3. 기존 플레이어들에게 신규 플레이어 스폰 브로드캐스트 ────────────
+    {
+        PacketWriter w(SMSG_SPAWN_PLAYER);
+        w.WriteUInt64(pawnId);
+        w.WriteUInt64(msg.sessionId);
+        w.WriteString(msg.characterName);
+        w.WriteUInt32(hp);
+        w.WriteUInt32(maxHp);
         w.WriteFloat(spawnPos.x);
         w.WriteFloat(spawnPos.y);
         w.WriteFloat(spawnPos.z);
-        sa->Post(MsgZone_SendTcp{ w.Finalize() });
+        w.WriteFloat(0.f);
+        BroadcastTcp(msg.sessionId, w.Finalize());
     }
+
+    m_playerPawns.emplace(msg.sessionId, std::move(pawn));
+    LOG_INFO("ZoneActor {}: 플레이어 추가 sessionId={} name={} pawnId={}",
+             m_zone.GetId(), msg.sessionId, msg.characterName, pawnId);
 }
 
 void ZoneActor::Handle(MsgSession_Move& msg)
@@ -184,9 +228,15 @@ void ZoneActor::Handle(MsgSession_LeaveZone& msg)
     auto it = m_playerPawns.find(msg.sessionId);
     if (it == m_playerPawns.end()) return;
 
+    const uint64_t pawnId = it->second->GetPawnId();
     it->second->OnDespawn();
     m_playerPawns.erase(it);
-    LOG_INFO("ZoneActor {}: 플레이어 퇴장 sessionId={}", m_zone.GetId(), msg.sessionId);
+
+    PacketWriter w(SMSG_DESPAWN_PLAYER);
+    w.WriteUInt64(pawnId);
+    BroadcastTcp(msg.sessionId, w.Finalize());
+
+    LOG_INFO("ZoneActor {}: 플레이어 퇴장 sessionId={} pawnId={}", m_zone.GetId(), msg.sessionId, pawnId);
 }
 
 void ZoneActor::Handle(MsgWorld_RemovePlayer& msg)
@@ -194,8 +244,13 @@ void ZoneActor::Handle(MsgWorld_RemovePlayer& msg)
     auto it = m_playerPawns.find(msg.sessionId);
     if (it == m_playerPawns.end()) return;
 
+    const uint64_t pawnId = it->second->GetPawnId();
     it->second->OnDespawn();
     m_playerPawns.erase(it);
+
+    PacketWriter w(SMSG_DESPAWN_PLAYER);
+    w.WriteUInt64(pawnId);
+    BroadcastTcp(msg.sessionId, w.Finalize());
 }
 
 void ZoneActor::Handle(MsgGameLogic_WorldEvent& msg)

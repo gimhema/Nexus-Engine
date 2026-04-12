@@ -270,6 +270,145 @@ if (reg.IsHostile(attackerFaction, targetFaction))
 
 ---
 
+---
+
+## 3. 플레이어 스폰 / 디스폰 동기화 구현 가이드라인
+
+플레이어가 존에 진입할 때 **본인과 기존 플레이어 양쪽 모두에게** 폰 정보를 전달해야 한다.
+퇴장 시에는 기존 플레이어들에게 디스폰을 알린다.
+
+### 3.1 패킷 정의
+
+```
+SMSG_ENTER_WORLD (0x0104) — 진입한 본인에게만 전송
+  [uint8  success]
+  [uint64 pawnId]        서버가 발급한 고유 폰 ID
+  [uint32 characterId]
+  [string name]
+  [uint32 hp]
+  [uint32 maxHp]
+  [float  x][float y][float z][float orientation]
+
+SMSG_SPAWN_PLAYER (0x0401) — 다른 플레이어에게 전송 (상호 스폰)
+  [uint64 pawnId]
+  [uint64 sessionId]
+  [string name]
+  [uint32 hp]
+  [uint32 maxHp]
+  [float  x][float y][float z][float orientation]
+
+SMSG_DESPAWN_PLAYER (0x0402) — 퇴장 시 잔류 플레이어에게 전송
+  [uint64 pawnId]
+```
+
+### 3.2 서버 처리 흐름
+
+```
+CMSG_ENTER_WORLD [characterId]
+  → SessionActor → WorldActor (MsgSession_EnterWorld)
+  → WorldActor → ZoneActor (MsgWorld_AddPlayer)
+  → ZoneActor::Handle(MsgWorld_AddPlayer):
+      1. PlayerPawn 생성 + spawnPos 결정
+      2. 신규 플레이어 → SMSG_ENTER_WORLD (본인 폰 정보)
+      3. 신규 플레이어 → SMSG_SPAWN_PLAYER × 기존 플레이어 수 (기존 폰 목록)
+      4. 기존 플레이어들 → SMSG_SPAWN_PLAYER (신규 폰 정보) BroadcastTcp
+      5. m_playerPawns에 추가
+```
+
+### 3.3 구현 위치
+
+모든 로직은 `ZoneActor.cpp`의 두 핸들러에 위치한다.
+
+```cpp
+// 진입 — ZoneActor.cpp: Handle(MsgWorld_AddPlayer)
+void ZoneActor::Handle(MsgWorld_AddPlayer& msg)
+{
+    auto pawn = std::make_unique<PlayerPawn>(msg.characterName, msg.characterId, msg.sessionActor);
+    const Vec3 spawnPos = /* Zone 스폰 포인트 순환 또는 msg.spawnPos */;
+    pawn->SetPos(spawnPos);
+    pawn->OnSpawn();
+
+    const uint64_t pawnId = pawn->GetPawnId();
+    const uint32_t hp     = static_cast<uint32_t>(pawn->GetHp());
+    const uint32_t maxHp  = static_cast<uint32_t>(pawn->GetMaxHp());
+
+    if (auto sa = msg.sessionActor.lock())
+    {
+        // 1) 본인에게 SMSG_ENTER_WORLD
+        PacketWriter w(SMSG_ENTER_WORLD);
+        w.WriteUInt8(1).WriteUInt64(pawnId).WriteUInt32(msg.characterId)
+         .WriteString(msg.characterName).WriteUInt32(hp).WriteUInt32(maxHp)
+         .WriteFloat(spawnPos.x).WriteFloat(spawnPos.y).WriteFloat(spawnPos.z).WriteFloat(0.f);
+        sa->Post(MsgZone_SendTcp{ w.Finalize() });
+
+        // 2) 기존 플레이어 목록 → 신규 플레이어에게
+        for (auto& [sid, existing] : m_playerPawns)
+        {
+            PacketWriter ws(SMSG_SPAWN_PLAYER);
+            ws.WriteUInt64(existing->GetPawnId()).WriteUInt64(sid)
+              .WriteString(existing->GetName())
+              .WriteUInt32(static_cast<uint32_t>(existing->GetHp()))
+              .WriteUInt32(static_cast<uint32_t>(existing->GetMaxHp()))
+              .WriteFloat(existing->GetPos().x).WriteFloat(existing->GetPos().y)
+              .WriteFloat(existing->GetPos().z).WriteFloat(existing->GetOrientation());
+            sa->Post(MsgZone_SendTcp{ ws.Finalize() });
+        }
+    }
+
+    // 3) 신규 플레이어 → 기존 플레이어들에게 브로드캐스트
+    PacketWriter wb(SMSG_SPAWN_PLAYER);
+    wb.WriteUInt64(pawnId).WriteUInt64(msg.sessionId)
+      .WriteString(msg.characterName).WriteUInt32(hp).WriteUInt32(maxHp)
+      .WriteFloat(spawnPos.x).WriteFloat(spawnPos.y).WriteFloat(spawnPos.z).WriteFloat(0.f);
+    BroadcastTcp(msg.sessionId, wb.Finalize());
+
+    m_playerPawns.emplace(msg.sessionId, std::move(pawn));
+}
+```
+
+```cpp
+// 퇴장 — ZoneActor.cpp: Handle(MsgWorld_RemovePlayer) / Handle(MsgSession_LeaveZone)
+// 두 핸들러 모두 동일한 패턴
+void ZoneActor::Handle(MsgWorld_RemovePlayer& msg)
+{
+    auto it = m_playerPawns.find(msg.sessionId);
+    if (it == m_playerPawns.end()) return;
+
+    const uint64_t pawnId = it->second->GetPawnId();
+    it->second->OnDespawn();
+    m_playerPawns.erase(it);
+
+    PacketWriter w(SMSG_DESPAWN_PLAYER);
+    w.WriteUInt64(pawnId);
+    BroadcastTcp(msg.sessionId, w.Finalize());
+}
+```
+
+### 3.4 클라이언트 수신 처리 (UE5 참고)
+
+```
+SMSG_ENTER_WORLD 수신
+  → pawnId, characterId, name, hp/maxHp, 위치로 로컬 플레이어 폰 스폰
+
+SMSG_SPAWN_PLAYER 수신
+  → pawnId, sessionId, name, hp/maxHp, 위치로 원격 플레이어 폰 스폰
+  → pawnId를 키로 맵에 보관 (이후 이동/디스폰 메시지에서 사용)
+
+SMSG_DESPAWN_PLAYER 수신
+  → pawnId로 원격 플레이어 폰 제거
+```
+
+### 3.5 주의 사항
+
+- `SMSG_ENTER_WORLD` 전송 후 `m_playerPawns.emplace` 전에 기존 플레이어 목록을 순회해야  
+  신규 플레이어 자신이 목록에 포함되지 않는다.
+- `BroadcastTcp(msg.sessionId, ...)` 호출 시점은 `emplace` 전후 모두 안전하다.  
+  `BroadcastTcp`는 `excludeSessionId`로 신규 플레이어를 자동 제외한다.
+- `hp`/`maxHp`는 `int32_t`이지만 패킷 전송 시 `uint32_t`로 캐스트한다.  
+  클라이언트도 `uint32_t`로 읽은 후 `int32_t`로 해석하면 된다.
+
+---
+
 ## 미구현 항목 (향후 작업)
 
 | 항목 | 상태 |
