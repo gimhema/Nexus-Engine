@@ -41,7 +41,7 @@ public:
         if (m_running.exchange(true)) return;
 
         if (threadCount == 0)
-            threadCount = std::max(1u, std::thread::hardware_concurrency());
+            threadCount = (std::max)(1u, std::thread::hardware_concurrency());
 
         m_workers.reserve(threadCount);
         for (uint32_t i = 0; i < threadCount; ++i)
