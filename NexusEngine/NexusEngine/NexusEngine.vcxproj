@@ -152,9 +152,15 @@
     <ClCompile Include="Game\Actors\ZoneActor.cpp" />
     <ClCompile Include="Shared\Logger.cpp" />
     <ClCompile Include="Game\Data\GameDataEntities\EntityBase.cpp" />
-    <ClCompile Include="NexusClient\ClientLib\NetClient.cpp" />
-    <ClCompile Include="NexusClient\ClientLib\Packets\PacketBase.cpp" />
-    <ClCompile Include="NexusClient\DummyClient\main.cpp" />
+    <ClCompile Include="NexusClient\ClientLib\NetClient.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="NexusClient\ClientLib\Packets\PacketBase.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="NexusClient\DummyClient\main.cpp">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="Game\Logic\Pawn\Pawn.cpp" />
     <ClCompile Include="Game\Data\Faction\FactionRegistry.cpp" />
     <ClCompile Include="Game\Data\GameDataEntities\CharacterEntityData.cpp" />
