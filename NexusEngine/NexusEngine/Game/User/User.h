@@ -12,10 +12,11 @@ namespace EUser
 {
     enum Status : uint8_t
     {
-        CONNECTED       = 0,   // TCP 연결됨, 미인증 (로그인 전)
-        AUTHENTICATED   = 1,   // 로그인 완료, 캐릭터 설정 전
-        CHAR_READY      = 2,   // 캐릭터 설정 완료, 월드 진입 가능
-        WAIT_DISCONNECT = 3,   // 연결 해제 대기 중 (정리 진행)
+        CONNECTED          = 0,   // TCP 연결됨, 미인증 (로그인 전)
+        AUTHENTICATED      = 1,   // 로그인 완료, 캐릭터 설정 전
+        CHAR_SETUP_PENDING = 2,   // 캐릭터 설정 처리 중 (Phase 4: DB INSERT 비동기 완료 대기)
+        CHAR_READY         = 3,   // 캐릭터 설정 완료, 월드 진입 가능
+        WAIT_DISCONNECT    = 4,   // 연결 해제 대기 중 (정리 진행)
     };
 }
 
@@ -27,6 +28,7 @@ namespace EUser
 // ─────────────────────────────────────────────────────────────────────────────
 struct CharacterSetup
 {
+    uint32_t    characterId{ 0 };   // 서버 발급 ID — Phase 4: DB INSERT 반환값으로 교체
     std::string characterName;
     // 향후 추가 예정
     // uint8_t  gender{ 0 };
@@ -78,10 +80,11 @@ public:
     [[nodiscard]] const std::string& GetAccountId() const { return m_identification.accountId; }
 
     // ── 상태 ─────────────────────────────────────────────────────────────
-    [[nodiscard]] EUser::Status GetStatus()         const { return m_status; }
-    [[nodiscard]] bool          IsAuthenticated()   const { return m_status == EUser::AUTHENTICATED; }
-    [[nodiscard]] bool          IsCharReady()       const { return m_status == EUser::CHAR_READY; }
-    [[nodiscard]] bool          IsWaitDisconnect()  const { return m_status == EUser::WAIT_DISCONNECT; }
+    [[nodiscard]] EUser::Status GetStatus()             const { return m_status; }
+    [[nodiscard]] bool          IsAuthenticated()       const { return m_status == EUser::AUTHENTICATED; }
+    [[nodiscard]] bool          IsCharSetupPending()    const { return m_status == EUser::CHAR_SETUP_PENDING; }
+    [[nodiscard]] bool          IsCharReady()           const { return m_status == EUser::CHAR_READY; }
+    [[nodiscard]] bool          IsWaitDisconnect()      const { return m_status == EUser::WAIT_DISCONNECT; }
     void SetStatus(EUser::Status status) { m_status = status; }
 
     // ── 계정 정보 ─────────────────────────────────────────────────────────

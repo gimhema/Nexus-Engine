@@ -152,6 +152,7 @@ void SessionActor::Handle(MsgWorld_CharSetupResult& msg)
 {
     PacketWriter w(SMSG_CHAR_SETUP_RESULT);
     w.WriteUInt8(msg.success ? 1u : 0u);
+    w.WriteUInt32(msg.characterId);   // 서버 발급 ID — 클라이언트는 이 값을 CMSG_ENTER_WORLD에 사용
     w.WriteString(msg.message);
     const auto& buf = w.Finalize();
     if (m_session && m_session->IsConnected())

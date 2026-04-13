@@ -38,7 +38,7 @@ enum Opcode : uint16_t
                                 //                        [uint32 hp][uint32 maxHp]
                                 //                        [float x][float y][float z][float orientation]
     CMSG_CHAR_SETUP,            // 캐릭터 설정            [string characterName]
-    SMSG_CHAR_SETUP_RESULT,     // 캐릭터 설정 결과       [uint8 success][string message]
+    SMSG_CHAR_SETUP_RESULT,     // 캐릭터 설정 결과       [uint8 success][uint32 characterId][string message]
     _AUTH_END,                  // 더미 — 범위 검사용
 
     // ── 이동 (0x0200번대) ─────────────────────────────────────────────────────

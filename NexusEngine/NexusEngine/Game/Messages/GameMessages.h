@@ -162,6 +162,7 @@ struct MsgWorld_LoginResult
 struct MsgWorld_CharSetupResult
 {
     bool        success{ false };
+    uint32_t    characterId{ 0 };   // 서버 발급 ID — Phase 4: DB INSERT 반환값으로 교체
     std::string message;
 };
 

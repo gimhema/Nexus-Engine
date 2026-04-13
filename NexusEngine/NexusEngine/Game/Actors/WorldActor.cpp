@@ -79,33 +79,50 @@ void WorldActor::Handle(MsgSession_Login& msg)
 void WorldActor::Handle(MsgSession_CharSetup& msg)
 {
     User* user = FindUser(msg.sessionId);
-    if (!user || (user->GetStatus() != EUser::AUTHENTICATED && user->GetStatus() != EUser::CHAR_READY))
+
+    // CHAR_SETUP_PENDING: 이미 처리 중인 요청 있음 (Phase 4: DB 쿼리 대기 중)
+    // WAIT_DISCONNECT:    종료 처리 중
+    // CONNECTED:          로그인 미완료
+    const auto status = user ? user->GetStatus() : EUser::CONNECTED;
+    if (!user || status == EUser::CHAR_SETUP_PENDING || status >= EUser::WAIT_DISCONNECT
+             || status == EUser::CONNECTED)
     {
-        LOG_WARN("WorldActor: 유효하지 않은 상태의 캐릭터 설정 시도 sessionId={}", msg.sessionId);
-        auto sa = FindSession(msg.sessionId);
-        if (sa)
+        LOG_WARN("WorldActor: 유효하지 않은 상태의 캐릭터 설정 시도 sessionId={} status={}",
+                 msg.sessionId, static_cast<int>(status));
+        if (auto sa = FindSession(msg.sessionId))
         {
             MsgWorld_CharSetupResult result;
             result.success = false;
-            result.message = "Not authenticated";
+            result.message = "Invalid state";
             sa->Post(std::move(result));
         }
         return;
     }
 
-    // TODO: DB에서 캐릭터명 중복 검사 (Phase 4)
-    LOG_INFO("WorldActor: 캐릭터 설정 sessionId={} name={}",
-             msg.sessionId, msg.setup.characterName);
+    // ── DB 연동 전환점 ────────────────────────────────────────────────────────
+    // PENDING 전환: 이 시점 이후 중복 요청을 차단한다.
+    user->SetStatus(EUser::CHAR_SETUP_PENDING);
 
-    user->SetCharacterSetup(std::move(msg.setup));
+    // Phase 4: 여기서 DBProxyActor에 비동기 INSERT 요청을 보내고 즉시 반환.
+    //          DB 콜백에서 characterId를 받아 아래 로직을 이어서 처리한다.
+    //          현재: 동기 처리 — 임시 ID 즉시 발급.
+    CharacterSetup setup    = std::move(msg.setup);
+    setup.characterId       = m_nextCharacterId++;
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // TODO: DB에서 캐릭터명 중복 검사 (Phase 4)
+    LOG_INFO("WorldActor: 캐릭터 설정 sessionId={} charId={} name={}",
+             msg.sessionId, setup.characterId, setup.characterName);
+
+    user->SetCharacterSetup(std::move(setup));
     user->SetStatus(EUser::CHAR_READY);
 
-    auto sa = FindSession(msg.sessionId);
-    if (sa)
+    if (auto sa = FindSession(msg.sessionId))
     {
         MsgWorld_CharSetupResult result;
-        result.success = true;
-        result.message = "OK";
+        result.success     = true;
+        result.characterId = user->GetCharacterSetup().characterId;
+        result.message     = "OK";
         sa->Post(std::move(result));
     }
 }
@@ -138,6 +155,15 @@ void WorldActor::Handle(MsgSession_EnterWorld& msg)
     if (!user || !user->IsCharReady())
     {
         LOG_WARN("WorldActor: 캐릭터 설정 미완료 세션의 월드 진입 시도 sessionId={}", msg.sessionId);
+        return;
+    }
+
+    // 클라이언트가 보낸 characterId와 서버 발급 ID 일치 여부 검증
+    // Phase 4: DB에서 해당 characterId가 이 계정 소유인지 추가 검증
+    if (msg.characterId != user->GetCharacterSetup().characterId)
+    {
+        LOG_WARN("WorldActor: characterId 불일치 sent={} expected={} sessionId={}",
+                 msg.characterId, user->GetCharacterSetup().characterId, msg.sessionId);
         return;
     }
 

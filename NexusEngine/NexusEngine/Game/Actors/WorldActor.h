@@ -7,6 +7,7 @@
 
 #include <unordered_map>
 #include <memory>
+#include <cstdint>
 
 class SessionActor;
 class ZoneActor;
@@ -52,4 +53,8 @@ private:
     std::unordered_map<uint32_t, std::shared_ptr<ZoneActor>>    m_zones;
     std::unordered_map<uint64_t, std::shared_ptr<SessionActor>> m_sessions;
     std::unordered_map<uint64_t, User>                          m_users;
+
+    // 임시 characterId 발급 카운터
+    // Phase 4: DB INSERT 후 반환되는 auto-increment ID로 교체
+    uint32_t m_nextCharacterId{ 1 };
 };
