@@ -1,11 +1,11 @@
 #include <NetClient.h>
 #include <Packets/PacketBase.h>
 #include "Packets/GamePackets.hpp"
+#include "../../protocol_shared/PacketParser.h"
 
 #include <atomic>
 #include <chrono>
 #include <cstdio>
-#include <cstring>
 #include <thread>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -83,44 +83,6 @@ void SendMove(NetClient& client, float x, float y, float z, float orientation = 
     std::printf("[→] CMSG_MOVE  pos=(%.1f, %.1f, %.1f) o=%.2f\n", x, y, z, orientation);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 수신 파서 헬퍼 (람다 캡처용 구조체)
-// ─────────────────────────────────────────────────────────────────────────────
-struct PayloadReader
-{
-    const uint8_t* data;
-    uint32_t       size;
-    uint32_t       pos{ 0 };
-
-    uint8_t ReadU8()
-    {
-        return (pos < size) ? data[pos++] : 0;
-    }
-    uint16_t ReadU16()
-    {
-        uint16_t v{}; if (pos + 2 <= size) { std::memcpy(&v, data + pos, 2); pos += 2; } return v;
-    }
-    uint32_t ReadU32()
-    {
-        uint32_t v{}; if (pos + 4 <= size) { std::memcpy(&v, data + pos, 4); pos += 4; } return v;
-    }
-    uint64_t ReadU64()
-    {
-        uint64_t v{}; if (pos + 8 <= size) { std::memcpy(&v, data + pos, 8); pos += 8; } return v;
-    }
-    float ReadFloat()
-    {
-        float v{}; if (pos + 4 <= size) { std::memcpy(&v, data + pos, 4); pos += 4; } return v;
-    }
-    std::string ReadString()
-    {
-        const uint16_t len = ReadU16();
-        if (pos + len > size) return {};
-        std::string s(reinterpret_cast<const char*>(data + pos), len);
-        pos += len;
-        return s;
-    }
-};
 
 // ─────────────────────────────────────────────────────────────────────────────
 int main()
@@ -146,7 +108,7 @@ int main()
     // ── 수신 패킷 핸들러 ──────────────────────────────────────────────────────
     client.SetOnPacket([&client](uint16_t opcode, std::vector<uint8_t> payload)
     {
-        PayloadReader r{ payload.data(), static_cast<uint32_t>(payload.size()) };
+        NexusPacketParser r{ payload.data(), static_cast<uint32_t>(payload.size()) };
 
         switch (static_cast<Opcode>(opcode))
         {
@@ -283,7 +245,7 @@ int main()
 
         default:
             std::printf("[←] 알 수 없는 opcode=0x%04x  payloadSize=%u\n",
-                        opcode, r.size);
+                        opcode, r.Remaining() + r.pos);
             break;
         }
     });
