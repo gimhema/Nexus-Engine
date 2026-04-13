@@ -5,26 +5,34 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <thread>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 접속 테스트 시나리오
 //
 //   1. 서버 접속
-//   2. CMSG_LOGIN       → SMSG_LOGIN_RESULT 대기
-//   3. CMSG_ENTER_WORLD → SMSG_ENTER_WORLD  대기
-//   4. CMSG_CHAT        (입장 메시지)
-//   5. CMSG_MOVE        (임의 위치로 이동)
-//   6. 3초 대기 후 연결 해제
+//   2. CMSG_LOGIN              → SMSG_LOGIN_RESULT 대기
+//   3. CMSG_CHAR_SETUP         → SMSG_CHAR_SETUP_RESULT 대기 (서버 발급 characterId 수신)
+//   4. CMSG_ENTER_WORLD        → SMSG_ENTER_WORLD 대기
+//   5. CMSG_CHAT               (존 채팅 — 같은 존 플레이어에게만)
+//   6. CMSG_WORLD_CHAT         (월드 채팅 — 전 서버 브로드캐스트)
+//   7. CMSG_MOVE               (임의 위치로 이동)
+//   8. 3초 대기 후 연결 해제
 // ─────────────────────────────────────────────────────────────────────────────
 
-static constexpr const char*   SERVER_HOST    = "127.0.0.1";
-static constexpr uint16_t      SERVER_PORT    = 7070;
-static constexpr uint32_t      CHARACTER_ID   = 1;
-static constexpr const char*   ACCOUNT_NAME   = "test_user";
-static constexpr const char*   LOGIN_TOKEN    = "dummy_token";
+static constexpr const char* SERVER_HOST   = "127.0.0.1";
+static constexpr uint16_t    SERVER_PORT   = 7070;
+static constexpr const char* ACCOUNT_NAME  = "test_user";
+static constexpr const char* LOGIN_TOKEN   = "dummy_token";
+static constexpr const char* CHAR_NAME     = "TestHero";
 
-std::atomic<bool> g_running{ true };
+std::atomic<bool>     g_running{ true };
+std::atomic<uint32_t> g_characterId{ 0 };   // SMSG_CHAR_SETUP_RESULT에서 수신한 서버 발급 ID
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 송신 헬퍼
+// ─────────────────────────────────────────────────────────────────────────────
 
 void SendLogin(NetClient& client)
 {
@@ -35,30 +43,86 @@ void SendLogin(NetClient& client)
     std::printf("[→] CMSG_LOGIN  account=%s\n", ACCOUNT_NAME);
 }
 
-void SendEnterWorld(NetClient& client)
+void SendCharSetup(NetClient& client)
 {
-    ClientPacketWriter w(CMSG_ENTER_WORLD);
-    w.WriteUInt32(CHARACTER_ID);
+    ClientPacketWriter w(CMSG_CHAR_SETUP);
+    w.WriteString(CHAR_NAME);
     client.Send(w.Finalize());
-    std::printf("[→] CMSG_ENTER_WORLD  characterId=%u\n", CHARACTER_ID);
+    std::printf("[→] CMSG_CHAR_SETUP  name=%s\n", CHAR_NAME);
 }
 
-void SendChat(NetClient& client, const std::string& text)
+void SendEnterWorld(NetClient& client, uint32_t characterId)
+{
+    ClientPacketWriter w(CMSG_ENTER_WORLD);
+    w.WriteUInt32(characterId);
+    client.Send(w.Finalize());
+    std::printf("[→] CMSG_ENTER_WORLD  characterId=%u\n", characterId);
+}
+
+void SendZoneChat(NetClient& client, const std::string& text)
 {
     ClientPacketWriter w(CMSG_CHAT);
     w.WriteString(text);
     client.Send(w.Finalize());
-    std::printf("[→] CMSG_CHAT  text=\"%s\"\n", text.c_str());
+    std::printf("[→] CMSG_CHAT (존)  text=\"%s\"\n", text.c_str());
 }
 
-void SendMove(NetClient& client, float x, float y, float z)
+void SendWorldChat(NetClient& client, const std::string& text)
+{
+    ClientPacketWriter w(CMSG_WORLD_CHAT);
+    w.WriteString(text);
+    client.Send(w.Finalize());
+    std::printf("[→] CMSG_WORLD_CHAT  text=\"%s\"\n", text.c_str());
+}
+
+void SendMove(NetClient& client, float x, float y, float z, float orientation = 0.f)
 {
     ClientPacketWriter w(CMSG_MOVE);
-    w.WriteFloat(x).WriteFloat(y).WriteFloat(z).WriteFloat(0.f);
+    w.WriteFloat(x).WriteFloat(y).WriteFloat(z).WriteFloat(orientation);
     client.Send(w.Finalize());
-    std::printf("[→] CMSG_MOVE  pos=(%.1f, %.1f, %.1f)\n", x, y, z);
+    std::printf("[→] CMSG_MOVE  pos=(%.1f, %.1f, %.1f) o=%.2f\n", x, y, z, orientation);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 수신 파서 헬퍼 (람다 캡처용 구조체)
+// ─────────────────────────────────────────────────────────────────────────────
+struct PayloadReader
+{
+    const uint8_t* data;
+    uint32_t       size;
+    uint32_t       pos{ 0 };
+
+    uint8_t ReadU8()
+    {
+        return (pos < size) ? data[pos++] : 0;
+    }
+    uint16_t ReadU16()
+    {
+        uint16_t v{}; if (pos + 2 <= size) { std::memcpy(&v, data + pos, 2); pos += 2; } return v;
+    }
+    uint32_t ReadU32()
+    {
+        uint32_t v{}; if (pos + 4 <= size) { std::memcpy(&v, data + pos, 4); pos += 4; } return v;
+    }
+    uint64_t ReadU64()
+    {
+        uint64_t v{}; if (pos + 8 <= size) { std::memcpy(&v, data + pos, 8); pos += 8; } return v;
+    }
+    float ReadFloat()
+    {
+        float v{}; if (pos + 4 <= size) { std::memcpy(&v, data + pos, 4); pos += 4; } return v;
+    }
+    std::string ReadString()
+    {
+        const uint16_t len = ReadU16();
+        if (pos + len > size) return {};
+        std::string s(reinterpret_cast<const char*>(data + pos), len);
+        pos += len;
+        return s;
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 int main()
 {
     std::printf("=== NexusClient DummyClient ===\n");
@@ -66,7 +130,7 @@ int main()
 
     NetClient client;
 
-    // ── 콜백 등록 ──────────────────────────────────────────────────────────
+    // ── 연결 콜백 ─────────────────────────────────────────────────────────────
     client.SetOnConnected([&client]()
     {
         std::printf("[연결] 서버 접속 성공\n");
@@ -79,98 +143,162 @@ int main()
         g_running.store(false);
     });
 
+    // ── 수신 패킷 핸들러 ──────────────────────────────────────────────────────
     client.SetOnPacket([&client](uint16_t opcode, std::vector<uint8_t> payload)
     {
-        ClientPacketReader reader(payload.data(), static_cast<uint32_t>(payload.size()) + CLIENT_PACKET_HEADER_SIZE);
-
-        // SetOnPacket의 payload는 헤더 제외 바이트이므로
-        // 직접 역직렬화를 위해 raw pointer + size로 읽음
-        const uint8_t* data = payload.data();
-        uint32_t       size = static_cast<uint32_t>(payload.size());
-        uint32_t       pos  = 0;
-
-        auto readU8 = [&]() -> uint8_t {
-            return (pos < size) ? data[pos++] : 0;
-        };
-        auto readFloat = [&]() -> float {
-            float v{}; if (pos + 4 <= size) { std::memcpy(&v, data + pos, 4); pos += 4; } return v;
-        };
-        auto readString = [&]() -> std::string {
-            if (pos + 2 > size) return {};
-            uint16_t len{}; std::memcpy(&len, data + pos, 2); pos += 2;
-            if (pos + len > size) return {};
-            std::string s(reinterpret_cast<const char*>(data + pos), len); pos += len; return s;
-        };
-        auto readU64 = [&]() -> uint64_t {
-            uint64_t v{}; if (pos + 8 <= size) { std::memcpy(&v, data + pos, 8); pos += 8; } return v;
-        };
+        PayloadReader r{ payload.data(), static_cast<uint32_t>(payload.size()) };
 
         switch (static_cast<Opcode>(opcode))
         {
+        // ── 인증 / 접속 ───────────────────────────────────────────────────────
         case SMSG_LOGIN_RESULT:
         {
-            uint8_t success = readU8();
-            std::string msg = readString();
-            std::printf("[←] SMSG_LOGIN_RESULT  success=%u message=\"%s\"\n",
-                        success, msg.c_str());
+            const uint8_t     success = r.ReadU8();
+            const std::string message = r.ReadString();
+            std::printf("[←] SMSG_LOGIN_RESULT  success=%u  message=\"%s\"\n",
+                        success, message.c_str());
             if (success)
-                SendEnterWorld(client);
+                SendCharSetup(client);          // 로그인 성공 → 캐릭터 설정 단계로
+            else
+                g_running.store(false);
+            break;
+        }
+        case SMSG_CHAR_SETUP_RESULT:
+        {
+            const uint8_t     success     = r.ReadU8();
+            const uint32_t    characterId = r.ReadU32();
+            const std::string message     = r.ReadString();
+            std::printf("[←] SMSG_CHAR_SETUP_RESULT  success=%u  characterId=%u  message=\"%s\"\n",
+                        success, characterId, message.c_str());
+            if (success)
+            {
+                g_characterId.store(characterId);
+                SendEnterWorld(client, characterId);   // 서버 발급 ID로 월드 진입
+            }
             else
                 g_running.store(false);
             break;
         }
         case SMSG_ENTER_WORLD:
         {
-            uint8_t success = readU8();
-            float x = readFloat(), y = readFloat(), z = readFloat();
-            std::printf("[←] SMSG_ENTER_WORLD  success=%u pos=(%.1f, %.1f, %.1f)\n",
-                        success, x, y, z);
+            const uint8_t     success     = r.ReadU8();
+            const uint64_t    pawnId      = r.ReadU64();
+            const uint32_t    characterId = r.ReadU32();
+            const std::string name        = r.ReadString();
+            const uint32_t    hp          = r.ReadU32();
+            const uint32_t    maxHp       = r.ReadU32();
+            const float       x           = r.ReadFloat();
+            const float       y           = r.ReadFloat();
+            const float       z           = r.ReadFloat();
+            const float       orientation = r.ReadFloat();
+
+            std::printf("[←] SMSG_ENTER_WORLD  success=%u  pawnId=%llu  charId=%u  name=%s\n"
+                        "                      hp=%u/%u  pos=(%.1f, %.1f, %.1f)  o=%.2f\n",
+                        success,
+                        static_cast<unsigned long long>(pawnId),
+                        characterId, name.c_str(),
+                        hp, maxHp, x, y, z, orientation);
+
             if (success)
             {
-                SendChat(client, "안녕하세요!");
+                SendZoneChat(client, "안녕하세요! (존 채팅)");
+                SendWorldChat(client, "안녕하세요! (월드 채팅)");
                 SendMove(client, 10.f, 0.f, 5.f);
             }
             break;
         }
+
+        // ── 채팅 ──────────────────────────────────────────────────────────────
         case SMSG_CHAT:
         {
-            uint64_t    sid  = readU64();
-            std::string name = readString();
-            std::string text = readString();
-            std::printf("[←] SMSG_CHAT  [%s] %s  (sessionId=%llu)\n",
+            const uint64_t    sessionId = r.ReadU64();
+            const std::string name      = r.ReadString();
+            const std::string text      = r.ReadString();
+            std::printf("[←] SMSG_CHAT (존)  [%s] %s  (sessionId=%llu)\n",
                         name.c_str(), text.c_str(),
-                        static_cast<unsigned long long>(sid));
+                        static_cast<unsigned long long>(sessionId));
             break;
         }
+        case SMSG_WORLD_CHAT:
+        {
+            const uint64_t    sessionId = r.ReadU64();
+            const std::string name      = r.ReadString();
+            const std::string text      = r.ReadString();
+            std::printf("[←] SMSG_WORLD_CHAT  [%s] %s  (sessionId=%llu)\n",
+                        name.c_str(), text.c_str(),
+                        static_cast<unsigned long long>(sessionId));
+            break;
+        }
+
+        // ── 이동 ──────────────────────────────────────────────────────────────
         case SMSG_MOVE_BROADCAST:
         {
-            uint64_t sid = readU64();
-            float x = readFloat(), y = readFloat(), z = readFloat(), o = readFloat();
-            std::printf("[←] SMSG_MOVE_BROADCAST  sessionId=%llu pos=(%.1f,%.1f,%.1f) o=%.2f\n",
-                        static_cast<unsigned long long>(sid), x, y, z, o);
+            const uint64_t sid         = r.ReadU64();
+            const float    x           = r.ReadFloat();
+            const float    y           = r.ReadFloat();
+            const float    z           = r.ReadFloat();
+            const float    orientation = r.ReadFloat();
+            std::printf("[←] SMSG_MOVE_BROADCAST  sessionId=%llu  pos=(%.1f, %.1f, %.1f)  o=%.2f\n",
+                        static_cast<unsigned long long>(sid), x, y, z, orientation);
             break;
         }
+        case SMSG_MOVE_UDP:
+        {
+            const uint64_t sid         = r.ReadU64();
+            const float    x           = r.ReadFloat();
+            const float    y           = r.ReadFloat();
+            const float    z           = r.ReadFloat();
+            const float    orientation = r.ReadFloat();
+            std::printf("[←] SMSG_MOVE_UDP  sessionId=%llu  pos=(%.1f, %.1f, %.1f)  o=%.2f\n",
+                        static_cast<unsigned long long>(sid), x, y, z, orientation);
+            break;
+        }
+
+        // ── 스폰 / 디스폰 ─────────────────────────────────────────────────────
+        case SMSG_SPAWN_PLAYER:
+        {
+            const uint64_t    pawnId      = r.ReadU64();
+            const uint64_t    sessionId   = r.ReadU64();
+            const std::string name        = r.ReadString();
+            const uint32_t    hp          = r.ReadU32();
+            const uint32_t    maxHp       = r.ReadU32();
+            const float       x           = r.ReadFloat();
+            const float       y           = r.ReadFloat();
+            const float       z           = r.ReadFloat();
+            const float       orientation = r.ReadFloat();
+            std::printf("[←] SMSG_SPAWN_PLAYER  pawnId=%llu  sessionId=%llu  name=%s\n"
+                        "                       hp=%u/%u  pos=(%.1f, %.1f, %.1f)  o=%.2f\n",
+                        static_cast<unsigned long long>(pawnId),
+                        static_cast<unsigned long long>(sessionId),
+                        name.c_str(), hp, maxHp, x, y, z, orientation);
+            break;
+        }
+        case SMSG_DESPAWN_PLAYER:
+        {
+            const uint64_t pawnId = r.ReadU64();
+            std::printf("[←] SMSG_DESPAWN_PLAYER  pawnId=%llu\n",
+                        static_cast<unsigned long long>(pawnId));
+            break;
+        }
+
         default:
             std::printf("[←] 알 수 없는 opcode=0x%04x  payloadSize=%u\n",
-                        opcode, size);
+                        opcode, r.size);
             break;
         }
     });
 
-    // ── 서버 접속 ──────────────────────────────────────────────────────────
+    // ── 서버 접속 ─────────────────────────────────────────────────────────────
     if (!client.Connect(SERVER_HOST, SERVER_PORT))
     {
         std::printf("[오류] 서버 접속 실패: %s:%u\n", SERVER_HOST, SERVER_PORT);
         return 1;
     }
 
-    // ── 3초 대기 후 종료 ───────────────────────────────────────────────────
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-    while (g_running.load() &&
-           std::chrono::steady_clock::now() < deadline)
-    {
+    // ── 3초 대기 후 종료 ──────────────────────────────────────────────────────
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (g_running.load() && std::chrono::steady_clock::now() < deadline)
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
 
     std::printf("\n테스트 종료 — 연결 해제 중...\n");
     client.Disconnect();
