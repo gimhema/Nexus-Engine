@@ -18,11 +18,12 @@ SessionActor::SessionActor(std::shared_ptr<Session> session,
 void SessionActor::OnMessage(SessionMessage& msg)
 {
     std::visit(overloaded{
-        [this](MsgNet_PacketReceived& m) { Handle(m); },
-        [this](MsgZone_SendTcp& m)       { Handle(m); },
-        [this](MsgZone_SendUdp& m)       { Handle(m); },
-        [this](MsgZone_Disconnect& m)    { Handle(m); },
-        [this](MsgWorld_LoginResult& m)  { Handle(m); },
+        [this](MsgNet_PacketReceived& m)    { Handle(m); },
+        [this](MsgZone_SendTcp& m)          { Handle(m); },
+        [this](MsgZone_SendUdp& m)          { Handle(m); },
+        [this](MsgZone_Disconnect& m)       { Handle(m); },
+        [this](MsgWorld_LoginResult& m)     { Handle(m); },
+        [this](MsgWorld_CharSetupResult& m) { Handle(m); },
     }, msg);
 }
 
@@ -45,6 +46,14 @@ void SessionActor::Handle(MsgNet_PacketReceived& msg)
         login.accountName = reader.ReadString();
         login.token       = reader.ReadString();
         m_world.Post(std::move(login));
+        break;
+    }
+    case CMSG_CHAR_SETUP:
+    {
+        MsgSession_CharSetup charSetup;
+        charSetup.sessionId            = m_sessionId;
+        charSetup.setup.characterName  = reader.ReadString();
+        m_world.Post(std::move(charSetup));
         break;
     }
     case CMSG_ENTER_WORLD:
@@ -91,6 +100,14 @@ void SessionActor::Handle(MsgNet_PacketReceived& msg)
         zone->Post(std::move(chat));
         break;
     }
+    case CMSG_WORLD_CHAT:
+    {
+        MsgSession_WorldChat worldChat;
+        worldChat.sessionId = m_sessionId;
+        worldChat.text      = reader.ReadString();
+        m_world.Post(std::move(worldChat));
+        break;
+    }
     default:
         LOG_WARN("SessionActor: 알 수 없는 opcode={:#06x} sessionId={}", msg.opcode, m_sessionId);
         break;
@@ -123,8 +140,17 @@ void SessionActor::Handle(MsgZone_Disconnect& msg)
 
 void SessionActor::Handle(MsgWorld_LoginResult& msg)
 {
-    // 로그인 결과 패킷 직렬화 후 TCP 전송
     PacketWriter w(SMSG_LOGIN_RESULT);
+    w.WriteUInt8(msg.success ? 1u : 0u);
+    w.WriteString(msg.message);
+    const auto& buf = w.Finalize();
+    if (m_session && m_session->IsConnected())
+        m_session->Send(buf);
+}
+
+void SessionActor::Handle(MsgWorld_CharSetupResult& msg)
+{
+    PacketWriter w(SMSG_CHAR_SETUP_RESULT);
     w.WriteUInt8(msg.success ? 1u : 0u);
     w.WriteString(msg.message);
     const auto& buf = w.Finalize();

@@ -1,7 +1,9 @@
 #include "WorldActor.h"
 #include "SessionActor.h"
 #include "ZoneActor.h"
+#include "../../Packets/PacketBase.h"
 #include "../../Shared/Logger.h"
+#include "../Data/GamePackets/Packet-Example.hpp"
 
 WorldActor::WorldActor() = default;
 
@@ -27,6 +29,8 @@ void WorldActor::OnMessage(WorldMessage& msg)
         [this](MsgSession_Login& m)            { Handle(m); },
         [this](MsgSession_EnterWorld& m)       { Handle(m); },
         [this](MsgSession_Logout& m)           { Handle(m); },
+        [this](MsgSession_CharSetup& m)        { Handle(m); },
+        [this](MsgSession_WorldChat& m)        { Handle(m); },
         [this](MsgZone_TeleportRequest& m)     { Handle(m); },
         [this](MsgServer_RegisterSession& m)   { Handle(m); },
         [this](MsgServer_UnregisterSession& m) { Handle(m); },
@@ -72,15 +76,68 @@ void WorldActor::Handle(MsgSession_Login& msg)
     sa->Post(std::move(result));
 }
 
+void WorldActor::Handle(MsgSession_CharSetup& msg)
+{
+    User* user = FindUser(msg.sessionId);
+    if (!user || (user->GetStatus() != EUser::AUTHENTICATED && user->GetStatus() != EUser::CHAR_READY))
+    {
+        LOG_WARN("WorldActor: 유효하지 않은 상태의 캐릭터 설정 시도 sessionId={}", msg.sessionId);
+        auto sa = FindSession(msg.sessionId);
+        if (sa)
+        {
+            MsgWorld_CharSetupResult result;
+            result.success = false;
+            result.message = "Not authenticated";
+            sa->Post(std::move(result));
+        }
+        return;
+    }
+
+    // TODO: DB에서 캐릭터명 중복 검사 (Phase 4)
+    LOG_INFO("WorldActor: 캐릭터 설정 sessionId={} name={}",
+             msg.sessionId, msg.setup.characterName);
+
+    user->SetCharacterSetup(std::move(msg.setup));
+    user->SetStatus(EUser::CHAR_READY);
+
+    auto sa = FindSession(msg.sessionId);
+    if (sa)
+    {
+        MsgWorld_CharSetupResult result;
+        result.success = true;
+        result.message = "OK";
+        sa->Post(std::move(result));
+    }
+}
+
+void WorldActor::Handle(MsgSession_WorldChat& msg)
+{
+    User* user = FindUser(msg.sessionId);
+    if (!user || !user->IsCharReady()) return;
+
+    const std::string& senderName = user->GetCharacterSetup().characterName;
+    LOG_DEBUG("WorldActor: 월드채팅 [{}] {}", senderName, msg.text);
+
+    PacketWriter w(SMSG_WORLD_CHAT);
+    w.WriteUInt64(msg.sessionId);
+    w.WriteString(senderName);
+    w.WriteString(msg.text);
+    const auto& packet = w.Finalize();
+
+    // 모든 세션에 브로드캐스트 (CHAR_READY 이상 필터링은 클라이언트가 처리)
+    for (auto& [sid, sa] : m_sessions)
+        sa->Post(MsgZone_SendTcp{ packet });
+}
+
 void WorldActor::Handle(MsgSession_EnterWorld& msg)
 {
     LOG_INFO("WorldActor: 월드 진입 sessionId={} charId={}", msg.sessionId, msg.characterId);
 
-    // 인증되지 않은 세션 차단
+    // 캐릭터 설정이 완료된 세션만 허용
     User* user = FindUser(msg.sessionId);
-    if (!user || !user->IsAuthenticated())
+    if (!user || !user->IsCharReady())
     {
-        LOG_WARN("WorldActor: 미인증 세션의 월드 진입 시도 sessionId={}", msg.sessionId);
+        LOG_WARN("WorldActor: 캐릭터 설정 미완료 세션의 월드 진입 시도 sessionId={}", msg.sessionId);
         return;
     }
 
@@ -104,7 +161,7 @@ void WorldActor::Handle(MsgSession_EnterWorld& msg)
     MsgWorld_AddPlayer add;
     add.sessionId     = msg.sessionId;
     add.characterId   = msg.characterId;
-    add.characterName = "Player";       // TODO: DB에서 로드
+    add.characterName = user->GetCharacterSetup().characterName;
     add.spawnPos      = { 0.f, 0.f, 0.f };
     add.sessionActor  = sa;             // weak_ptr — ZoneActor가 Handle 내에서 등록
     zone->Post(std::move(add));

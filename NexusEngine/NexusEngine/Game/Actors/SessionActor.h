@@ -55,6 +55,7 @@ private:
     void Handle(MsgZone_SendUdp& msg);
     void Handle(MsgZone_Disconnect& msg);
     void Handle(MsgWorld_LoginResult& msg);
+    void Handle(MsgWorld_CharSetupResult& msg);
 
     std::shared_ptr<Session>  m_session;
     WorldActor&               m_world;

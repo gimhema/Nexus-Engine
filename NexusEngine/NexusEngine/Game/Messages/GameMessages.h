@@ -6,6 +6,8 @@
 #include <variant>
 #include <memory>
 
+#include "../User/User.h"
+
 // 전방 선언
 class Session;
 class SessionActor;
@@ -132,11 +134,32 @@ struct MsgSession_Logout
     uint64_t sessionId{};
 };
 
+// 캐릭터 설정 (로그인 후, 월드 진입 전)
+struct MsgSession_CharSetup
+{
+    uint64_t       sessionId{};
+    CharacterSetup setup;
+};
+
+// 월드 채팅 메시지 (전체 존 브로드캐스트)
+struct MsgSession_WorldChat
+{
+    uint64_t    sessionId{};
+    std::string text;
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // WorldActor → SessionActor
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct MsgWorld_LoginResult
+{
+    bool        success{ false };
+    std::string message;
+};
+
+// 캐릭터 설정 결과
+struct MsgWorld_CharSetupResult
 {
     bool        success{ false };
     std::string message;
@@ -229,7 +252,8 @@ using SessionMessage = std::variant<
     MsgZone_SendTcp,
     MsgZone_SendUdp,
     MsgZone_Disconnect,
-    MsgWorld_LoginResult
+    MsgWorld_LoginResult,
+    MsgWorld_CharSetupResult
 >;
 
 // ZoneActor가 받는 메시지
@@ -266,6 +290,8 @@ using WorldMessage = std::variant<
     MsgSession_Login,
     MsgSession_EnterWorld,
     MsgSession_Logout,
+    MsgSession_CharSetup,
+    MsgSession_WorldChat,
     MsgZone_TeleportRequest,
     MsgServer_RegisterSession,
     MsgServer_UnregisterSession

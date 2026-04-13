@@ -14,3 +14,8 @@ void User::SetProfile(UserProfile profile)
 {
     m_profile = std::move(profile);
 }
+
+void User::SetCharacterSetup(CharacterSetup setup)
+{
+    m_characterSetup = std::move(setup);
+}

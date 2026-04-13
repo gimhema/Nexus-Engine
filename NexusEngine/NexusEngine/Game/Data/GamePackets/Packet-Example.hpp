@@ -37,6 +37,8 @@ enum Opcode : uint16_t
                                 //                        [uint64 pawnId][uint32 characterId][string name]
                                 //                        [uint32 hp][uint32 maxHp]
                                 //                        [float x][float y][float z][float orientation]
+    CMSG_CHAR_SETUP,            // 캐릭터 설정            [string characterName]
+    SMSG_CHAR_SETUP_RESULT,     // 캐릭터 설정 결과       [uint8 success][string message]
     _AUTH_END,                  // 더미 — 범위 검사용
 
     // ── 이동 (0x0200번대) ─────────────────────────────────────────────────────
@@ -49,8 +51,10 @@ enum Opcode : uint16_t
 
     // ── 채팅 (0x0300번대) ─────────────────────────────────────────────────────
     _CHAT_BASE      = 0x0300,   // 더미 — 직접 사용 금지
-    CMSG_CHAT,                  // 채팅 메시지            [string text]
-    SMSG_CHAT,                  // 채팅 브로드캐스트      [uint64 sessionId][string name][string text]
+    CMSG_CHAT,                  // 존 채팅 메시지          [string text]
+    SMSG_CHAT,                  // 존 채팅 브로드캐스트    [uint64 sessionId][string name][string text]
+    CMSG_WORLD_CHAT,            // 월드 채팅 메시지        [string text]
+    SMSG_WORLD_CHAT,            // 월드 채팅 브로드캐스트  [uint64 sessionId][string name][string text]
     _CHAT_END,                  // 더미 — 범위 검사용
 
     // ── 스폰 / 디스폰 (0x0400번대) ────────────────────────────────────────────

@@ -6,17 +6,34 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // EUser::Status — 유저 연결/인증 상태
 //
-// 생명주기: CONNECTED → AUTHENTICATED → WAIT_DISCONNECT → (소멸)
+// 생명주기: CONNECTED → AUTHENTICATED → CHAR_READY → WAIT_DISCONNECT → (소멸)
 // ─────────────────────────────────────────────────────────────────────────────
 namespace EUser
 {
     enum Status : uint8_t
     {
         CONNECTED       = 0,   // TCP 연결됨, 미인증 (로그인 전)
-        AUTHENTICATED   = 1,   // 로그인 완료, 월드/존 이용 가능
-        WAIT_DISCONNECT = 2,   // 연결 해제 대기 중 (정리 진행)
+        AUTHENTICATED   = 1,   // 로그인 완료, 캐릭터 설정 전
+        CHAR_READY      = 2,   // 캐릭터 설정 완료, 월드 진입 가능
+        WAIT_DISCONNECT = 3,   // 연결 해제 대기 중 (정리 진행)
     };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CharacterSetup — 캐릭터 생성 전 클라이언트에서 입력받는 설정 데이터
+//
+// 현재: 캐릭터 이름만 포함.
+// 향후: gender, raceId, classId, appearancePresetId 등 확장 예정.
+// ─────────────────────────────────────────────────────────────────────────────
+struct CharacterSetup
+{
+    std::string characterName;
+    // 향후 추가 예정
+    // uint8_t  gender{ 0 };
+    // uint8_t  raceId{ 0 };
+    // uint8_t  classId{ 0 };
+    // uint32_t appearancePresetId{ 0 };
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UserIdentification — 계정 식별 정보
@@ -63,6 +80,7 @@ public:
     // ── 상태 ─────────────────────────────────────────────────────────────
     [[nodiscard]] EUser::Status GetStatus()         const { return m_status; }
     [[nodiscard]] bool          IsAuthenticated()   const { return m_status == EUser::AUTHENTICATED; }
+    [[nodiscard]] bool          IsCharReady()       const { return m_status == EUser::CHAR_READY; }
     [[nodiscard]] bool          IsWaitDisconnect()  const { return m_status == EUser::WAIT_DISCONNECT; }
     void SetStatus(EUser::Status status) { m_status = status; }
 
@@ -74,9 +92,14 @@ public:
     void SetProfile(UserProfile profile);
     [[nodiscard]] const UserProfile& GetProfile() const { return m_profile; }
 
+    // ── 캐릭터 설정 ──────────────────────────────────────────────────────
+    void SetCharacterSetup(CharacterSetup setup);
+    [[nodiscard]] const CharacterSetup& GetCharacterSetup() const { return m_characterSetup; }
+
 private:
     uint64_t           m_sessionId{};
     EUser::Status      m_status{ EUser::CONNECTED };
     UserIdentification m_identification;
     UserProfile        m_profile;
+    CharacterSetup     m_characterSetup;
 };

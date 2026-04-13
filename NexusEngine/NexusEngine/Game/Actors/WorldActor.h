@@ -38,6 +38,8 @@ private:
     void Handle(MsgSession_Login& msg);
     void Handle(MsgSession_EnterWorld& msg);
     void Handle(MsgSession_Logout& msg);
+    void Handle(MsgSession_CharSetup& msg);
+    void Handle(MsgSession_WorldChat& msg);
     void Handle(MsgZone_TeleportRequest& msg);
     void Handle(MsgServer_RegisterSession& msg);
     void Handle(MsgServer_UnregisterSession& msg);
