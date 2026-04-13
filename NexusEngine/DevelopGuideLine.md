@@ -17,17 +17,20 @@ UDP : [ uint16 size ][ uint16 opcode ][ uint64 sessionToken ][ payload... ]
 
 ### 1.2 Opcode 추가 방법
 
-`Game/Data/GamePackets/Packet-Example.hpp`의 `Opcode` enum에 추가한다.
+Opcode의 단일 소스는 `protocol_shared/Opcodes.h`다. 이 파일 하나만 수정하면 서버·DummyClient·UE5 모두에 반영된다.
 
 ```cpp
-// 새 그룹: _BASE만 직접 지정, 이후 auto-increment
-_COMBAT_BASE  = 0x0400,
-CMSG_ATTACK,       // [uint64 targetPawnId]
-SMSG_ATTACK_RESULT,// [uint64 attackerPawnId][uint64 targetPawnId][int32 damage]
+// protocol_shared/Opcodes.h — 새 그룹 추가 예시
+// 기존 _SPAWN_END 아래에:
+_COMBAT_BASE  = 0x0500,
+CMSG_ATTACK,            // C→S (TCP) [uint64 targetPawnId]
+SMSG_ATTACK_RESULT,     // S→C (TCP) [uint64 attackerPawnId][uint64 targetPawnId][uint32 damage]
 _COMBAT_END,
 ```
 
-> **주의**: DummyClient의 `NexusClient/DummyClient/Packets/GamePackets.hpp`에도 동일한 값을 반드시 추가해야 한다.
+- `Packet-Example.hpp`는 `Opcodes.h`를 include하는 래퍼 — 서버 전용 직렬화 예시만 유지
+- DummyClient의 `GamePackets.hpp`도 동일하게 `Opcodes.h`를 include하므로 **별도 수정 불필요**
+- UE5도 `Opcodes.h`를 직접 include하므로 자동 반영
 
 ### 1.3 수신 패킷 처리 흐름
 
@@ -409,6 +412,217 @@ SMSG_DESPAWN_PLAYER 수신
 
 ---
 
+---
+
+## 4. 클라이언트 연동 가이드라인
+
+### 4.1 전체 연결 시퀀스
+
+클라이언트는 아래 순서를 반드시 지켜야 한다. 순서를 어기면 서버가 요청을 무시한다.
+
+```
+[1] TCP 연결 (포트 7070)
+
+[2] CMSG_LOGIN  →  SMSG_LOGIN_RESULT
+    서버 상태: CONNECTED → AUTHENTICATED
+
+[3] CMSG_CHAR_SETUP  →  SMSG_CHAR_SETUP_RESULT
+    서버 상태: AUTHENTICATED → CHAR_SETUP_PENDING → CHAR_READY
+    ※ SMSG_CHAR_SETUP_RESULT의 characterId를 반드시 저장
+
+[4] CMSG_ENTER_WORLD(characterId)  →  SMSG_ENTER_WORLD
+    ※ [3]에서 받은 characterId를 그대로 전송
+    서버 상태: CHAR_READY (이후 게임 내 활동 가능)
+
+[5] 게임 플레이
+    이동  : CMSG_MOVE (TCP) / CMSG_MOVE_UDP (UDP)
+    존채팅: CMSG_CHAT
+    월드챗: CMSG_WORLD_CHAT
+```
+
+### 4.2 패킷별 송수신 명세
+
+#### 로그인
+
+```
+송신  CMSG_LOGIN (0x0101)
+  string  accountName
+  string  token
+
+수신  SMSG_LOGIN_RESULT (0x0102)
+  uint8   success     // 1 = 성공, 0 = 실패
+  string  message     // 실패 사유 또는 "OK"
+```
+
+#### 캐릭터 설정
+
+```
+송신  CMSG_CHAR_SETUP (0x0105)
+  string  characterName
+
+수신  SMSG_CHAR_SETUP_RESULT (0x0106)
+  uint8   success
+  uint32  characterId   ← 서버 발급 ID. 반드시 저장 후 CMSG_ENTER_WORLD에 사용.
+  string  message
+
+※ Phase 4 이후: DB 캐릭터 생성이 완료된 시점에 수신됨 (비동기).
+   SMSG_CHAR_SETUP_RESULT를 받기 전에 CMSG_ENTER_WORLD를 보내면 서버가 무시함.
+```
+
+#### 월드 진입
+
+```
+송신  CMSG_ENTER_WORLD (0x0103)
+  uint32  characterId   ← SMSG_CHAR_SETUP_RESULT에서 받은 값
+
+수신  SMSG_ENTER_WORLD (0x0104)
+  uint8   success
+  uint64  pawnId        ← 내 폰의 서버 식별자 (이후 모든 폰 메시지에서 사용)
+  uint32  characterId
+  string  name
+  uint32  hp
+  uint32  maxHp
+  float   x, y, z      ← 스폰 위치 (cm 단위, Z-up)
+  float   orientation   ← 라디안
+
+수신  SMSG_SPAWN_PLAYER (0x0401)  ← 같은 존의 기존 플레이어 수만큼 연속 수신
+  uint64  pawnId
+  uint64  sessionId
+  string  name
+  uint32  hp, maxHp
+  float   x, y, z, orientation
+```
+
+#### 이동
+
+```
+송신  CMSG_MOVE (0x0201)        — TCP, 신뢰 필요 시
+송신  CMSG_MOVE_UDP (0x0203)    — UDP, 고빈도 위치 동기화
+  float  x, y, z, orientation
+
+수신  SMSG_MOVE_BROADCAST (0x0202) / SMSG_MOVE_UDP (0x0204)
+  uint64 sessionId
+  float  x, y, z, orientation
+```
+
+#### 채팅
+
+```
+송신  CMSG_CHAT (0x0301)        — 같은 존 플레이어에게만 전달
+송신  CMSG_WORLD_CHAT (0x0303)  — 전 서버(모든 존) 플레이어에게 전달
+  string  text
+
+수신  SMSG_CHAT (0x0302)
+수신  SMSG_WORLD_CHAT (0x0304)
+  uint64  sessionId
+  string  name
+  string  text
+```
+
+#### 스폰 / 디스폰
+
+```
+수신  SMSG_SPAWN_PLAYER (0x0401)   — 다른 플레이어 입장 시
+  uint64  pawnId, sessionId
+  string  name
+  uint32  hp, maxHp
+  float   x, y, z, orientation
+
+수신  SMSG_DESPAWN_PLAYER (0x0402) — 다른 플레이어 퇴장 시
+  uint64  pawnId
+```
+
+### 4.3 protocol_shared 사용법
+
+`protocol_shared/` 폴더는 서버, DummyClient, UE5가 동일 코드를 공유한다.
+
+#### DummyClient / 표준 C++ 환경
+
+```cpp
+#include "protocol_shared/Opcodes.h"
+#include "protocol_shared/PacketParser.h"
+
+// 수신 패킷 파싱
+NexusPacketParser p{ payload.data(), (uint32_t)payload.size() };
+uint8_t  success     = p.ReadU8();
+uint64_t pawnId      = p.ReadU64();
+auto     name        = p.ReadString();   // std::string 반환
+float    x           = p.ReadFloat();
+
+if (p.HasError()) { /* 패킷 길이 이상 */ }
+```
+
+#### UE5 환경 (NEXUS_UE5 define 필요)
+
+```csharp
+// YourProject.Build.cs
+PublicDefinitions.Add("NEXUS_UE5");
+```
+
+```cpp
+// UE5 C++ 코드
+#include "protocol_shared/Opcodes.h"
+#include "protocol_shared/PacketParser.h"
+
+// FSocket 수신 버퍼
+TArray<uint8> PacketData = /* FSocket::Recv() */;
+NexusPacketParser p{ PacketData.GetData(), (uint32_t)PacketData.Num() };
+
+uint8   success = p.ReadU8();
+uint64  pawnId  = p.ReadU64();
+FString name    = p.ReadString();   // FString 반환 (UTF-8 자동 변환)
+float   x       = p.ReadFloat();
+```
+
+> **스레드 주의**: UE5에서 FSocket 수신은 백그라운드 스레드에서 발생한다.  
+> 파싱 후 게임 오브젝트 조작은 반드시 게임 스레드로 마샬링해야 한다.
+>
+> ```cpp
+> AsyncTask(ENamedThreads::GameThread, [this, opcode, PacketData]()
+> {
+>     // 게임 스레드에서 처리
+>     NexusPacketParser p{ PacketData.GetData(), (uint32_t)PacketData.Num() };
+>     HandlePacket(opcode, p);
+> });
+> ```
+
+### 4.4 CharacterSetup 확장 방법
+
+현재 `CharacterSetup`에는 `characterName`만 있다. 향후 필드 추가 시:
+
+**서버** (`Game/User/User.h`):
+```cpp
+struct CharacterSetup
+{
+    uint32_t    characterId{ 0 };
+    std::string characterName;
+    uint8_t     gender{ 0 };          // 추가
+    uint8_t     raceId{ 0 };          // 추가
+    // ...
+};
+```
+
+**프로토콜** (`protocol_shared/Opcodes.h` 주석 + `SessionActor.cpp` 파싱):
+```
+CMSG_CHAR_SETUP: [string characterName][uint8 gender][uint8 raceId]
+```
+
+```cpp
+// SessionActor.cpp — Handle(MsgNet_PacketReceived)
+case CMSG_CHAR_SETUP:
+{
+    MsgSession_CharSetup charSetup;
+    charSetup.sessionId           = m_sessionId;
+    charSetup.setup.characterName = reader.ReadString();
+    charSetup.setup.gender        = reader.ReadUInt8();   // 추가
+    charSetup.setup.raceId        = reader.ReadUInt8();   // 추가
+    m_world.Post(std::move(charSetup));
+    break;
+}
+```
+
+---
+
 ## 미구현 항목 (향후 작업)
 
 | 항목 | 상태 |
@@ -420,3 +634,5 @@ SMSG_DESPAWN_PLAYER 수신
 | 몬스터 경험치 보상 / 드롭테이블 | 미구현 |
 | 인벤토리 / 장비 슬롯 | 미구현 |
 | 스킬 시스템 | 미구현 |
+| CharacterSetup DB 저장 (Phase 4) | `CHAR_SETUP_PENDING` 자리만 확보, DB 연동 미구현 |
+| CharacterSetup 캐릭터 선택 흐름 (Phase 4) | 로그인 후 캐릭터 목록 조회 → 선택 → 입장 경로 미구현 |
