@@ -1,25 +1,14 @@
 #include "NetClient.h"
 #include <cstring>
 
-#ifdef _WIN32
-    #pragma comment(lib, "ws2_32.lib")
-#endif
-
 NetClient::NetClient()
 {
-#ifdef _WIN32
-    WSADATA wsa{};
-    ::WSAStartup(MAKEWORD(2, 2), &wsa);
-#endif
     m_recvBuf.reserve(8192);
 }
 
 NetClient::~NetClient()
 {
     Disconnect();
-#ifdef _WIN32
-    ::WSACleanup();
-#endif
 }
 
 bool NetClient::Connect(const std::string& host, uint16_t port)

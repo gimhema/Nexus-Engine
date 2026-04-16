@@ -1,5 +1,5 @@
 #include "PacketBase.h"
-#include <stdexcept>
+#include "Misc/AssertionMacros.h"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ClientPacketWriter
@@ -63,8 +63,9 @@ ClientPacketReader::ClientPacketReader(const uint8_t* data, uint32_t length)
 template<typename T>
 T ClientPacketReader::ReadRaw()
 {
-    if (m_pos + sizeof(T) > m_length)
-        throw std::out_of_range("ClientPacketReader: 버퍼 초과");
+    checkf(m_pos + sizeof(T) <= m_length,
+           TEXT("ClientPacketReader: 버퍼 초과 (pos=%u, size=%u, len=%u)"),
+           m_pos, static_cast<uint32_t>(sizeof(T)), m_length);
     T v{};
     std::memcpy(&v, m_data + m_pos, sizeof(T));
     m_pos += sizeof(T);
@@ -80,8 +81,9 @@ float       ClientPacketReader::ReadFloat()  { return ReadRaw<float>();    }
 std::string ClientPacketReader::ReadString()
 {
     uint16_t len = ReadRaw<uint16_t>();
-    if (m_pos + len > m_length)
-        throw std::out_of_range("ClientPacketReader: 문자열 버퍼 초과");
+    checkf(m_pos + len <= m_length,
+           TEXT("ClientPacketReader: 문자열 버퍼 초과 (pos=%u, len=%u, total=%u)"),
+           m_pos, (uint32_t)len, m_length);
     std::string s(reinterpret_cast<const char*>(m_data + m_pos), len);
     m_pos += len;
     return s;
