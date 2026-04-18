@@ -1,156 +1,175 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { onMount, onDestroy } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
-  let name = $state("");
-  let greetMsg = $state("");
+  import StatusHeader, { type ConnectionStatus } from '$lib/components/StatusHeader.svelte';
+  import ServerStats from '$lib/components/ServerStats.svelte';
+  import PlayerList,  { type Player }            from '$lib/components/PlayerList.svelte';
 
-  async function greet(event: Event) {
-    event.preventDefault();
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsg = await invoke("greet", { name });
+  // ─── 상태 ─────────────────────────────────────────────────────────────────
+  let status        = $state<ConnectionStatus>('disconnected');
+  let playerCount   = $state(0);
+  let uptimeSeconds = $state(0);
+  let players       = $state<Player[]>([]);
+  let kickingIds    = $state<Set<number>>(new Set());
+
+  // 상태 폴링 타이머 (Arbiter 연결 중에만 동작)
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+  // ─── Arbiter 연결 ─────────────────────────────────────────────────────────
+  async function connect() {
+    if (status !== 'disconnected') return;
+    status = 'connecting';
+    try {
+      await invoke('connect_arbiter');
+    } catch (e) {
+      console.error('연결 실패:', e);
+      status = 'disconnected';
+    }
   }
+
+  async function disconnect() {
+    stopPoll();
+    await invoke('disconnect_arbiter');
+    resetState();
+  }
+
+  // ─── 상태 폴링 ────────────────────────────────────────────────────────────
+  function startPoll() {
+    // 연결 직후 즉시 1회 요청
+    invoke('get_server_status').catch(console.error);
+    // 이후 5초 간격 폴링
+    pollTimer = setInterval(() => {
+      invoke('get_server_status').catch(console.error);
+    }, 5000);
+  }
+
+  function stopPoll() {
+    if (pollTimer !== null) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  // ─── 킥 ──────────────────────────────────────────────────────────────────
+  async function kickPlayer(sessionId: number, name: string) {
+    kickingIds = new Set([...kickingIds, sessionId]);
+    try {
+      const result = await invoke<{ success: boolean; message: string }>('kick_player', {
+        sessionId,
+        reason: '런처에서 킥됨',
+      });
+      if (!result.success) {
+        console.warn(`킥 실패 (${name}):`, result.message);
+      }
+    } catch (e) {
+      console.error('킥 오류:', e);
+    } finally {
+      kickingIds = new Set([...kickingIds].filter(id => id !== sessionId));
+    }
+  }
+
+  // ─── 상태 초기화 ──────────────────────────────────────────────────────────
+  function resetState() {
+    status        = 'disconnected';
+    players       = [];
+    playerCount   = 0;
+    uptimeSeconds = 0;
+    kickingIds    = new Set();
+  }
+
+  // ─── Tauri 이벤트 리스너 등록 ─────────────────────────────────────────────
+  const unlisteners: UnlistenFn[] = [];
+
+  onMount(async () => {
+    // Arbiter 인증 완료 → 연결 확정 + 폴링 시작
+    unlisteners.push(await listen('arbiter_connected', () => {
+      status = 'connected';
+      startPoll();
+    }));
+
+    // Arbiter 연결 해제 (서버 종료 / 오류)
+    unlisteners.push(await listen('arbiter_disconnected', () => {
+      stopPoll();
+      resetState();
+    }));
+
+    // 서버 상태 업데이트 (AMSG_STATUS)
+    unlisteners.push(await listen<{ player_count: number; uptime_seconds: number }>(
+      'server_status',
+      (event) => {
+        playerCount   = event.payload.player_count;
+        uptimeSeconds = event.payload.uptime_seconds;
+      }
+    ));
+
+    // 플레이어 접속 이벤트 (AMSG_EVENT_PLAYER_JOIN)
+    unlisteners.push(await listen<{ session_id: number; name: string }>(
+      'player_joined',
+      (event) => {
+        const { session_id, name } = event.payload;
+        // 중복 방지
+        if (!players.some(p => p.sessionId === session_id)) {
+          players = [...players, { sessionId: session_id, name }];
+        }
+      }
+    ));
+
+    // 플레이어 퇴장 이벤트 (AMSG_EVENT_PLAYER_LEAVE)
+    unlisteners.push(await listen<{ session_id: number }>(
+      'player_left',
+      (event) => {
+        players = players.filter(p => p.sessionId !== event.payload.session_id);
+      }
+    ));
+
+    // 서버 준비 이벤트 (AMSG_EVENT_SERVER_READY)
+    unlisteners.push(await listen('server_ready', () => {
+      if (status === 'connected') {
+        invoke('get_server_status').catch(console.error);
+      }
+    }));
+  });
+
+  // 컴포넌트 언마운트 시 리스너 + 폴링 정리
+  onDestroy(() => {
+    stopPoll();
+    unlisteners.forEach(fn => fn());
+  });
 </script>
 
-<main class="container">
-  <h1>Welcome to Tauri + Svelte</h1>
-
-  <div class="row">
-    <a href="https://vite.dev" target="_blank">
-      <img src="/vite.svg" class="logo vite" alt="Vite Logo" />
-    </a>
-    <a href="https://tauri.app" target="_blank">
-      <img src="/tauri.svg" class="logo tauri" alt="Tauri Logo" />
-    </a>
-    <a href="https://svelte.dev" target="_blank">
-      <img src="/svelte.svg" class="logo svelte-kit" alt="SvelteKit Logo" />
-    </a>
-  </div>
-  <p>Click on the Tauri, Vite, and SvelteKit logos to learn more.</p>
-
-  <form class="row" onsubmit={greet}>
-    <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
-    <button type="submit">Greet</button>
-  </form>
-  <p>{greetMsg}</p>
-</main>
+<div class="launcher">
+  <StatusHeader {status} onConnect={connect} onDisconnect={disconnect} />
+  <ServerStats {playerCount} {uptimeSeconds} connected={status === 'connected'} />
+  <PlayerList {players} connected={status === 'connected'} {kickingIds} onKick={kickPlayer} />
+</div>
 
 <style>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.svelte-kit:hover {
-  filter: drop-shadow(0 0 2em #ff3e00);
-}
-
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
-  margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
-}
-
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
-  display: flex;
-  justify-content: center;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
-  cursor: pointer;
-}
-
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
+  :global(*, *::before, *::after) {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
   }
 
-  a:hover {
-    color: #24c8db;
+  :global(html, body) {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #0d0d20;
+    color: #c8d8f0;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+    line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
   }
 
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
+  .launcher {
+    display: flex;
+    flex-direction: column;
+    width: 100vw;
+    height: 100vh;
+    background: #0d0d20;
+    overflow: hidden;
   }
-  button:active {
-    background-color: #0f0f0f69;
-  }
-}
-
 </style>
