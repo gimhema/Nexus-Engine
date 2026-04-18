@@ -23,7 +23,7 @@ rustup --version
 rustup update stable
 ```
 
-> **현재 환경**: rustc 1.84.1 / cargo 1.84.1 / rustup 1.27.1 ✅
+> **현재 환경**: rustc 1.95.0 / cargo 1.95.0 / rustup 1.27.1 ✅
 
 ---
 
@@ -59,7 +59,7 @@ cargo tauri --version
 npx tauri --version
 ```
 
-> **현재 환경**: 미설치 ❌ → 위 명령어로 설치 필요
+> **현재 환경**: tauri-cli 2.10.1 ✅
 
 ---
 
