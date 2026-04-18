@@ -5,6 +5,8 @@ set(SOURCES
     Connection.cpp
     Packets/PacketBase.cpp
     Shared/Logger.cpp
+    Arbiter/Arbiter.cpp
+    Arbiter/ArbiterSession.cpp
     Game/Data/GameDataEntities/CharacterEntityData.cpp
     Game/Data/GameDataEntities/NpcEntityData.cpp
     Game/Data/GameDataEntities/MonsterEntityData.cpp
@@ -24,6 +26,9 @@ set(SOURCES
 set(HEADERS
     Server.h
     ServerNet.h
+    Arbiter/Arbiter.h
+    Arbiter/ArbiterSession.h
+    protocol_shared/ArbiterOpcodes.h
     Connection.h
     Packets/PacketBase.h
     Platform/Platform.h

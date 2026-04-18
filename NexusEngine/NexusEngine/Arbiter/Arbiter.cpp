@@ -1,0 +1,266 @@
+#include "Arbiter.h"
+#include "../Shared/Logger.h"
+#include "../Packets/PacketBase.h"
+#include "../protocol_shared/ArbiterOpcodes.h"
+
+#include <algorithm>
+#include <chrono>
+
+// socklen_t 플랫폼 분기
+#ifdef _WIN32
+using SockLen = int;
+#else
+using SockLen = socklen_t;
+#endif
+
+Arbiter::Arbiter() = default;
+
+Arbiter::~Arbiter()
+{
+    Stop();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Run — 비동기 시작
+// ─────────────────────────────────────────────────────────────────────────────
+void Arbiter::Run()
+{
+#ifdef _WIN32
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+#endif
+
+    m_listenSocket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (m_listenSocket == NX_INVALID_SOCKET)
+    {
+        LOG_ERROR("Arbiter: 소켓 생성 실패");
+        return;
+    }
+
+    // 재시작 시 포트 즉시 재사용
+    int reuse = 1;
+    ::setsockopt(m_listenSocket, SOL_SOCKET, SO_REUSEADDR,
+                 reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+
+    sockaddr_in addr{};
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port        = htons(ARBITER_PORT);
+
+    if (::bind(m_listenSocket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
+    {
+        LOG_ERROR("Arbiter: bind 실패 (port={})", ARBITER_PORT);
+        closesocket(m_listenSocket);
+        m_listenSocket = NX_INVALID_SOCKET;
+        return;
+    }
+
+    if (::listen(m_listenSocket, 4) != 0)
+    {
+        LOG_ERROR("Arbiter: listen 실패");
+        closesocket(m_listenSocket);
+        m_listenSocket = NX_INVALID_SOCKET;
+        return;
+    }
+
+    m_running.store(true);
+    m_startTime    = std::chrono::steady_clock::now();
+    m_acceptThread = std::thread([this] { AcceptLoop(); });
+
+    LOG_INFO("Arbiter 시작 (port={})", ARBITER_PORT);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stop — 종료
+// ─────────────────────────────────────────────────────────────────────────────
+void Arbiter::Stop()
+{
+    if (!m_running.exchange(false)) return;
+
+    // 리슨 소켓을 닫아 AcceptLoop의 accept() 블로킹 해제
+    if (m_listenSocket != NX_INVALID_SOCKET)
+    {
+        closesocket(m_listenSocket);
+        m_listenSocket = NX_INVALID_SOCKET;
+    }
+
+    if (m_acceptThread.joinable())
+        m_acceptThread.join();
+
+    // 세션 목록을 로컬로 이동 후 소켓 닫기
+    // — 잠금 해제 후 소멸자(recv 스레드 join)가 실행되므로 데드락 없음
+    std::vector<std::shared_ptr<ArbiterSession>> sessions;
+    {
+        std::lock_guard lock(m_sessionsMutex);
+        sessions = std::move(m_sessions);
+    }
+
+    for (auto& s : sessions)
+        s->Close();
+
+    // sessions 소멸 → 각 세션 소멸자에서 recv 스레드 join
+    sessions.clear();
+
+#ifdef _WIN32
+    WSACleanup();
+#endif
+
+    LOG_INFO("Arbiter 종료");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 수락 루프
+// ─────────────────────────────────────────────────────────────────────────────
+void Arbiter::AcceptLoop()
+{
+    while (m_running.load())
+    {
+        sockaddr_storage clientAddr{};
+        SockLen          addrLen = static_cast<SockLen>(sizeof(clientAddr));
+
+        NxSocket client = ::accept(m_listenSocket,
+                                   reinterpret_cast<sockaddr*>(&clientAddr),
+                                   &addrLen);
+        if (client == NX_INVALID_SOCKET) break;  // Stop() 또는 오류
+
+        LOG_INFO("Arbiter: 런처 연결됨");
+
+        auto session = std::make_shared<ArbiterSession>(client);
+        {
+            std::lock_guard lock(m_sessionsMutex);
+            m_sessions.push_back(session);
+        }
+
+        session->Start(
+            [this](ArbiterSession& s, uint16_t op, std::vector<uint8_t> payload)
+            {
+                OnPacket(s, op, std::move(payload));
+            },
+            [this](ArbiterSession& s)
+            {
+                OnClose(s);
+            });
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 패킷 수신 디스패치
+// ─────────────────────────────────────────────────────────────────────────────
+void Arbiter::OnPacket(ArbiterSession& session, uint16_t opcode, std::vector<uint8_t> payload)
+{
+    // 인증 전에는 LMSG_AUTH 만 허용
+    if (!session.IsAuthenticated() && opcode != LMSG_AUTH)
+    {
+        LOG_WARN("Arbiter: 인증 전 패킷 수신 opcode={:#x} — 연결 종료", opcode);
+        session.Close();
+        return;
+    }
+
+    switch (static_cast<ArbiterOpcode>(opcode))
+    {
+        case LMSG_AUTH:         HandleAuth(session, payload);        break;
+        case LMSG_GET_STATUS:   HandleGetStatus(session);            break;
+        case LMSG_KICK_PLAYER:  HandleKickPlayer(session, payload);  break;
+        default:
+            LOG_WARN("Arbiter: 알 수 없는 opcode={:#x}", opcode);
+            break;
+    }
+}
+
+void Arbiter::OnClose(ArbiterSession& session)
+{
+    std::lock_guard lock(m_sessionsMutex);
+    m_sessions.erase(
+        std::remove_if(m_sessions.begin(), m_sessions.end(),
+                       [&session](const std::shared_ptr<ArbiterSession>& s)
+                       { return s.get() == &session; }),
+        m_sessions.end());
+
+    LOG_INFO("Arbiter: 런처 연결 해제");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 패킷 핸들러
+// ─────────────────────────────────────────────────────────────────────────────
+
+void Arbiter::HandleAuth(ArbiterSession& session, std::vector<uint8_t>& payload)
+{
+    // TODO: 설정 파일에서 secret 로드 후 비교 (현재는 항상 성공 처리)
+    PacketReader r = PacketReader::FromPayload(
+        LMSG_AUTH, payload.data(), static_cast<uint32_t>(payload.size()));
+    [[maybe_unused]] std::string secret = r.ReadString();
+
+    session.SetAuthenticated(true);
+    LOG_INFO("Arbiter: 런처 인증 성공");
+
+    PacketWriter w(AMSG_AUTH_RESULT);
+    w.WriteUInt8(1);
+    w.WriteString("OK");
+    session.Send(w.Finalize());
+}
+
+void Arbiter::HandleGetStatus(ArbiterSession& session)
+{
+    const uint32_t playerCount = m_getPlayerCount ? m_getPlayerCount() : 0;
+
+    const auto     now        = std::chrono::steady_clock::now();
+    const uint32_t uptimeSecs = static_cast<uint32_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(now - m_startTime).count());
+
+    PacketWriter w(AMSG_STATUS);
+    w.WriteUInt32(playerCount);
+    w.WriteUInt32(uptimeSecs);
+    session.Send(w.Finalize());
+}
+
+void Arbiter::HandleKickPlayer(ArbiterSession& session, std::vector<uint8_t>& payload)
+{
+    PacketReader r = PacketReader::FromPayload(
+        LMSG_KICK_PLAYER, payload.data(), static_cast<uint32_t>(payload.size()));
+    const uint64_t    targetSessionId = r.ReadUInt64();
+    const std::string reason          = r.ReadString();
+
+    const bool success = m_kickPlayer ? m_kickPlayer(targetSessionId, reason) : false;
+    LOG_INFO("Arbiter: 킥 요청 sessionId={} reason=\"{}\" success={}",
+             targetSessionId, reason, success);
+
+    PacketWriter w(AMSG_KICK_RESULT);
+    w.WriteUInt8(success ? 1 : 0);
+    w.WriteString(success ? "OK" : "킥 콜백이 등록되지 않았습니다");
+    session.Send(w.Finalize());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 이벤트 발행
+// ─────────────────────────────────────────────────────────────────────────────
+
+void Arbiter::PublishServerReady()
+{
+    PacketWriter w(AMSG_EVENT_SERVER_READY);
+    Broadcast(w.Finalize());
+}
+
+void Arbiter::PublishPlayerJoin(uint64_t sessionId, const std::string& name)
+{
+    PacketWriter w(AMSG_EVENT_PLAYER_JOIN);
+    w.WriteUInt64(sessionId);
+    w.WriteString(name);
+    Broadcast(w.Finalize());
+}
+
+void Arbiter::PublishPlayerLeave(uint64_t sessionId)
+{
+    PacketWriter w(AMSG_EVENT_PLAYER_LEAVE);
+    w.WriteUInt64(sessionId);
+    Broadcast(w.Finalize());
+}
+
+void Arbiter::Broadcast(const std::vector<uint8_t>& packet)
+{
+    std::lock_guard lock(m_sessionsMutex);
+    for (auto& s : m_sessions)
+    {
+        if (s->IsAuthenticated())
+            s->Send(packet);
+    }
+}
