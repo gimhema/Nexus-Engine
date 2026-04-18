@@ -173,3 +173,9 @@ npm install -D @tauri-apps/cli@^2 vite typescript
 4. Tauri CLI              cargo install tauri-cli --version "^2"
 5. 프로젝트 생성          npm create tauri-app@latest
 ```
+
+## 실행
+```
+npm install << 의존성 미설치시
+cargo tauri dev
+```
