@@ -34,12 +34,20 @@ std::shared_ptr<Session> NetworkManager::FindSession(uint64_t sessionId) const
 
 void NetworkManager::CloseSession(uint64_t sessionId)
 {
-    // 세션이 이미 제거된 경우 콜백 중복 호출 방지
-    auto session = FindSession(sessionId);
-    if (!session) return;
+    // find+erase를 단일 잠금 내에서 처리 — 두 워커 스레드가 동시에 진입해도 콜백 중복 호출 방지
+    std::shared_ptr<Session> session;
+    {
+        std::lock_guard lock(m_sessionMutex);
+        auto it = m_sessions.find(sessionId);
+        if (it == m_sessions.end()) return;
+        session = it->second;
+        session->SetState(SessionState::Closing);
+        m_sessions.erase(it);
+    }
 
-    session->SetState(SessionState::Closing);
-    RemoveSession(sessionId);
+#ifndef _WIN32
+    ::epoll_ctl(m_epollFd, EPOLL_CTL_DEL, session->GetSocket(), nullptr);
+#endif
 
     if (m_onDisconnect)
         m_onDisconnect(sessionId);
