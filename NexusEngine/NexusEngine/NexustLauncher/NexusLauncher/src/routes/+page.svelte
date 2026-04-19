@@ -104,6 +104,14 @@
       }
     ));
 
+    // 접속자 목록 스냅샷 (AMSG_PLAYERS — 연결 직후 1회)
+    unlisteners.push(await listen<{ players: { session_id: number; name: string }[] }>(
+      'players_snapshot',
+      (event) => {
+        players = event.payload.players.map(p => ({ sessionId: p.session_id, name: p.name }));
+      }
+    ));
+
     // 플레이어 접속 이벤트 (AMSG_EVENT_PLAYER_JOIN)
     unlisteners.push(await listen<{ session_id: number; name: string }>(
       'player_joined',

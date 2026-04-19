@@ -137,10 +137,23 @@ void Server::Run()
         sa->Post(MsgZone_Disconnect{ reason });
         return true;
     });
+    m_arbiter.SetGetPlayersCallback([this]() {
+        std::lock_guard lock(m_playerRegistryMutex);
+        return std::vector<std::pair<uint64_t, std::string>>(
+            m_playerRegistry.begin(), m_playerRegistry.end());
+    });
     m_world.SetOnPlayerEntered([this](uint64_t sid, const std::string& name) {
+        {
+            std::lock_guard lock(m_playerRegistryMutex);
+            m_playerRegistry[sid] = name;
+        }
         m_arbiter.PublishPlayerJoin(sid, name);
     });
     m_world.SetOnPlayerLeft([this](uint64_t sid) {
+        {
+            std::lock_guard lock(m_playerRegistryMutex);
+            m_playerRegistry.erase(sid);
+        }
         m_arbiter.PublishPlayerLeave(sid);
     });
 

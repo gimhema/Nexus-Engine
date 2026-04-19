@@ -25,6 +25,8 @@ const AMSG_KICK_RESULT: u16         = 0x0F06;
 const AMSG_EVENT_SERVER_READY: u16  = 0x0F07;
 const AMSG_EVENT_PLAYER_JOIN: u16   = 0x0F08;
 const AMSG_EVENT_PLAYER_LEAVE: u16  = 0x0F09;
+const LMSG_GET_PLAYERS: u16         = 0x0F0A;
+const AMSG_PLAYERS: u16             = 0x0F0B;
 
 // ─── Svelte로 emit되는 이벤트 페이로드 타입 ──────────────────────────────────
 
@@ -43,6 +45,17 @@ pub struct PlayerJoinPayload {
 #[derive(Serialize, Clone)]
 pub struct PlayerLeavePayload {
     pub session_id: u64,
+}
+
+#[derive(Serialize, Clone)]
+pub struct PlayerEntry {
+    pub session_id: u64,
+    pub name:       String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct PlayersSnapshotPayload {
+    pub players: Vec<PlayerEntry>,
 }
 
 /// kick_player 커맨드 반환 타입
@@ -147,7 +160,7 @@ async fn read_loop(
             break;
         }
 
-        dispatch_packet(opcode, &payload, &inner, &app_handle).await;
+        dispatch_packet(opcode, &payload, &inner, &writer, &app_handle).await;
     }
 
     // 연결 정리 — 대기 중인 모든 채널을 드롭해 에러 전파
@@ -167,6 +180,7 @@ async fn dispatch_packet(
     opcode:     u16,
     payload:    &[u8],
     inner:      &Arc<Mutex<ArbiterInner>>,
+    writer:     &Arc<Mutex<Option<OwnedWriteHalf>>>,
     app_handle: &AppHandle,
 ) {
     match opcode {
@@ -179,9 +193,14 @@ async fn dispatch_packet(
 
             if success {
                 let _ = app_handle.emit("arbiter_connected", ());
+                // 인증 직후 현재 접속자 목록 스냅샷 요청
+                let packet = build_packet(LMSG_GET_PLAYERS, &[]);
+                let mut wg = writer.lock().await;
+                if let Some(w) = wg.as_mut() {
+                    let _ = w.write_all(&packet).await;
+                }
             }
             // 실패 시 read_loop가 종료되면서 arbiter_disconnected가 emit됨
-
             let _ = app_handle.emit("arbiter_auth_result", serde_json::json!({
                 "success": success,
                 "message": message,
@@ -234,6 +253,22 @@ async fn dispatch_packet(
             if payload.len() < 8 { return; }
             let session_id = u64::from_le_bytes(payload[0..8].try_into().unwrap());
             let _ = app_handle.emit("player_left", PlayerLeavePayload { session_id });
+        }
+
+        // ── 접속자 목록 스냅샷 ────────────────────────────────────────────────
+        AMSG_PLAYERS => {
+            if payload.len() < 4 { return; }
+            let count = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
+            let mut pos = 4;
+            let mut players = Vec::with_capacity(count);
+            for _ in 0..count {
+                if pos + 8 > payload.len() { break; }
+                let session_id = u64::from_le_bytes(payload[pos..pos + 8].try_into().unwrap());
+                pos += 8;
+                let name = decode_string(payload, &mut pos).unwrap_or_default();
+                players.push(PlayerEntry { session_id, name });
+            }
+            let _ = app_handle.emit("players_snapshot", PlayersSnapshotPayload { players });
         }
 
         _ => {} // 알 수 없는 오피코드 무시

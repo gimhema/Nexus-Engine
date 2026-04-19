@@ -161,6 +161,7 @@ void Arbiter::OnPacket(ArbiterSession& session, uint16_t opcode, std::vector<uin
         case LMSG_AUTH:         HandleAuth(session, payload);        break;
         case LMSG_GET_STATUS:   HandleGetStatus(session);            break;
         case LMSG_KICK_PLAYER:  HandleKickPlayer(session, payload);  break;
+        case LMSG_GET_PLAYERS:  HandleGetPlayers(session);           break;
         default:
             LOG_WARN("Arbiter: 알 수 없는 opcode={:#x}", opcode);
             break;
@@ -233,6 +234,20 @@ void Arbiter::HandleKickPlayer(ArbiterSession& session, std::vector<uint8_t>& pa
 // ─────────────────────────────────────────────────────────────────────────────
 // 이벤트 발행
 // ─────────────────────────────────────────────────────────────────────────────
+
+void Arbiter::HandleGetPlayers(ArbiterSession& session)
+{
+    const auto players = m_getPlayers ? m_getPlayers() : std::vector<std::pair<uint64_t, std::string>>{};
+
+    PacketWriter w(AMSG_PLAYERS);
+    w.WriteUInt32(static_cast<uint32_t>(players.size()));
+    for (const auto& [sessionId, name] : players)
+    {
+        w.WriteUInt64(sessionId);
+        w.WriteString(name);
+    }
+    session.Send(w.Finalize());
+}
 
 void Arbiter::PublishServerReady()
 {

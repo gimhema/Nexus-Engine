@@ -66,6 +66,11 @@ public:
     {
         m_kickPlayer = std::move(fn);
     }
+    // 현재 접속자 목록 반환: {sessionId, characterName} 벡터
+    void SetGetPlayersCallback(std::function<std::vector<std::pair<uint64_t, std::string>>()> fn)
+    {
+        m_getPlayers = std::move(fn);
+    }
 
 private:
     // ── 내부 루프 / 핸들러 ───────────────────────────────────────────────────
@@ -77,9 +82,10 @@ private:
     void Broadcast(const std::vector<uint8_t>& packet);
 
     // ── 패킷 핸들러 ──────────────────────────────────────────────────────────
-    void HandleAuth      (ArbiterSession& session, std::vector<uint8_t>& payload);
-    void HandleGetStatus (ArbiterSession& session);
-    void HandleKickPlayer(ArbiterSession& session, std::vector<uint8_t>& payload);
+    void HandleAuth       (ArbiterSession& session, std::vector<uint8_t>& payload);
+    void HandleGetStatus  (ArbiterSession& session);
+    void HandleKickPlayer (ArbiterSession& session, std::vector<uint8_t>& payload);
+    void HandleGetPlayers (ArbiterSession& session);
 
     // ── 소켓 ─────────────────────────────────────────────────────────────────
     NxSocket          m_listenSocket{ NX_INVALID_SOCKET };
@@ -94,6 +100,7 @@ private:
     std::chrono::steady_clock::time_point m_startTime;
 
     // ── 선택적 콜백 ──────────────────────────────────────────────────────────
-    std::function<uint32_t()>                         m_getPlayerCount;
-    std::function<bool(uint64_t, const std::string&)> m_kickPlayer;
+    std::function<uint32_t()>                                          m_getPlayerCount;
+    std::function<bool(uint64_t, const std::string&)>                 m_kickPlayer;
+    std::function<std::vector<std::pair<uint64_t, std::string>>()>    m_getPlayers;
 };

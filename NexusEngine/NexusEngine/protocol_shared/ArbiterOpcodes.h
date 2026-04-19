@@ -35,9 +35,12 @@ enum ArbiterOpcode : uint16_t
     LMSG_KICK_PLAYER,        // L→S [uint64 sessionId][string reason]          — 플레이어 강제 퇴장
     AMSG_KICK_RESULT,        // S→L [uint8 success][string message]
 
-    AMSG_EVENT_SERVER_READY, // S→L (push, payload 없음)                       — 서버 준비 완료
-    AMSG_EVENT_PLAYER_JOIN,  // S→L (push) [uint64 sessionId][string name]     — 플레이어 접속
-    AMSG_EVENT_PLAYER_LEAVE, // S→L (push) [uint64 sessionId]                  — 플레이어 접속 해제
+    AMSG_EVENT_SERVER_READY, // S→L (push, payload 없음)                                           — 서버 준비 완료
+    AMSG_EVENT_PLAYER_JOIN,  // S→L (push) [uint64 sessionId][string name]                       — 플레이어 접속
+    AMSG_EVENT_PLAYER_LEAVE, // S→L (push) [uint64 sessionId]                                    — 플레이어 접속 해제
+
+    LMSG_GET_PLAYERS,        // L→S (payload 없음)                                               — 현재 접속자 목록 조회
+    AMSG_PLAYERS,            // S→L [uint32 count][{uint64 sessionId, string name} × count]      — 접속자 목록 스냅샷
 
     _ARBITER_END,            // 더미 — 범위 검사용
 };

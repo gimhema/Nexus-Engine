@@ -38,7 +38,11 @@ private:
     GameLogic                        m_gameLogic;   // 월드 시간 + 이벤트 루프
 
     // sessionId → SessionActor (워커 스레드에서 접근하므로 mutex 보호)
-    std::mutex                                           m_sessionActorsMutex;
+    std::mutex                                                   m_sessionActorsMutex;
     std::unordered_map<uint64_t, std::shared_ptr<SessionActor>> m_sessionActors;
+
+    // sessionId → 캐릭터명 (Arbiter GetPlayers 응답용 — WorldActor 콜백에서 갱신)
+    std::mutex                                                   m_playerRegistryMutex;
+    std::unordered_map<uint64_t, std::string>                   m_playerRegistry;
 };
 
