@@ -230,6 +230,18 @@ void Server::Run()
     LOG_INFO("서버 종료 중...");
     m_arbiter.Stop();
     m_net.Shutdown();
+
+    // 네트워크 종료 후 SessionActor ref를 명시적으로 해제
+    // Session 소켓이 Shutdown에서 강제 종료됐으므로 지금 해제해도 안전
+    {
+        std::lock_guard lock(m_sessionActorsMutex);
+        m_sessionActors.clear();
+    }
+    {
+        std::lock_guard lock(m_playerRegistryMutex);
+        m_playerRegistry.clear();
+    }
+
     m_gameLogic.Stop();
     m_zone->Stop();
     m_world.Stop();

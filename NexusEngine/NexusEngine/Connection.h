@@ -88,6 +88,22 @@ public:
     [[nodiscard]] bool         IsConnected() const { return m_state.load() == SessionState::Connected; }
     void                       SetState(SessionState s) { m_state.store(s); }
 
+    // 즉시 소켓 강제 종료 — Shutdown 시 워커 스레드 종료 후 호출
+    void ForceClose()
+    {
+        m_state.store(SessionState::Closed);
+        if (m_socket != NX_INVALID_SOCKET)
+        {
+#ifdef _WIN32
+            ::shutdown(m_socket, SD_BOTH);
+#else
+            ::shutdown(m_socket, SHUT_RDWR);
+#endif
+            closesocket(m_socket);
+            m_socket = NX_INVALID_SOCKET;
+        }
+    }
+
     // ── 송신 (스레드-세이프) ──────────────────────────────────────────────────
     // 전송 큐에 복사 후, 유휴 상태이면 즉시 전송 개시.
     void Send(const uint8_t* data, uint16_t length);

@@ -415,6 +415,10 @@ bool NetworkManager::SetupTCPListener(uint16_t port)
     int opt = 1;
     ::setsockopt(m_tcpListenSocket, SOL_SOCKET, SO_REUSEADDR,
                  reinterpret_cast<const char*>(&opt), sizeof(opt));
+#ifdef SO_REUSEPORT
+    ::setsockopt(m_tcpListenSocket, SOL_SOCKET, SO_REUSEPORT,
+                 reinterpret_cast<const char*>(&opt), sizeof(opt));
+#endif
 
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
@@ -458,16 +462,28 @@ void NetworkManager::Shutdown()
 {
     if (!m_running.exchange(false)) return;
 
-    for (auto& t : m_workerThreads)
-        if (t.joinable()) t.join();
-    m_workerThreads.clear();
-
-    { std::lock_guard lock(m_sessionMutex); m_sessions.clear(); }
-
+    // listen 소켓을 먼저 닫아 신규 accept를 차단 (워커가 OnTCPAccept에서 EBADF로 즉시 탈출)
     if (m_tcpListenSocket != NX_INVALID_SOCKET)
     { ::close(m_tcpListenSocket); m_tcpListenSocket = NX_INVALID_SOCKET; }
     if (m_udpSocket != NX_INVALID_SOCKET)
     { ::close(m_udpSocket); m_udpSocket = NX_INVALID_SOCKET; }
+
+    // 워커 스레드 종료 대기 (epoll_wait 100ms 타임아웃 내 자연 탈출)
+    for (auto& t : m_workerThreads)
+        if (t.joinable()) t.join();
+    m_workerThreads.clear();
+
+    // 워커 종료 후 남은 클라이언트 소켓을 강제 종료 — TIME_WAIT 회피 + 포트 즉시 해제
+    {
+        std::lock_guard lock(m_sessionMutex);
+        for (auto& [id, session] : m_sessions)
+        {
+            ::epoll_ctl(m_epollFd, EPOLL_CTL_DEL, session->GetSocket(), nullptr);
+            session->ForceClose();
+        }
+        m_sessions.clear();
+    }
+
     if (m_epollFd != NX_INVALID_HANDLE)
     { ::close(m_epollFd); m_epollFd = NX_INVALID_HANDLE; }
 }
