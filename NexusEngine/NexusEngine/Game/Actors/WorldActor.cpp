@@ -195,7 +195,11 @@ void WorldActor::Handle(MsgSession_EnterWorld& msg)
     zone->Post(std::move(add));
 
     if (m_onPlayerEntered)
+    {
+        LOG_DEBUG("WorldActor: onPlayerEntered 콜백 호출 sessionId={} name=\"{}\"",
+                  msg.sessionId, charName);
         m_onPlayerEntered(msg.sessionId, charName);
+    }
 }
 
 void WorldActor::Handle(MsgSession_Logout& msg)

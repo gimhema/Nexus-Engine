@@ -263,6 +263,7 @@ void Arbiter::PublishServerReady()
 
 void Arbiter::PublishPlayerJoin(uint64_t sessionId, const std::string& name)
 {
+    LOG_DEBUG("Arbiter: PublishPlayerJoin sessionId={} name=\"{}\"", sessionId, name);
     PacketWriter w(AMSG_EVENT_PLAYER_JOIN);
     w.WriteUInt64(sessionId);
     w.WriteString(name);
@@ -271,6 +272,7 @@ void Arbiter::PublishPlayerJoin(uint64_t sessionId, const std::string& name)
 
 void Arbiter::PublishPlayerLeave(uint64_t sessionId)
 {
+    LOG_DEBUG("Arbiter: PublishPlayerLeave sessionId={}", sessionId);
     PacketWriter w(AMSG_EVENT_PLAYER_LEAVE);
     w.WriteUInt64(sessionId);
     Broadcast(w.Finalize());
@@ -279,6 +281,7 @@ void Arbiter::PublishPlayerLeave(uint64_t sessionId)
 void Arbiter::Broadcast(const std::vector<uint8_t>& packet)
 {
     std::lock_guard lock(m_sessionsMutex);
+    LOG_DEBUG("Arbiter: Broadcast — 세션 수={}", m_sessions.size());
     for (auto& s : m_sessions)
     {
         if (s->IsAuthenticated())
