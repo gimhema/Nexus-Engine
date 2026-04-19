@@ -72,27 +72,29 @@ NexustLauncher/
             └── lib.rs                 # Tauri Builder + 커맨드 등록
 ```
 
-### 앞으로 추가할 Rust 모듈 위치
+### 현재 Rust 모듈 구조
 
 ```
 src-tauri/src/
-├── main.rs
-├── lib.rs                # Builder 설정 — 커맨드 등록은 여기서
-├── arbiter.rs            # Arbiter TCP 클라이언트 (서버 통신)
-├── server.rs             # 서버 프로세스 spawn/종료 (추후)
-└── commands.rs           # Tauri 커맨드 모음 (프론트↔백엔드 브릿지)
+├── main.rs               # 진입점 (Windows 콘솔 숨김)
+├── lib.rs                # Builder 설정 — 커맨드 등록
+├── arbiter.rs            # Arbiter TCP 클라이언트 (서버 통신, 이벤트 브로드캐스트)
+├── commands.rs           # Tauri 커맨드 모음 (connect/disconnect/kick/get_status)
+└── server.rs             # 서버 프로세스 spawn/종료 (추후)
 ```
 
-### 앞으로 추가할 프론트엔드 구조
+### 현재 프론트엔드 구조
 
 ```
-src/routes/
-├── +layout.ts
-├── +page.svelte          # 메인 화면 (서버 상태, 시작/종료)
-├── players/
-│   └── +page.svelte      # 접속자 목록 / 킥
-└── settings/
-    └── +page.svelte      # 서버 설정
+src/
+├── app.html
+└── routes/
+    ├── +layout.ts            # SSR 비활성화 (SPA 모드)
+    └── +page.svelte          # 메인 화면 (상태 헤더 + 서버 통계 + 접속자 목록)
+src/lib/components/
+├── StatusHeader.svelte        # 연결 상태 + 연결/해제 버튼
+├── ServerStats.svelte         # 접속자 수 + 업타임 표시
+└── PlayerList.svelte          # 접속자 목록 + 킥 버튼
 ```
 
 ---
@@ -200,6 +202,8 @@ NexusEngine에는 **Arbiter** (포트 7072)가 구현되어 있다.
 | `AMSG_EVENT_SERVER_READY` (0x0F07) | S→L | (없음) | 서버 준비 완료 푸시 |
 | `AMSG_EVENT_PLAYER_JOIN` (0x0F08) | S→L | `[uint64 sessionId][string name]` | 접속 이벤트 푸시 |
 | `AMSG_EVENT_PLAYER_LEAVE` (0x0F09) | S→L | `[uint64 sessionId]` | 퇴장 이벤트 푸시 |
+| `LMSG_GET_PLAYERS` (0x0F0A) | L→S | (없음) | 현재 접속자 목록 조회 |
+| `AMSG_PLAYERS` (0x0F0B) | S→L | `[uint32 count][{uint64 sessionId, string name} × count]` | 접속자 목록 스냅샷 |
 
 ### 연동 흐름
 
@@ -209,7 +213,11 @@ Svelte UI
        └─ Rust: TcpStream::connect("127.0.0.1:7072")
             └─ LMSG_AUTH 전송
                  └─ AMSG_AUTH_RESULT 수신 → 연결 확립
+                      ├─ LMSG_GET_PLAYERS 즉시 전송 → AMSG_PLAYERS 수신 → players_snapshot emit
                       └─ 수신 루프: AMSG_EVENT_* → app_handle.emit()
+                           ├─ AMSG_EVENT_PLAYER_JOIN  → player_joined emit
+                           ├─ AMSG_EVENT_PLAYER_LEAVE → player_left emit
+                           └─ AMSG_EVENT_SERVER_READY → server_ready emit
 ```
 
 ### 서버 연결 상수
@@ -232,10 +240,13 @@ Svelte UI
 | 기술 스택 확정 | ✅ 완료 |
 | Tauri + SvelteKit 프로젝트 생성 | ✅ 완료 |
 | tauri.conf.json `deno task` → `npm run` 수정 | ✅ 완료 |
-| Arbiter TCP 클라이언트 (Rust) | ✅ 완료 (`src-tauri/src/arbiter.rs`) |
-| Arbiter 이벤트 → Svelte 전달 | ✅ 완료 (`commands.rs` + Tauri emit) |
-| 서버 상태 표시 UI | ✅ 완료 (`ServerStats.svelte`) |
+| Arbiter TCP 클라이언트 (Rust) | ✅ 완료 (`arbiter.rs` — 인증·수신 루프·이벤트 emit) |
+| Arbiter 커맨드 (connect/disconnect/kick/get_status) | ✅ 완료 (`commands.rs`) |
+| 연결 직후 접속자 스냅샷 (`LMSG_GET_PLAYERS`) | ✅ 완료 (인증 성공 시 즉시 요청 → `players_snapshot` emit) |
+| 실시간 접속자 증감 이벤트 | ✅ 완료 (`player_joined` / `player_left` emit) |
+| 서버 상태 표시 UI | ✅ 완료 (`ServerStats.svelte` — 접속자 수·업타임) |
 | 접속자 목록 / 킥 UI | ✅ 완료 (`PlayerList.svelte`) |
+| 서버 연결 상태 헤더 | ✅ 완료 (`StatusHeader.svelte`) |
 | 서버 프로세스 spawn/종료 | ❌ 미착수 |
 | UE5 클라이언트 실행 연동 | ❌ 미착수 |
 
