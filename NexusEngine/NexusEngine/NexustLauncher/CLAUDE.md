@@ -234,8 +234,8 @@ Svelte UI
 | tauri.conf.json `deno task` → `npm run` 수정 | ✅ 완료 |
 | Arbiter TCP 클라이언트 (Rust) | ✅ 완료 (`src-tauri/src/arbiter.rs`) |
 | Arbiter 이벤트 → Svelte 전달 | ✅ 완료 (`commands.rs` + Tauri emit) |
-| 서버 상태 표시 UI | ❌ 미착수 |
-| 접속자 목록 / 킥 UI | ❌ 미착수 |
+| 서버 상태 표시 UI | ✅ 완료 (`ServerStats.svelte`) |
+| 접속자 목록 / 킥 UI | ✅ 완료 (`PlayerList.svelte`) |
 | 서버 프로세스 spawn/종료 | ❌ 미착수 |
 | UE5 클라이언트 실행 연동 | ❌ 미착수 |
 
