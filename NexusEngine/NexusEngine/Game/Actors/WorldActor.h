@@ -5,6 +5,7 @@
 
 #include "../User/User.h"
 
+#include <functional>
 #include <unordered_map>
 #include <memory>
 #include <cstdint>
@@ -29,6 +30,13 @@ public:
 
     // Zone 등록 — 서버 시작 시 호출 (단일 스레드 초기화 구간에서만 사용)
     void RegisterZone(uint32_t zoneId, std::shared_ptr<ZoneActor> zone);
+
+    // 플레이어 입장/퇴장 이벤트 콜백 — Arbiter 연동용
+    // WorldActor 전용 스레드에서 호출되므로 콜백은 스레드 안전하게 구현해야 함
+    void SetOnPlayerEntered(std::function<void(uint64_t, const std::string&)> fn)
+    { m_onPlayerEntered = std::move(fn); }
+    void SetOnPlayerLeft(std::function<void(uint64_t)> fn)
+    { m_onPlayerLeft = std::move(fn); }
 
 protected:
     void OnMessage(WorldMessage& msg) override;
@@ -57,4 +65,7 @@ private:
     // 임시 characterId 발급 카운터
     // Phase 4: DB INSERT 후 반환되는 auto-increment ID로 교체
     uint32_t m_nextCharacterId{ 1 };
+
+    std::function<void(uint64_t, const std::string&)> m_onPlayerEntered;
+    std::function<void(uint64_t)>                     m_onPlayerLeft;
 };

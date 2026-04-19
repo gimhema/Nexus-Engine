@@ -122,6 +122,28 @@ void Server::Run()
     m_gameLogic.RegisterZone(DEFAULT_ZONE_ID, m_zone.get());
     m_gameLogic.StartWithTick(GAMELOGIC_TICK_INTERVAL);
 
+    // ── Arbiter 콜백 설정 ────────────────────────────────────────────────────
+    m_arbiter.SetPlayerCountCallback([this]() {
+        return m_playerCount.load(std::memory_order_relaxed);
+    });
+    m_arbiter.SetKickCallback([this](uint64_t sessionId, const std::string& reason) -> bool {
+        std::shared_ptr<SessionActor> sa;
+        {
+            std::lock_guard lock(m_sessionActorsMutex);
+            auto it = m_sessionActors.find(sessionId);
+            if (it == m_sessionActors.end()) return false;
+            sa = it->second;
+        }
+        sa->Post(MsgZone_Disconnect{ reason });
+        return true;
+    });
+    m_world.SetOnPlayerEntered([this](uint64_t sid, const std::string& name) {
+        m_arbiter.PublishPlayerJoin(sid, name);
+    });
+    m_world.SetOnPlayerLeft([this](uint64_t sid) {
+        m_arbiter.PublishPlayerLeave(sid);
+    });
+
     // ── NetworkManager 콜백 설정 ─────────────────────────────────────────────
     m_net.SetCallbacks(
         // onAccept: 새 Session → SessionActor 생성 + WorldActor에 Post로 등록
@@ -132,6 +154,7 @@ void Server::Run()
                 std::lock_guard lock(m_sessionActorsMutex);
                 m_sessionActors[session->GetSessionId()] = sa;
             }
+            m_playerCount.fetch_add(1, std::memory_order_relaxed);
             // RegisterSession 직접 호출 대신 Post — WorldActor 전용 스레드에서 m_sessions 변경
             m_world.Post(MsgServer_RegisterSession{ session->GetSessionId(), sa });
             LOG_INFO("클라이언트 접속: sessionId={}", session->GetSessionId());
@@ -143,6 +166,7 @@ void Server::Run()
                 std::lock_guard lock(m_sessionActorsMutex);
                 m_sessionActors.erase(sessionId);
             }
+            m_playerCount.fetch_sub(1, std::memory_order_relaxed);
             m_world.Post(MsgServer_UnregisterSession{ sessionId });
             m_world.Post(MsgSession_Logout{ sessionId });
             LOG_INFO("클라이언트 접속 해제: sessionId={}", sessionId);
@@ -177,6 +201,11 @@ void Server::Run()
 
     LOG_INFO("서버 시작 (TCP:{}, UDP:{})", NET_TCP_PORT, NET_UDP_PORT);
 
+    // ── Arbiter 시작 ─────────────────────────────────────────────────────────
+    m_arbiter.Run();
+    m_arbiter.PublishServerReady();
+    LOG_INFO("Arbiter 시작 (포트:{})", ARBITER_PORT);
+
     // ── 메인 루프 ────────────────────────────────────────────────────────────
     // 실제 I/O 처리는 워커 스레드가 담당.
     // 메인 스레드는 종료 신호를 기다리며 대기.
@@ -186,6 +215,7 @@ void Server::Run()
 
     // ── 종료 (초기화 역순) ────────────────────────────────────────────────────
     LOG_INFO("서버 종료 중...");
+    m_arbiter.Stop();
     m_net.Shutdown();
     m_gameLogic.Stop();
     m_zone->Stop();

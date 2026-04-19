@@ -182,15 +182,20 @@ void WorldActor::Handle(MsgSession_EnterWorld& msg)
 
     sa->SetZone(zone);
 
+    const std::string& charName = user->GetCharacterSetup().characterName;
+
     // RegisterSessionActor는 ZoneActor 스레드 내에서 처리
     // MsgWorld_AddPlayer에 weak_ptr을 실어 보내 ZoneActor가 직접 등록
     MsgWorld_AddPlayer add;
     add.sessionId     = msg.sessionId;
     add.characterId   = msg.characterId;
-    add.characterName = user->GetCharacterSetup().characterName;
+    add.characterName = charName;
     add.spawnPos      = { 0.f, 0.f, 0.f };
     add.sessionActor  = sa;             // weak_ptr — ZoneActor가 Handle 내에서 등록
     zone->Post(std::move(add));
+
+    if (m_onPlayerEntered)
+        m_onPlayerEntered(msg.sessionId, charName);
 }
 
 void WorldActor::Handle(MsgSession_Logout& msg)
@@ -205,6 +210,9 @@ void WorldActor::Handle(MsgSession_Logout& msg)
                  user->GetAccountId(), msg.sessionId);
     }
     m_users.erase(msg.sessionId);
+
+    if (m_onPlayerLeft)
+        m_onPlayerLeft(msg.sessionId);
 
     if (auto sa = FindSession(msg.sessionId))
         sa->ClearZone();

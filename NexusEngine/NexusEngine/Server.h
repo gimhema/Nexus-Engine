@@ -1,5 +1,6 @@
 #pragma once
 #include "ServerNet.h"
+#include "Arbiter/Arbiter.h"
 #include "Game/Actors/WorldActor.h"
 #include "Game/Actors/ZoneActor.h"
 #include "Game/Actors/SessionActor.h"
@@ -28,7 +29,9 @@ public:
 
 private:
     NetworkManager                   m_net;
+    Arbiter                          m_arbiter;
     std::atomic<bool>                m_running{ false };
+    std::atomic<uint32_t>            m_playerCount{ 0 };  // Arbiter 상태 조회용
 
     WorldActor                       m_world;
     std::shared_ptr<ZoneActor>       m_zone;        // 기본 존 (zoneId=1)
