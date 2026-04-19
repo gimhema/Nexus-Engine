@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <csignal>
 #include <thread>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -257,12 +258,17 @@ int main()
         return 1;
     }
 
-    // ── 3초 대기 후 종료 ──────────────────────────────────────────────────────
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-    while (g_running.load() && std::chrono::steady_clock::now() < deadline)
+    // ── Ctrl+C / SIGTERM 시그널 핸들러 ───────────────────────────────────────
+    std::signal(SIGINT,  [](int) { g_running.store(false); });
+    std::signal(SIGTERM, [](int) { g_running.store(false); });
+
+    std::printf("접속 유지 중 — 종료하려면 Ctrl+C\n\n");
+
+    // ── 서버 연결이 끊기거나 Ctrl+C 까지 대기 ────────────────────────────────
+    while (g_running.load())
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    std::printf("\n테스트 종료 — 연결 해제 중...\n");
+    std::printf("\n종료 — 연결 해제 중...\n");
     client.Disconnect();
     return 0;
 }
