@@ -4,7 +4,9 @@
 #include "../protocol_shared/ArbiterOpcodes.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
+#include <cstring>
 
 // socklen_t 플랫폼 분기
 #ifdef _WIN32
@@ -37,10 +39,14 @@ void Arbiter::Run()
         return;
     }
 
-    // 재시작 시 포트 즉시 재사용
+    // 재시작 시 포트 즉시 재사용 (TIME_WAIT 상태 포트 재사용 허용)
     int reuse = 1;
     ::setsockopt(m_listenSocket, SOL_SOCKET, SO_REUSEADDR,
                  reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+#ifdef SO_REUSEPORT
+    ::setsockopt(m_listenSocket, SOL_SOCKET, SO_REUSEPORT,
+                 reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+#endif
 
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
@@ -49,7 +55,7 @@ void Arbiter::Run()
 
     if (::bind(m_listenSocket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
     {
-        LOG_ERROR("Arbiter: bind 실패 (port={})", ARBITER_PORT);
+        LOG_ERROR("Arbiter: bind 실패 (port={}) — {}", ARBITER_PORT, std::strerror(errno));
         closesocket(m_listenSocket);
         m_listenSocket = NX_INVALID_SOCKET;
         return;

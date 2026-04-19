@@ -8,9 +8,15 @@ ArbiterSession::ArbiterSession(NxSocket socket)
 ArbiterSession::~ArbiterSession()
 {
     Close();
-    // recv 스레드가 종료될 때까지 대기 — 소멸 전 this 참조 안전 보장
     if (m_recvThread.joinable())
-        m_recvThread.join();
+    {
+        // RecvLoop → onClose 콜백 체인으로 소멸자가 호출되면 recv 스레드 내부에서 실행 중.
+        // 자기 자신을 join하면 EDEADLK → detach로 우회 (RecvLoop는 곧바로 반환하므로 안전)
+        if (m_recvThread.get_id() == std::this_thread::get_id())
+            m_recvThread.detach();
+        else
+            m_recvThread.join();
+    }
 }
 
 void ArbiterSession::Start(OnPacketFunc onPacket, OnCloseFunc onClose)
