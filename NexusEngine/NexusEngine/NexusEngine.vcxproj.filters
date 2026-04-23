@@ -124,6 +124,15 @@
     <Filter Include="헤더 파일\Game\Data\Faction">
       <UniqueIdentifier>{7BC80556-20B0-4109-88F5-F0DE05CAE23B}</UniqueIdentifier>
     </Filter>
+    <Filter Include="소스 파일\Arbiter">
+      <UniqueIdentifier>{76E4D92A-1132-44FA-870E-2EAE1A6FD952}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Arbiter">
+      <UniqueIdentifier>{6700F0D6-D3B0-4EF8-8FCF-0470443A487A}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\protocol_shared">
+      <UniqueIdentifier>{3AE26108-9377-48E5-B1F6-375005C1654F}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -191,6 +200,12 @@
     </ClCompile>
     <ClCompile Include="Game\Logic\Pawn\PlayerPawn.cpp">
       <Filter>소스 파일\Game\Logic\Pawn</Filter>
+    </ClCompile>
+    <ClCompile Include="Arbiter\Arbiter.cpp">
+      <Filter>소스 파일\Arbiter</Filter>
+    </ClCompile>
+    <ClCompile Include="Arbiter\ArbiterSession.cpp">
+      <Filter>소스 파일\Arbiter</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -280,6 +295,24 @@
     </ClInclude>
     <ClInclude Include="Game\Logic\Pawn\PlayerPawn.h">
       <Filter>헤더 파일\Game\Logic\Pawn</Filter>
+    </ClInclude>
+    <ClInclude Include="Arbiter\Arbiter.h">
+      <Filter>헤더 파일\Arbiter</Filter>
+    </ClInclude>
+    <ClInclude Include="Arbiter\ArbiterSession.h">
+      <Filter>헤더 파일\Arbiter</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol_shared\ArbiterOpcodes.h">
+      <Filter>헤더 파일\protocol_shared</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol_shared\NexusTypes.h">
+      <Filter>헤더 파일\protocol_shared</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol_shared\Opcodes.h">
+      <Filter>헤더 파일\protocol_shared</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol_shared\PacketParser.h">
+      <Filter>헤더 파일\protocol_shared</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

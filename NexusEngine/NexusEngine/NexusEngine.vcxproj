@@ -167,6 +167,8 @@
     <ClCompile Include="Game\Data\GameDataEntities\MonsterEntityData.cpp" />
     <ClCompile Include="Game\Data\GameDataEntities\NpcEntityData.cpp" />
     <ClCompile Include="Game\Logic\Pawn\PlayerPawn.cpp" />
+    <ClCompile Include="Arbiter\Arbiter.cpp" />
+    <ClCompile Include="Arbiter\ArbiterSession.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Connection.h" />
@@ -198,6 +200,12 @@
     <ClInclude Include="Game\Data\GameDataEntities\MonsterEntityData.h" />
     <ClInclude Include="Game\Data\GameDataEntities\NpcEntityData.h" />
     <ClInclude Include="Game\Logic\Pawn\PlayerPawn.h" />
+    <ClInclude Include="Arbiter\Arbiter.h" />
+    <ClInclude Include="Arbiter\ArbiterSession.h" />
+    <ClInclude Include="protocol_shared\ArbiterOpcodes.h" />
+    <ClInclude Include="protocol_shared\NexusTypes.h" />
+    <ClInclude Include="protocol_shared\Opcodes.h" />
+    <ClInclude Include="protocol_shared\PacketParser.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets"></ImportGroup>
