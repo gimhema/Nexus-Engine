@@ -8,6 +8,10 @@
 #include <chrono>
 #include <cstring>
 
+#ifndef _WIN32
+#include <poll.h>
+#endif
+
 // socklen_t 플랫폼 분기
 #ifdef _WIN32
 using SockLen = int;
@@ -83,15 +87,16 @@ void Arbiter::Stop()
 {
     if (!m_running.exchange(false)) return;
 
-    // 리슨 소켓을 닫아 AcceptLoop의 accept() 블로킹 해제
+    // m_running = false → AcceptLoop가 poll 타임아웃(200ms) 후 자연 탈출
+    if (m_acceptThread.joinable())
+        m_acceptThread.join();
+
+    // 수락 스레드 종료 후 리슨 소켓 닫기
     if (m_listenSocket != NX_INVALID_SOCKET)
     {
         closesocket(m_listenSocket);
         m_listenSocket = NX_INVALID_SOCKET;
     }
-
-    if (m_acceptThread.joinable())
-        m_acceptThread.join();
 
     // 세션 목록을 로컬로 이동 후 소켓 닫기
     // — 잠금 해제 후 소멸자(recv 스레드 join)가 실행되므로 데드락 없음
@@ -121,13 +126,28 @@ void Arbiter::AcceptLoop()
 {
     while (m_running.load())
     {
+        // poll로 연결 대기 — 200ms 타임아웃마다 m_running을 재확인해 Stop() 시 즉시 탈출
+#ifdef _WIN32
+        WSAPOLLFD pfd{};
+        pfd.fd      = m_listenSocket;
+        pfd.events  = POLLIN;
+        int ret = ::WSAPoll(&pfd, 1, 200);
+#else
+        struct pollfd pfd{};
+        pfd.fd     = m_listenSocket;
+        pfd.events = POLLIN;
+        int ret = ::poll(&pfd, 1, 200);
+#endif
+        if (ret <= 0) continue;                   // 타임아웃 또는 오류 → 플래그 재확인
+        if (!(pfd.revents & POLLIN)) continue;
+
         sockaddr_storage clientAddr{};
         SockLen          addrLen = static_cast<SockLen>(sizeof(clientAddr));
 
         NxSocket client = ::accept(m_listenSocket,
                                    reinterpret_cast<sockaddr*>(&clientAddr),
                                    &addrLen);
-        if (client == NX_INVALID_SOCKET) break;  // Stop() 또는 오류
+        if (client == NX_INVALID_SOCKET) break;  // 소켓 오류
 
         LOG_INFO("Arbiter: 런처 연결됨");
 
