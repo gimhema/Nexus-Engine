@@ -4,8 +4,9 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
   import StatusHeader, { type ConnectionStatus } from '$lib/components/StatusHeader.svelte';
-  import ServerStats from '$lib/components/ServerStats.svelte';
+  import ServerStats    from '$lib/components/ServerStats.svelte';
   import PlayerList,  { type Player }            from '$lib/components/PlayerList.svelte';
+  import ProcessManager from '$lib/components/ProcessManager.svelte';
 
   // ─── 상태 ─────────────────────────────────────────────────────────────────
   let status        = $state<ConnectionStatus>('disconnected');
@@ -151,6 +152,7 @@
   <StatusHeader {status} onConnect={connect} onDisconnect={disconnect} />
   <ServerStats {playerCount} {uptimeSeconds} connected={status === 'connected'} />
   <PlayerList {players} connected={status === 'connected'} {kickingIds} onKick={kickPlayer} />
+  <ProcessManager />
 </div>
 
 <style>

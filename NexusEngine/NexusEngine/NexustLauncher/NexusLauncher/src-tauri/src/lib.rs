@@ -6,6 +6,7 @@
 
 mod arbiter;
 mod commands;
+mod server;
 
 use arbiter::ArbiterState;
 
@@ -27,6 +28,8 @@ pub fn run() {
             commands::disconnect_arbiter,
             commands::get_server_status,
             commands::kick_player,
+            commands::list_server_processes,
+            commands::kill_server_processes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
