@@ -59,7 +59,13 @@ void Arbiter::Run()
 
     if (::bind(m_listenSocket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
     {
-        LOG_ERROR("Arbiter: bind 실패 (port={}) — {}", ARBITER_PORT, std::strerror(errno));
+        char errBuf[128]{};
+#ifdef _WIN32
+        strerror_s(errBuf, sizeof(errBuf), errno);
+#else
+        strerror_r(errno, errBuf, sizeof(errBuf));
+#endif
+        LOG_ERROR("Arbiter: bind 실패 (port={}) — {}", ARBITER_PORT, errBuf);
         closesocket(m_listenSocket);
         m_listenSocket = NX_INVALID_SOCKET;
         return;
