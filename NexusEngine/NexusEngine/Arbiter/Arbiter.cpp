@@ -40,6 +40,9 @@ void Arbiter::Run()
     if (m_listenSocket == NX_INVALID_SOCKET)
     {
         LOG_ERROR("Arbiter: 소켓 생성 실패");
+#ifdef _WIN32
+        WSACleanup();
+#endif
         return;
     }
 
@@ -59,15 +62,12 @@ void Arbiter::Run()
 
     if (::bind(m_listenSocket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
     {
-        char errBuf[128]{};
-#ifdef _WIN32
-        strerror_s(errBuf, sizeof(errBuf), errno);
-#else
-        strerror_r(errno, errBuf, sizeof(errBuf));
-#endif
-        LOG_ERROR("Arbiter: bind 실패 (port={}) — {}", ARBITER_PORT, errBuf);
+        LOG_ERROR("Arbiter: bind 실패 (port={}) — {}", ARBITER_PORT, std::strerror(errno));
         closesocket(m_listenSocket);
         m_listenSocket = NX_INVALID_SOCKET;
+#ifdef _WIN32
+        WSACleanup();
+#endif
         return;
     }
 
@@ -76,6 +76,9 @@ void Arbiter::Run()
         LOG_ERROR("Arbiter: listen 실패");
         closesocket(m_listenSocket);
         m_listenSocket = NX_INVALID_SOCKET;
+#ifdef _WIN32
+        WSACleanup();
+#endif
         return;
     }
 

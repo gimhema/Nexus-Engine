@@ -84,13 +84,18 @@ std::shared_ptr<Session> NetworkManager::CreateSession(NxSocket socket)
 
 void NetworkManager::RemoveSession(uint64_t sessionId)
 {
+    // CloseSession과 동일하게 단일 잠금 내에서 find+erase 처리
+    std::shared_ptr<Session> session;
+    {
+        std::lock_guard lock(m_sessionMutex);
+        auto it = m_sessions.find(sessionId);
+        if (it == m_sessions.end()) return;
+        session = it->second;
+        m_sessions.erase(it);
+    }
 #ifndef _WIN32
-    auto session = FindSession(sessionId);
-    if (session)
-        ::epoll_ctl(m_epollFd, EPOLL_CTL_DEL, session->GetSocket(), nullptr);
+    ::epoll_ctl(m_epollFd, EPOLL_CTL_DEL, session->GetSocket(), nullptr);
 #endif
-    std::lock_guard lock(m_sessionMutex);
-    m_sessions.erase(sessionId);
 }
 
 bool NetworkManager::StartWorkerThreads(uint32_t count)
@@ -127,14 +132,14 @@ bool NetworkManager::InitWinsock()
 bool NetworkManager::CreateIOCP()
 {
     m_iocpHandle = ::CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 0);
-    return m_iocpHandle != INVALID_HANDLE_VALUE;
+    return m_iocpHandle != NX_INVALID_HANDLE;
 }
 
 bool NetworkManager::SetupTCPListener(uint16_t port)
 {
     m_tcpListenSocket = ::WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP,
                                     nullptr, 0, WSA_FLAG_OVERLAPPED);
-    if (m_tcpListenSocket == INVALID_SOCKET) return false;
+    if (m_tcpListenSocket == NX_INVALID_SOCKET) return false;
 
     int opt = 1;
     ::setsockopt(m_tcpListenSocket, SOL_SOCKET, SO_REUSEADDR,
@@ -175,7 +180,7 @@ bool NetworkManager::SetupUDPSocket(uint16_t port)
 {
     m_udpSocket = ::WSASocket(AF_INET, SOCK_DGRAM, IPPROTO_UDP,
                               nullptr, 0, WSA_FLAG_OVERLAPPED);
-    if (m_udpSocket == INVALID_SOCKET) return false;
+    if (m_udpSocket == NX_INVALID_SOCKET) return false;
 
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
@@ -216,12 +221,12 @@ void NetworkManager::Shutdown()
 
     { std::lock_guard lock(m_sessionMutex); m_sessions.clear(); }
 
-    if (m_tcpListenSocket != INVALID_SOCKET)
-    { ::closesocket(m_tcpListenSocket); m_tcpListenSocket = INVALID_SOCKET; }
-    if (m_udpSocket != INVALID_SOCKET)
-    { ::closesocket(m_udpSocket); m_udpSocket = INVALID_SOCKET; }
-    if (m_iocpHandle != INVALID_HANDLE_VALUE)
-    { ::CloseHandle(m_iocpHandle); m_iocpHandle = INVALID_HANDLE_VALUE; }
+    if (m_tcpListenSocket != NX_INVALID_SOCKET)
+    { ::closesocket(m_tcpListenSocket); m_tcpListenSocket = NX_INVALID_SOCKET; }
+    if (m_udpSocket != NX_INVALID_SOCKET)
+    { ::closesocket(m_udpSocket); m_udpSocket = NX_INVALID_SOCKET; }
+    if (m_iocpHandle != NX_INVALID_HANDLE)
+    { ::CloseHandle(m_iocpHandle); m_iocpHandle = NX_INVALID_HANDLE; }
 
     ::WSACleanup();
 }
@@ -232,7 +237,7 @@ void NetworkManager::PostAccept()
     pOv->operation    = IOOperation::TCP_ACCEPT;
     pOv->acceptSocket = ::WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP,
                                     nullptr, 0, WSA_FLAG_OVERLAPPED);
-    if (pOv->acceptSocket == INVALID_SOCKET) { delete pOv; return; }
+    if (pOv->acceptSocket == NX_INVALID_SOCKET) { delete pOv; return; }
 
     DWORD bytes = 0;
     BOOL ok = m_fnAcceptEx(
@@ -314,8 +319,8 @@ void NetworkManager::WorkerLoop()
 
 void NetworkManager::OnTCPAccept(OverlappedEx* pOv, NxDword /*bytes*/)
 {
-    SOCKET accepted    = pOv->acceptSocket;
-    pOv->acceptSocket  = INVALID_SOCKET;
+    NxSocket accepted  = pOv->acceptSocket;
+    pOv->acceptSocket  = NX_INVALID_SOCKET;
     delete pOv;
 
     ::setsockopt(accepted, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT,
@@ -464,9 +469,9 @@ void NetworkManager::Shutdown()
 
     // listen 소켓을 먼저 닫아 신규 accept를 차단 (워커가 OnTCPAccept에서 EBADF로 즉시 탈출)
     if (m_tcpListenSocket != NX_INVALID_SOCKET)
-    { ::close(m_tcpListenSocket); m_tcpListenSocket = NX_INVALID_SOCKET; }
+    { closesocket(m_tcpListenSocket); m_tcpListenSocket = NX_INVALID_SOCKET; }
     if (m_udpSocket != NX_INVALID_SOCKET)
-    { ::close(m_udpSocket); m_udpSocket = NX_INVALID_SOCKET; }
+    { closesocket(m_udpSocket); m_udpSocket = NX_INVALID_SOCKET; }
 
     // 워커 스레드 종료 대기 (epoll_wait 100ms 타임아웃 내 자연 탈출)
     for (auto& t : m_workerThreads)
@@ -588,7 +593,7 @@ void NetworkManager::OnTCPAccept(OverlappedEx* /*pOv*/, NxDword /*bytes*/)
         auto session = CreateSession(accepted);
         if (!session)
         {
-            ::close(accepted);
+            closesocket(accepted);
         }
         else
         {
