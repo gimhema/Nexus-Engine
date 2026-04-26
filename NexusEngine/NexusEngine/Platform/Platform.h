@@ -17,6 +17,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include <cstdint>
+#include <cstring>
+#include <string>
 
 #ifdef _WIN32
 
@@ -57,3 +59,17 @@
     inline int  closesocket(NxSocket s) { return ::close(s); }
 
 #endif
+
+// strerror 크로스플랫폼 래퍼:
+//   Windows — strerror_s (MSVC deprecated 경고 없음)
+//   Linux   — strerror   (GCC/Clang 경고 없음)
+inline std::string NxStrError(int errnum)
+{
+#ifdef _WIN32
+    char buf[256];
+    ::strerror_s(buf, sizeof(buf), errnum);
+    return buf;
+#else
+    return ::strerror(errnum);
+#endif
+}

@@ -13,6 +13,10 @@
 #include <windows.h>
 static void EnableVirtualTerminal()
 {
+    // 콘솔 코드페이지를 UTF-8로 설정 — 한글 등 멀티바이트 문자 깨짐 방지
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+
     HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
     if (h == INVALID_HANDLE_VALUE) return;
     DWORD mode = 0;

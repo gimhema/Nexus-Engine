@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
-#include <cstring>
 
 #ifndef _WIN32
 #include <poll.h>
@@ -62,7 +61,7 @@ void Arbiter::Run()
 
     if (::bind(m_listenSocket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
     {
-        LOG_ERROR("Arbiter: bind 실패 (port={}) — {}", ARBITER_PORT, std::strerror(errno));
+        LOG_ERROR("Arbiter: bind 실패 (port={}) — {}", ARBITER_PORT, NxStrError(errno));
         closesocket(m_listenSocket);
         m_listenSocket = NX_INVALID_SOCKET;
 #ifdef _WIN32
