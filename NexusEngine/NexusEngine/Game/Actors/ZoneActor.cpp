@@ -87,12 +87,70 @@ void ZoneActor::Handle(MsgSession_EnterZone& msg)
         msg.characterId,
         msg.sessionActor);
 
-    pawn->SetPos(msg.spawnPos);
+    const Vec3 spawnPos = (msg.spawnPos.x == 0.f && msg.spawnPos.y == 0.f && msg.spawnPos.z == 0.f)
+                        ? m_zone.PickPlayerSpawn()
+                        : msg.spawnPos;
+
+    pawn->SetPos(spawnPos);
     pawn->OnSpawn();
 
+    const uint64_t pawnId = pawn->GetPawnId();
+    const uint32_t hp     = static_cast<uint32_t>(pawn->GetHp());
+    const uint32_t maxHp  = static_cast<uint32_t>(pawn->GetMaxHp());
+
+    if (auto sa = msg.sessionActor.lock())
+    {
+        // ── 1. 신규 플레이어에게 본인 폰 정보 전송 ──────────────────────────
+        {
+            PacketWriter w(SMSG_ENTER_WORLD);
+            w.WriteUInt8(1);
+            w.WriteUInt64(pawnId);
+            w.WriteUInt32(msg.characterId);
+            w.WriteString(msg.characterName);
+            w.WriteUInt32(hp);
+            w.WriteUInt32(maxHp);
+            w.WriteFloat(spawnPos.x);
+            w.WriteFloat(spawnPos.y);
+            w.WriteFloat(spawnPos.z);
+            w.WriteFloat(0.f);
+            sa->Post(MsgZone_SendTcp{ w.Finalize() });
+        }
+
+        // ── 2. 신규 플레이어에게 기존 플레이어 목록 전송 ────────────────────
+        for (auto& [sid, existing] : m_playerPawns)
+        {
+            PacketWriter w(SMSG_SPAWN_PLAYER);
+            w.WriteUInt64(existing->GetPawnId());
+            w.WriteUInt64(sid);
+            w.WriteString(existing->GetName());
+            w.WriteUInt32(static_cast<uint32_t>(existing->GetHp()));
+            w.WriteUInt32(static_cast<uint32_t>(existing->GetMaxHp()));
+            w.WriteFloat(existing->GetPos().x);
+            w.WriteFloat(existing->GetPos().y);
+            w.WriteFloat(existing->GetPos().z);
+            w.WriteFloat(existing->GetOrientation());
+            sa->Post(MsgZone_SendTcp{ w.Finalize() });
+        }
+    }
+
+    // ── 3. 기존 플레이어들에게 신규 플레이어 스폰 브로드캐스트 ────────────
+    {
+        PacketWriter w(SMSG_SPAWN_PLAYER);
+        w.WriteUInt64(pawnId);
+        w.WriteUInt64(msg.sessionId);
+        w.WriteString(msg.characterName);
+        w.WriteUInt32(hp);
+        w.WriteUInt32(maxHp);
+        w.WriteFloat(spawnPos.x);
+        w.WriteFloat(spawnPos.y);
+        w.WriteFloat(spawnPos.z);
+        w.WriteFloat(0.f);
+        BroadcastTcp(msg.sessionId, w.Finalize());
+    }
+
     m_playerPawns.emplace(msg.sessionId, std::move(pawn));
-    LOG_INFO("ZoneActor {}: 플레이어 진입 sessionId={} name={}",
-             m_zone.GetId(), msg.sessionId, msg.characterName);
+    LOG_INFO("ZoneActor {}: 플레이어 진입 sessionId={} name={} pawnId={}",
+             m_zone.GetId(), msg.sessionId, msg.characterName, pawnId);
 }
 
 // WorldActor 경유 진입 (로그인/텔레포트 — 주 진입 경로)
