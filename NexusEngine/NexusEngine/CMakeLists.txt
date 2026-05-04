@@ -18,6 +18,11 @@ set(SOURCES
     Game/User/User.cpp
     Game/Zone/Zone.cpp
 
+    Game/Data/GamePackets/Packet-Auth.cpp
+    Game/Data/GamePackets/Packet-Movement.cpp
+    Game/Data/GamePackets/Packet-Chat.cpp
+    Game/Data/GamePackets/Packet-Spawn.cpp
+
     Game/Actors/SessionActor.cpp
     Game/Actors/WorldActor.cpp
     Game/Actors/ZoneActor.cpp
@@ -48,7 +53,10 @@ set(HEADERS
     Game/Data/GameDataEntities/MonsterEntityData.h
     Game/Data/Faction/FactionTypes.h
     Game/Data/Faction/FactionRegistry.h
-    Game/Data/GamePackets/Packet-Example.hpp
+    Game/Data/GamePackets/Packet-Auth.h
+    Game/Data/GamePackets/Packet-Movement.h
+    Game/Data/GamePackets/Packet-Chat.h
+    Game/Data/GamePackets/Packet-Spawn.h
     Game/Messages/GameMessages.h
     Game/Actors/SessionActor.h
     Game/Actors/WorldActor.h
