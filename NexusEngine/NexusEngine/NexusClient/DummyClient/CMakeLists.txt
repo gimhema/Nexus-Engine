@@ -1,5 +1,9 @@
 set(DUMMYCLIENT_SOURCES
     main.cpp
+    ../../protocol_shared/Packets/Packet-Auth.cpp
+    ../../protocol_shared/Packets/Packet-Movement.cpp
+    ../../protocol_shared/Packets/Packet-Chat.cpp
+    ../../protocol_shared/Packets/Packet-Spawn.cpp
 )
 
 set(DUMMYCLIENT_HEADERS

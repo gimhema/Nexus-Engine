@@ -69,4 +69,14 @@ inline std::string NexusStringFromBytes(const NexusByte* data, uint32_t len)
     return std::string(reinterpret_cast<const char*>(data), len);
 }
 
+// std::string → [uint16 길이][UTF-8 바이트] 형식의 바이트 배열 (패킷 송신 시 사용)
+inline std::vector<uint8_t> NexusStringToBytes(const std::string& str)
+{
+    const uint16_t len = static_cast<uint16_t>(str.size());
+    std::vector<uint8_t> result(sizeof(uint16_t) + len);
+    std::memcpy(result.data(),                   &len,        sizeof(uint16_t));
+    std::memcpy(result.data() + sizeof(uint16_t), str.data(), len);
+    return result;
+}
+
 #endif // NEXUS_UE5
