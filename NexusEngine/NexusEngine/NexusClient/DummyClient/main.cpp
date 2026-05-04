@@ -7,9 +7,11 @@
 #include <chrono>
 #include <cstdio>
 #include <csignal>
+#include <mutex>
 #include <random>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 접속 테스트 시나리오
@@ -18,20 +20,62 @@
 //   2. CMSG_LOGIN              → SMSG_LOGIN_RESULT 대기
 //   3. CMSG_CHAR_SETUP         → SMSG_CHAR_SETUP_RESULT 대기 (서버 발급 characterId 수신)
 //   4. CMSG_ENTER_WORLD        → SMSG_ENTER_WORLD 대기
-//   5. CMSG_CHAT               (존 채팅 — 같은 존 플레이어에게만)
-//   6. CMSG_WORLD_CHAT         (월드 채팅 — 전 서버 브로드캐스트)
-//   7. CMSG_MOVE               (임의 위치로 이동)
-//   8. 3초 대기 후 연결 해제
+//   5. SMSG_SPAWN_PLAYER       → 타 플레이어 스폰 (g_remotePlayers 등록)
+//                                [UE] GetWorld()->SpawnActor<ANexusOtherPlayer>() 호출 지점
+//   6. CMSG_MOVE (500ms 주기)  → 내 위치를 서버로 전송 → 타 클라이언트에 SMSG_MOVE_BROADCAST
+//   7. SMSG_MOVE_BROADCAST     → 타 플레이어 위치 갱신 (g_remotePlayers 업데이트)
+//                                [UE] SetActorLocation / 보간 처리 지점
+//   8. SMSG_DESPAWN_PLAYER     → 타 플레이어 제거 (g_remotePlayers 삭제)
+//                                [UE] Actor->Destroy() 호출 지점
+//   9. Ctrl+C 로 종료
 // ─────────────────────────────────────────────────────────────────────────────
 
-static constexpr const char* SERVER_HOST  = "127.0.0.1";
-static constexpr uint16_t    SERVER_PORT  = 7070;
-static constexpr const char* LOGIN_TOKEN  = "dummy_token";
+static constexpr const char* SERVER_HOST = "127.0.0.1";
+static constexpr uint16_t    SERVER_PORT = 7070;
+static constexpr const char* LOGIN_TOKEN = "dummy_token";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 원격 플레이어 상태 레코드
+//
+// UE 가이드:
+//   이 구조체 대신 ANexusOtherPlayer* (APawn 서브클래스)를 직접 사용.
+//   위치·회전은 Actor 컴포넌트가 보유하므로 별도 저장 불필요.
+//   TMap<uint64, ANexusOtherPlayer*> OtherPlayers 로 sessionId 매핑.
+// ─────────────────────────────────────────────────────────────────────────────
+struct RemotePlayerInfo
+{
+    uint64_t    pawnId;
+    uint64_t    sessionId;
+    std::string name;
+    uint32_t    hp;
+    uint32_t    maxHp;
+    float       x, y, z;
+    float       orientation;
+};
+
+std::unordered_map<uint64_t, RemotePlayerInfo> g_remotePlayers;  // key: sessionId
+std::unordered_map<uint64_t, uint64_t>         g_pawnToSession;  // pawnId → sessionId (디스폰 역조회용)
+std::mutex                                      g_playersMtx;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 내 캐릭터 상태
+// ─────────────────────────────────────────────────────────────────────────────
+std::atomic<bool>     g_running{ true };
+std::atomic<bool>     g_inWorld{ false };   // SMSG_ENTER_WORLD 성공 후 true
+std::atomic<uint32_t> g_characterId{ 0 };
+
+// SMSG_ENTER_WORLD 수신 스레드에서 설정 후 g_inWorld(release) → 메인 스레드(acquire)로 가시성 보장
+uint64_t g_myPawnId   = 0;
+float    g_myX        = 0.f;
+float    g_myY        = 0.f;
+float    g_myZ        = 0.f;
+float    g_myOrient   = 0.f;
+
+std::string g_charName;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 무작위 캐릭터 이름 생성
 // 형식: <형용사><명사><숫자 2자리>  예) "BraveSword42"
-// 이름 목록이나 포맷을 수정할 때 이 함수만 편집하면 된다.
 // ─────────────────────────────────────────────────────────────────────────────
 static std::string GenerateCharName()
 {
@@ -54,19 +98,12 @@ static std::string GenerateCharName()
          + std::to_string(numDist(rng));
 }
 
-std::atomic<bool>     g_running{ true };
-std::atomic<uint32_t> g_characterId{ 0 };   // SMSG_CHAR_SETUP_RESULT에서 수신한 서버 발급 ID
-
-// 접속 시 생성된 캐릭터 이름 (콜백에서 참조)
-std::string g_charName;
-
 // ─────────────────────────────────────────────────────────────────────────────
 // 송신 헬퍼
 // ─────────────────────────────────────────────────────────────────────────────
 
-void SendLogin(NetClient& client)
+static void SendLogin(NetClient& client)
 {
-    // 계정명은 캐릭터 이름과 동일하게 사용 (더미 클라이언트 전용)
     ClientPacketWriter w(CMSG_LOGIN);
     w.WriteString(g_charName);
     w.WriteString(LOGIN_TOKEN);
@@ -74,7 +111,7 @@ void SendLogin(NetClient& client)
     std::printf("[→] CMSG_LOGIN  account=%s\n", g_charName.c_str());
 }
 
-void SendCharSetup(NetClient& client, const std::string& name)
+static void SendCharSetup(NetClient& client, const std::string& name)
 {
     ClientPacketWriter w(CMSG_CHAR_SETUP);
     w.WriteString(name);
@@ -82,7 +119,7 @@ void SendCharSetup(NetClient& client, const std::string& name)
     std::printf("[→] CMSG_CHAR_SETUP  name=%s\n", name.c_str());
 }
 
-void SendEnterWorld(NetClient& client, uint32_t characterId)
+static void SendEnterWorld(NetClient& client, uint32_t characterId)
 {
     ClientPacketWriter w(CMSG_ENTER_WORLD);
     w.WriteUInt32(characterId);
@@ -90,7 +127,7 @@ void SendEnterWorld(NetClient& client, uint32_t characterId)
     std::printf("[→] CMSG_ENTER_WORLD  characterId=%u\n", characterId);
 }
 
-void SendZoneChat(NetClient& client, const std::string& text)
+static void SendZoneChat(NetClient& client, const std::string& text)
 {
     ClientPacketWriter w(CMSG_CHAT);
     w.WriteString(text);
@@ -98,7 +135,7 @@ void SendZoneChat(NetClient& client, const std::string& text)
     std::printf("[→] CMSG_CHAT (존)  text=\"%s\"\n", text.c_str());
 }
 
-void SendWorldChat(NetClient& client, const std::string& text)
+static void SendWorldChat(NetClient& client, const std::string& text)
 {
     ClientPacketWriter w(CMSG_WORLD_CHAT);
     w.WriteString(text);
@@ -106,14 +143,149 @@ void SendWorldChat(NetClient& client, const std::string& text)
     std::printf("[→] CMSG_WORLD_CHAT  text=\"%s\"\n", text.c_str());
 }
 
-void SendMove(NetClient& client, float x, float y, float z, float orientation = 0.f)
+static void SendMove(NetClient& client, float x, float y, float z, float orientation = 0.f)
 {
     ClientPacketWriter w(CMSG_MOVE);
     w.WriteFloat(x).WriteFloat(y).WriteFloat(z).WriteFloat(orientation);
     client.Send(w.Finalize());
-    std::printf("[→] CMSG_MOVE  pos=(%.1f, %.1f, %.1f) o=%.2f\n", x, y, z, orientation);
+    std::printf("[→] CMSG_MOVE  pos=(%.1f, %.1f, %.1f)  o=%.2f\n", x, y, z, orientation);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 원격 플레이어 스폰 처리
+//
+// SMSG_SPAWN_PLAYER 수신 시 호출.
+// 두 가지 상황 모두 이 함수로 처리됨:
+//   A) 내가 존 입장 → 기존 플레이어 목록을 반복 수신 (존재하는 N명만큼 호출)
+//   B) 다른 플레이어가 존 입장 → 단발 수신
+//
+// UE 가이드:
+//   FVector SpawnLoc(x, y, z);
+//   FRotator SpawnRot(0.f, FMath::RadiansToDegrees(orientation), 0.f);
+//   ANexusOtherPlayer* Actor = GetWorld()->SpawnActor<ANexusOtherPlayer>(
+//       OtherPlayerClass, SpawnLoc, SpawnRot);
+//   if (Actor)
+//   {
+//       Actor->InitFromServer(pawnId, sessionId, FString(name), hp, maxHp);
+//       OtherPlayers.Add(sessionId, Actor);   // TMap<uint64, ANexusOtherPlayer*>
+//   }
+// ─────────────────────────────────────────────────────────────────────────────
+static void OnRemotePlayerSpawn(uint64_t pawnId, uint64_t sessionId,
+                                const std::string& name,
+                                uint32_t hp, uint32_t maxHp,
+                                float x, float y, float z, float orientation)
+{
+    {
+        std::lock_guard lock(g_playersMtx);
+        g_remotePlayers[sessionId] = { pawnId, sessionId, name, hp, maxHp, x, y, z, orientation };
+        g_pawnToSession[pawnId]    = sessionId;
+    }
+    std::printf("[←] SMSG_SPAWN_PLAYER  pawnId=%-6llu  name=%-20s  hp=%u/%u  pos=(%.1f, %.1f, %.1f)\n",
+                static_cast<unsigned long long>(pawnId),
+                name.c_str(), hp, maxHp, x, y, z);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 원격 플레이어 디스폰 처리
+//
+// SMSG_DESPAWN_PLAYER 수신 시 호출.
+// 서버는 pawnId만 전송하므로 g_pawnToSession 역조회로 sessionId를 획득.
+//
+// UE 가이드:
+//   if (ANexusOtherPlayer** Actor = OtherPlayers.Find(sessionId))
+//   {
+//       (*Actor)->Destroy();
+//       OtherPlayers.Remove(sessionId);
+//   }
+// ─────────────────────────────────────────────────────────────────────────────
+static void OnRemotePlayerDespawn(uint64_t pawnId)
+{
+    uint64_t    sessionId = 0;
+    std::string name;
+    {
+        std::lock_guard lock(g_playersMtx);
+        auto it = g_pawnToSession.find(pawnId);
+        if (it == g_pawnToSession.end()) return;
+
+        sessionId = it->second;
+        auto pit  = g_remotePlayers.find(sessionId);
+        if (pit != g_remotePlayers.end())
+        {
+            name = pit->second.name;
+            g_remotePlayers.erase(pit);
+        }
+        g_pawnToSession.erase(it);
+    }
+    std::printf("[←] SMSG_DESPAWN_PLAYER  pawnId=%-6llu  name=%s  sessionId=%llu\n",
+                static_cast<unsigned long long>(pawnId),
+                name.c_str(),
+                static_cast<unsigned long long>(sessionId));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 원격 플레이어 TCP 이동 처리
+//
+// SMSG_MOVE_BROADCAST 수신 시 호출. 빈도가 낮으므로 즉시 위치 적용.
+//
+// UE 가이드:
+//   if (ANexusOtherPlayer** Actor = OtherPlayers.Find(sessionId))
+//   {
+//       FVector  TargetLoc(x, y, z);
+//       FRotator TargetRot(0.f, FMath::RadiansToDegrees(orientation), 0.f);
+//       (*Actor)->SetActorLocationAndRotation(TargetLoc, TargetRot);
+//   }
+// ─────────────────────────────────────────────────────────────────────────────
+static void OnRemotePlayerMoveTcp(uint64_t sessionId,
+                                   float x, float y, float z, float orientation)
+{
+    {
+        std::lock_guard lock(g_playersMtx);
+        auto it = g_remotePlayers.find(sessionId);
+        if (it != g_remotePlayers.end())
+        {
+            it->second.x           = x;
+            it->second.y           = y;
+            it->second.z           = z;
+            it->second.orientation = orientation;
+        }
+    }
+    std::printf("[←] SMSG_MOVE_BROADCAST  sessionId=%-6llu  pos=(%.1f, %.1f, %.1f)  o=%.2f\n",
+                static_cast<unsigned long long>(sessionId), x, y, z, orientation);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 원격 플레이어 UDP 이동 처리
+//
+// SMSG_MOVE_UDP 수신 시 호출. 고빈도이므로 목표 위치를 저장 후 Tick에서 보간 처리 권장.
+//
+// UE 가이드:
+//   if (ANexusOtherPlayer** Actor = OtherPlayers.Find(sessionId))
+//   {
+//       (*Actor)->SetNetworkTargetLocation(FVector(x, y, z));
+//       // Tick():
+//       //   FVector Current = GetActorLocation();
+//       //   FVector Interped = FMath::VInterpTo(Current, NetworkTargetLocation,
+//       //                                       DeltaTime, InterpSpeed);
+//       //   SetActorLocation(Interped);
+//   }
+// ─────────────────────────────────────────────────────────────────────────────
+static void OnRemotePlayerMoveUdp(uint64_t sessionId,
+                                   float x, float y, float z, float orientation)
+{
+    {
+        std::lock_guard lock(g_playersMtx);
+        auto it = g_remotePlayers.find(sessionId);
+        if (it != g_remotePlayers.end())
+        {
+            it->second.x           = x;
+            it->second.y           = y;
+            it->second.z           = z;
+            it->second.orientation = orientation;
+        }
+    }
+    std::printf("[←] SMSG_MOVE_UDP        sessionId=%-6llu  pos=(%.1f, %.1f, %.1f)  o=%.2f\n",
+                static_cast<unsigned long long>(sessionId), x, y, z, orientation);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 int main()
@@ -177,6 +349,11 @@ int main()
         }
         case SMSG_ENTER_WORLD:
         {
+            // ── UE 가이드 ────────────────────────────────────────────────────
+            // success=true 시 내 캐릭터(APlayerController가 빙의한 APawn)를
+            // SpawnPos 위치에 배치하고 HUD를 초기화한다.
+            // pawnId / sessionId 는 이후 다른 패킷에서 자신을 식별하는 키이므로
+            // GameInstance 또는 PlayerState에 저장해 둔다.
             const uint8_t     success     = r.ReadU8();
             const uint64_t    pawnId      = r.ReadU64();
             const uint32_t    characterId = r.ReadU32();
@@ -189,7 +366,7 @@ int main()
             const float       orientation = r.ReadFloat();
 
             std::printf("[←] SMSG_ENTER_WORLD  success=%u  pawnId=%llu  charId=%u  name=%s\n"
-                        "                      hp=%u/%u  pos=(%.1f, %.1f, %.1f)  o=%.2f\n",
+                        "                      hp=%u/%u  spawnPos=(%.1f, %.1f, %.1f)  o=%.2f\n",
                         success,
                         static_cast<unsigned long long>(pawnId),
                         characterId, name.c_str(),
@@ -197,10 +374,66 @@ int main()
 
             if (success)
             {
+                // 내 캐릭터 초기 상태 저장 — g_inWorld 설정 전에 완료해야 한다
+                g_myPawnId = pawnId;
+                g_myX      = x;
+                g_myY      = y;
+                g_myZ      = z;
+                g_myOrient = orientation;
+                // release: 위 값들이 메인 스레드에서 acquire 후 보이도록 보장
+                g_inWorld.store(true, std::memory_order_release);
+
                 SendZoneChat(client, "안녕하세요! (존 채팅)");
                 SendWorldChat(client, "안녕하세요! (월드 채팅)");
-                SendMove(client, 10.f, 0.f, 5.f);
             }
+            else
+            {
+                g_running.store(false);
+            }
+            break;
+        }
+
+        // ── 스폰 / 디스폰 ─────────────────────────────────────────────────────
+        case SMSG_SPAWN_PLAYER:
+        {
+            const uint64_t    pawnId      = r.ReadU64();
+            const uint64_t    sessionId   = r.ReadU64();
+            const std::string name        = r.ReadString();
+            const uint32_t    hp          = r.ReadU32();
+            const uint32_t    maxHp       = r.ReadU32();
+            const float       x           = r.ReadFloat();
+            const float       y           = r.ReadFloat();
+            const float       z           = r.ReadFloat();
+            const float       orientation = r.ReadFloat();
+            OnRemotePlayerSpawn(pawnId, sessionId, name, hp, maxHp, x, y, z, orientation);
+            break;
+        }
+        case SMSG_DESPAWN_PLAYER:
+        {
+            const uint64_t pawnId = r.ReadU64();
+            OnRemotePlayerDespawn(pawnId);
+            break;
+        }
+
+        // ── 이동 ──────────────────────────────────────────────────────────────
+        case SMSG_MOVE_BROADCAST:
+        {
+            const uint64_t sid         = r.ReadU64();
+            const float    x           = r.ReadFloat();
+            const float    y           = r.ReadFloat();
+            const float    z           = r.ReadFloat();
+            const float    orientation = r.ReadFloat();
+            OnRemotePlayerMoveTcp(sid, x, y, z, orientation);
+            break;
+        }
+        case SMSG_MOVE_UDP:
+        {
+            const uint64_t sid         = r.ReadU64();
+            const float    x           = r.ReadFloat();
+            const float    y           = r.ReadFloat();
+            const float    z           = r.ReadFloat();
+            const float    orientation = r.ReadFloat();
+            OnRemotePlayerMoveUdp(sid, x, y, z, orientation);
             break;
         }
 
@@ -226,60 +459,9 @@ int main()
             break;
         }
 
-        // ── 이동 ──────────────────────────────────────────────────────────────
-        case SMSG_MOVE_BROADCAST:
-        {
-            const uint64_t sid         = r.ReadU64();
-            const float    x           = r.ReadFloat();
-            const float    y           = r.ReadFloat();
-            const float    z           = r.ReadFloat();
-            const float    orientation = r.ReadFloat();
-            std::printf("[←] SMSG_MOVE_BROADCAST  sessionId=%llu  pos=(%.1f, %.1f, %.1f)  o=%.2f\n",
-                        static_cast<unsigned long long>(sid), x, y, z, orientation);
-            break;
-        }
-        case SMSG_MOVE_UDP:
-        {
-            const uint64_t sid         = r.ReadU64();
-            const float    x           = r.ReadFloat();
-            const float    y           = r.ReadFloat();
-            const float    z           = r.ReadFloat();
-            const float    orientation = r.ReadFloat();
-            std::printf("[←] SMSG_MOVE_UDP  sessionId=%llu  pos=(%.1f, %.1f, %.1f)  o=%.2f\n",
-                        static_cast<unsigned long long>(sid), x, y, z, orientation);
-            break;
-        }
-
-        // ── 스폰 / 디스폰 ─────────────────────────────────────────────────────
-        case SMSG_SPAWN_PLAYER:
-        {
-            const uint64_t    pawnId      = r.ReadU64();
-            const uint64_t    sessionId   = r.ReadU64();
-            const std::string name        = r.ReadString();
-            const uint32_t    hp          = r.ReadU32();
-            const uint32_t    maxHp       = r.ReadU32();
-            const float       x           = r.ReadFloat();
-            const float       y           = r.ReadFloat();
-            const float       z           = r.ReadFloat();
-            const float       orientation = r.ReadFloat();
-            std::printf("[←] SMSG_SPAWN_PLAYER  pawnId=%llu  sessionId=%llu  name=%s\n"
-                        "                       hp=%u/%u  pos=(%.1f, %.1f, %.1f)  o=%.2f\n",
-                        static_cast<unsigned long long>(pawnId),
-                        static_cast<unsigned long long>(sessionId),
-                        name.c_str(), hp, maxHp, x, y, z, orientation);
-            break;
-        }
-        case SMSG_DESPAWN_PLAYER:
-        {
-            const uint64_t pawnId = r.ReadU64();
-            std::printf("[←] SMSG_DESPAWN_PLAYER  pawnId=%llu\n",
-                        static_cast<unsigned long long>(pawnId));
-            break;
-        }
-
         default:
             std::printf("[←] 알 수 없는 opcode=0x%04x  payloadSize=%u\n",
-                        opcode, r.Remaining() + r.pos);
+                        opcode, static_cast<uint32_t>(payload.size()));
             break;
         }
     });
@@ -297,9 +479,53 @@ int main()
 
     std::printf("접속 유지 중 — 종료하려면 Ctrl+C\n\n");
 
-    // ── 서버 연결이 끊기거나 Ctrl+C 까지 대기 ────────────────────────────────
+    // ── 메인 루프: 이동 시뮬레이션 + 존 현황 출력 ────────────────────────────
+    //
+    // UE 가이드:
+    //   이 루프에 해당하는 로직은 PlayerController::Tick() 또는
+    //   UNexusNetworkComponent::TickComponent() 에 구현한다.
+    //   - 이동 입력: EnhancedInput 의 IA_Move 값을 읽어 CMSG_MOVE 전송
+    //   - 빠른 위치 동기화가 필요하다면 CMSG_MOVE_UDP 로 전환
+    auto lastMoveSend    = std::chrono::steady_clock::now();
+    auto lastStatusPrint = std::chrono::steady_clock::now();
+    float moveDirX = 1.f;
+
     while (g_running.load())
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    {
+        auto now = std::chrono::steady_clock::now();
+
+        if (g_inWorld.load(std::memory_order_acquire))
+        {
+            // 500ms마다 이동 패킷 전송 (왕복 직선 이동 시뮬레이션)
+            if (now - lastMoveSend >= std::chrono::milliseconds(500))
+            {
+                g_myX += moveDirX * 2.f;
+                if (g_myX > 30.f || g_myX < -30.f)
+                    moveDirX = -moveDirX;
+                g_myOrient = (moveDirX > 0.f) ? 0.f : 3.14159f;
+                SendMove(client, g_myX, g_myY, g_myZ, g_myOrient);
+                lastMoveSend = now;
+            }
+
+            // 5초마다 존 플레이어 현황 출력
+            if (now - lastStatusPrint >= std::chrono::seconds(5))
+            {
+                std::lock_guard lock(g_playersMtx);
+                std::printf("\n[현황] 내 pawnId=%llu  존 내 다른 플레이어 수: %zu\n",
+                            static_cast<unsigned long long>(g_myPawnId),
+                            g_remotePlayers.size());
+                for (auto& [sid, p] : g_remotePlayers)
+                    std::printf("  %-20s  pawnId=%-6llu  pos=(%.1f, %.1f, %.1f)  hp=%u/%u\n",
+                                p.name.c_str(),
+                                static_cast<unsigned long long>(p.pawnId),
+                                p.x, p.y, p.z, p.hp, p.maxHp);
+                std::printf("\n");
+                lastStatusPrint = now;
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
 
     std::printf("\n종료 — 연결 해제 중...\n");
     client.Disconnect();
