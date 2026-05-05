@@ -3,9 +3,10 @@
 #include "ZoneActor.h"
 
 #include "../../Connection.h"
-#include "../../Packets/PacketBase.h"
 #include "../../Shared/Logger.h"
-#include "../Data/GamePackets/Packet-Example.hpp"
+#include "../../protocol_shared/Packets/Packet-Auth.h"
+#include "../../protocol_shared/Packets/Packet-Movement.h"
+#include "../../protocol_shared/Packets/Packet-Chat.h"
 
 SessionActor::SessionActor(std::shared_ptr<Session> session,
                            WorldActor&              world)
@@ -32,35 +33,35 @@ void SessionActor::OnMessage(SessionMessage& msg)
 // ─────────────────────────────────────────────────────────────────────────────
 void SessionActor::Handle(MsgNet_PacketReceived& msg)
 {
-    PacketReader reader = PacketReader::FromPayload(
-        msg.opcode,
-        msg.payload.data(),
-        static_cast<uint32_t>(msg.payload.size()));
+    NexusPacketParser r{ msg.payload.data(), static_cast<uint32_t>(msg.payload.size()) };
 
     switch (msg.opcode)
     {
     case CMSG_LOGIN:
     {
+        auto pkt = CMsg_Login::Decode(r);
         MsgSession_Login login;
         login.sessionId   = m_sessionId;
-        login.accountName = reader.ReadString();
-        login.token       = reader.ReadString();
+        login.accountName = std::move(pkt.accountName);
+        login.token       = std::move(pkt.token);
         m_world.Post(std::move(login));
         break;
     }
     case CMSG_CHAR_SETUP:
     {
+        auto pkt = CMsg_CharSetup::Decode(r);
         MsgSession_CharSetup charSetup;
-        charSetup.sessionId            = m_sessionId;
-        charSetup.setup.characterName  = reader.ReadString();
+        charSetup.sessionId           = m_sessionId;
+        charSetup.setup.characterName = std::move(pkt.characterName);
         m_world.Post(std::move(charSetup));
         break;
     }
     case CMSG_ENTER_WORLD:
     {
+        auto pkt = CMsg_EnterWorld::Decode(r);
         MsgSession_EnterWorld enter;
-        enter.sessionId    = m_sessionId;
-        enter.characterId  = reader.ReadUInt32();
+        enter.sessionId   = m_sessionId;
+        enter.characterId = pkt.characterId;
         m_world.Post(std::move(enter));
         break;
     }
@@ -68,12 +69,11 @@ void SessionActor::Handle(MsgNet_PacketReceived& msg)
     {
         auto* zone = m_zone.load(std::memory_order_acquire);
         if (!zone) break;
+        auto pkt = CMsg_Move::Decode(r);
         MsgSession_Move move;
         move.sessionId   = m_sessionId;
-        move.pos.x       = reader.ReadFloat();
-        move.pos.y       = reader.ReadFloat();
-        move.pos.z       = reader.ReadFloat();
-        move.orientation = reader.ReadFloat();
+        move.pos         = { pkt.x, pkt.y, pkt.z };
+        move.orientation = pkt.orientation;
         zone->Post(std::move(move));
         break;
     }
@@ -81,12 +81,11 @@ void SessionActor::Handle(MsgNet_PacketReceived& msg)
     {
         auto* zone = m_zone.load(std::memory_order_acquire);
         if (!zone) break;
+        auto pkt = CMsg_MoveUdp::Decode(r);
         MsgSession_MoveUdp move;
         move.sessionId   = m_sessionId;
-        move.pos.x       = reader.ReadFloat();
-        move.pos.y       = reader.ReadFloat();
-        move.pos.z       = reader.ReadFloat();
-        move.orientation = reader.ReadFloat();
+        move.pos         = { pkt.x, pkt.y, pkt.z };
+        move.orientation = pkt.orientation;
         zone->Post(std::move(move));
         break;
     }
@@ -94,17 +93,19 @@ void SessionActor::Handle(MsgNet_PacketReceived& msg)
     {
         auto* zone = m_zone.load(std::memory_order_acquire);
         if (!zone) break;
+        auto pkt = CMsg_Chat::Decode(r);
         MsgSession_Chat chat;
         chat.sessionId = m_sessionId;
-        chat.text      = reader.ReadString();
+        chat.text      = std::move(pkt.text);
         zone->Post(std::move(chat));
         break;
     }
     case CMSG_WORLD_CHAT:
     {
+        auto pkt = CMsg_WorldChat::Decode(r);
         MsgSession_WorldChat worldChat;
         worldChat.sessionId = m_sessionId;
-        worldChat.text      = reader.ReadString();
+        worldChat.text      = std::move(pkt.text);
         m_world.Post(std::move(worldChat));
         break;
     }
@@ -140,21 +141,16 @@ void SessionActor::Handle(MsgZone_Disconnect& msg)
 
 void SessionActor::Handle(MsgWorld_LoginResult& msg)
 {
-    PacketWriter w(SMSG_LOGIN_RESULT);
-    w.WriteUInt8(msg.success ? 1u : 0u);
-    w.WriteString(msg.message);
-    const auto& buf = w.Finalize();
     if (m_session && m_session->IsConnected())
-        m_session->Send(buf);
+        m_session->Send(SMsg_LoginResult{ .success = msg.success, .message = msg.message }.Encode());
 }
 
 void SessionActor::Handle(MsgWorld_CharSetupResult& msg)
 {
-    PacketWriter w(SMSG_CHAR_SETUP_RESULT);
-    w.WriteUInt8(msg.success ? 1u : 0u);
-    w.WriteUInt32(msg.characterId);   // 서버 발급 ID — 클라이언트는 이 값을 CMSG_ENTER_WORLD에 사용
-    w.WriteString(msg.message);
-    const auto& buf = w.Finalize();
     if (m_session && m_session->IsConnected())
-        m_session->Send(buf);
+        m_session->Send(SMsg_CharSetupResult{
+            .success     = msg.success,
+            .characterId = msg.characterId,
+            .message     = msg.message
+        }.Encode());
 }

@@ -1,9 +1,8 @@
 #include "WorldActor.h"
 #include "SessionActor.h"
 #include "ZoneActor.h"
-#include "../../Packets/PacketBase.h"
 #include "../../Shared/Logger.h"
-#include "../Data/GamePackets/Packet-Example.hpp"
+#include "../../protocol_shared/Packets/Packet-Chat.h"
 
 WorldActor::WorldActor() = default;
 
@@ -135,11 +134,11 @@ void WorldActor::Handle(MsgSession_WorldChat& msg)
     const std::string& senderName = user->GetCharacterSetup().characterName;
     LOG_DEBUG("WorldActor: 월드채팅 [{}] {}", senderName, msg.text);
 
-    PacketWriter w(SMSG_WORLD_CHAT);
-    w.WriteUInt64(msg.sessionId);
-    w.WriteString(senderName);
-    w.WriteString(msg.text);
-    const auto& packet = w.Finalize();
+    const auto packet = SMsg_WorldChat{
+        .sessionId = msg.sessionId,
+        .name      = senderName,
+        .text      = msg.text
+    }.Encode();
 
     // 모든 세션에 브로드캐스트 (CHAR_READY 이상 필터링은 클라이언트가 처리)
     for (auto& [sid, sa] : m_sessions)
