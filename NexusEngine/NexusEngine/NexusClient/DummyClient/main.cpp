@@ -1,7 +1,8 @@
 #include <NetClient.h>
-#include <Packets/PacketBase.h>
-#include "Packets/GamePackets.hpp"
-#include "../../protocol_shared/PacketParser.h"
+#include "../../protocol_shared/Packets/Packet-Auth.h"
+#include "../../protocol_shared/Packets/Packet-Movement.h"
+#include "../../protocol_shared/Packets/Packet-Chat.h"
+#include "../../protocol_shared/Packets/Packet-Spawn.h"
 
 #include <atomic>
 #include <chrono>
@@ -99,55 +100,42 @@ static std::string GenerateCharName()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 송신 헬퍼
+// 송신 헬퍼 — 공유 패킷 클래스의 Encode() 사용
 // ─────────────────────────────────────────────────────────────────────────────
 
 static void SendLogin(NetClient& client)
 {
-    ClientPacketWriter w(CMSG_LOGIN);
-    w.WriteString(g_charName);
-    w.WriteString(LOGIN_TOKEN);
-    client.Send(w.Finalize());
+    client.Send(CMsg_Login{ .accountName = g_charName, .token = LOGIN_TOKEN }.Encode());
     std::printf("[→] CMSG_LOGIN  account=%s\n", g_charName.c_str());
 }
 
 static void SendCharSetup(NetClient& client, const std::string& name)
 {
-    ClientPacketWriter w(CMSG_CHAR_SETUP);
-    w.WriteString(name);
-    client.Send(w.Finalize());
+    client.Send(CMsg_CharSetup{ .characterName = name }.Encode());
     std::printf("[→] CMSG_CHAR_SETUP  name=%s\n", name.c_str());
 }
 
 static void SendEnterWorld(NetClient& client, uint32_t characterId)
 {
-    ClientPacketWriter w(CMSG_ENTER_WORLD);
-    w.WriteUInt32(characterId);
-    client.Send(w.Finalize());
+    client.Send(CMsg_EnterWorld{ .characterId = characterId }.Encode());
     std::printf("[→] CMSG_ENTER_WORLD  characterId=%u\n", characterId);
 }
 
 static void SendZoneChat(NetClient& client, const std::string& text)
 {
-    ClientPacketWriter w(CMSG_CHAT);
-    w.WriteString(text);
-    client.Send(w.Finalize());
+    client.Send(CMsg_Chat{ .text = text }.Encode());
     std::printf("[→] CMSG_CHAT (존)  text=\"%s\"\n", text.c_str());
 }
 
 static void SendWorldChat(NetClient& client, const std::string& text)
 {
-    ClientPacketWriter w(CMSG_WORLD_CHAT);
-    w.WriteString(text);
-    client.Send(w.Finalize());
+    client.Send(CMsg_WorldChat{ .text = text }.Encode());
     std::printf("[→] CMSG_WORLD_CHAT  text=\"%s\"\n", text.c_str());
 }
 
 static void SendMove(NetClient& client, float x, float y, float z, float orientation = 0.f)
 {
-    ClientPacketWriter w(CMSG_MOVE);
-    w.WriteFloat(x).WriteFloat(y).WriteFloat(z).WriteFloat(orientation);
-    client.Send(w.Finalize());
+    client.Send(CMsg_Move{ .x = x, .y = y, .z = z, .orientation = orientation }.Encode());
     std::printf("[→] CMSG_MOVE  pos=(%.1f, %.1f, %.1f)  o=%.2f\n", x, y, z, orientation);
 }
 
@@ -170,19 +158,19 @@ static void SendMove(NetClient& client, float x, float y, float z, float orienta
 //       OtherPlayers.Add(sessionId, Actor);   // TMap<uint64, ANexusOtherPlayer*>
 //   }
 // ─────────────────────────────────────────────────────────────────────────────
-static void OnRemotePlayerSpawn(uint64_t pawnId, uint64_t sessionId,
-                                const std::string& name,
-                                uint32_t hp, uint32_t maxHp,
-                                float x, float y, float z, float orientation)
+static void OnRemotePlayerSpawn(const SMsg_SpawnPlayer& pkt)
 {
     {
         std::lock_guard lock(g_playersMtx);
-        g_remotePlayers[sessionId] = { pawnId, sessionId, name, hp, maxHp, x, y, z, orientation };
-        g_pawnToSession[pawnId]    = sessionId;
+        g_remotePlayers[pkt.sessionId] = {
+            pkt.pawnId, pkt.sessionId, pkt.name,
+            pkt.hp, pkt.maxHp, pkt.x, pkt.y, pkt.z, pkt.orientation
+        };
+        g_pawnToSession[pkt.pawnId] = pkt.sessionId;
     }
     std::printf("[←] SMSG_SPAWN_PLAYER  pawnId=%-6llu  name=%-20s  hp=%u/%u  pos=(%.1f, %.1f, %.1f)\n",
-                static_cast<unsigned long long>(pawnId),
-                name.c_str(), hp, maxHp, x, y, z);
+                static_cast<unsigned long long>(pkt.pawnId),
+                pkt.name.c_str(), pkt.hp, pkt.maxHp, pkt.x, pkt.y, pkt.z);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -198,13 +186,13 @@ static void OnRemotePlayerSpawn(uint64_t pawnId, uint64_t sessionId,
 //       OtherPlayers.Remove(sessionId);
 //   }
 // ─────────────────────────────────────────────────────────────────────────────
-static void OnRemotePlayerDespawn(uint64_t pawnId)
+static void OnRemotePlayerDespawn(const SMsg_DespawnPlayer& pkt)
 {
     uint64_t    sessionId = 0;
     std::string name;
     {
         std::lock_guard lock(g_playersMtx);
-        auto it = g_pawnToSession.find(pawnId);
+        auto it = g_pawnToSession.find(pkt.pawnId);
         if (it == g_pawnToSession.end()) return;
 
         sessionId = it->second;
@@ -217,7 +205,7 @@ static void OnRemotePlayerDespawn(uint64_t pawnId)
         g_pawnToSession.erase(it);
     }
     std::printf("[←] SMSG_DESPAWN_PLAYER  pawnId=%-6llu  name=%s  sessionId=%llu\n",
-                static_cast<unsigned long long>(pawnId),
+                static_cast<unsigned long long>(pkt.pawnId),
                 name.c_str(),
                 static_cast<unsigned long long>(sessionId));
 }
@@ -235,22 +223,21 @@ static void OnRemotePlayerDespawn(uint64_t pawnId)
 //       (*Actor)->SetActorLocationAndRotation(TargetLoc, TargetRot);
 //   }
 // ─────────────────────────────────────────────────────────────────────────────
-static void OnRemotePlayerMoveTcp(uint64_t sessionId,
-                                   float x, float y, float z, float orientation)
+static void OnRemotePlayerMoveTcp(const SMsg_MoveBroadcast& pkt)
 {
     {
         std::lock_guard lock(g_playersMtx);
-        auto it = g_remotePlayers.find(sessionId);
+        auto it = g_remotePlayers.find(pkt.sessionId);
         if (it != g_remotePlayers.end())
         {
-            it->second.x           = x;
-            it->second.y           = y;
-            it->second.z           = z;
-            it->second.orientation = orientation;
+            it->second.x           = pkt.x;
+            it->second.y           = pkt.y;
+            it->second.z           = pkt.z;
+            it->second.orientation = pkt.orientation;
         }
     }
     std::printf("[←] SMSG_MOVE_BROADCAST  sessionId=%-6llu  pos=(%.1f, %.1f, %.1f)  o=%.2f\n",
-                static_cast<unsigned long long>(sessionId), x, y, z, orientation);
+                static_cast<unsigned long long>(pkt.sessionId), pkt.x, pkt.y, pkt.z, pkt.orientation);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -269,22 +256,21 @@ static void OnRemotePlayerMoveTcp(uint64_t sessionId,
 //       //   SetActorLocation(Interped);
 //   }
 // ─────────────────────────────────────────────────────────────────────────────
-static void OnRemotePlayerMoveUdp(uint64_t sessionId,
-                                   float x, float y, float z, float orientation)
+static void OnRemotePlayerMoveUdp(const SMsg_MoveUdp& pkt)
 {
     {
         std::lock_guard lock(g_playersMtx);
-        auto it = g_remotePlayers.find(sessionId);
+        auto it = g_remotePlayers.find(pkt.sessionId);
         if (it != g_remotePlayers.end())
         {
-            it->second.x           = x;
-            it->second.y           = y;
-            it->second.z           = z;
-            it->second.orientation = orientation;
+            it->second.x           = pkt.x;
+            it->second.y           = pkt.y;
+            it->second.z           = pkt.z;
+            it->second.orientation = pkt.orientation;
         }
     }
     std::printf("[←] SMSG_MOVE_UDP        sessionId=%-6llu  pos=(%.1f, %.1f, %.1f)  o=%.2f\n",
-                static_cast<unsigned long long>(sessionId), x, y, z, orientation);
+                static_cast<unsigned long long>(pkt.sessionId), pkt.x, pkt.y, pkt.z, pkt.orientation);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -311,7 +297,7 @@ int main()
         g_running.store(false);
     });
 
-    // ── 수신 패킷 핸들러 ──────────────────────────────────────────────────────
+    // ── 수신 패킷 핸들러 — 공유 패킷 클래스의 Decode() 사용 ───────────────────
     client.SetOnPacket([&client](uint16_t opcode, std::vector<uint8_t> payload)
     {
         NexusPacketParser r{ payload.data(), static_cast<uint32_t>(payload.size()) };
@@ -321,11 +307,10 @@ int main()
         // ── 인증 / 접속 ───────────────────────────────────────────────────────
         case SMSG_LOGIN_RESULT:
         {
-            const uint8_t     success = r.ReadU8();
-            const std::string message = r.ReadString();
+            auto pkt = SMsg_LoginResult::Decode(r);
             std::printf("[←] SMSG_LOGIN_RESULT  success=%u  message=\"%s\"\n",
-                        success, message.c_str());
-            if (success)
+                        pkt.success, pkt.message.c_str());
+            if (pkt.success)
                 SendCharSetup(client, g_charName);
             else
                 g_running.store(false);
@@ -333,15 +318,13 @@ int main()
         }
         case SMSG_CHAR_SETUP_RESULT:
         {
-            const uint8_t     success     = r.ReadU8();
-            const uint32_t    characterId = r.ReadU32();
-            const std::string message     = r.ReadString();
+            auto pkt = SMsg_CharSetupResult::Decode(r);
             std::printf("[←] SMSG_CHAR_SETUP_RESULT  success=%u  characterId=%u  message=\"%s\"\n",
-                        success, characterId, message.c_str());
-            if (success)
+                        pkt.success, pkt.characterId, pkt.message.c_str());
+            if (pkt.success)
             {
-                g_characterId.store(characterId);
-                SendEnterWorld(client, characterId);
+                g_characterId.store(pkt.characterId);
+                SendEnterWorld(client, pkt.characterId);
             }
             else
                 g_running.store(false);
@@ -352,35 +335,23 @@ int main()
             // ── UE 가이드 ────────────────────────────────────────────────────
             // success=true 시 내 캐릭터(APlayerController가 빙의한 APawn)를
             // SpawnPos 위치에 배치하고 HUD를 초기화한다.
-            // pawnId / sessionId 는 이후 다른 패킷에서 자신을 식별하는 키이므로
+            // pawnId 는 이후 다른 패킷에서 자신을 식별하는 키이므로
             // GameInstance 또는 PlayerState에 저장해 둔다.
-            const uint8_t     success     = r.ReadU8();
-            const uint64_t    pawnId      = r.ReadU64();
-            const uint32_t    characterId = r.ReadU32();
-            const std::string name        = r.ReadString();
-            const uint32_t    hp          = r.ReadU32();
-            const uint32_t    maxHp       = r.ReadU32();
-            const float       x           = r.ReadFloat();
-            const float       y           = r.ReadFloat();
-            const float       z           = r.ReadFloat();
-            const float       orientation = r.ReadFloat();
-
+            auto pkt = SMsg_EnterWorld::Decode(r);
             std::printf("[←] SMSG_ENTER_WORLD  success=%u  pawnId=%llu  charId=%u  name=%s\n"
                         "                      hp=%u/%u  spawnPos=(%.1f, %.1f, %.1f)  o=%.2f\n",
-                        success,
-                        static_cast<unsigned long long>(pawnId),
-                        characterId, name.c_str(),
-                        hp, maxHp, x, y, z, orientation);
+                        pkt.success,
+                        static_cast<unsigned long long>(pkt.pawnId),
+                        pkt.characterId, pkt.name.c_str(),
+                        pkt.hp, pkt.maxHp, pkt.x, pkt.y, pkt.z, pkt.orientation);
 
-            if (success)
+            if (pkt.success)
             {
-                // 내 캐릭터 초기 상태 저장 — g_inWorld 설정 전에 완료해야 한다
-                g_myPawnId = pawnId;
-                g_myX      = x;
-                g_myY      = y;
-                g_myZ      = z;
-                g_myOrient = orientation;
-                // release: 위 값들이 메인 스레드에서 acquire 후 보이도록 보장
+                g_myPawnId = pkt.pawnId;
+                g_myX      = pkt.x;
+                g_myY      = pkt.y;
+                g_myZ      = pkt.z;
+                g_myOrient = pkt.orientation;
                 g_inWorld.store(true, std::memory_order_release);
 
                 SendZoneChat(client, "안녕하세요! (존 채팅)");
@@ -395,67 +366,37 @@ int main()
 
         // ── 스폰 / 디스폰 ─────────────────────────────────────────────────────
         case SMSG_SPAWN_PLAYER:
-        {
-            const uint64_t    pawnId      = r.ReadU64();
-            const uint64_t    sessionId   = r.ReadU64();
-            const std::string name        = r.ReadString();
-            const uint32_t    hp          = r.ReadU32();
-            const uint32_t    maxHp       = r.ReadU32();
-            const float       x           = r.ReadFloat();
-            const float       y           = r.ReadFloat();
-            const float       z           = r.ReadFloat();
-            const float       orientation = r.ReadFloat();
-            OnRemotePlayerSpawn(pawnId, sessionId, name, hp, maxHp, x, y, z, orientation);
+            OnRemotePlayerSpawn(SMsg_SpawnPlayer::Decode(r));
             break;
-        }
+
         case SMSG_DESPAWN_PLAYER:
-        {
-            const uint64_t pawnId = r.ReadU64();
-            OnRemotePlayerDespawn(pawnId);
+            OnRemotePlayerDespawn(SMsg_DespawnPlayer::Decode(r));
             break;
-        }
 
         // ── 이동 ──────────────────────────────────────────────────────────────
         case SMSG_MOVE_BROADCAST:
-        {
-            const uint64_t sid         = r.ReadU64();
-            const float    x           = r.ReadFloat();
-            const float    y           = r.ReadFloat();
-            const float    z           = r.ReadFloat();
-            const float    orientation = r.ReadFloat();
-            OnRemotePlayerMoveTcp(sid, x, y, z, orientation);
+            OnRemotePlayerMoveTcp(SMsg_MoveBroadcast::Decode(r));
             break;
-        }
+
         case SMSG_MOVE_UDP:
-        {
-            const uint64_t sid         = r.ReadU64();
-            const float    x           = r.ReadFloat();
-            const float    y           = r.ReadFloat();
-            const float    z           = r.ReadFloat();
-            const float    orientation = r.ReadFloat();
-            OnRemotePlayerMoveUdp(sid, x, y, z, orientation);
+            OnRemotePlayerMoveUdp(SMsg_MoveUdp::Decode(r));
             break;
-        }
 
         // ── 채팅 ──────────────────────────────────────────────────────────────
         case SMSG_CHAT:
         {
-            const uint64_t    sessionId = r.ReadU64();
-            const std::string name      = r.ReadString();
-            const std::string text      = r.ReadString();
+            auto pkt = SMsg_Chat::Decode(r);
             std::printf("[←] SMSG_CHAT (존)  [%s] %s  (sessionId=%llu)\n",
-                        name.c_str(), text.c_str(),
-                        static_cast<unsigned long long>(sessionId));
+                        pkt.name.c_str(), pkt.text.c_str(),
+                        static_cast<unsigned long long>(pkt.sessionId));
             break;
         }
         case SMSG_WORLD_CHAT:
         {
-            const uint64_t    sessionId = r.ReadU64();
-            const std::string name      = r.ReadString();
-            const std::string text      = r.ReadString();
+            auto pkt = SMsg_WorldChat::Decode(r);
             std::printf("[←] SMSG_WORLD_CHAT  [%s] %s  (sessionId=%llu)\n",
-                        name.c_str(), text.c_str(),
-                        static_cast<unsigned long long>(sessionId));
+                        pkt.name.c_str(), pkt.text.c_str(),
+                        static_cast<unsigned long long>(pkt.sessionId));
             break;
         }
 
