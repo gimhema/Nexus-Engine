@@ -1,7 +1,10 @@
 mod config;
-mod dbagent;
 mod dbconn;
-mod dbpackets;
+mod msg;
+
+// msg-action 디렉토리명에 하이픈이 포함되어 있어 #[path] 어트리뷰트로 매핑
+#[path = "msg-action/mod.rs"]
+mod msg_action;
 
 use anyhow::Result;
 use sqlx::SqlitePool;
@@ -20,12 +23,9 @@ async fn main() -> Result<()> {
 
     let cfg = config::Config::load()?;
 
-    // DB 연결 풀 초기화 (스키마 자동 생성 포함)
     let pool = match cfg.database.backend.as_str() {
         "sqlite" => dbconn::init_pool(&cfg.database.sqlite_path).await?,
-        other => {
-            anyhow::bail!("지원하지 않는 DB 백엔드: '{}' (현재: sqlite만 지원)", other);
-        }
+        other => anyhow::bail!("지원하지 않는 DB 백엔드: '{}' (현재: sqlite만 지원)", other),
     };
 
     let addr = format!("{}:{}", cfg.relay.host, cfg.relay.port);
@@ -47,14 +47,9 @@ async fn main() -> Result<()> {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TCP 연결 1개 처리 루프
-//
-// 패킷 포맷: [u16 total_size][u16 opcode][payload...]
-// total_size는 헤더(4바이트) 포함.
+// 패킷 포맷: [u16 total_size][u16 opcode][payload...]  (total_size는 헤더 포함)
 // ─────────────────────────────────────────────────────────────────────────────
-async fn handle_connection(
-    mut stream: tokio::net::TcpStream,
-    pool: SqlitePool,
-) -> Result<()> {
+async fn handle_connection(mut stream: tokio::net::TcpStream, pool: SqlitePool) -> Result<()> {
     let mut header = [0u8; 4];
 
     loop {
@@ -63,7 +58,6 @@ async fn handle_connection(
         let total_size = u16::from_le_bytes([header[0], header[1]]) as usize;
         let opcode     = u16::from_le_bytes([header[2], header[3]]);
 
-        // total_size가 헤더보다 작으면 잘못된 패킷
         let payload_size = total_size.saturating_sub(4);
         if payload_size > 65535 {
             anyhow::bail!("비정상 패킷 크기: {}", total_size);
@@ -76,7 +70,7 @@ async fn handle_connection(
 
         log::debug!("수신: opcode={:#06x} size={}", opcode, total_size);
 
-        let response = dbagent::handle_packet(opcode, &payload, &pool).await;
+        let response = msg_action::handle_packet(opcode, &payload, &pool).await;
         stream.write_all(&response).await?;
     }
 }
