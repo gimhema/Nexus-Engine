@@ -1,0 +1,15 @@
+# NexusDBRelay 설정 파일
+# 수정하지 않아도 기본값으로 동작합니다.
+
+[relay]
+host = "127.0.0.1"
+port = 7073
+
+[database]
+# "sqlite" (기본값, 제로 설정) 또는 "postgresql" (대규모 운영용)
+backend     = "sqlite"
+sqlite_path = "./nexus_data.db"
+
+# PostgreSQL 사용 시 아래 주석 해제 후 설정
+# backend        = "postgresql"
+# postgresql_url = "postgres://user:password@localhost/nexus"
