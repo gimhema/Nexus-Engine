@@ -3,6 +3,9 @@
 #include "Pawn.h"
 #include "../../Data/GameDataEntities/CharacterEntityData.h"
 
+#include <chrono>
+#include <unordered_map>
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PlayerPawn — 플레이어블 Pawn (클라이언트 세션 보유)
 //
@@ -34,6 +37,19 @@ public:
         return *static_cast<const CharacterEntityData*>(m_data.get());
     }
 
+    // ── 스킬 쿨타임 ──────────────────────────────────────────────────────────
+    // 쿨타임 진행 중이면 true 반환
+    [[nodiscard]] bool IsOnCooldown(uint32_t skillId) const;
+
+    // 스킬 사용 후 쿨타임 등록 (cooldownMs 밀리초 동안 재사용 불가)
+    void SetCooldown(uint32_t skillId, uint32_t cooldownMs);
+
 private:
     uint32_t m_characterId{};
+
+    using Clock     = std::chrono::steady_clock;
+    using TimePoint = Clock::time_point;
+
+    // skillId → 쿨타임 만료 시각. ZoneActor 전용 스레드에서만 접근.
+    std::unordered_map<uint32_t, TimePoint> m_cooldowns;
 };

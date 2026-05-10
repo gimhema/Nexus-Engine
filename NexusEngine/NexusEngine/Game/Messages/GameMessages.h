@@ -87,6 +87,16 @@ struct MsgSession_LeaveZone
     uint64_t sessionId{};
 };
 
+// 플레이어가 스킬 사용 요청
+struct MsgSession_UseSkill
+{
+    uint64_t sessionId{};
+    uint32_t skillId{};
+    uint64_t targetPawnId{};     // 단일 대상 스킬 (AoE면 0)
+    Vec3     targetPos;          // 스킬 시전 좌표
+    uint32_t clientTimestamp{};  // 클라이언트 타임스탬프 (ms) — 래그 보상용
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ZoneActor → SessionActor
 // ─────────────────────────────────────────────────────────────────────────────
@@ -264,6 +274,7 @@ using ZoneMessage = std::variant<
     MsgSession_MoveUdp,
     MsgSession_Chat,
     MsgSession_LeaveZone,
+    MsgSession_UseSkill,
     MsgWorld_AddPlayer,
     MsgWorld_RemovePlayer,
     MsgGameLogic_WorldEvent     // GameLogic 브로드캐스트 수신

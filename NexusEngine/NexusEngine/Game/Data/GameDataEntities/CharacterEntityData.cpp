@@ -1,5 +1,7 @@
 #include "CharacterEntityData.h"
 
+#include <algorithm>
+
 // 신규 캐릭터 기본 스탯: hp=100, atk=10, def=5, speed=3
 // 플레이어는 DEFENSIVE AI (공격받으면 반격)
 CharacterEntityData::CharacterEntityData(EFactionId factionId)
@@ -44,6 +46,19 @@ void CharacterEntityData::ApplyLevelUp()
     m_maxHp   += 10;
     m_attack  += 1;
     m_defense += 1;
+    m_maxMp   += 5;
+}
+
+bool CharacterEntityData::ConsumeMp(int32_t cost)
+{
+    if (m_mp < cost) return false;
+    m_mp -= cost;
+    return true;
+}
+
+void CharacterEntityData::RestoreMp(int32_t amount)
+{
+    m_mp = std::min(m_mp + amount, m_maxMp);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

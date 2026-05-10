@@ -61,6 +61,7 @@ private:
     void Handle(MsgSession_MoveUdp&      msg);
     void Handle(MsgSession_Chat&         msg);
     void Handle(MsgSession_LeaveZone&    msg);
+    void Handle(MsgSession_UseSkill&     msg);
     void Handle(MsgWorld_AddPlayer&      msg);
     void Handle(MsgWorld_RemovePlayer&   msg);
     void Handle(MsgGameLogic_WorldEvent& msg);

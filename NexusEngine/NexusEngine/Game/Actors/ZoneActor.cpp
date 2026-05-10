@@ -2,12 +2,15 @@
 #include "SessionActor.h"
 #include "../Data/GameDataEntities/NpcEntityData.h"
 #include "../Data/GameDataEntities/MonsterEntityData.h"
+#include "../Data/Skill/SkillRegistry.h"
+#include "../Logic/Combat/CombatProcessor.h"
 
 #include "../../Shared/Logger.h"
 #include "../../protocol_shared/Packets/Packet-Auth.h"
 #include "../../protocol_shared/Packets/Packet-Movement.h"
 #include "../../protocol_shared/Packets/Packet-Chat.h"
 #include "../../protocol_shared/Packets/Packet-Spawn.h"
+#include "../../protocol_shared/Packets/Packet-Combat.h"
 
 ZoneActor::ZoneActor(Zone zone, WorldActor& world)
     : m_zone(std::move(zone))
@@ -71,6 +74,7 @@ void ZoneActor::OnMessage(ZoneMessage& msg)
         [this](MsgSession_MoveUdp&      m) { Handle(m); },
         [this](MsgSession_Chat&         m) { Handle(m); },
         [this](MsgSession_LeaveZone&    m) { Handle(m); },
+        [this](MsgSession_UseSkill&     m) { Handle(m); },
         [this](MsgWorld_AddPlayer&      m) { Handle(m); },
         [this](MsgWorld_RemovePlayer&   m) { Handle(m); },
         [this](MsgGameLogic_WorldEvent& m) { Handle(m); },
@@ -299,6 +303,85 @@ void ZoneActor::Handle(MsgWorld_RemovePlayer& msg)
     m_playerPawns.erase(it);
 
     BroadcastTcp(msg.sessionId, SMsg_DespawnPlayer{ .pawnId = pawnId }.Encode());
+}
+
+void ZoneActor::Handle(MsgSession_UseSkill& msg)
+{
+    // ── 공격자 확인 ───────────────────────────────────────────────────────────
+    PlayerPawn* attacker = FindPlayerPawn(msg.sessionId);
+    if (!attacker) return;
+
+    // ── 스킬 정의 조회 ────────────────────────────────────────────────────────
+    const SkillDef* def = SkillRegistry::Instance().Get(msg.skillId);
+    if (!def)
+    {
+        LOG_WARN("ZoneActor {}: 알 수 없는 skillId={} sessionId={}",
+                 m_zone.GetId(), msg.skillId, msg.sessionId);
+        return;
+    }
+
+    // ── 대상 탐색 (단일 대상 스킬) ───────────────────────────────────────────
+    Pawn* target = nullptr;
+    if (msg.targetPawnId != 0)
+    {
+        // 플레이어 대상 우선 조회, 없으면 NPC/몬스터 조회
+        for (auto& [sid, pawn] : m_playerPawns)
+        {
+            if (pawn->GetPawnId() == msg.targetPawnId)
+            {
+                target = pawn.get();
+                break;
+            }
+        }
+        if (!target) target = FindNpcPawn(msg.targetPawnId);
+    }
+
+    if (!target)
+    {
+        LOG_WARN("ZoneActor {}: 스킬 대상 없음 targetPawnId={}", m_zone.GetId(), msg.targetPawnId);
+        return;
+    }
+
+    // ── 전투 처리 ─────────────────────────────────────────────────────────────
+    const auto res = CombatProcessor::ProcessSingleTarget(*attacker, *target, *def);
+
+    // 결과 브로드캐스트 (자신 포함 — 자신의 예측값과 비교용)
+    BroadcastTcp(0, SMsg_SkillResult{
+        .success        = res.success,
+        .attackerPawnId = attacker->GetPawnId(),
+        .targetPawnId   = target->GetPawnId(),
+        .damage         = res.damage,
+        .targetRemainHp = res.targetRemainHp,
+        .message        = res.success ? "" : res.failReason
+    }.Encode());
+
+    if (!res.success) return;
+
+    LOG_DEBUG("ZoneActor {}: 스킬 적중 skill={} attacker={} target={} dmg={} hp={}",
+              m_zone.GetId(), def->name, attacker->GetPawnId(),
+              target->GetPawnId(), res.damage, res.targetRemainHp);
+
+    // 대상 사망 시 — HP 0 브로드캐스트 후 디스폰
+    if (res.targetDied)
+    {
+        BroadcastTcp(0, SMsg_PawnHpUpdate{
+            .pawnId = target->GetPawnId(),
+            .hp     = 0,
+            .maxHp  = static_cast<uint32_t>(target->GetMaxHp())
+        }.Encode());
+
+        // 플레이어 사망이면 세션 연결 유지, NPC/몬스터면 디스폰
+        if (!target->IsPlayable())
+        {
+            DespawnNpc(target->GetPawnId());
+            LOG_INFO("ZoneActor {}: NPC 사망 pawnId={}", m_zone.GetId(), target->GetPawnId());
+        }
+        else
+        {
+            LOG_INFO("ZoneActor {}: 플레이어 사망 pawnId={}", m_zone.GetId(), target->GetPawnId());
+            // Phase 2: 리스폰 로직, 패널티 처리 예정
+        }
+    }
 }
 
 void ZoneActor::Handle(MsgGameLogic_WorldEvent& msg)

@@ -4,6 +4,7 @@ set(DUMMYCLIENT_SOURCES
     ../../protocol_shared/Packets/Packet-Movement.cpp
     ../../protocol_shared/Packets/Packet-Chat.cpp
     ../../protocol_shared/Packets/Packet-Spawn.cpp
+    ../../protocol_shared/Packets/Packet-Combat.cpp
 )
 
 set(DUMMYCLIENT_HEADERS

@@ -7,6 +7,7 @@
 #include "../../protocol_shared/Packets/Packet-Auth.h"
 #include "../../protocol_shared/Packets/Packet-Movement.h"
 #include "../../protocol_shared/Packets/Packet-Chat.h"
+#include "../../protocol_shared/Packets/Packet-Combat.h"
 
 SessionActor::SessionActor(std::shared_ptr<Session> session,
                            WorldActor&              world)
@@ -107,6 +108,20 @@ void SessionActor::Handle(MsgNet_PacketReceived& msg)
         worldChat.sessionId = m_sessionId;
         worldChat.text      = std::move(pkt.text);
         m_world.Post(std::move(worldChat));
+        break;
+    }
+    case CMSG_USE_SKILL:
+    {
+        auto* zone = m_zone.load(std::memory_order_acquire);
+        if (!zone) break;
+        auto pkt = CMsg_UseSkill::Decode(r);
+        MsgSession_UseSkill skill;
+        skill.sessionId       = m_sessionId;
+        skill.skillId         = pkt.skillId;
+        skill.targetPawnId    = pkt.targetPawnId;
+        skill.targetPos       = { pkt.targetX, pkt.targetY, pkt.targetZ };
+        skill.clientTimestamp = pkt.clientTimestamp;
+        zone->Post(std::move(skill));
         break;
     }
     default:

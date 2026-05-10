@@ -37,8 +37,16 @@ public:
     // 경험치 추가. 레벨업이 발생했으면 true 반환 (연속 레벨업 가능).
     bool AddExperience(uint64_t amount);
 
+    // ── MP ─────────────────────────────────────────────────────────────────
+    [[nodiscard]] int32_t GetMp()    const { return m_mp; }
+    [[nodiscard]] int32_t GetMaxMp() const { return m_maxMp; }
+
+    // MP 소모. 부족하면 false 반환 (소모 안 함).
+    bool ConsumeMp(int32_t cost);
+    void RestoreMp(int32_t amount);
+
 private:
-    // 레벨업 시 스탯 증가 적용
+    // 레벨업 시 스탯 증가 적용 (maxHp, attack, defense, maxMp)
     void ApplyLevelUp();
 
     // 다음 레벨에 필요한 경험치 계산 (level^2 * 100)
@@ -47,4 +55,7 @@ private:
     uint32_t m_level{ 1 };
     uint64_t m_experience{ 0 };
     uint64_t m_expToNextLevel{ 100 };   // CalcExpToNextLevel(1)
+
+    int32_t  m_maxMp{ 50 };            // 기본 최대 MP
+    int32_t  m_mp{ 50 };               // 현재 MP
 };

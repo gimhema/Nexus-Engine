@@ -63,6 +63,19 @@ enum Opcode : uint16_t
                                       //           [float x][float y][float z][float orientation]
     SMSG_DESPAWN_PLAYER,              // S→C (TCP) [uint64 pawnId]
     _SPAWN_END,                       // 더미 — 범위 검사용
+
+    // ── 전투 (0x0500번대) ─────────────────────────────────────────────────────
+    _COMBAT_BASE          = 0x0500,   // 더미 — 직접 사용 금지
+    CMSG_USE_SKILL,                   // C→S (TCP) [uint32 skillId][uint64 targetPawnId]
+                                      //           [float targetX][float targetY][float targetZ]
+                                      //           [uint32 clientTimestamp]
+    SMSG_SKILL_RESULT,                // S→C (TCP) [uint8 success]
+                                      //           [uint64 attackerPawnId][uint64 targetPawnId]
+                                      //           [int32 damage][uint32 targetRemainHp]
+                                      //           [string message]  — 실패 시 사유
+    SMSG_PAWN_HP_UPDATE,              // S→C (TCP) [uint64 pawnId][uint32 hp][uint32 maxHp]
+                                      //           — 사망/회복 등 HP 변동 브로드캐스트
+    _COMBAT_END,                      // 더미 — 범위 검사용
 };
 
 // 그룹 범위 체크 헬퍼 (inclusive, _BASE/_END 제외)

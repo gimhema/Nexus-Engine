@@ -11,6 +11,8 @@ set(SOURCES
     Game/Data/GameDataEntities/NpcEntityData.cpp
     Game/Data/GameDataEntities/MonsterEntityData.cpp
     Game/Data/Faction/FactionRegistry.cpp
+    Game/Data/Skill/SkillRegistry.cpp
+    Game/Logic/Combat/CombatProcessor.cpp
     Game/Logic/GameLogic.cpp
     Game/Logic/Pawn/Pawn.cpp
     Game/Logic/Pawn/PlayerPawn.cpp
@@ -22,6 +24,7 @@ set(SOURCES
     protocol_shared/Packets/Packet-Movement.cpp
     protocol_shared/Packets/Packet-Chat.cpp
     protocol_shared/Packets/Packet-Spawn.cpp
+    protocol_shared/Packets/Packet-Combat.cpp
 
     Game/Actors/SessionActor.cpp
     Game/Actors/WorldActor.cpp
@@ -53,11 +56,14 @@ set(HEADERS
     Game/Data/GameDataEntities/MonsterEntityData.h
     Game/Data/Faction/FactionTypes.h
     Game/Data/Faction/FactionRegistry.h
+    Game/Data/Skill/SkillDef.h
+    Game/Data/Skill/SkillRegistry.h
     protocol_shared/NexusPacketBuilder.h
     protocol_shared/Packets/Packet-Auth.h
     protocol_shared/Packets/Packet-Movement.h
     protocol_shared/Packets/Packet-Chat.h
     protocol_shared/Packets/Packet-Spawn.h
+    protocol_shared/Packets/Packet-Combat.h
     Game/Messages/GameMessages.h
     Game/Actors/SessionActor.h
     Game/Actors/WorldActor.h

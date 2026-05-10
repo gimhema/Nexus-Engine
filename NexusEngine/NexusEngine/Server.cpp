@@ -3,6 +3,7 @@
 #include "Actor/ActorSystem.h"
 #include "Game/Messages/GameMessages.h"
 #include "Game/Data/Faction/FactionRegistry.h"
+#include "Game/Data/Skill/SkillRegistry.h"
 
 #include <csignal>
 #include <chrono>
@@ -76,6 +77,16 @@ void Server::Run()
         reg.SetRelation(EFactionId::NEUTRAL_MERCHANT, EFactionId::STORMWIND,    EFactionRelation::FRIENDLY);
         reg.SetRelation(EFactionId::NEUTRAL_MERCHANT, EFactionId::IRONFORGE,    EFactionRelation::FRIENDLY);
         reg.SetRelation(EFactionId::NEUTRAL_MERCHANT, EFactionId::UNDEAD_SCOURGE, EFactionRelation::FRIENDLY);
+    }
+
+    // ── 스킬 등록 ────────────────────────────────────────────────────────────
+    {
+        auto& sr = SkillRegistry::Instance();
+        //                 id  name          type                   range  aoeR  cdMs   mp   mult
+        sr.Register({  1, "기본 공격",  ESkillType::Melee,   3.f,  0.f,  1000,  0, 1.0f });
+        sr.Register({  2, "강격",       ESkillType::Melee,   3.5f, 0.f,  4000, 10, 2.5f });
+        sr.Register({  3, "화살",       ESkillType::Ranged, 20.f,  0.f,  2000,  5, 1.2f });
+        sr.Register({  4, "회오리",     ESkillType::AoE,     5.f,  4.f,  8000, 20, 0.9f });
     }
 
     // ── ActorSystem (Pooled Actor 스레드 풀) 시작 ────────────────────────────
