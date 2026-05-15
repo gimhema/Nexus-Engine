@@ -9,6 +9,13 @@ enum class ITEM_TYPE
     SKIN,
 };
 
+struct ItemBasicInfo
+{
+        uint64_t  itemID;
+        ITEM_TYPE itemType;
+        int       itemUnique;
+};
+
 class ItemBase
 {
     public:
@@ -21,6 +28,5 @@ class ItemBase
 
         }
     public:
-        ITEM_TYPE itemType;
-        int       itemUnique;
+        ItemBasicInfo itemBasicInfo;
 };
