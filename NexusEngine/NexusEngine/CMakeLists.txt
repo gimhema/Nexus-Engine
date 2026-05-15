@@ -36,6 +36,7 @@ set(SOURCES
     NexusClient/ClientLib/Packets/PacketBase.cpp
     NexusClient/DummyClient/main.cpp
     Game/Table/TableBase.cpp
+    Game/Logic/Consumable/Consumable.cpp
 )
 
 set(HEADERS
@@ -88,6 +89,8 @@ set(HEADERS
     protocol_shared/Opcodes.h
     protocol_shared/PacketParser.h
     Game/Table/TableBase.h
+    Game/Logic/Consumable/Consumable.h
+    Game/Logic/Item.h
 )
 
 add_executable(NexusEngine ${SOURCES} ${HEADERS})
