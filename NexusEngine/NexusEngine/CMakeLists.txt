@@ -29,6 +29,12 @@ set(SOURCES
     Game/Actors/SessionActor.cpp
     Game/Actors/WorldActor.cpp
     Game/Actors/ZoneActor.cpp
+    Game/Logic/Equipment/Equipment.cpp
+    Game/Logic/Inventory/Inventory.cpp
+    Game/Logic/Skin/Skin.cpp
+    NexusClient/ClientLib/NetClient.cpp
+    NexusClient/ClientLib/Packets/PacketBase.cpp
+    NexusClient/DummyClient/main.cpp
 )
 
 set(HEADERS
@@ -68,6 +74,18 @@ set(HEADERS
     Game/Actors/SessionActor.h
     Game/Actors/WorldActor.h
     Game/Actors/ZoneActor.h
+    Game/Data/GamePackets/Packet-Example.hpp
+    Game/Logic/Combat/CombatProcessor.h
+    Game/Logic/Equipment/Equipment.h
+    Game/Logic/Inventory/Inventory.h
+    Game/Logic/Skin/Skin.h
+    NexusClient/ClientLib/NetClient.h
+    NexusClient/ClientLib/Packets/PacketBase.h
+    NexusClient/ClientLib/Platform/Platform.h
+    NexusClient/DummyClient/Packets/GamePackets.hpp
+    protocol_shared/NexusTypes.h
+    protocol_shared/Opcodes.h
+    protocol_shared/PacketParser.h
 )
 
 add_executable(NexusEngine ${SOURCES} ${HEADERS})
