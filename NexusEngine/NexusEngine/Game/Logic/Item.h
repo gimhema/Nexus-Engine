@@ -48,7 +48,7 @@ class ItemBase
         ItemBasicInfo itemBasicInfo;
 
     protected:
-        void Create(ItemBasicInfo iInfo) {}
+        virtual void Create(ItemBasicInfo iInfo) {}
 };
 
 
