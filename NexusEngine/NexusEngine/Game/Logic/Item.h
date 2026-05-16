@@ -8,24 +8,6 @@
 #include <atomic>
 
 
-// class Singleton {
-// private:
-//     Singleton() {}
-//     Singleton(const Singleton& ref) {}
-//     Singleton& operator=(const Singleton& ref) {}
-//     ~Singleton() {}
-// public:
-//     static Singleton& getIncetance() {
-//         static Singleton s;
-//         return s;
-//     }
-// };
-
-// int main(void) {
-//     Singleton& s = Singleton::getIncetance();
-//     return 0;
-// }
-
 
 enum class ITEM_TYPE
 {
@@ -59,44 +41,37 @@ class ItemBase
 };
 
 
-
-class ItemIDGenerator
+class ItemUIDGenerator
 {
-public:
-    ItemIDGenerator(){}
-    ~ItemIDGenerator(){}
-    ItemIDGenerator(const ItemIDGenerator& ref) {}
-    ItemIDGenerator& operator=(const ItemIDGenerator& ref) {}
+private:
 
-public:
-    static ItemIDGenerator& getIncetance() {
-        static ItemIDGenerator s;
-        return s;
-    }
+	std::atomic<unsigned int> m_Sequence;
+
+	unsigned short m_ServerId;
+
+	bool m_Initialized;
 
 private:
-	static std::atomic<uint64_t> s_Sequence;
+
+	ItemUIDGenerator();
+
+	~ItemUIDGenerator();
+
+	ItemUIDGenerator(const ItemUIDGenerator&);
+	ItemUIDGenerator& operator=(const ItemUIDGenerator&);
+
 
 public:
-	static uint64_t Generate(unsigned short serverId)
-	{
-		uint64_t uid = 0;
 
-		uint64_t timestamp = static_cast<uint64_t>(time(NULL));
-		uint64_t seq = s_Sequence.fetch_add(1, std::memory_order_relaxed);
+	static ItemUIDGenerator& Instance();
 
-		uid |= (static_cast<uint64_t>(serverId) << 48);
-		uid |= ((timestamp & 0xFFFFFFFF) << 16);
-		uid |= (seq & 0xFFFF);
+public:
 
-		return uid;
-	}
+	bool Initialize(unsigned short serverId);
 
-    void Init()
-    {
+	bool LoadFromLastUID(uint64_t lastUID);
 
-    }
-    
+	uint64_t Generate();
 };
 
 
