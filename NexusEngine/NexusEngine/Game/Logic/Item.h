@@ -19,10 +19,18 @@ enum class ITEM_TYPE
 
 struct ItemBasicInfo
 {
-        uint64_t  ownerID;
-        uint64_t  itemID;
-        ITEM_TYPE itemType;
-        int       itemUnique;
+    uint64_t  ownerID;
+    uint64_t  itemID;
+    ITEM_TYPE itemType;
+    int       itemUnique;
+
+    ItemBasicInfo()
+    {
+        ownerID = 0;
+        itemID = 0;
+        itemType = ITEM_TYPE::DEFAULT;
+        itemUnique = 0;
+    }
 };
 
 class ItemBase
@@ -38,11 +46,16 @@ class ItemBase
         }
     public:
         ItemBasicInfo itemBasicInfo;
+
+    protected:
+        void Create(ItemBasicInfo iInfo) {}
 };
 
 
 class ItemUIDGenerator
 {
+    // 게임로직 초기화시
+    // ItemUIDGenerator::Instance().Initialize(1);
 private:
 
 	std::atomic<unsigned int> m_Sequence;
@@ -74,20 +87,5 @@ public:
 	uint64_t Generate();
 };
 
-
-
-class ItemCreator
-{
-    public:
-        ItemCreator()
-        {
-            
-        }
-        ~ItemCreator()
-        {
-
-        }
-    public:
-};
 
 
