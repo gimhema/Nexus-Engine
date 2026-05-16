@@ -37,6 +37,7 @@ set(SOURCES
     NexusClient/DummyClient/main.cpp
     Game/Table/TableBase.cpp
     Game/Logic/Consumable/Consumable.cpp
+    Game/Logic/Item.cpp
 )
 
 set(HEADERS
