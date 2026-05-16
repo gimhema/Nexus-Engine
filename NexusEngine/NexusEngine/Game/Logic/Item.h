@@ -75,26 +75,31 @@ public:
     }
 
 private:
-	static std::atomic<unsigned int> s_Sequence;
+	static std::atomic<uint64_t> s_Sequence;
 
 public:
-	static unsigned long long Generate(unsigned short serverId)
+	static uint64_t Generate(unsigned short serverId)
 	{
-		unsigned long long uid = 0;
+		uint64_t uid = 0;
 
-		unsigned long long timestamp = static_cast<unsigned long long>(time(NULL));
-		unsigned long long seq = s_Sequence.fetch_add(1, std::memory_order_relaxed);
+		uint64_t timestamp = static_cast<uint64_t>(time(NULL));
+		uint64_t seq = s_Sequence.fetch_add(1, std::memory_order_relaxed);
 
-		uid |= (static_cast<unsigned long long>(serverId) << 48);
+		uid |= (static_cast<uint64_t>(serverId) << 48);
 		uid |= ((timestamp & 0xFFFFFFFF) << 16);
 		uid |= (seq & 0xFFFF);
 
 		return uid;
 	}
+
+    void Init()
+    {
+
+    }
     
 };
 
-// std::atomic<unsigned int> ItemUIDGenerator::s_Sequence(0);
+
 
 class ItemCreator
 {
