@@ -46,12 +46,16 @@ class ItemBase
 
         }
     private:
-        Pawn* Owner;
+        Pawn* Owner = nullptr;
         ItemBasicInfo itemBasicInfo;    
 
     protected:
         virtual void Create(ItemBasicInfo iInfo) {}
         virtual void Use() {}
+
+    public:
+        void SetOwner(Pawn* _ptr) { Owner = _ptr; }
+        Pawn* GetOwner() {return Owner;}
 };
 
 
