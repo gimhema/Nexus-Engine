@@ -8,7 +8,7 @@
 #include <atomic>
 
 #include "CommonLogicType.h"
-#include "Pawn.h"
+#include "PlayerPawn.h"
 
 enum class ITEM_TYPE
 {
@@ -46,7 +46,7 @@ class ItemBase
 
         }
     private:
-        Pawn* Owner = nullptr;
+        PlayerPawn* Owner = nullptr;
         ItemBasicInfo itemBasicInfo;    
 
     protected:
@@ -54,8 +54,8 @@ class ItemBase
         virtual void Use() {}
 
     public:
-        void SetOwner(Pawn* _ptr) { Owner = _ptr; }
-        Pawn* GetOwner() {return Owner;}
+        void SetOwner(PlayerPawn* _ptr) { Owner = _ptr; }
+        PlayerPawn* GetOwner() {return Owner;}
 };
 
 

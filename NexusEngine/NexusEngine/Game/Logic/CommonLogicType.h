@@ -8,5 +8,6 @@ enum class SKIN_PARTS_TYPE
     _BODY_UP = 2,
     _BODY_DOWN = 3,
     _HAND = 4,
-    _SHOES = 5
+    _SHOES = 5,
+    _END = 6
 };
