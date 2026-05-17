@@ -8,7 +8,7 @@
 #include <atomic>
 
 #include "CommonLogicType.h"
-
+#include "Pawn.h"
 
 enum class ITEM_TYPE
 {
@@ -45,8 +45,9 @@ class ItemBase
         {
 
         }
-    public:
-        ItemBasicInfo itemBasicInfo;
+    private:
+        Pawn* Owner;
+        ItemBasicInfo itemBasicInfo;    
 
     protected:
         virtual void Create(ItemBasicInfo iInfo) {}
