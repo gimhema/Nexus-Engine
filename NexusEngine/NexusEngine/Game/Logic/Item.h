@@ -7,6 +7,7 @@
 #include <vector>
 #include <atomic>
 
+#include "CommonLogicType.h"
 
 
 enum class ITEM_TYPE

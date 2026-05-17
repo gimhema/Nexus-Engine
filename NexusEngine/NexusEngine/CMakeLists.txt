@@ -92,6 +92,7 @@ set(HEADERS
     Game/Table/TableBase.h
     Game/Logic/Consumable/Consumable.h
     Game/Logic/Item.h
+    Game/Logic/CommonLogicType.h
 )
 
 add_executable(NexusEngine ${SOURCES} ${HEADERS})
