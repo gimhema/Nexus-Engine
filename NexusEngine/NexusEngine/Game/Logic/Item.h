@@ -49,6 +49,7 @@ class ItemBase
 
     protected:
         virtual void Create(ItemBasicInfo iInfo) {}
+        virtual void Use() {}
 };
 
 

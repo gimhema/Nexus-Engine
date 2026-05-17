@@ -10,3 +10,7 @@ void Skin::Create(ItemBasicInfo iInfo)
 }
 
 
+void Skin::Use()
+{
+    
+}
