@@ -38,6 +38,7 @@ set(SOURCES
     Game/Table/TableBase.cpp
     Game/Logic/Consumable/Consumable.cpp
     Game/Logic/Item.cpp
+    Game/Logic/Pawn/PlayerItemComponent.cpp
 )
 
 set(HEADERS
@@ -93,6 +94,7 @@ set(HEADERS
     Game/Logic/Consumable/Consumable.h
     Game/Logic/Item.h
     Game/Logic/CommonLogicType.h
+    Game/Logic/Pawn/PlayerItemComponent.h
 )
 
 add_executable(NexusEngine ${SOURCES} ${HEADERS})
