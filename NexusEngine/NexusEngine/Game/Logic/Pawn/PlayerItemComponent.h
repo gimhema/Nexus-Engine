@@ -13,6 +13,11 @@ class Skin;
 class Equipment;
 class Consumbale;
 
+class ItemBag
+{
+
+};
+
 class ItemComponent
 {
     public:
