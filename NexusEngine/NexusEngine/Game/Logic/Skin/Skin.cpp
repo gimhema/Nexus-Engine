@@ -15,12 +15,12 @@ void Skin::Use()
 
 }
 
-void Attach(SKIN_PARTS_TYPE parts)
+void Skin::Attach(SKIN_PARTS_TYPE parts)
 {
 
 }
 
-void Detach(SKIN_PARTS_TYPE parts)
+void Skin::Detach(SKIN_PARTS_TYPE parts)
 {
 
 }
