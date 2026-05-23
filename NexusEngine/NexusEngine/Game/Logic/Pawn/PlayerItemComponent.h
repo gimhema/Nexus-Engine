@@ -1,57 +1,78 @@
 #pragma once
 
 #include <array>
-#include "CommonLogicType.h"
+#include <algorithm>
+#include "../CommonLogicType.h"
+#include "../Consumable/Consumable.h"
+#include "../Equipment/Equipment.h"
+#include "../Skin/Skin.h"
 
-#define MAX_CONSUMABLE_BAG_NUM 120
-#define MAX_SKIN_BAG_NUM 120
-#define MAX_EQUIPMENT_BAG_NUM 120
+constexpr int MAX_CONSUMABLE_BAG_NUM   = 120;
+constexpr int MAX_SKIN_BAG_NUM         = 120;
+constexpr int MAX_EQUIPMENT_BAG_NUM    = 120;
+constexpr int MAX_QUICKSLOT_CONSUMABLE = 10;
 
-#define MAX_QUICKSLOT_CONSUMBALE 10
-
-class Skin;
-class Equipment;
-class Consumbale;
-
+// ─────────────────────────────────────────────────────────────────────────────
+// ItemBag<TItem, MaxSlots> — 타입별 가방 베이스
+//
+// Add/Get/Drop/Swap 은 공통 구현 제공.
+// Sync() 는 자식 클래스에서 DB 동기화 로직 구현.
+// ─────────────────────────────────────────────────────────────────────────────
+template<typename TItem, size_t MaxSlots>
 class ItemBag
 {
+protected:
+    std::array<TItem*, MaxSlots> m_slots{};
 
+public:
+    virtual ~ItemBag() = default;
+
+    void   Add(TItem* item, int pos)  { m_slots[pos] = item; }
+    TItem* Get(int pos) const         { return m_slots[pos]; }
+    void   Drop(int pos)              { m_slots[pos] = nullptr; }
+    void   Swap(int a, int b)         { std::swap(m_slots[a], m_slots[b]); }
+    bool   IsEmpty(int pos) const     { return m_slots[pos] == nullptr; }
+
+    virtual void Sync() = 0;
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 타입별 자식 가방
+// ─────────────────────────────────────────────────────────────────────────────
+class SkinBag : public ItemBag<Skin, MAX_SKIN_BAG_NUM>
+{
+public:
+    void Sync() override;
+};
+
+class EquipmentBag : public ItemBag<Equipment, MAX_EQUIPMENT_BAG_NUM>
+{
+public:
+    void Sync() override;
+};
+
+class ConsumableBag : public ItemBag<Consumable, MAX_CONSUMABLE_BAG_NUM>
+{
+public:
+    void Sync() override;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ItemComponent — PlayerPawn 이 보유하는 아이템 컴포넌트
+// ─────────────────────────────────────────────────────────────────────────────
 class ItemComponent
 {
-    public:
-        ItemComponent(){}
-        ~ItemComponent(){}
+public:
+    ItemComponent()  = default;
+    ~ItemComponent() = default;
 
-    // Bag
-    public:
-        std::array<Skin*, MAX_SKIN_BAG_NUM> SkinBag;
-        std::array<Equipment*, MAX_EQUIPMENT_BAG_NUM> EquipmentBag;
-        std::array<Consumbale*, MAX_CONSUMABLE_BAG_NUM> ConsumableBag;
+    // 가방
+    SkinBag       skinBag;
+    EquipmentBag  equipmentBag;
+    ConsumableBag consumableBag;
 
-    // Bag Action
-    public:
-        void AddSkinToBag(Skin* newSkin, int Pos);
-        void AddEquipmentToBag(Equipment* newEquipment, int Pos);
-        void AddConsumableToBag(Consumbale* newCons, int Pos);
-
-        void DropSkinFromBag(int Pos);
-        void DropEquipmentFromBag(int Pos);
-        void DropConsumableFromBag(int Pos);
-
-        void SwapSkin(int Pos1, int Pos2);
-        void SwapEquipment(int Pos1, int Pos2);
-        void SwapConsumable(int Pos1, int Pos2);
-
-        void SyncSkinBag();
-        void SyncEquipmentBag();
-        void SyncConsumableBag();
- 
-
-    // Use Slot
-    public:
-        std::array<Skin*, static_cast<int>(SKIN_PARTS_TYPE::_END)> CurrentSkins;
-        std::array<Equipment*, static_cast<int>(EQUIPMENT_POS_TYPE::_END)> CurrentEquipments;
-        std::array<Consumbale*, MAX_QUICKSLOT_CONSUMBALE> ConsubaleQuickSlot;        
+    // 장착 슬롯
+    std::array<Skin*,       static_cast<int>(SKIN_PARTS_TYPE::_END)>    CurrentSkins{};
+    std::array<Equipment*,  static_cast<int>(EQUIPMENT_POS_TYPE::_END)> CurrentEquipments{};
+    std::array<Consumable*, MAX_QUICKSLOT_CONSUMABLE>                    ConsumableQuickSlot{};
 };

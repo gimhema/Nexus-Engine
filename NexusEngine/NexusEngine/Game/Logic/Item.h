@@ -8,7 +8,8 @@
 #include <atomic>
 
 #include "CommonLogicType.h"
-#include "PlayerPawn.h"
+
+class PlayerPawn;
 
 enum class ITEM_TYPE
 {
