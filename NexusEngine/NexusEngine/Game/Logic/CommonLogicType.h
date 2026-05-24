@@ -22,3 +22,15 @@ enum class EQUIPMENT_POS_TYPE
     _ARMOR_SHOES = 5,    
     _END
 };
+
+enum class ITEM_GRADE_TYPE
+{
+    _DEFAULT = 0,
+    _NORMAL = 1,
+    _COMMON = 2,
+    _RARE = 3,
+    _UNIQUE = 4,
+    _EPIC = 5,
+    _LEGEND = 6,
+    _END = 7
+};

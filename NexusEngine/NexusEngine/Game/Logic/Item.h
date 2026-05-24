@@ -25,6 +25,7 @@ struct ItemBasicInfo
     uint64_t  itemID;
     ITEM_TYPE itemType;
     int       itemUnique;
+    ITEM_GRADE_TYPE itemGrade;
 
     ItemBasicInfo()
     {
@@ -32,6 +33,7 @@ struct ItemBasicInfo
         itemID = 0;
         itemType = ITEM_TYPE::DEFAULT;
         itemUnique = 0;
+        itemGrade = ITEM_GRADE_TYPE::_DEFAULT;
     }
 };
 
