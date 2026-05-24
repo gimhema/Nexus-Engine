@@ -96,6 +96,7 @@ set(HEADERS
     Game/Logic/Pawn/PlayerItemComponent.h
     Game/Logic/Pawn/ItemBag.h
     Game/Logic/Pawn/ItemSlot.h
+    Game/Logic/Pawn/Slot.h
 )
 
 add_executable(NexusEngine ${SOURCES} ${HEADERS})
