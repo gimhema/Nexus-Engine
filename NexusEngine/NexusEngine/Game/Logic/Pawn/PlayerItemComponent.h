@@ -12,6 +12,10 @@ constexpr int MAX_SKIN_BAG_NUM         = 120;
 constexpr int MAX_EQUIPMENT_BAG_NUM    = 120;
 constexpr int MAX_QUICKSLOT_CONSUMABLE = 10;
 
+
+constexpr int MAX_SKIN_SLOT = 6;
+constexpr int MAX_EQUIPMENT_SLOT = 10;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ItemBag<TItem, MaxSlots> — 타입별 가방 베이스
 //
@@ -55,6 +59,32 @@ class ConsumableBag : public ItemBag<Consumable, MAX_CONSUMABLE_BAG_NUM>
 {
 public:
     void Sync() override;
+};
+
+template<typename TItem, size_t MaxSlots>
+class ItemSlot
+{
+protected:
+    std::array<TItem*, MaxSlots> m_slots{};
+
+public:
+    virtual ~ItemSlot() = default;
+
+    TItem* Get(int pos) const         { return m_slots[pos]; }
+    void   Swap(int a, int b)         { std::swap(m_slots[a], m_slots[b]); }
+    bool   IsEmpty(int pos) const     { return m_slots[pos] == nullptr; }
+
+    virtual void Sync() = 0;
+};
+
+class EquipmentSlot : public ItemSlot<Equipment, MAX_EQUIPMENT_SLOT>
+{
+
+};
+
+class SkinSlot : public ItemSlot<Skin, MAX_SKIN_SLOT>
+{
+
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
