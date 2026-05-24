@@ -32,13 +32,12 @@ set(SOURCES
     Game/Logic/Equipment/Equipment.cpp
     Game/Logic/Inventory/Inventory.cpp
     Game/Logic/Skin/Skin.cpp
-    NexusClient/ClientLib/NetClient.cpp
-    NexusClient/ClientLib/Packets/PacketBase.cpp
-    NexusClient/DummyClient/main.cpp
     Game/Table/TableBase.cpp
     Game/Logic/Consumable/Consumable.cpp
     Game/Logic/Item.cpp
     Game/Logic/Pawn/PlayerItemComponent.cpp
+    Game/Logic/Pawn/ItemBag.cpp
+    Game/Logic/Pawn/ItemSlot.cpp
 )
 
 set(HEADERS
@@ -95,6 +94,8 @@ set(HEADERS
     Game/Logic/Item.h
     Game/Logic/CommonLogicType.h
     Game/Logic/Pawn/PlayerItemComponent.h
+    Game/Logic/Pawn/ItemBag.h
+    Game/Logic/Pawn/ItemSlot.h
 )
 
 add_executable(NexusEngine ${SOURCES} ${HEADERS})
