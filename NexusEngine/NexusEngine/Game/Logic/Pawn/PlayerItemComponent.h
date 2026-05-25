@@ -42,18 +42,18 @@ public:
     ItemComponent()  = default;
     ~ItemComponent() = default;
 
-public:
+private:
     // Sub Components
-
     ItemBagComponent itemBag;
     ItemSlotComponent itemSlot;
 
 public:
-    // Bag Action
-    
+    // Call by Player Action
+    void SwapEquip(int pos);
+    void SwapSkin(int pos);
+    void UseConsumbale(int pos);
 
-
-public:
-    // Slot Action
+private:
+    // Pure Inner Action
     
 };

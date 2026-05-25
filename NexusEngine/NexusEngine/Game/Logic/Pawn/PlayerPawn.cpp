@@ -40,17 +40,17 @@ void PlayerPawn::ItemInteraction(ITEM_TYPE bagType, int pos)
             break;
         case ITEM_TYPE::EQUIPMENT:
             {
-                // ItemComponent->SwapEquip(pos);
+                itemComponent->SwapEquip(pos);
             }
             break;       
         case ITEM_TYPE::SKIN:
             {
-                // ItemComponent->SwapSkin(pos);
+                itemComponent->SwapSkin(pos);
             }
             break;             
         case ITEM_TYPE::CONSUMABLE:
             {
-                // ItemComponent->Use(pos);
+                itemComponent->UseConsumbale(pos);
             }
             break;
     }

@@ -60,7 +60,7 @@ private:
 
     // Item Member
 private:
-    ItemComponent ItemComponent;
+    ItemComponent* itemComponent;
 
     // Item Action
 public:
