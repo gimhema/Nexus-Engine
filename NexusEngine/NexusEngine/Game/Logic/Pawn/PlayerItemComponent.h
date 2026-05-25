@@ -47,5 +47,13 @@ public:
 
     ItemBagComponent itemBag;
     ItemSlotComponent itemSlot;
+
+public:
+    // Bag Action
+    
+
+
+public:
+    // Slot Action
     
 };

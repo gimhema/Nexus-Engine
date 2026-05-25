@@ -2,6 +2,8 @@
 
 #include "Pawn.h"
 #include "../../Data/GameDataEntities/CharacterEntityData.h"
+#include "PlayerItemComponent.h"
+#include "../Item.h"
 
 #include <chrono>
 #include <unordered_map>
@@ -55,4 +57,12 @@ private:
 
     // skillId → 쿨타임 만료 시각. ZoneActor 전용 스레드에서만 접근.
     std::unordered_map<uint32_t, TimePoint> m_cooldowns;
+
+    // Item Member
+private:
+    ItemComponent ItemComponent;
+
+    // Item Action
+public:
+    void PickUpItem(ItemBase* pickuped);
 };
