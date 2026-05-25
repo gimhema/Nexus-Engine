@@ -64,5 +64,10 @@ private:
 
     // Item Action
 public:
+    // Pick & Drop
     void PickUpItem(ItemBase* pickuped);
+    void DropItem(ITEM_TYPE bagType, int pos);
+
+    // Item Interaction
+    void ItemInteraction(ITEM_TYPE bagType, int pos);
 };

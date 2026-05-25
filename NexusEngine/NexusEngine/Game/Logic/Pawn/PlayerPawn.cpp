@@ -18,3 +18,20 @@ void PlayerPawn::SetCooldown(uint32_t skillId, uint32_t cooldownMs)
 {
     m_cooldowns[skillId] = Clock::now() + std::chrono::milliseconds(cooldownMs);
 }
+
+void PlayerPawn::PickUpItem(ItemBase* pickuped)
+{
+    
+}
+
+void PlayerPawn::DropItem(ITEM_TYPE bagType, int pos)
+{
+    
+}
+
+void PlayerPawn::ItemInteraction(ITEM_TYPE bagType, int pos)
+{
+
+}
+
+
