@@ -38,6 +38,9 @@ set(SOURCES
     Game/Logic/Pawn/PlayerItemComponent.cpp
     Game/Logic/Pawn/ItemBag.cpp
     Game/Logic/Pawn/ItemSlot.cpp
+    Game/Logic/Pawn/EquipmentSlot.cpp
+    Game/Logic/Pawn/SkinSlot.cpp
+    Game/Logic/Pawn/ConsumableSlot.cpp
 )
 
 set(HEADERS
@@ -97,6 +100,9 @@ set(HEADERS
     Game/Logic/Pawn/ItemBag.h
     Game/Logic/Pawn/ItemSlot.h
     Game/Logic/Pawn/Slot.h
+    Game/Logic/Pawn/EquipmentSlot.h
+    Game/Logic/Pawn/SkinSlot.h
+    Game/Logic/Pawn/ConsumableSlot.h
 )
 
 add_executable(NexusEngine ${SOURCES} ${HEADERS})
