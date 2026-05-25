@@ -11,14 +11,6 @@
 
 class PlayerPawn;
 
-enum class ITEM_TYPE
-{
-    DEFAULT,
-    CONSUMABLE,
-    EQUIPMENT,
-    SKIN,
-};
-
 struct ItemBasicInfo
 {
     uint64_t  ownerID;

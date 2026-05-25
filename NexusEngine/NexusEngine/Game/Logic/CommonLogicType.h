@@ -34,3 +34,11 @@ enum class ITEM_GRADE_TYPE
     _LEGEND = 6,
     _END = 7
 };
+
+enum class ITEM_TYPE
+{
+    DEFAULT,
+    CONSUMABLE,
+    EQUIPMENT,
+    SKIN,
+};
