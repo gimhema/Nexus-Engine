@@ -21,17 +21,39 @@ void PlayerPawn::SetCooldown(uint32_t skillId, uint32_t cooldownMs)
 
 void PlayerPawn::PickUpItem(ItemBase* pickuped)
 {
-    
+    // ItemComponent->Store(pickuped);
 }
 
 void PlayerPawn::DropItem(ITEM_TYPE bagType, int pos)
 {
-    
+    // ItemComponent->Delete(bagType, pos);
 }
 
 void PlayerPawn::ItemInteraction(ITEM_TYPE bagType, int pos)
 {
-
+    switch(bagType)
+    {
+        case ITEM_TYPE::DEFAULT:
+            {
+                return;
+            }
+            break;
+        case ITEM_TYPE::EQUIPMENT:
+            {
+                // ItemComponent->SwapEquip(pos);
+            }
+            break;       
+        case ITEM_TYPE::SKIN:
+            {
+                // ItemComponent->SwapSkin(pos);
+            }
+            break;             
+        case ITEM_TYPE::CONSUMABLE:
+            {
+                // ItemComponent->Use(pos);
+            }
+            break;
+    }
 }
 
 
