@@ -72,5 +72,7 @@ public:
     void ItemBagInteraction(ITEM_TYPE bagType, int pos);
 
     // Slot Interaction
-
+    void QuickSlotInteraction(int pos);
+    void SkinSlotInteraction(SKIN_PARTS_TYPE parts);
+    void EquipmentSlotInteraction(EQUIPMENT_POS_TYPE pos);
 };
