@@ -68,6 +68,9 @@ public:
     void PickUpItem(ItemBase* pickuped);
     void DropItem(ITEM_TYPE bagType, int pos);
 
-    // Item Interaction
-    void ItemInteraction(ITEM_TYPE bagType, int pos);
+    // ItemBag Interaction
+    void ItemBagInteraction(ITEM_TYPE bagType, int pos);
+
+    // Slot Interaction
+
 };

@@ -29,7 +29,7 @@ void PlayerPawn::DropItem(ITEM_TYPE bagType, int pos)
     // ItemComponent->Delete(bagType, pos);
 }
 
-void PlayerPawn::ItemInteraction(ITEM_TYPE bagType, int pos)
+void PlayerPawn::ItemBagInteraction(ITEM_TYPE bagType, int pos)
 {
     switch(bagType)
     {

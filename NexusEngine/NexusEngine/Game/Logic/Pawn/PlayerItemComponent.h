@@ -54,10 +54,13 @@ public:
     void Store(ItemBase* pickuped);
     void DropItem(ITEM_TYPE bagType, int pos);
 
-    // Item Interaction
+    // ItemBag Interaction
     void SwapEquip(int pos);
     void SwapSkin(int pos);
     void UseConsumbale(int pos);
+
+    // ItemSlot Interaction
+    
 
 private:
     // Pure Inner Action
