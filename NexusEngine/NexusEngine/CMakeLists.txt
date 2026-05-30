@@ -13,6 +13,7 @@ set(SOURCES
     Game/Data/Faction/FactionRegistry.cpp
     Game/Data/Skill/SkillRegistry.cpp
     Game/Logic/Combat/CombatProcessor.cpp
+    Game/Logic/Movement/MovementProcessor.cpp
     Game/Logic/GameLogic.cpp
     Game/Logic/Pawn/Pawn.cpp
     Game/Logic/Pawn/PlayerPawn.cpp
@@ -81,6 +82,7 @@ set(HEADERS
     Game/Actors/ZoneActor.h
     Game/Data/GamePackets/Packet-Example.hpp
     Game/Logic/Combat/CombatProcessor.h
+    Game/Logic/Movement/MovementProcessor.h
     Game/Logic/Equipment/Equipment.h
     Game/Logic/Inventory/Inventory.h
     Game/Logic/Skin/Skin.h

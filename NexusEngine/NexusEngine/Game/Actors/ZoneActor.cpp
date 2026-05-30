@@ -11,6 +11,7 @@
 #include "../../protocol_shared/Packets/Packet-Chat.h"
 #include "../../protocol_shared/Packets/Packet-Spawn.h"
 #include "../../protocol_shared/Packets/Packet-Combat.h"
+#include "../Logic/Movement/MovementProcessor.h"
 
 ZoneActor::ZoneActor(Zone zone, WorldActor& world)
     : m_zone(std::move(zone))
@@ -228,16 +229,15 @@ void ZoneActor::Handle(MsgSession_Move& msg)
     auto* pawn = FindPlayerPawn(msg.sessionId);
     if (!pawn) return;
 
-    // 존 경계 검증 — 범위 밖 이동은 무시
-    if (!m_zone.IsInBounds(msg.pos))
+    const auto result = MovementProcessor::ApplyMove(
+        *pawn, msg.pos, msg.orientation, msg.movementFlags, m_zone);
+
+    if (result != MovementProcessor::EResult::Ok)
     {
-        LOG_WARN("ZoneActor {}: 경계 밖 이동 sessionId={} pos=({},{},{})",
+        LOG_WARN("ZoneActor {}: 이동 거부 sessionId={} pos=({},{},{})",
                  m_zone.GetId(), msg.sessionId, msg.pos.x, msg.pos.y, msg.pos.z);
         return;
     }
-
-    pawn->SetPos(msg.pos);
-    pawn->SetOrientation(msg.orientation);
 
     BroadcastTcp(msg.sessionId, SMsg_MoveBroadcast{
         .sessionId   = msg.sessionId,
@@ -253,8 +253,7 @@ void ZoneActor::Handle(MsgSession_MoveUdp& msg)
     auto* pawn = FindPlayerPawn(msg.sessionId);
     if (!pawn) return;
 
-    pawn->SetPos(msg.pos);
-    pawn->SetOrientation(msg.orientation);
+    MovementProcessor::ApplyMoveUdp(*pawn, msg.pos, msg.orientation);
 
     BroadcastUdp(msg.sessionId, SMsg_MoveUdp{
         .sessionId   = msg.sessionId,
