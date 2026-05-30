@@ -57,3 +57,20 @@ void PlayerPawn::ItemBagInteraction(ITEM_TYPE bagType, int pos)
 }
 
 
+void PlayerPawn::QuickSlotInteraction(int pos)
+{
+    // Use
+}
+
+void PlayerPawn::SkinSlotInteraction(SKIN_PARTS_TYPE parts)
+{
+    // UnEquip
+}
+
+void PlayerPawn::EquipmentSlotInteraction(EQUIPMENT_POS_TYPE pos)
+{
+    // UnEquip
+}
+
+
+
