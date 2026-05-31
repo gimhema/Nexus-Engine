@@ -76,6 +76,26 @@ enum Opcode : uint16_t
     SMSG_PAWN_HP_UPDATE,              // S→C (TCP) [uint64 pawnId][uint32 hp][uint32 maxHp]
                                       //           — 사망/회복 등 HP 변동 브로드캐스트
     _COMBAT_END,                      // 더미 — 범위 검사용
+
+    // Item Action
+    _ITEM_BASE = 0x0600,
+    SMSG_STORE_ITEM,                   // S-C (TCP) 아이템 획득시
+    CMSG_DROP_ITEM,                    // C-S (TCP) 아이템 드랍 요청
+    SMSG_DROP_ITEM,                    // S-C (TCP) 아이템 드랍 요청 서버처리
+
+    // Consumable Action
+    CMSG_USE_CONSUMABLE,
+    SMSG_USE_CONSUMABLE,
+    
+    // Skin Action
+    CMSG_USE_SKIN,
+    SMSG_USE_SKIN,
+
+    // Equipment Action
+    CMSG_USE_EQUIPMENT,
+    SMSG_USE_EQUIPMENT,
+
+    _ITEM_END
 };
 
 // 그룹 범위 체크 헬퍼 (inclusive, _BASE/_END 제외)
