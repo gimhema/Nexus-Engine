@@ -26,6 +26,7 @@ set(SOURCES
     protocol_shared/Packets/Packet-Chat.cpp
     protocol_shared/Packets/Packet-Spawn.cpp
     protocol_shared/Packets/Packet-Combat.cpp
+    protocol_shared/Packets/Packet-Item.cpp
 
     Game/Actors/SessionActor.cpp
     Game/Actors/WorldActor.cpp
@@ -76,6 +77,7 @@ set(HEADERS
     protocol_shared/Packets/Packet-Chat.h
     protocol_shared/Packets/Packet-Spawn.h
     protocol_shared/Packets/Packet-Combat.h
+    protocol_shared/Packets/Packet-Item.h
     Game/Messages/GameMessages.h
     Game/Actors/SessionActor.h
     Game/Actors/WorldActor.h

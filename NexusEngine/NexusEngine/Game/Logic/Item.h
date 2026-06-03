@@ -48,6 +48,7 @@ class ItemBase
 
     public:
         ITEM_TYPE   GetItemType() const { return itemBasicInfo.itemType; }
+        uint64_t    GetItemId()   const { return itemBasicInfo.itemID; }
 
         void        SetOwner(PlayerPawn* ptr) { Owner = ptr; }
         PlayerPawn* GetOwner()                { return Owner; }
