@@ -1,14 +1,16 @@
 #include "PlayerItemComponent.h"
 
 // ── Store ─────────────────────────────────────────────────────────────────────
-// ItemBase 는 GetItemType() 이 없어 dynamic_cast 로 타입을 판별한다.
 // 해당 가방의 첫 번째 빈 슬롯에 삽입한다.
 void ItemComponent::Store(ItemBase* item)
 {
     if (!item) return;
 
-    if (auto* eq = dynamic_cast<Equipment*>(item))
+    switch (item->GetItemType())
     {
+    case ITEM_TYPE::EQUIPMENT:
+    {
+        auto* eq = static_cast<Equipment*>(item);
         for (int i = 0; i < MAX_EQUIPMENT_BAG_NUM; ++i)
         {
             if (itemBag.equipmentBag.IsEmpty(i))
@@ -17,9 +19,11 @@ void ItemComponent::Store(ItemBase* item)
                 return;
             }
         }
+        break;
     }
-    else if (auto* sk = dynamic_cast<Skin*>(item))
+    case ITEM_TYPE::SKIN:
     {
+        auto* sk = static_cast<Skin*>(item);
         for (int i = 0; i < MAX_SKIN_BAG_NUM; ++i)
         {
             if (itemBag.skinBag.IsEmpty(i))
@@ -28,9 +32,11 @@ void ItemComponent::Store(ItemBase* item)
                 return;
             }
         }
+        break;
     }
-    else if (auto* cs = dynamic_cast<Consumable*>(item))
+    case ITEM_TYPE::CONSUMABLE:
     {
+        auto* cs = static_cast<Consumable*>(item);
         for (int i = 0; i < MAX_CONSUMABLE_BAG_NUM; ++i)
         {
             if (itemBag.consumableBag.IsEmpty(i))
@@ -39,6 +45,10 @@ void ItemComponent::Store(ItemBase* item)
                 return;
             }
         }
+        break;
+    }
+    default:
+        break;
     }
 }
 

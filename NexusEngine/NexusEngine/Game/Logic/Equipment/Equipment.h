@@ -6,8 +6,8 @@
 class Equipment : public ItemBase
 {
     public:
-        Equipment() {}
-        ~Equipment() {}
+        explicit Equipment(EQUIPMENT_POS_TYPE pos);
+        ~Equipment() override = default;
 
     protected:
         void Create(ItemBasicInfo iInfo) override;

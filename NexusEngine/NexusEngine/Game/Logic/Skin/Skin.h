@@ -7,8 +7,8 @@
 class Skin : public ItemBase
 {
     public:
-        Skin() {}
-        ~Skin() {}
+        explicit Skin(SKIN_PARTS_TYPE parts);
+        ~Skin() override = default;
 
     protected:
         void Create(ItemBasicInfo iInfo) override;
@@ -21,7 +21,7 @@ class Skin : public ItemBase
         SKIN_PARTS_TYPE GetPartsType() const { return m_partsType; }
 
     private:
-        SKIN_PARTS_TYPE m_partsType = SKIN_PARTS_TYPE::_DEFAULT;
+        SKIN_PARTS_TYPE m_partsType;
 };
 
 

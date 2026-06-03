@@ -32,25 +32,25 @@ struct ItemBasicInfo
 class ItemBase
 {
     public:
-        ItemBase()
+        explicit ItemBase(ITEM_TYPE type = ITEM_TYPE::DEFAULT)
         {
-
+            itemBasicInfo.itemType = type;
         }
-        ~ItemBase()
-        {
+        virtual ~ItemBase() = default;
 
-        }
     private:
-        PlayerPawn* Owner = nullptr;
-        ItemBasicInfo itemBasicInfo;    
+        PlayerPawn*   Owner = nullptr;
+        ItemBasicInfo itemBasicInfo;
 
     protected:
         virtual void Create(ItemBasicInfo iInfo) {}
         virtual void Use() {}
 
     public:
-        void SetOwner(PlayerPawn* _ptr) { Owner = _ptr; }
-        PlayerPawn* GetOwner() {return Owner;}
+        ITEM_TYPE   GetItemType() const { return itemBasicInfo.itemType; }
+
+        void        SetOwner(PlayerPawn* ptr) { Owner = ptr; }
+        PlayerPawn* GetOwner()                { return Owner; }
 };
 
 

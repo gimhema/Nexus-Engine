@@ -5,8 +5,8 @@
 class Consumable : public ItemBase
 {
     public:
-        Consumable() {}
-        ~Consumable() {}
+        Consumable();
+        ~Consumable() override = default;
 
     protected:
         void Create(ItemBasicInfo iInfo) override;
