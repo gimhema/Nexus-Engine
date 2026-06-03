@@ -49,6 +49,11 @@ void PlayerPawn::ItemBagInteraction(ITEM_TYPE bagType, int pos)
 }
 
 
+SkinSwapResult PlayerPawn::SwapSkin(uint32_t bagPos)
+{
+    return m_itemComponent->SwapSkin(static_cast<int>(bagPos));
+}
+
 void PlayerPawn::QuickSlotInteraction(int pos)
 {
     // Use

@@ -91,9 +91,11 @@ void ItemComponent::SwapEquip(int pos)
 // ── SwapSkin ──────────────────────────────────────────────────────────────────
 // 가방[pos] 의 외형을 GetPartsType() 이 가리키는 외형 슬롯으로 이동.
 // 기존 외형이 있으면 가방[pos] 로 돌아온다.
-void ItemComponent::SwapSkin(int pos)
+// 성공 시 장착된 스킨의 partsType·itemId 를 반환.
+SkinSwapResult ItemComponent::SwapSkin(int pos)
 {
-    if (!itemBag.skinBag.HasItem(pos)) return;
+    if (!itemBag.skinBag.HasItem(pos))
+        return {};
 
     Skin* incoming = &itemBag.skinBag.GetSlot(pos).Item();
     int slotIdx = static_cast<int>(incoming->GetPartsType());
@@ -110,6 +112,12 @@ void ItemComponent::SwapSkin(int pos)
     }
 
     itemSlot.CurrentSkins[slotIdx].Equip(incoming);             // 렌더링 반영
+
+    return {
+        true,
+        static_cast<uint8_t>(incoming->GetPartsType()),
+        incoming->GetItemId()
+    };
 }
 
 // ── UseConsumbale ─────────────────────────────────────────────────────────────

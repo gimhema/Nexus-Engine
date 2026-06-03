@@ -9,6 +9,14 @@
 
 constexpr int MAX_QUICKSLOT_CONSUMABLE = 10;
 
+// SwapSkin 결과 — ZoneActor가 브로드캐스트 시 사용
+struct SkinSwapResult
+{
+    bool     success{ false };
+    uint8_t  partsType{ 0 };   // SKIN_PARTS_TYPE (uint8_t 캐스트)
+    uint64_t itemId{ 0 };      // 장착된 스킨 아이템 ID
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ItemComponent — PlayerPawn 이 보유하는 아이템 컴포넌트
 // ─────────────────────────────────────────────────────────────────────────────
@@ -55,9 +63,9 @@ public:
     void DropItem(ITEM_TYPE bagType, int pos);
 
     // ItemBag Interaction
-    void SwapEquip(int pos);
-    void SwapSkin(int pos);
-    void UseConsumbale(int pos);
+    void           SwapEquip(int pos);
+    SkinSwapResult SwapSkin(int pos);
+    void           UseConsumbale(int pos);
 
     // ItemSlot Interaction
     

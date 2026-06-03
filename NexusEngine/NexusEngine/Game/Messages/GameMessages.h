@@ -97,6 +97,13 @@ struct MsgSession_UseSkill
     uint32_t clientTimestamp{};  // 클라이언트 타임스탬프 (ms) — 래그 보상용
 };
 
+// 플레이어가 스킨 장착 요청 (가방 슬롯 → 해당 partsType 슬롯)
+struct MsgSession_UseSkin
+{
+    uint64_t sessionId{};
+    uint32_t bagPos{};
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ZoneActor → SessionActor
 // ─────────────────────────────────────────────────────────────────────────────
@@ -275,6 +282,7 @@ using ZoneMessage = std::variant<
     MsgSession_Chat,
     MsgSession_LeaveZone,
     MsgSession_UseSkill,
+    MsgSession_UseSkin,
     MsgWorld_AddPlayer,
     MsgWorld_RemovePlayer,
     MsgGameLogic_WorldEvent     // GameLogic 브로드캐스트 수신

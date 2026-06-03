@@ -8,6 +8,7 @@
 #include "../../protocol_shared/Packets/Packet-Movement.h"
 #include "../../protocol_shared/Packets/Packet-Chat.h"
 #include "../../protocol_shared/Packets/Packet-Combat.h"
+#include "../../protocol_shared/Packets/Packet-Item.h"
 
 SessionActor::SessionActor(std::shared_ptr<Session> session,
                            WorldActor&              world)
@@ -122,6 +123,17 @@ void SessionActor::Handle(MsgNet_PacketReceived& msg)
         skill.targetPos       = { pkt.targetX, pkt.targetY, pkt.targetZ };
         skill.clientTimestamp = pkt.clientTimestamp;
         zone->Post(std::move(skill));
+        break;
+    }
+    case CMSG_USE_SKIN:
+    {
+        auto* zone = m_zone.load(std::memory_order_acquire);
+        if (!zone) break;
+        auto pkt = CMsg_UseSkin::Decode(r);
+        MsgSession_UseSkin skin;
+        skin.sessionId = m_sessionId;
+        skin.bagPos    = pkt.bagPos;
+        zone->Post(std::move(skin));
         break;
     }
     default:

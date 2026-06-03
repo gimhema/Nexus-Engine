@@ -11,6 +11,7 @@
 #include "../../protocol_shared/Packets/Packet-Chat.h"
 #include "../../protocol_shared/Packets/Packet-Spawn.h"
 #include "../../protocol_shared/Packets/Packet-Combat.h"
+#include "../../protocol_shared/Packets/Packet-Item.h"
 #include "../Logic/Movement/MovementProcessor.h"
 
 ZoneActor::ZoneActor(Zone zone, WorldActor& world)
@@ -76,6 +77,7 @@ void ZoneActor::OnMessage(ZoneMessage& msg)
         [this](MsgSession_Chat&         m) { Handle(m); },
         [this](MsgSession_LeaveZone&    m) { Handle(m); },
         [this](MsgSession_UseSkill&     m) { Handle(m); },
+        [this](MsgSession_UseSkin&      m) { Handle(m); },
         [this](MsgWorld_AddPlayer&      m) { Handle(m); },
         [this](MsgWorld_RemovePlayer&   m) { Handle(m); },
         [this](MsgGameLogic_WorldEvent& m) { Handle(m); },
@@ -381,6 +383,30 @@ void ZoneActor::Handle(MsgSession_UseSkill& msg)
             // Phase 2: 리스폰 로직, 패널티 처리 예정
         }
     }
+}
+
+void ZoneActor::Handle(MsgSession_UseSkin& msg)
+{
+    auto* pawn = FindPlayerPawn(msg.sessionId);
+    if (!pawn) return;
+
+    const auto result = pawn->SwapSkin(msg.bagPos);
+    if (!result.success)
+    {
+        LOG_WARN("ZoneActor {}: 스킨 장착 실패 sessionId={} bagPos={}",
+                 m_zone.GetId(), msg.sessionId, msg.bagPos);
+        return;
+    }
+
+    LOG_DEBUG("ZoneActor {}: 스킨 장착 sessionId={} partsType={} itemId={}",
+              m_zone.GetId(), msg.sessionId, result.partsType, result.itemId);
+
+    // 자신 포함 존 전체에 브로드캐스트 — 모든 클라이언트가 외형 갱신
+    BroadcastTcp(0, SMsg_UseSkin{
+        .sessionId = msg.sessionId,
+        .partsType = result.partsType,
+        .itemId    = result.itemId
+    }.Encode());
 }
 
 void ZoneActor::Handle(MsgGameLogic_WorldEvent& msg)

@@ -75,4 +75,7 @@ public:
     void QuickSlotInteraction(int pos);
     void SkinSlotInteraction(SKIN_PARTS_TYPE parts);
     void EquipmentSlotInteraction(EQUIPMENT_POS_TYPE pos);
+
+    // ZoneActor 전용 — 스킨 장착 후 브로드캐스트에 필요한 결과 반환
+    SkinSwapResult SwapSkin(uint32_t bagPos);
 };
