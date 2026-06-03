@@ -125,3 +125,12 @@ void ItemComponent::UseConsumbale(int pos)
 {
     itemSlot.ConsumableQuickSlot[pos].Use();
 }
+
+// ── GetCurrentSkinId ──────────────────────────────────────────────────────────
+uint64_t ItemComponent::GetCurrentSkinId(SKIN_PARTS_TYPE parts) const
+{
+    const int slotIdx = static_cast<int>(parts);
+    if (!itemSlot.CurrentSkins[slotIdx].HasItem())
+        return 0;
+    return itemSlot.CurrentSkins[slotIdx].Item().GetItemId();
+}

@@ -94,24 +94,32 @@ static Vec3 ResolveSpawnPos(const Vec3& requested, const Zone& zone)
          : requested;
 }
 
+static SMsg_SpawnPlayer BuildSpawnPacket(uint64_t sessionId, const PlayerPawn& pawn)
+{
+    return SMsg_SpawnPlayer{
+        .pawnId       = pawn.GetPawnId(),
+        .sessionId    = sessionId,
+        .name         = pawn.GetName(),
+        .hp           = static_cast<uint32_t>(pawn.GetHp()),
+        .maxHp        = static_cast<uint32_t>(pawn.GetMaxHp()),
+        .x            = pawn.GetPos().x,
+        .y            = pawn.GetPos().y,
+        .z            = pawn.GetPos().z,
+        .orientation  = pawn.GetOrientation(),
+        .skinHead     = pawn.GetCurrentSkinId(SKIN_PARTS_TYPE::_HEAD),
+        .skinBodyUp   = pawn.GetCurrentSkinId(SKIN_PARTS_TYPE::_BODY_UP),
+        .skinBodyDown = pawn.GetCurrentSkinId(SKIN_PARTS_TYPE::_BODY_DOWN),
+        .skinHand     = pawn.GetCurrentSkinId(SKIN_PARTS_TYPE::_HAND),
+        .skinShoes    = pawn.GetCurrentSkinId(SKIN_PARTS_TYPE::_SHOES),
+    };
+}
+
 static void SendPlayerList(SessionActor& sa,
                            const std::unordered_map<uint64_t,
                                                     std::unique_ptr<PlayerPawn>>& pawns)
 {
     for (auto& [sid, existing] : pawns)
-    {
-        sa.Post(MsgZone_SendTcp{ SMsg_SpawnPlayer{
-            .pawnId      = existing->GetPawnId(),
-            .sessionId   = sid,
-            .name        = existing->GetName(),
-            .hp          = static_cast<uint32_t>(existing->GetHp()),
-            .maxHp       = static_cast<uint32_t>(existing->GetMaxHp()),
-            .x           = existing->GetPos().x,
-            .y           = existing->GetPos().y,
-            .z           = existing->GetPos().z,
-            .orientation = existing->GetOrientation()
-        }.Encode() });
-    }
+        sa.Post(MsgZone_SendTcp{ BuildSpawnPacket(sid, *existing).Encode() });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -155,17 +163,7 @@ void ZoneActor::Handle(MsgSession_EnterZone& msg)
     }
 
     // 3. 기존 플레이어들에게 신규 플레이어 스폰 브로드캐스트
-    BroadcastTcp(msg.sessionId, SMsg_SpawnPlayer{
-        .pawnId      = pawnId,
-        .sessionId   = msg.sessionId,
-        .name        = msg.characterName,
-        .hp          = hp,
-        .maxHp       = maxHp,
-        .x           = spawnPos.x,
-        .y           = spawnPos.y,
-        .z           = spawnPos.z,
-        .orientation = 0.f
-    }.Encode());
+    BroadcastTcp(msg.sessionId, BuildSpawnPacket(msg.sessionId, *pawn).Encode());
 
     m_playerPawns.emplace(msg.sessionId, std::move(pawn));
     LOG_INFO("ZoneActor {}: 플레이어 진입 sessionId={} name={} pawnId={}",
@@ -209,17 +207,7 @@ void ZoneActor::Handle(MsgWorld_AddPlayer& msg)
     }
 
     // 3. 기존 플레이어들에게 신규 플레이어 스폰 브로드캐스트
-    BroadcastTcp(msg.sessionId, SMsg_SpawnPlayer{
-        .pawnId      = pawnId,
-        .sessionId   = msg.sessionId,
-        .name        = msg.characterName,
-        .hp          = hp,
-        .maxHp       = maxHp,
-        .x           = spawnPos.x,
-        .y           = spawnPos.y,
-        .z           = spawnPos.z,
-        .orientation = 0.f
-    }.Encode());
+    BroadcastTcp(msg.sessionId, BuildSpawnPacket(msg.sessionId, *pawn).Encode());
 
     m_playerPawns.emplace(msg.sessionId, std::move(pawn));
     LOG_INFO("ZoneActor {}: 플레이어 추가 sessionId={} name={} pawnId={}",

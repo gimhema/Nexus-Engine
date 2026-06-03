@@ -67,6 +67,9 @@ public:
     SkinSwapResult SwapSkin(int pos);
     void           UseConsumbale(int pos);
 
+    // 현재 장착된 스킨 아이템 ID 조회 (미장착 시 0)
+    uint64_t GetCurrentSkinId(SKIN_PARTS_TYPE parts) const;
+
     // ItemSlot Interaction
     
 

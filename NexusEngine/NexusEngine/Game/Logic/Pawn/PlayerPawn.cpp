@@ -54,6 +54,11 @@ SkinSwapResult PlayerPawn::SwapSkin(uint32_t bagPos)
     return m_itemComponent->SwapSkin(static_cast<int>(bagPos));
 }
 
+uint64_t PlayerPawn::GetCurrentSkinId(SKIN_PARTS_TYPE parts) const
+{
+    return m_itemComponent->GetCurrentSkinId(parts);
+}
+
 void PlayerPawn::QuickSlotInteraction(int pos)
 {
     // Use

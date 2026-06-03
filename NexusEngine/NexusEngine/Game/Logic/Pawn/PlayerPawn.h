@@ -78,4 +78,7 @@ public:
 
     // ZoneActor 전용 — 스킨 장착 후 브로드캐스트에 필요한 결과 반환
     SkinSwapResult SwapSkin(uint32_t bagPos);
+
+    // 스폰 패킷 생성 시 현재 장착 스킨 ID 조회 (미장착 시 0)
+    uint64_t GetCurrentSkinId(SKIN_PARTS_TYPE parts) const;
 };
