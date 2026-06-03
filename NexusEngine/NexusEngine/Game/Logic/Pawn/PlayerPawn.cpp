@@ -5,6 +5,7 @@ PlayerPawn::PlayerPawn(std::string name,
                        std::weak_ptr<SessionActor> session)
     : Pawn(std::move(name), std::move(session), std::make_unique<CharacterEntityData>())
     , m_characterId(characterId)
+    , m_itemComponent(std::make_unique<ItemComponent>())
 {}
 
 bool PlayerPawn::IsOnCooldown(uint32_t skillId) const
@@ -21,12 +22,12 @@ void PlayerPawn::SetCooldown(uint32_t skillId, uint32_t cooldownMs)
 
 void PlayerPawn::PickUpItem(ItemBase* pickuped)
 {
-    // ItemComponent->Store(pickuped);
+    m_itemComponent->Store(pickuped);
 }
 
 void PlayerPawn::DropItem(ITEM_TYPE bagType, int pos)
 {
-    // ItemComponent->Delete(bagType, pos);
+    m_itemComponent->DropItem(bagType, pos);
 }
 
 void PlayerPawn::ItemBagInteraction(ITEM_TYPE bagType, int pos)
@@ -34,24 +35,15 @@ void PlayerPawn::ItemBagInteraction(ITEM_TYPE bagType, int pos)
     switch(bagType)
     {
         case ITEM_TYPE::DEFAULT:
-            {
-                return;
-            }
-            break;
+            return;
         case ITEM_TYPE::EQUIPMENT:
-            {
-                itemComponent->SwapEquip(pos);
-            }
-            break;       
+            m_itemComponent->SwapEquip(pos);
+            break;
         case ITEM_TYPE::SKIN:
-            {
-                itemComponent->SwapSkin(pos);
-            }
-            break;             
+            m_itemComponent->SwapSkin(pos);
+            break;
         case ITEM_TYPE::CONSUMABLE:
-            {
-                itemComponent->UseConsumbale(pos);
-            }
+            m_itemComponent->UseConsumbale(pos);
             break;
     }
 }

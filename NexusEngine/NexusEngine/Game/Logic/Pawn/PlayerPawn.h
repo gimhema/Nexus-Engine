@@ -60,7 +60,7 @@ private:
 
     // Item Member
 private:
-    ItemComponent* itemComponent;
+    std::unique_ptr<ItemComponent> m_itemComponent;
 
     // Item Action
 public:
