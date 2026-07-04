@@ -169,6 +169,26 @@
     <ClCompile Include="Game\Logic\Pawn\PlayerPawn.cpp" />
     <ClCompile Include="Arbiter\Arbiter.cpp" />
     <ClCompile Include="Arbiter\ArbiterSession.cpp" />
+    <ClCompile Include="Game\Data\Skill\SkillRegistry.cpp" />
+    <ClCompile Include="Game\Logic\Item.cpp" />
+    <ClCompile Include="Game\Logic\Combat\CombatProcessor.cpp" />
+    <ClCompile Include="Game\Logic\Consumable\Consumable.cpp" />
+    <ClCompile Include="Game\Logic\Equipment\Equipment.cpp" />
+    <ClCompile Include="Game\Logic\Inventory\Inventory.cpp" />
+    <ClCompile Include="Game\Logic\Movement\MovementProcessor.cpp" />
+    <ClCompile Include="Game\Logic\Pawn\ConsumableSlot.cpp" />
+    <ClCompile Include="Game\Logic\Pawn\EquipmentSlot.cpp" />
+    <ClCompile Include="Game\Logic\Pawn\ItemBag.cpp" />
+    <ClCompile Include="Game\Logic\Pawn\PlayerItemComponent.cpp" />
+    <ClCompile Include="Game\Logic\Pawn\SkinSlot.cpp" />
+    <ClCompile Include="Game\Logic\Skin\Skin.cpp" />
+    <ClCompile Include="Game\Table\TableBase.cpp" />
+    <ClCompile Include="protocol_shared\Packets\Packet-Auth.cpp" />
+    <ClCompile Include="protocol_shared\Packets\Packet-Chat.cpp" />
+    <ClCompile Include="protocol_shared\Packets\Packet-Combat.cpp" />
+    <ClCompile Include="protocol_shared\Packets\Packet-Item.cpp" />
+    <ClCompile Include="protocol_shared\Packets\Packet-Movement.cpp" />
+    <ClCompile Include="protocol_shared\Packets\Packet-Spawn.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Connection.h" />
@@ -206,6 +226,30 @@
     <ClInclude Include="protocol_shared\NexusTypes.h" />
     <ClInclude Include="protocol_shared\Opcodes.h" />
     <ClInclude Include="protocol_shared\PacketParser.h" />
+    <ClInclude Include="Game\Data\Skill\SkillDef.h" />
+    <ClInclude Include="Game\Data\Skill\SkillRegistry.h" />
+    <ClInclude Include="Game\Logic\CommonLogicType.h" />
+    <ClInclude Include="Game\Logic\Item.h" />
+    <ClInclude Include="Game\Logic\Combat\CombatProcessor.h" />
+    <ClInclude Include="Game\Logic\Consumable\Consumable.h" />
+    <ClInclude Include="Game\Logic\Equipment\Equipment.h" />
+    <ClInclude Include="Game\Logic\Inventory\Inventory.h" />
+    <ClInclude Include="Game\Logic\Movement\MovementProcessor.h" />
+    <ClInclude Include="Game\Logic\Pawn\ConsumableSlot.h" />
+    <ClInclude Include="Game\Logic\Pawn\EquipmentSlot.h" />
+    <ClInclude Include="Game\Logic\Pawn\ItemBag.h" />
+    <ClInclude Include="Game\Logic\Pawn\PlayerItemComponent.h" />
+    <ClInclude Include="Game\Logic\Pawn\SkinSlot.h" />
+    <ClInclude Include="Game\Logic\Pawn\Slot.h" />
+    <ClInclude Include="Game\Logic\Skin\Skin.h" />
+    <ClInclude Include="Game\Table\TableBase.h" />
+    <ClInclude Include="protocol_shared\NexusPacketBuilder.h" />
+    <ClInclude Include="protocol_shared\Packets\Packet-Auth.h" />
+    <ClInclude Include="protocol_shared\Packets\Packet-Chat.h" />
+    <ClInclude Include="protocol_shared\Packets\Packet-Combat.h" />
+    <ClInclude Include="protocol_shared\Packets\Packet-Item.h" />
+    <ClInclude Include="protocol_shared\Packets\Packet-Movement.h" />
+    <ClInclude Include="protocol_shared\Packets\Packet-Spawn.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets"></ImportGroup>

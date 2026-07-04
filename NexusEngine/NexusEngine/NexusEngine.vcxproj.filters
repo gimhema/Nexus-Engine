@@ -133,6 +133,63 @@
     <Filter Include="헤더 파일\protocol_shared">
       <UniqueIdentifier>{3AE26108-9377-48E5-B1F6-375005C1654F}</UniqueIdentifier>
     </Filter>
+    <Filter Include="헤더 파일\Game\Data\Skill">
+      <UniqueIdentifier>{917109DB-BFCE-46FD-9954-65C695E2A9ED}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Game\Data\Skill">
+      <UniqueIdentifier>{1BC3C426-76E5-47FD-95BE-6972B935450D}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Game\Logic\Combat">
+      <UniqueIdentifier>{0858976C-373F-458B-8AED-D38EA8A96670}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Game\Logic\Combat">
+      <UniqueIdentifier>{C36A519D-4638-463E-8BF1-54D2D54CB9ED}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Game\Logic\Consumable">
+      <UniqueIdentifier>{9D85C326-8541-4CD0-B58D-1EE393A699A9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Game\Logic\Consumable">
+      <UniqueIdentifier>{FC5E470C-A501-482D-857E-8DB0B35FF15C}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Game\Logic\Equipment">
+      <UniqueIdentifier>{8F2B3FCA-5140-4C91-A938-DA0C495E9B35}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Game\Logic\Equipment">
+      <UniqueIdentifier>{98282387-D1C8-4F79-8FCD-9B048026C536}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Game\Logic\Inventory">
+      <UniqueIdentifier>{781A2679-3459-4EE0-B61C-DE37220EF794}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Game\Logic\Inventory">
+      <UniqueIdentifier>{302110EF-A0B4-4084-BCF8-E2B2509C486E}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Game\Logic\Movement">
+      <UniqueIdentifier>{FE062494-D24B-49FC-920B-3238F3D3B22E}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Game\Logic\Movement">
+      <UniqueIdentifier>{6E989ECD-E909-41FD-AA41-F51D403A29EC}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Game\Logic\Skin">
+      <UniqueIdentifier>{00F9BDE0-461F-4E4E-8F01-69AB5D8A2C73}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Game\Logic\Skin">
+      <UniqueIdentifier>{4AAF6712-CF91-4B51-AAB7-D52143795E68}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\Game\Table">
+      <UniqueIdentifier>{AC10A6E5-894B-48C2-91E2-F4611E350680}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\Game\Table">
+      <UniqueIdentifier>{F88042D6-9CE0-488D-8BE2-264594207C2C}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\protocol_shared">
+      <UniqueIdentifier>{816E0926-F74B-4AB8-A596-A49C5A3F8E72}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="소스 파일\protocol_shared\Packets">
+      <UniqueIdentifier>{CD970555-6992-405A-A6D6-BAED37C8CBEC}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="헤더 파일\protocol_shared\Packets">
+      <UniqueIdentifier>{6AA8D490-366D-43B4-BC93-0A9E55E7E781}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -206,6 +263,66 @@
     </ClCompile>
     <ClCompile Include="Arbiter\ArbiterSession.cpp">
       <Filter>소스 파일\Arbiter</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Data\Skill\SkillRegistry.cpp">
+      <Filter>소스 파일\Game\Data\Skill</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Logic\Item.cpp">
+      <Filter>소스 파일\Game\Logic</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Logic\Combat\CombatProcessor.cpp">
+      <Filter>소스 파일\Game\Logic\Combat</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Logic\Consumable\Consumable.cpp">
+      <Filter>소스 파일\Game\Logic\Consumable</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Logic\Equipment\Equipment.cpp">
+      <Filter>소스 파일\Game\Logic\Equipment</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Logic\Inventory\Inventory.cpp">
+      <Filter>소스 파일\Game\Logic\Inventory</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Logic\Movement\MovementProcessor.cpp">
+      <Filter>소스 파일\Game\Logic\Movement</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Logic\Pawn\ConsumableSlot.cpp">
+      <Filter>소스 파일\Game\Logic\Pawn</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Logic\Pawn\EquipmentSlot.cpp">
+      <Filter>소스 파일\Game\Logic\Pawn</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Logic\Pawn\ItemBag.cpp">
+      <Filter>소스 파일\Game\Logic\Pawn</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Logic\Pawn\PlayerItemComponent.cpp">
+      <Filter>소스 파일\Game\Logic\Pawn</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Logic\Pawn\SkinSlot.cpp">
+      <Filter>소스 파일\Game\Logic\Pawn</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Logic\Skin\Skin.cpp">
+      <Filter>소스 파일\Game\Logic\Skin</Filter>
+    </ClCompile>
+    <ClCompile Include="Game\Table\TableBase.cpp">
+      <Filter>소스 파일\Game\Table</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol_shared\Packets\Packet-Auth.cpp">
+      <Filter>소스 파일\protocol_shared\Packets</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol_shared\Packets\Packet-Chat.cpp">
+      <Filter>소스 파일\protocol_shared\Packets</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol_shared\Packets\Packet-Combat.cpp">
+      <Filter>소스 파일\protocol_shared\Packets</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol_shared\Packets\Packet-Item.cpp">
+      <Filter>소스 파일\protocol_shared\Packets</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol_shared\Packets\Packet-Movement.cpp">
+      <Filter>소스 파일\protocol_shared\Packets</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol_shared\Packets\Packet-Spawn.cpp">
+      <Filter>소스 파일\protocol_shared\Packets</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -313,6 +430,78 @@
     </ClInclude>
     <ClInclude Include="protocol_shared\PacketParser.h">
       <Filter>헤더 파일\protocol_shared</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Data\Skill\SkillDef.h">
+      <Filter>헤더 파일\Game\Data\Skill</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Data\Skill\SkillRegistry.h">
+      <Filter>헤더 파일\Game\Data\Skill</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Logic\CommonLogicType.h">
+      <Filter>헤더 파일\Game\Logic</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Logic\Item.h">
+      <Filter>헤더 파일\Game\Logic</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Logic\Combat\CombatProcessor.h">
+      <Filter>헤더 파일\Game\Logic\Combat</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Logic\Consumable\Consumable.h">
+      <Filter>헤더 파일\Game\Logic\Consumable</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Logic\Equipment\Equipment.h">
+      <Filter>헤더 파일\Game\Logic\Equipment</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Logic\Inventory\Inventory.h">
+      <Filter>헤더 파일\Game\Logic\Inventory</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Logic\Movement\MovementProcessor.h">
+      <Filter>헤더 파일\Game\Logic\Movement</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Logic\Pawn\ConsumableSlot.h">
+      <Filter>헤더 파일\Game\Logic\Pawn</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Logic\Pawn\EquipmentSlot.h">
+      <Filter>헤더 파일\Game\Logic\Pawn</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Logic\Pawn\ItemBag.h">
+      <Filter>헤더 파일\Game\Logic\Pawn</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Logic\Pawn\PlayerItemComponent.h">
+      <Filter>헤더 파일\Game\Logic\Pawn</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Logic\Pawn\SkinSlot.h">
+      <Filter>헤더 파일\Game\Logic\Pawn</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Logic\Pawn\Slot.h">
+      <Filter>헤더 파일\Game\Logic\Pawn</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Logic\Skin\Skin.h">
+      <Filter>헤더 파일\Game\Logic\Skin</Filter>
+    </ClInclude>
+    <ClInclude Include="Game\Table\TableBase.h">
+      <Filter>헤더 파일\Game\Table</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol_shared\NexusPacketBuilder.h">
+      <Filter>헤더 파일\protocol_shared</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol_shared\Packets\Packet-Auth.h">
+      <Filter>헤더 파일\protocol_shared\Packets</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol_shared\Packets\Packet-Chat.h">
+      <Filter>헤더 파일\protocol_shared\Packets</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol_shared\Packets\Packet-Combat.h">
+      <Filter>헤더 파일\protocol_shared\Packets</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol_shared\Packets\Packet-Item.h">
+      <Filter>헤더 파일\protocol_shared\Packets</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol_shared\Packets\Packet-Movement.h">
+      <Filter>헤더 파일\protocol_shared\Packets</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol_shared\Packets\Packet-Spawn.h">
+      <Filter>헤더 파일\protocol_shared\Packets</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
