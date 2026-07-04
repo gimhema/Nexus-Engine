@@ -27,21 +27,21 @@ CombatResult ProcessSingleTarget(PlayerPawn& attacker,
     // ── 1. 공격자 생존 확인 ───────────────────────────────────────────────────
     if (!attacker.IsAlive())
     {
-        std::strncpy(result.failReason, "사망 상태", sizeof(result.failReason) - 1);
+        strncpy_s(result.failReason, "사망 상태", _TRUNCATE);
         return result;
     }
 
     // ── 2. 대상 생존 확인 ────────────────────────────────────────────────────
     if (!target.IsAlive())
     {
-        std::strncpy(result.failReason, "대상이 이미 사망", sizeof(result.failReason) - 1);
+        strncpy_s(result.failReason, "대상이 이미 사망", _TRUNCATE);
         return result;
     }
 
     // ── 3. 쿨타임 확인 ────────────────────────────────────────────────────────
     if (attacker.IsOnCooldown(def.skillId))
     {
-        std::strncpy(result.failReason, "쿨타임 중", sizeof(result.failReason) - 1);
+        strncpy_s(result.failReason, "쿨타임 중", _TRUNCATE);
         return result;
     }
 
@@ -49,7 +49,7 @@ CombatResult ProcessSingleTarget(PlayerPawn& attacker,
     auto& charData = attacker.GetCharacterData();
     if (def.mpCost > 0 && !charData.ConsumeMp(static_cast<int32_t>(def.mpCost)))
     {
-        std::strncpy(result.failReason, "MP 부족", sizeof(result.failReason) - 1);
+        strncpy_s(result.failReason, "MP 부족", _TRUNCATE);
         return result;
     }
 
@@ -59,7 +59,7 @@ CombatResult ProcessSingleTarget(PlayerPawn& attacker,
     {
         // MP 소모를 이미 했으면 환불
         if (def.mpCost > 0) charData.RestoreMp(static_cast<int32_t>(def.mpCost));
-        std::strncpy(result.failReason, "사거리 초과", sizeof(result.failReason) - 1);
+        strncpy_s(result.failReason, "사거리 초과", _TRUNCATE);
         return result;
     }
 
