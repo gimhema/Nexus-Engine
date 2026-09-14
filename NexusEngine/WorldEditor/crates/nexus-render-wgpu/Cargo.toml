@@ -1,5 +1,5 @@
 [package]
-name = "nexus-platform"
+name = "nexus-render-wgpu"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,8 +9,11 @@ path = "src/lib.rs"
 
 [dependencies]
 nexus-core.workspace        = true
-winit.workspace             = true
+nexus-render.workspace      = true
 raw-window-handle.workspace = true
+wgpu.workspace              = true
+pollster.workspace          = true
+bytemuck.workspace          = true
 
 [lints]
 workspace = true
