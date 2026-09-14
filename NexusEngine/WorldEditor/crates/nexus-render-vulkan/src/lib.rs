@@ -2,6 +2,7 @@
 
 use nexus_render::{RenderBackend, RenderCommand, RenderDeviceInfo, RenderError, Renderer};
 
+#[derive(Debug)]
 pub struct VulkanRenderer {
     device_info: RenderDeviceInfo,
     frame_open: bool,

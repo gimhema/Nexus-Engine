@@ -16,7 +16,7 @@ pub struct Vec3 {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Entity(u32);
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct World {
     next_entity: u32,
 }
