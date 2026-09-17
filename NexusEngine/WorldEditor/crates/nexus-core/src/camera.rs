@@ -1,8 +1,8 @@
 //! 2D 정사영 카메라.
 //!
 //! **이것은 3D 카메라다.** 투영만 정사영일 뿐, view·projection 행렬을 정상적으로
-//! 만들어 낸다. M8 에서 3D 로 갈 때 [`Camera2d::view_proj`] 의 `orthographic_rh` 를
-//! `perspective_rh` 로 바꾸고 궤도 컨트롤러를 붙이면 되며, 렌더 파이프라인은 손대지 않는다.
+//! 만들어 낸다. M8 에서 3D 로 갈 때 [`Camera2d::view_proj`] 의 `directx::orthographic` 을
+//! `directx::perspective` 로 바꾸고 궤도 컨트롤러를 붙이면 되며, 렌더 파이프라인은 손대지 않는다.
 //!
 //! 좌표계는 서버와 동일하게 **cm 단위, Z-up** 이다. 따라서 지면은 XY 평면이고,
 //! 탑다운 카메라는 +Z 에서 −Z 방향을 내려다본다.
@@ -255,6 +255,28 @@ mod tests {
         assert!(ndc.x.abs() < 1e-4 && ndc.y.abs() < 1e-4, "{ndc:?}");
         // wgpu 깊이 범위는 0..1 이므로 지면은 그 안에 있어야 한다
         assert!((0.0..=1.0).contains(&ndc.z), "깊이 범위 이탈: {}", ndc.z);
+    }
+
+    #[test]
+    fn higher_objects_get_smaller_depth() {
+        // 깊이 규약: 일반 Z. 카메라에 가까울수록(월드 Z 가 클수록) 깊이 값이 작다.
+        // 렌더러는 이를 전제로 LessEqual 비교를 쓴다. 이 테스트가 깨지면
+        // 렌더러의 depth_compare 와 깊이 초기값도 함께 바꿔야 한다.
+        let c = cam();
+        let vp = c.view_proj();
+        let depth = |z: f32| {
+            let clip = vp * glam::Vec4::new(c.center.x, c.center.y, z, 1.0);
+            clip.z / clip.w
+        };
+
+        assert!(
+            depth(1.0) < depth(0.0),
+            "마커(z=1)가 지면보다 앞이어야 한다"
+        );
+        assert!(
+            depth(0.0) < depth(-1.0),
+            "지면이 그리드(z=-1)보다 앞이어야 한다"
+        );
     }
 
     #[test]

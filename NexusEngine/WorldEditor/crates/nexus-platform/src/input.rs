@@ -13,8 +13,11 @@ pub use winit::keyboard::KeyCode;
 /// 한 프레임 동안의 입력 상태.
 ///
 /// `held` 계열은 눌려 있는 동안 계속 참이고, `pressed` / `released` 계열은
-/// 상태가 바뀐 프레임에만 참이다. 후자는 [`end_frame`](Self::end_frame) 에서
-/// 비워지므로, 한 프레임에 여러 고정 스텝이 돌아도 중복 소비되지 않는다.
+/// 상태가 바뀐 뒤 **다음 고정 스텝 한 번**에만 참이다.
+///
+/// 플랫폼 루프는 스텝이 실행되지 않은 프레임에서는 일시 입력을 쌓아 두고,
+/// 스텝이 여러 번 실행된 프레임에서는 첫 스텝 직후에 비운다. 따라서 시뮬레이션 주기(20Hz)가
+/// 화면 주사율보다 낮아도 입력이 사라지지 않고, 같은 입력이 두 번 처리되지도 않는다.
 #[derive(Debug, Default, Clone)]
 pub struct Input {
     keys_held: HashSet<KeyCode>,
@@ -115,7 +118,9 @@ impl Input {
     }
 
     pub(crate) fn on_cursor(&mut self, x: f32, y: f32) {
-        self.cursor_delta = (x - self.cursor.0, y - self.cursor.1);
+        // 한 프레임에 이동 이벤트가 여러 번 올 수 있으므로 덮어쓰지 않고 누적한다.
+        self.cursor_delta.0 += x - self.cursor.0;
+        self.cursor_delta.1 += y - self.cursor.1;
         self.cursor = (x, y);
     }
 
@@ -204,6 +209,18 @@ mod tests {
 
         input.end_frame();
         assert_eq!(input.cursor_delta(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn cursor_delta_accumulates_multiple_moves() {
+        // 이전 구현은 마지막 이벤트의 이동량만 남겼다 (10 → 12 → 15 에서 3 만 남음)
+        let mut input = Input::default();
+        input.on_cursor(10.0, 0.0);
+        input.end_frame();
+
+        input.on_cursor(12.0, 0.0);
+        input.on_cursor(15.0, 4.0);
+        assert_eq!(input.cursor_delta(), (5.0, 4.0));
     }
 
     #[test]

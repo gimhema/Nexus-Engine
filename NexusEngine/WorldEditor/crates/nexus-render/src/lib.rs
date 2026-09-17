@@ -39,6 +39,17 @@ pub enum RenderCommand {
     /// 프레임 배경색. 렌더 패스의 load 연산으로 처리되므로 프레임당 한 번만 유효하다.
     Clear { color: [f32; 4] },
 
+    /// 씬을 그릴 화면 영역 (물리 픽셀, 좌상단 원점).
+    ///
+    /// 에디터처럼 패널이 화면을 나눠 쓸 때, 씬은 이 사각형 안에만 그려진다.
+    /// 제출하지 않으면 화면 전체를 쓴다. 화면 밖으로 나간 부분은 잘린다.
+    SetViewport {
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    },
+
     /// 카메라 행렬 설정. 드로우 명령보다 먼저 제출해야 한다.
     ///
     /// M8 에서 이 행렬을 만드는 쪽이 정사영에서 원근으로 바뀔 뿐,
@@ -93,6 +104,25 @@ pub enum FrameStatus {
     Skipped,
 }
 
+/// 화면 캡처 결과. 8bit RGBA, sRGB 인코딩, 좌상단부터 행 우선.
+#[derive(Clone)]
+pub struct Capture {
+    pub width: u32,
+    pub height: u32,
+    /// `width * height * 4` 바이트.
+    pub rgba: Vec<u8>,
+}
+
+impl std::fmt::Debug for Capture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Capture")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("bytes", &self.rgba.len())
+            .finish()
+    }
+}
+
 /// 프레임 단위 렌더러.
 ///
 /// 호출 순서는 `begin_frame` → `submit`* → `end_frame` 이다.
@@ -127,4 +157,19 @@ pub trait Renderer {
     /// # Errors
     /// `begin_frame` 이 선행되지 않았거나 제출에 실패하면 오류를 반환한다.
     fn end_frame(&mut self) -> Result<(), RenderError>;
+
+    /// 다음으로 표시되는 프레임을 캡처하도록 예약한다.
+    ///
+    /// 결과는 그 프레임의 `end_frame` 이후 [`take_capture`](Self::take_capture) 로 꺼낸다.
+    /// 자동화 검증(스크린샷 비교, 사람 없이 UI 확인)에 쓴다.
+    ///
+    /// # Errors
+    /// 백엔드나 서피스가 화면 읽기를 지원하지 않으면 오류를 반환한다.
+    fn request_capture(&mut self) -> Result<(), RenderError>;
+
+    /// 완료된 캡처를 꺼낸다. 아직 없으면 `None`.
+    ///
+    /// # Errors
+    /// 캡처는 수행됐지만 읽기에 실패했으면 오류를 반환한다.
+    fn take_capture(&mut self) -> Option<Result<Capture, RenderError>>;
 }
