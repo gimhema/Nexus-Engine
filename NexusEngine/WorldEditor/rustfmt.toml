@@ -1,0 +1,5 @@
+# 줄바꿈을 LF 로 고정한다.
+# 기본값(Auto)은 플랫폼 네이티브를 따라가므로, Windows 에서 포맷하면
+# CRLF 가 섞여 리눅스 CI 의 `cargo fmt --check` 가 깨진다.
+newline_style = "Unix"
+edition       = "2024"

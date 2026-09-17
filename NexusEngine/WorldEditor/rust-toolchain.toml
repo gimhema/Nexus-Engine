@@ -1,0 +1,8 @@
+# 툴체인을 고정한다.
+#
+# CI 가 clippy 를 -D warnings 로 돌리기 때문에, 채널을 "stable" 로 두면
+# 새 Rust 릴리스에서 추가된 린트 하나로 CI 가 예고 없이 깨진다.
+# 버전을 올릴 때는 이 파일을 수정하고 로컬에서 clippy 를 통과시킨 뒤 커밋할 것.
+[toolchain]
+channel    = "1.95.0"
+components = ["rustfmt", "clippy"]
