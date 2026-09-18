@@ -7,20 +7,32 @@
 //!
 //! - 뷰포트 드래그 한 번 = 1 스텝 (누를 때 원래 값을 잡아 두고, 뗄 때 기록)
 //! - 인스펙터 값 편집 한 번 = 1 스텝 (드래그가 끝나거나 입력칸 포커스를 잃을 때 기록)
-//! - 움직이지 않은 클릭은 기록하지 않는다
+//! - 추가·삭제 한 번 = 1 스텝 (여러 개를 지워도 하나)
+//! - 움직이지 않은 클릭, 박스 선택은 기록하지 않는다 — 선택은 편집이 아니다
 
-use nexus_core::{Entity, Vec2};
+use core::f32::consts::PI;
 
-use crate::scene::{Handle, Pick, Scene, Target, ZoneBounds};
+use nexus_core::{Entity, Vec2, units};
+
+use crate::scene::{Handle, Item, ItemKind, Pick, Scene, Target, ZoneBounds};
 
 /// 언두 기록 상한. 오래된 것부터 버린다.
 const HISTORY_LIMIT: usize = 256;
+
+/// Ctrl 회전 스냅 간격 — 15°.
+pub(crate) const ROTATE_SNAP: f32 = PI / 12.0;
 
 /// 되돌릴 수 있는 편집 하나.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Command {
     /// 대상별 (원래 위치, 새 위치).
     MoveItems(Vec<(Entity, Vec2, Vec2)>),
+    /// 대상별 (원래 방향, 새 방향). 라디안.
+    RotateItems(Vec<(Entity, f32, f32)>),
+    /// (목록 위치, 항목). 위치 오름차순.
+    AddItems(Vec<(usize, Item)>),
+    /// (원래 목록 위치, 항목). 위치 오름차순.
+    RemoveItems(Vec<(usize, Item)>),
     SetZone {
         from: ZoneBounds,
         to: ZoneBounds,
@@ -37,6 +49,11 @@ impl Command {
                     }
                 }
             }
+            Self::RotateItems(turns) => {
+                set_headings(scene, turns.iter().map(|&(e, _, to)| (e, to)))
+            }
+            Self::AddItems(items) => insert_all(scene, items),
+            Self::RemoveItems(items) => remove_all(scene, items),
             Self::SetZone { to, .. } => scene.zone = *to,
         }
     }
@@ -50,6 +67,11 @@ impl Command {
                     }
                 }
             }
+            Self::RotateItems(turns) => {
+                set_headings(scene, turns.iter().map(|&(e, from, _)| (e, from)));
+            }
+            Self::AddItems(items) => remove_all(scene, items),
+            Self::RemoveItems(items) => insert_all(scene, items),
             Self::SetZone { from, .. } => scene.zone = *from,
         }
     }
@@ -57,17 +79,56 @@ impl Command {
     fn is_noop(&self) -> bool {
         match self {
             Self::MoveItems(moves) => moves.iter().all(|&(_, from, to)| from == to),
+            Self::RotateItems(turns) => turns.iter().all(|&(_, from, to)| from == to),
+            Self::AddItems(items) | Self::RemoveItems(items) => items.is_empty(),
             Self::SetZone { from, to } => from == to,
         }
     }
 
     /// 사람이 읽을 요약 (메뉴·상태 바용).
     pub(crate) fn describe(&self) -> String {
+        let count = |n: usize, verb: &str| {
+            if n == 1 {
+                String::from(verb)
+            } else {
+                format!("{n}개 {verb}")
+            }
+        };
         match self {
-            Self::MoveItems(moves) if moves.len() == 1 => String::from("이동"),
-            Self::MoveItems(moves) => format!("{}개 이동", moves.len()),
+            Self::MoveItems(moves) => count(moves.len(), "이동"),
+            Self::RotateItems(turns) => count(turns.len(), "회전"),
+            Self::AddItems(items) => match items.as_slice() {
+                [(_, item)] => format!("{} 추가", item.name),
+                _ => count(items.len(), "추가"),
+            },
+            Self::RemoveItems(items) => match items.as_slice() {
+                [(_, item)] => format!("{} 삭제", item.name),
+                _ => count(items.len(), "삭제"),
+            },
             Self::SetZone { .. } => String::from("존 경계 변경"),
         }
+    }
+}
+
+fn set_headings(scene: &mut Scene, headings: impl Iterator<Item = (Entity, f32)>) {
+    for (e, heading) in headings {
+        if let Some(item) = scene.item_mut(e) {
+            item.orientation = heading;
+        }
+    }
+}
+
+/// 위치 오름차순으로 넣는다 — 앞쪽이 먼저 자리를 잡아야 뒤쪽 위치가 맞는다.
+fn insert_all(scene: &mut Scene, items: &[(usize, Item)]) {
+    for (index, item) in items {
+        scene.insert(*index, item.clone());
+    }
+}
+
+/// 위치 내림차순으로 뺀다 — 뒤쪽부터 빼야 앞쪽 위치가 흔들리지 않는다.
+fn remove_all(scene: &mut Scene, items: &[(usize, Item)]) {
+    for (_, item) in items.iter().rev() {
+        scene.remove(item.entity);
     }
 }
 
@@ -113,7 +174,7 @@ pub(crate) struct PointerInput {
     pub(crate) released: bool,
     /// Shift — 선택에 더하기/빼기.
     pub(crate) additive: bool,
-    /// Ctrl — 그리드 스냅.
+    /// Ctrl — 그리드 스냅 / 회전 15° 스냅.
     pub(crate) snap: bool,
     /// 화면 1픽셀의 월드 길이 (m). 피킹 허용 오차·마커 최소 크기 계산에 쓴다.
     pub(crate) px: f32,
@@ -130,6 +191,12 @@ pub(crate) enum InspectorEdit {
         /// 이번 편집이 끝났다 (드래그 종료·포커스 상실) — 언두에 기록할 시점.
         finished: bool,
     },
+    /// 방향 (라디안). 저장 전에 `[0, 2π)` 로 정규화한다.
+    ItemHeading {
+        entity: Entity,
+        heading: f32,
+        finished: bool,
+    },
     Zone {
         bounds: ZoneBounds,
         finished: bool,
@@ -144,16 +211,27 @@ enum Drag {
         start_cursor: Vec2,
         originals: Vec<(Entity, Vec2)>,
     },
+    Rotate {
+        entity: Entity,
+        original: f32,
+    },
     Zone {
         handle: Handle,
         original: ZoneBounds,
+    },
+    /// 빈 곳에서 시작한 박스 선택. `base` 는 시작 시점의 선택 (Shift 면 유지, 아니면 비움).
+    Box {
+        start: Vec2,
+        current: Vec2,
+        base: Vec<Target>,
     },
 }
 
 /// 진행 중인 인스펙터 편집의 원래 값.
 #[derive(Clone, Copy, Debug)]
 enum LiveEdit {
-    Item(Entity, Vec2),
+    ItemPos(Entity, Vec2),
+    ItemHeading(Entity, f32),
     Zone(ZoneBounds),
 }
 
@@ -184,6 +262,24 @@ impl Editing {
         self.drag.is_some()
     }
 
+    /// 회전 핸들을 보일 마커 — 마커 하나만 선택됐을 때.
+    pub(crate) fn rotatable(&self) -> Option<Entity> {
+        match self.selection.as_slice() {
+            [Target::Item(e)] => Some(*e),
+            _ => None,
+        }
+    }
+
+    /// 진행 중인 박스 선택 사각형 (min, max). 그리기용.
+    pub(crate) fn box_rect(&self) -> Option<(Vec2, Vec2)> {
+        match &self.drag {
+            Some(Drag::Box { start, current, .. }) => {
+                Some((start.min(*current), start.max(*current)))
+            }
+            _ => None,
+        }
+    }
+
     /// 선택을 바꾼다. `additive` 면 토글, 아니면 그것만 선택.
     pub(crate) fn select(&mut self, target: Target, additive: bool) {
         if additive {
@@ -202,6 +298,14 @@ impl Editing {
         self.selection.clear();
     }
 
+    /// 씬에 더 이상 없는 대상을 선택에서 뺀다 (추가를 언두한 뒤 등).
+    fn prune_selection(&mut self, scene: &Scene) {
+        self.selection.retain(|t| match t {
+            Target::Zone => true,
+            Target::Item(e) => scene.item(*e).is_some(),
+        });
+    }
+
     // ── 언두 / 리두 ──────────────────────────────────────────────────────
 
     pub(crate) fn undo(&mut self, scene: &mut Scene) -> bool {
@@ -211,6 +315,7 @@ impl Editing {
         };
         cmd.revert(scene);
         self.history.redo.push(cmd);
+        self.prune_selection(scene);
         true
     }
 
@@ -221,6 +326,7 @@ impl Editing {
         };
         cmd.apply(scene);
         self.history.undo.push(cmd);
+        self.prune_selection(scene);
         true
     }
 
@@ -235,18 +341,60 @@ impl Editing {
                     }
                 }
             }
+            Some(Drag::Rotate { entity, original }) => {
+                set_headings(scene, std::iter::once((entity, original)));
+            }
             Some(Drag::Zone { original, .. }) => scene.zone = original,
+            Some(Drag::Box { base, .. }) => self.selection = base,
             None => {}
         }
         match self.live.take() {
-            Some(LiveEdit::Item(e, pos)) => {
+            Some(LiveEdit::ItemPos(e, pos)) => {
                 if let Some(item) = scene.item_mut(e) {
                     item.pos = pos;
                 }
             }
+            Some(LiveEdit::ItemHeading(e, heading)) => {
+                set_headings(scene, std::iter::once((e, heading)));
+            }
             Some(LiveEdit::Zone(z)) => scene.zone = z,
             None => {}
         }
+    }
+
+    // ── 추가 / 삭제 ──────────────────────────────────────────────────────
+
+    /// 마커를 `pos` 에 새로 놓고 그것만 선택한다.
+    pub(crate) fn add_item(&mut self, scene: &mut Scene, kind: ItemKind, pos: Vec2) -> Entity {
+        self.cancel_pending(scene);
+        let item = scene.new_item(kind, pos);
+        let entity = item.entity;
+        let cmd = Command::AddItems(vec![(scene.items.len(), item)]);
+        cmd.apply(scene);
+        self.history.record(cmd);
+        self.select(Target::Item(entity), false);
+        entity
+    }
+
+    /// 선택된 마커를 지운다. 존은 지울 수 없으므로 선택에 남는다. 지운 게 있으면 `true`.
+    pub(crate) fn delete_selected(&mut self, scene: &mut Scene) -> bool {
+        self.cancel_pending(scene);
+        let mut removed: Vec<(usize, Item)> = scene
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| self.is_selected(Target::Item(item.entity)))
+            .map(|(i, item)| (i, item.clone()))
+            .collect();
+        if removed.is_empty() {
+            return false;
+        }
+        removed.sort_by_key(|(i, _)| *i);
+        let cmd = Command::RemoveItems(removed);
+        cmd.apply(scene);
+        self.history.record(cmd);
+        self.prune_selection(scene);
+        true
     }
 
     // ── 뷰포트 포인터 ────────────────────────────────────────────────────
@@ -258,10 +406,11 @@ impl Editing {
         input: &PointerInput,
     ) -> Option<Pick> {
         // 패널 위에서는 호버하지 않는다 — 패널 뒤에 가려진 마커가 강조되지 않도록.
+        let rotatable = self.rotatable();
         let hover = input
             .world
             .filter(|_| input.over_viewport)
-            .and_then(|w| scene.pick(w, input.px));
+            .and_then(|w| scene.pick(w, input.px, rotatable));
 
         if input.pressed
             && let Some(w) = input.world
@@ -269,9 +418,27 @@ impl Editing {
             self.begin_press(scene, hover, w, input.additive);
         }
 
-        if let (Some(w), Some(drag)) = (input.world, &self.drag) {
-            let drag = drag.clone();
-            update_drag(scene, &drag, w, input.snap.then_some(input.grid));
+        if let Some(w) = input.world
+            && let Some(drag) = self.drag.as_mut()
+        {
+            match drag {
+                Drag::Box {
+                    start,
+                    current,
+                    base,
+                } => {
+                    *current = w;
+                    let (min, max) = (start.min(w), start.max(w));
+                    self.selection.clone_from(base);
+                    for e in scene.items_in_rect(min, max, input.px) {
+                        let target = Target::Item(e);
+                        if !self.selection.contains(&target) {
+                            self.selection.push(target);
+                        }
+                    }
+                }
+                other => update_drag(scene, other, w, input.snap, input.grid),
+            }
         }
 
         if input.released {
@@ -283,6 +450,14 @@ impl Editing {
 
     fn begin_press(&mut self, scene: &Scene, hover: Option<Pick>, cursor: Vec2, additive: bool) {
         match hover {
+            Some(Pick::RotateHandle(entity)) => {
+                if let Some(item) = scene.item(entity) {
+                    self.drag = Some(Drag::Rotate {
+                        entity,
+                        original: item.orientation,
+                    });
+                }
+            }
             Some(Pick::Item(entity)) => {
                 let target = Target::Item(entity);
                 if additive {
@@ -322,9 +497,15 @@ impl Editing {
                 });
             }
             None => {
+                // 빈 곳 클릭 = 선택 해제, 그대로 끌면 박스 선택.
                 if !additive {
                     self.clear_selection();
                 }
+                self.drag = Some(Drag::Box {
+                    start: cursor,
+                    current: cursor,
+                    base: self.selection.clone(),
+                });
             }
         }
     }
@@ -340,10 +521,19 @@ impl Editing {
                     .filter_map(|(e, from)| scene.item(e).map(|i| (e, from, i.pos)))
                     .collect(),
             ),
+            Drag::Rotate { entity, original } => Command::RotateItems(
+                scene
+                    .item(entity)
+                    .map(|i| (entity, original, i.orientation))
+                    .into_iter()
+                    .collect(),
+            ),
             Drag::Zone { original, .. } => Command::SetZone {
                 from: original,
                 to: scene.zone,
             },
+            // 선택은 이미 드래그 중에 반영됐다. 기록할 편집이 아니다.
+            Drag::Box { .. } => return,
         };
         self.history.record(cmd);
     }
@@ -361,7 +551,7 @@ impl Editing {
                     return;
                 };
                 let original = match self.live {
-                    Some(LiveEdit::Item(e, orig)) if e == entity => orig,
+                    Some(LiveEdit::ItemPos(e, orig)) if e == entity => orig,
                     _ => item.pos,
                 };
                 item.pos = pos;
@@ -370,7 +560,29 @@ impl Editing {
                     self.history
                         .record(Command::MoveItems(vec![(entity, original, pos)]));
                 } else {
-                    self.live = Some(LiveEdit::Item(entity, original));
+                    self.live = Some(LiveEdit::ItemPos(entity, original));
+                }
+            }
+            InspectorEdit::ItemHeading {
+                entity,
+                heading,
+                finished,
+            } => {
+                let Some(item) = scene.item_mut(entity) else {
+                    return;
+                };
+                let original = match self.live {
+                    Some(LiveEdit::ItemHeading(e, orig)) if e == entity => orig,
+                    _ => item.orientation,
+                };
+                let heading = units::normalize_heading(heading);
+                item.orientation = heading;
+                if finished {
+                    self.live = None;
+                    self.history
+                        .record(Command::RotateItems(vec![(entity, original, heading)]));
+                } else {
+                    self.live = Some(LiveEdit::ItemHeading(entity, original));
                 }
             }
             InspectorEdit::Zone { bounds, finished } => {
@@ -393,8 +605,8 @@ impl Editing {
     }
 }
 
-/// 드래그 중인 대상을 커서 위치에 맞춰 옮긴다. `snap` 이 있으면 그 간격으로 맞춘다.
-fn update_drag(scene: &mut Scene, drag: &Drag, cursor: Vec2, snap: Option<f32>) {
+/// 드래그 중인 대상을 커서 위치에 맞춰 옮긴다. `snap` 이면 위치는 `grid` 간격, 회전은 15° 로 맞춘다.
+fn update_drag(scene: &mut Scene, drag: &Drag, cursor: Vec2, snap: bool, grid: f32) {
     match drag {
         Drag::Items {
             anchor,
@@ -406,8 +618,8 @@ fn update_drag(scene: &mut Scene, drag: &Drag, cursor: Vec2, snap: Option<f32>) 
             };
             // 기준 대상(누른 것)을 스냅하고, 나머지는 같은 이동량만큼 따라온다.
             let mut anchor_to = anchor_from + (cursor - *start_cursor);
-            if let Some(step) = snap {
-                anchor_to = snap_to(anchor_to, step);
+            if snap {
+                anchor_to = snap_to(anchor_to, grid);
             }
             let delta = anchor_to - anchor_from;
             for &(e, from) in originals {
@@ -416,10 +628,27 @@ fn update_drag(scene: &mut Scene, drag: &Drag, cursor: Vec2, snap: Option<f32>) 
                 }
             }
         }
+        Drag::Rotate { entity, .. } => {
+            let Some(item) = scene.item_mut(*entity) else {
+                return;
+            };
+            let dir = cursor - item.pos;
+            // 커서가 마커 중심에 겹치면 방향이 정해지지 않는다 — 직전 값을 유지.
+            if dir.length_squared() <= f32::EPSILON {
+                return;
+            }
+            let mut heading = units::dir_to_heading(dir);
+            if snap {
+                heading = (heading / ROTATE_SNAP).round() * ROTATE_SNAP;
+            }
+            item.orientation = units::normalize_heading(heading);
+        }
         Drag::Zone { handle, original } => {
-            let to = snap.map_or(cursor, |step| snap_to(cursor, step));
+            let to = if snap { snap_to(cursor, grid) } else { cursor };
             scene.zone = original.with_handle_moved(*handle, to);
         }
+        // 박스 선택은 선택만 바꾼다 — `handle_pointer` 가 처리한다.
+        Drag::Box { .. } => {}
     }
 }
 
@@ -702,5 +931,189 @@ mod tests {
             );
         }
         assert_eq!(ed.history.undo.len(), HISTORY_LIMIT);
+    }
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-4
+    }
+
+    #[test]
+    fn rotate_handle_drag_turns_single_selection() {
+        let (mut s, a, _) = scene();
+        let mut ed = Editing::default();
+        ed.select(Target::Item(a), false);
+
+        // 방향 0 → 핸들은 마커 오른쪽(+X)에 있다
+        let handle = crate::scene::rotate_handle_pos(s.item(a).unwrap(), PX);
+        assert_eq!(
+            ed.handle_pointer(&mut s, &move_to(handle)),
+            Some(Pick::RotateHandle(a))
+        );
+
+        // 핸들을 마커 위쪽(+Y)으로 끌면 방향 90°
+        drag(&mut ed, &mut s, handle, Vec2::new(100.0, 300.0));
+        assert!(close(s.item(a).unwrap().orientation, PI / 2.0));
+        assert_eq!(
+            s.item(a).unwrap().pos,
+            Vec2::new(100.0, 100.0),
+            "위치는 그대로"
+        );
+        assert_eq!(ed.history().undo_label().as_deref(), Some("회전"));
+
+        ed.undo(&mut s);
+        assert!(close(s.item(a).unwrap().orientation, 0.0));
+    }
+
+    #[test]
+    fn rotate_handle_only_for_single_selection() {
+        let (mut s, a, b) = scene();
+        let mut ed = Editing::default();
+        ed.select(Target::Item(a), false);
+        ed.select(Target::Item(b), true);
+        assert_eq!(ed.rotatable(), None);
+
+        let handle = crate::scene::rotate_handle_pos(s.item(a).unwrap(), PX);
+        assert_ne!(
+            ed.handle_pointer(&mut s, &move_to(handle)),
+            Some(Pick::RotateHandle(a))
+        );
+    }
+
+    #[test]
+    fn rotate_snap_is_15_degrees() {
+        let (mut s, a, _) = scene();
+        let mut ed = Editing::default();
+        ed.select(Target::Item(a), false);
+        let handle = crate::scene::rotate_handle_pos(s.item(a).unwrap(), PX);
+
+        ed.handle_pointer(&mut s, &press(handle));
+        // 중심에서 약 37° 방향
+        let mut m =
+            move_to(Vec2::new(100.0, 100.0) + units::heading_to_dir(37f32.to_radians()) * 50.0);
+        m.snap = true;
+        ed.handle_pointer(&mut s, &m);
+        assert!(close(s.item(a).unwrap().orientation, 30f32.to_radians()));
+    }
+
+    #[test]
+    fn heading_edit_normalizes_and_records_once() {
+        let (mut s, a, _) = scene();
+        let mut ed = Editing::default();
+        for deg in [-10.0f32, -45.0, -90.0] {
+            ed.apply_inspector(
+                &mut s,
+                InspectorEdit::ItemHeading {
+                    entity: a,
+                    heading: deg.to_radians(),
+                    finished: deg == -90.0,
+                },
+            );
+        }
+        // -90° → 270°
+        assert!(close(s.item(a).unwrap().orientation, 1.5 * PI));
+        ed.undo(&mut s);
+        assert!(close(s.item(a).unwrap().orientation, 0.0));
+        assert!(ed.history().undo_label().is_none());
+    }
+
+    #[test]
+    fn add_then_undo_redo_keeps_same_entity() {
+        let (mut s, _, _) = scene();
+        let mut ed = Editing::default();
+        let e = ed.add_item(&mut s, ItemKind::Npc, Vec2::new(5.0, 5.0));
+        assert_eq!(s.item(e).unwrap().name, "NPC #1");
+        assert_eq!(ed.selection(), &[Target::Item(e)]);
+
+        ed.undo(&mut s);
+        assert!(s.item(e).is_none());
+        assert!(ed.selection().is_empty(), "사라진 항목은 선택에서도 빠진다");
+
+        ed.redo(&mut s);
+        assert_eq!(
+            s.item(e).unwrap().pos,
+            Vec2::new(5.0, 5.0),
+            "같은 핸들로 되살아난다"
+        );
+    }
+
+    #[test]
+    fn new_names_fill_the_lowest_free_number() {
+        let (mut s, _, _) = scene();
+        let mut ed = Editing::default();
+        let first = ed.add_item(&mut s, ItemKind::Monster, Vec2::ZERO);
+        ed.add_item(&mut s, ItemKind::Monster, Vec2::ZERO);
+        ed.select(Target::Item(first), false);
+        ed.delete_selected(&mut s);
+        let again = ed.add_item(&mut s, ItemKind::Monster, Vec2::ZERO);
+        assert_eq!(s.item(again).unwrap().name, "몬스터 #1");
+    }
+
+    #[test]
+    fn delete_restores_original_order_on_undo() {
+        let (mut s, a, b) = scene();
+        let c = s.add("C", ItemKind::Npc, Vec2::new(0.0, -300.0), 20.0);
+        let mut ed = Editing::default();
+        // A 와 C 를 지운다 (가운데 B 는 남김). 선택 순서를 목록 순서와 다르게.
+        ed.select(Target::Item(c), false);
+        ed.select(Target::Item(a), true);
+        ed.select(Target::Zone, true);
+
+        assert!(ed.delete_selected(&mut s));
+        assert_eq!(s.items.iter().map(|i| i.entity).collect::<Vec<_>>(), [b]);
+        assert_eq!(
+            ed.selection(),
+            &[Target::Zone],
+            "존은 지워지지 않고 선택에 남는다"
+        );
+        assert_eq!(ed.history().undo_label().as_deref(), Some("2개 삭제"));
+
+        ed.undo(&mut s);
+        assert_eq!(
+            s.items.iter().map(|i| i.entity).collect::<Vec<_>>(),
+            [a, b, c],
+            "원래 자리로 돌아와야 그리기·피킹 순서가 유지된다"
+        );
+    }
+
+    #[test]
+    fn delete_with_nothing_selected_records_nothing() {
+        let (mut s, _, _) = scene();
+        let mut ed = Editing::default();
+        ed.select(Target::Zone, false);
+        assert!(!ed.delete_selected(&mut s));
+        assert!(ed.history().undo_label().is_none());
+    }
+
+    #[test]
+    fn box_drag_on_empty_space_selects_overlapping_markers() {
+        let (mut s, a, b) = scene();
+        let mut ed = Editing::default();
+
+        // A(100,100) 만 감싸는 박스
+        ed.handle_pointer(&mut s, &press(Vec2::new(50.0, 50.0)));
+        ed.handle_pointer(&mut s, &move_to(Vec2::new(150.0, 150.0)));
+        assert_eq!(ed.selection(), &[Target::Item(a)], "끄는 중에도 반영된다");
+        assert!(ed.box_rect().is_some());
+        ed.handle_pointer(&mut s, &release_at(Vec2::new(150.0, 150.0)));
+        assert!(ed.box_rect().is_none());
+        assert!(ed.history().undo_label().is_none(), "선택은 편집이 아니다");
+
+        // Shift 박스는 기존 선택에 더한다
+        let mut p = press(Vec2::new(-350.0, 0.0));
+        p.additive = true;
+        ed.handle_pointer(&mut s, &p);
+        ed.handle_pointer(&mut s, &release_at(Vec2::new(-250.0, 100.0)));
+        assert_eq!(ed.selection(), &[Target::Item(a), Target::Item(b)]);
+    }
+
+    #[test]
+    fn shrinking_box_drops_markers_again() {
+        let (mut s, a, _) = scene();
+        let mut ed = Editing::default();
+        ed.handle_pointer(&mut s, &press(Vec2::new(50.0, 50.0)));
+        ed.handle_pointer(&mut s, &move_to(Vec2::new(150.0, 150.0)));
+        assert!(ed.is_selected(Target::Item(a)));
+        ed.handle_pointer(&mut s, &move_to(Vec2::new(60.0, 60.0)));
+        assert!(ed.selection().is_empty());
     }
 }

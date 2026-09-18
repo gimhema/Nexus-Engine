@@ -61,6 +61,7 @@ pub(crate) fn build(camera: &Camera2d, out: &mut Vec<RenderCommand>) {
         let is_axis = x.abs() < spacing * 0.01;
 
         out.push(RenderCommand::DrawRect {
+            rotation: 0.0,
             center: Vec2::new(x, camera.center.y),
             size: Vec2::new(if is_axis { thick } else { thin }, height),
             z: if is_axis { AXIS_Z } else { GRID_Z },
@@ -83,6 +84,7 @@ pub(crate) fn build(camera: &Camera2d, out: &mut Vec<RenderCommand>) {
         let is_axis = y.abs() < spacing * 0.01;
 
         out.push(RenderCommand::DrawRect {
+            rotation: 0.0,
             center: Vec2::new(camera.center.x, y),
             size: Vec2::new(width, if is_axis { thick } else { thin }),
             z: if is_axis { AXIS_Z } else { GRID_Z },
@@ -113,6 +115,7 @@ pub(crate) fn build_outline(
     // 위 / 아래
     for y in [min.y, max.y] {
         out.push(RenderCommand::DrawRect {
+            rotation: 0.0,
             center: Vec2::new(center.x, y),
             size: Vec2::new(size.x + thickness, thickness),
             z,
@@ -122,6 +125,7 @@ pub(crate) fn build_outline(
     // 좌 / 우
     for x in [min.x, max.x] {
         out.push(RenderCommand::DrawRect {
+            rotation: 0.0,
             center: Vec2::new(x, center.y),
             size: Vec2::new(thickness, size.y + thickness),
             z,

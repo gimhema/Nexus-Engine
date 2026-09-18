@@ -69,8 +69,10 @@ struct QuadInstance {
     center: [f32; 2],
     size: [f32; 2],
     z: f32,
+    /// Z 축 회전 (라디안, 반시계 +).
+    rotation: f32,
     // 패딩을 넣지 않는다. 정점 버퍼에는 유니폼 버퍼(std140) 같은 정렬 규칙이 없고,
-    // `vertex_attr_array!` 는 필드를 빈틈 없이 이어 붙인 오프셋(0, 8, 16, 20)으로 읽는다.
+    // `vertex_attr_array!` 는 필드를 빈틈 없이 이어 붙인 오프셋(0, 8, 16, 20, 24)으로 읽는다.
     // 여기에 패딩을 넣으면 color 를 엉뚱한 위치에서 읽는다 — 실제로 겪은 버그다.
     /// 선형 색 공간 RGBA (sRGB 입력을 변환해 넣는다).
     color: [f32; 4],
@@ -78,11 +80,12 @@ struct QuadInstance {
 
 /// 레이아웃이 셰이더 속성 오프셋과 맞는지 컴파일 타임에 확인한다.
 const _: () = {
-    assert!(core::mem::size_of::<QuadInstance>() == 36);
+    assert!(core::mem::size_of::<QuadInstance>() == 40);
     assert!(core::mem::offset_of!(QuadInstance, center) == 0);
     assert!(core::mem::offset_of!(QuadInstance, size) == 8);
     assert!(core::mem::offset_of!(QuadInstance, z) == 16);
-    assert!(core::mem::offset_of!(QuadInstance, color) == 20);
+    assert!(core::mem::offset_of!(QuadInstance, rotation) == 20);
+    assert!(core::mem::offset_of!(QuadInstance, color) == 24);
 };
 
 /// sRGB 한 채널을 선형으로 변환한다.
@@ -294,7 +297,8 @@ impl WgpuRenderer {
                         0 => Float32x2,  // center
                         1 => Float32x2,  // size
                         2 => Float32,    // z
-                        3 => Float32x4,  // color — 오프셋 20 (위 const 단언으로 검증)
+                        3 => Float32,    // rotation
+                        4 => Float32x4,  // color — 오프셋 24 (위 const 단언으로 검증)
                     ],
                 })],
             },
@@ -550,6 +554,7 @@ impl Renderer for WgpuRenderer {
             RenderCommand::DrawRect {
                 center,
                 size,
+                rotation,
                 z,
                 color,
             } => {
@@ -557,6 +562,7 @@ impl Renderer for WgpuRenderer {
                     center: center.to_array(),
                     size: size.to_array(),
                     z,
+                    rotation,
                     color: linear_rgba(color),
                 });
             }

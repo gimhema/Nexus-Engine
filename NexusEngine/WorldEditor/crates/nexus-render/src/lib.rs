@@ -56,12 +56,16 @@ pub enum RenderCommand {
     /// 렌더러는 아무것도 달라지지 않는다.
     SetCamera { view_proj: Mat4 },
 
-    /// 월드 공간 축 정렬 사각형. `center` / `size` 는 미터.
+    /// 월드 공간 사각형. `center` / `size` 는 미터.
+    ///
+    /// `rotation` 은 Z 축 기준 라디안 (`0` = 축 정렬, 위에서 볼 때 반시계가 +) —
+    /// `nexus_core::units` 의 방향 규약과 같다. `size.x` 가 회전 후 방향 쪽 길이다.
     ///
     /// `z` 는 높이(m)이자 깊이 정렬 기준이다 — 값이 큰 쪽이 위에 그려진다.
     DrawRect {
         center: Vec2,
         size: Vec2,
+        rotation: f32,
         z: f32,
         color: [f32; 4],
     },

@@ -5,7 +5,7 @@
 //!
 //! 이 모듈은 GPU·UI 를 모른다. 좌표는 모두 월드 공간(미터, XY 평면)이다 — `nexus_core::units`.
 
-use nexus_core::{Entity, Vec2, World};
+use nexus_core::{Entity, Vec2, World, units};
 
 /// 존 경계의 최소 한 변 길이 (m). 핸들을 끌어 뒤집히거나 0 이 되는 것을 막는다.
 pub(crate) const MIN_ZONE_SIZE: f32 = 1.0;
@@ -35,10 +35,18 @@ impl ItemKind {
             Self::Monster => "몬스터",
         }
     }
+
+    /// 새로 놓을 때의 점유 크기 (m). 서버에 크기 필드가 없어 캐릭터 크기 정도로 둔다.
+    pub(crate) fn default_size(self) -> f32 {
+        match self {
+            Self::PlayerSpawn => 1.0,
+            Self::Npc | Self::Monster => 0.8,
+        }
+    }
 }
 
 /// 뷰포트에 놓인 편집 대상 하나.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Item {
     pub(crate) entity: Entity,
     pub(crate) name: String,
@@ -146,13 +154,15 @@ pub(crate) enum Target {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Pick {
     Item(Entity),
+    /// 단독 선택된 마커의 방향 화살표 끝 회전 핸들.
+    RotateHandle(Entity),
     ZoneHandle(Handle),
 }
 
 impl Pick {
     pub(crate) fn target(self) -> Target {
         match self {
-            Self::Item(e) => Target::Item(e),
+            Self::Item(e) | Self::RotateHandle(e) => Target::Item(e),
             Self::ZoneHandle(_) => Target::Zone,
         }
     }
@@ -199,11 +209,12 @@ impl Scene {
             ("슬라임", ItemKind::Monster, 20.0, -5.0, 0.0),
         ];
         for (name, kind, server_x, server_z, orientation) in spawns {
-            let size = match kind {
-                ItemKind::PlayerSpawn => 1.0,
-                ItemKind::Npc | ItemKind::Monster => 0.8,
-            };
-            let e = scene.add(name, kind, Vec2::new(server_x, server_z), size);
+            let e = scene.add(
+                name,
+                kind,
+                Vec2::new(server_x, server_z),
+                kind.default_size(),
+            );
             if let Some(item) = scene.item_mut(e) {
                 item.orientation = orientation;
             }
@@ -222,6 +233,54 @@ impl Scene {
             orientation: 0.0,
         });
         entity
+    }
+
+    /// 새 마커를 만든다. 씬에는 아직 넣지 않는다 — 넣는 것은 언두 가능한 편집이 한다.
+    ///
+    /// 이름은 `"NPC #3"` 처럼 종류별로 비어 있는 가장 작은 번호를 쓴다.
+    pub(crate) fn new_item(&mut self, kind: ItemKind, pos: Vec2) -> Item {
+        let name = (1..)
+            .map(|n| format!("{} #{n}", kind.label()))
+            .find(|name| self.items.iter().all(|i| &i.name != name))
+            .unwrap_or_default();
+        Item {
+            entity: self.world.spawn(),
+            name,
+            kind,
+            pos,
+            size: kind.default_size(),
+            orientation: 0.0,
+        }
+    }
+
+    /// 목록의 `index` 자리에 넣는다 (범위를 넘으면 끝에).
+    ///
+    /// 삭제를 되돌릴 때 원래 자리로 돌아가야 그리기·피킹 순서가 유지된다.
+    pub(crate) fn insert(&mut self, index: usize, item: Item) {
+        let index = index.min(self.items.len());
+        self.items.insert(index, item);
+    }
+
+    /// 목록에서 빼고 (원래 자리, 항목) 을 돌려준다.
+    ///
+    /// 엔티티는 `World` 에서 해제하지 않는다 — 언두로 되살릴 때 **같은 핸들**이어야
+    /// 선택·언두 기록이 그대로 들어맞는다. 기록 상한(256)만큼만 남으므로 누수는 유한하다.
+    pub(crate) fn remove(&mut self, entity: Entity) -> Option<(usize, Item)> {
+        let index = self.items.iter().position(|i| i.entity == entity)?;
+        Some((index, self.items.remove(index)))
+    }
+
+    /// 사각형(월드)과 화면에 그려진 마커가 겹치는 항목. 박스 선택용.
+    pub(crate) fn items_in_rect(&self, min: Vec2, max: Vec2, px: f32) -> Vec<Entity> {
+        self.items
+            .iter()
+            .filter(|item| {
+                let half = Vec2::splat(marker_half_extent(item, px));
+                let (a, b) = (item.pos - half, item.pos + half);
+                a.x <= max.x && b.x >= min.x && a.y <= max.y && b.y >= min.y
+            })
+            .map(|item| item.entity)
+            .collect()
     }
 
     pub(crate) fn item(&self, entity: Entity) -> Option<&Item> {
@@ -253,10 +312,18 @@ impl Scene {
 
     /// `p` 아래의 대상을 찾는다. `px` 는 화면 1픽셀의 월드 길이(m) — 줌에 따라 달라진다.
     ///
-    /// 우선순위: 마커(위에 그려진 것부터) → 존 모서리 → 존 변.
+    /// `rotatable` 은 회전 핸들을 보이고 있는 마커(단독 선택)다.
+    ///
+    /// 우선순위: 회전 핸들 → 마커(위에 그려진 것부터) → 존 모서리 → 존 변.
     /// 존 내부의 빈 곳은 존을 고르지 않는다 — 존은 화면 대부분을 덮기 때문이다.
-    pub(crate) fn pick(&self, p: Vec2, px: f32) -> Option<Pick> {
+    pub(crate) fn pick(&self, p: Vec2, px: f32, rotatable: Option<Entity>) -> Option<Pick> {
         let tolerance = PICK_TOLERANCE_PX * px;
+
+        if let Some(item) = rotatable.and_then(|e| self.item(e))
+            && (p - rotate_handle_pos(item, px)).length() <= HANDLE_SIZE_PX * 0.5 * px + tolerance
+        {
+            return Some(Pick::RotateHandle(item.entity));
+        }
 
         for item in self.items.iter().rev() {
             // 그려지는 크기와 같은 규칙을 쓴다 — 보이는 만큼 잡혀야 한다.
@@ -311,6 +378,28 @@ pub(crate) fn marker_half_extent(item: &Item, px: f32) -> f32 {
     (item.size * 0.5).max(MARKER_MIN_PX * 0.5 * px)
 }
 
+/// 핸들(존 경계·회전)의 화면 크기, 한 변 (픽셀).
+pub(crate) const HANDLE_SIZE_PX: f32 = 11.0;
+
+/// 방향 화살표가 마커 가장자리 밖으로 뻗는 길이 (픽셀).
+pub(crate) const ARROW_PX: f32 = 14.0;
+
+/// 회전 핸들이 마커 가장자리에서 떨어진 거리 (픽셀). 화살표 끝보다 조금 더 바깥.
+pub(crate) const ROTATE_HANDLE_GAP_PX: f32 = 26.0;
+
+/// 방향 화살표 끝 (m).
+pub(crate) fn arrow_tip(item: &Item, px: f32) -> Vec2 {
+    item.pos
+        + units::heading_to_dir(item.orientation) * (marker_half_extent(item, px) + ARROW_PX * px)
+}
+
+/// 회전 핸들 위치 (m). 화살표 연장선 위에 있다.
+pub(crate) fn rotate_handle_pos(item: &Item, px: f32) -> Vec2 {
+    item.pos
+        + units::heading_to_dir(item.orientation)
+            * (marker_half_extent(item, px) + ROTATE_HANDLE_GAP_PX * px)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,9 +440,12 @@ mod tests {
         let bottom = s.add("아래", ItemKind::Npc, Vec2::new(500.0, 500.0), 40.0);
         let top = s.add("위", ItemKind::Npc, Vec2::new(505.0, 500.0), 40.0);
 
-        assert_eq!(s.pick(Vec2::new(503.0, 500.0), 1.0), Some(Pick::Item(top)));
+        assert_eq!(
+            s.pick(Vec2::new(503.0, 500.0), 1.0, None),
+            Some(Pick::Item(top))
+        );
         assert_ne!(
-            s.pick(Vec2::new(503.0, 500.0), 1.0),
+            s.pick(Vec2::new(503.0, 500.0), 1.0, None),
             Some(Pick::Item(bottom))
         );
     }
@@ -363,15 +455,15 @@ mod tests {
         let s = Scene::server_default();
         let px = 1.0; // 허용 오차 6m
         assert_eq!(
-            s.pick(Vec2::new(1000.0, 1000.0), px),
+            s.pick(Vec2::new(1000.0, 1000.0), px, None),
             Some(Pick::ZoneHandle(Handle::TopRight))
         );
         assert_eq!(
-            s.pick(Vec2::new(-1005.0, 300.0), px),
+            s.pick(Vec2::new(-1005.0, 300.0), px, None),
             Some(Pick::ZoneHandle(Handle::Left))
         );
         assert_eq!(
-            s.pick(Vec2::new(400.0, 400.0), px),
+            s.pick(Vec2::new(400.0, 400.0), px, None),
             None,
             "존 내부 빈 곳은 아무것도 고르지 않는다"
         );
@@ -386,7 +478,8 @@ mod tests {
         let px = 3.0;
         // 반폭 = 12px/2 × 3m = 18m, 허용 오차 6px × 3m = 18m → 36m 까지
         assert_eq!(
-            s.pick(Vec2::new(20.0 + 35.0, -5.0), px).map(Pick::target),
+            s.pick(Vec2::new(20.0 + 35.0, -5.0), px, None)
+                .map(Pick::target),
             Some(slime)
         );
     }
@@ -398,11 +491,11 @@ mod tests {
         let slime = s.find_by_label("슬라임").unwrap();
         let px = 0.01;
         assert_eq!(
-            s.pick(Vec2::new(20.45, -5.0), px).map(Pick::target),
+            s.pick(Vec2::new(20.45, -5.0), px, None).map(Pick::target),
             Some(slime),
             "반폭 0.4m + 오차 0.06m 안쪽"
         );
-        assert_eq!(s.pick(Vec2::new(20.5, -5.0), px), None);
+        assert_eq!(s.pick(Vec2::new(20.5, -5.0), px, None), None);
     }
 
     #[test]

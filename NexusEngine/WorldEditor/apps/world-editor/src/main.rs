@@ -1,10 +1,11 @@
 //! Nexus WorldEditor — 에디터 애플리케이션.
 //!
-//! 현재 단계: M5-1 뷰포트 편집.
+//! 현재 단계: M5-2 뷰포트 편집.
 //!   - 왼쪽 클릭 선택 / Shift+클릭 추가·해제 / 끌어서 이동 / Ctrl+드래그 그리드 스냅
+//!   - 빈 곳 드래그 박스 선택, 방향 화살표 + 회전 핸들(Ctrl 15°), 마커 추가 / Delete 삭제
 //!   - 존 경계: 변·모서리 핸들을 끌어 크기 조절
 //!   - 언두/리두 (Ctrl+Z / Ctrl+Y · Ctrl+Shift+Z), Esc 선택 해제
-//!   - 인스펙터: 위치·경계 값 편집 (나머지 필드는 패널 명세 대기)
+//!   - 인스펙터: 위치·방향·경계 값 편집 (나머지 필드는 패널 명세 대기)
 //!   - 가운데·오른쪽 드래그 팬, 휠 줌, Home 존 전체, F 선택 항목 보기, F12 스크린샷
 //!
 //! 단위는 미터(m), 방향은 라디안 — `nexus_core::units`.
@@ -16,18 +17,20 @@ mod edit;
 mod grid;
 mod scene;
 mod screenshot;
+mod script;
 mod ui;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use nexus_core::{Camera2d, Vec2};
+use nexus_core::{Camera2d, Vec2, units};
 use nexus_platform::{App, Input, WindowConfig, WindowEvent, WindowTarget};
 use nexus_render::{FrameStatus, RenderCommand, RenderError, Renderer};
 use nexus_render_wgpu::{TextureCarry, UiFrame, WgpuRenderer};
 
-use edit::Editing;
+use edit::{Editing, PointerInput};
 use scene::{Handle, Pick, Scene, Target};
+use script::{Anchor, Button, Script, Step};
 use ui::{EditorUi, FrameStats, UiActions, UiModel};
 
 // 색은 모두 sRGB. 렌더러가 선형으로 변환한다.
@@ -37,13 +40,24 @@ const SELECT_COLOR: [f32; 4] = [1.0, 0.82, 0.25, 1.0];
 const HOVER_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.55];
 const HANDLE_FILL: [f32; 4] = [0.95, 0.97, 1.0, 1.0];
 const HANDLE_BORDER: [f32; 4] = [0.05, 0.06, 0.08, 1.0];
+/// 마커 안쪽 화살표 — 마커 색 위에서 보이는 어두운 색.
+const ARROW_INNER: [f32; 4] = [0.08, 0.09, 0.12, 0.9];
+/// 박스 선택 채움. 블렌딩이 선형 공간이라 어두운 배경에서는 알파가 훨씬 진하게 보인다
+/// (0.04 → sRGB 약 0.23, 스크린샷으로 확인). 그래서 아주 낮게 둔다.
+const BOX_FILL: [f32; 4] = [1.0, 0.82, 0.25, 0.012];
 
 // 겹침 순서 (월드 Z, 클수록 위). 그리드는 음수.
 const Z_ZONE: f32 = 0.5;
 const Z_MARKER: f32 = 1.0;
+const Z_ARROW: f32 = 1.2;
 const Z_HOVER: f32 = 1.5;
 const Z_SELECT: f32 = 2.0;
 const Z_HANDLE: f32 = 3.0;
+const Z_BOX: f32 = 4.0;
+
+/// 가는 선의 최소 굵기 (픽셀). 1px 쿼드는 픽셀 경계에 걸리면 어떤 픽셀 중심도 덮지 못해
+/// 통째로 사라진다 (그리드 선 위에 놓인 박스 테두리에서 확인).
+const THIN_LINE_PX: f32 = 1.5;
 
 /// 시작 시 미리 선택할 대상 (쉼표 구분 이름). 스크린샷으로 선택 표시를 검증할 때 쓴다.
 const ENV_SELECT: &str = "NEXUS_SELECT";
@@ -69,7 +83,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.width, config.height, config.sim_hz
     );
     println!(
-        "조작: 왼쪽 = 선택/이동 (Shift 추가, Ctrl 스냅) | 가운데·오른쪽 드래그 = 팬 | 휠 = 줌 \
+        "조작: 왼쪽 = 선택/이동/박스 (Shift 추가, Ctrl 스냅) | ◆ = 회전 | Delete = 삭제 \
+         | 가운데·오른쪽 드래그 = 팬 | 휠 = 줌 \
          | Ctrl+Z/Y = 실행 취소/다시 | Esc = 선택 해제 | Home | F12"
     );
 
@@ -109,6 +124,14 @@ struct Editor {
     /// 캡처를 요청해 두고 결과를 기다리는 중인 저장 경로. `true` 면 저장 후 종료.
     pending_shot: Option<(PathBuf, bool)>,
     exit_requested: bool,
+
+    // ── 자동 검증 ────────────────────────────────────────────────────────
+    /// `NEXUS_SCRIPT` — 있으면 실제 포인터 대신 쓴다.
+    script: Option<Script>,
+    /// 스크립트 포인터의 현재 위치 (월드).
+    script_cursor: Option<Vec2>,
+    /// 스크립트가 누르고 있는 수식 키 (Shift, Ctrl) — 다음 포인터 단계까지 유지된다.
+    script_mods: (bool, bool),
 }
 
 impl Default for Editor {
@@ -132,6 +155,9 @@ impl Default for Editor {
             manual_shot_requested: false,
             pending_shot: None,
             exit_requested: false,
+            script: None,
+            script_cursor: None,
+            script_mods: (false, false),
         }
     }
 }
@@ -282,9 +308,20 @@ impl Editor {
         if let Some(edit) = actions.inspector {
             self.editing.apply_inspector(&mut self.scene, edit);
         }
-        self.hover = actions
-            .pointer
-            .and_then(|p| self.editing.handle_pointer(&mut self.scene, &p));
+        if let Some(kind) = actions.add_item {
+            // 지금 보고 있는 곳 한가운데에 놓는다
+            self.editing
+                .add_item(&mut self.scene, kind, self.camera.center);
+        }
+        if actions.delete && !self.editing.is_dragging() {
+            self.editing.delete_selected(&mut self.scene);
+        }
+
+        let pointer = match actions.pointer {
+            Some(p) if self.script.is_some() => Some(self.scripted_pointer(p, actions)),
+            other => other,
+        };
+        self.hover = pointer.and_then(|p| self.editing.handle_pointer(&mut self.scene, &p));
 
         // UI 가 이번 프레임의 뷰포트 크기를 `camera.viewport` 에 이미 반영했다 — 이제 맞춘다.
         // 뷰포트가 없는 프레임(UI 미실행)에는 다음 프레임으로 미룬다.
@@ -296,6 +333,73 @@ impl Editor {
                 ViewRequest::Selection => self.frame_selection(),
             }
         }
+    }
+
+    /// `NEXUS_SCRIPT` 가 있으면 실제 포인터 대신 스크립트 단계를 포인터 입력으로 만든다.
+    ///
+    /// 수식 키는 실제 키보드처럼 다음 포인터 단계까지 눌린 채로 둔다 — 한 프레임만 적용하면
+    /// 이어지는 프레임의 드래그 갱신이 스냅을 풀어 버린다 (스크린샷으로 확인).
+    ///
+    /// 스크립트가 끝난 뒤에도 실제 마우스는 계속 무시한다 — 창이 뜬 자리의 마우스가
+    /// 끄는 중인 박스를 움직여 스크린샷이 흔들리지 않도록.
+    fn scripted_pointer(&mut self, real: PointerInput, actions: &UiActions) -> PointerInput {
+        let mut p = PointerInput {
+            world: self.script_cursor,
+            over_viewport: self.script_cursor.is_some(),
+            pressed: false,
+            released: false,
+            additive: self.script_mods.0,
+            snap: self.script_mods.1,
+            ..real
+        };
+        // 시점 맞추기가 끝난 뒤에 시작한다 — 핸들 위치가 배율에 따라 달라지므로.
+        if actions.viewport_px.is_none() || self.pending_view.is_some() {
+            return p;
+        }
+        let Some(step) = self.script.as_mut().and_then(Script::next) else {
+            return p;
+        };
+        println!("{}: {step:?}", script::ENV_SCRIPT);
+
+        match step {
+            Step::Pointer {
+                button,
+                at,
+                shift,
+                ctrl,
+            } => {
+                let world = match at {
+                    Anchor::World(w) => Some(w),
+                    Anchor::RotateHandle => self
+                        .editing
+                        .rotatable()
+                        .and_then(|e| self.scene.item(e))
+                        .map(|item| scene::rotate_handle_pos(item, real.px)),
+                };
+                self.script_cursor = world.or(self.script_cursor);
+                p.world = self.script_cursor;
+                p.over_viewport = true;
+                p.pressed = button == Button::Press;
+                p.released = button == Button::Release;
+                self.script_mods = (shift, ctrl);
+                p.additive = shift;
+                p.snap = ctrl;
+            }
+            Step::Add(kind, pos) => {
+                self.editing.add_item(&mut self.scene, kind, pos);
+            }
+            Step::Delete => {
+                self.editing.delete_selected(&mut self.scene);
+            }
+            Step::Undo => {
+                self.editing.undo(&mut self.scene);
+            }
+            Step::Redo => {
+                self.editing.redo(&mut self.scene);
+            }
+            Step::Wait => {}
+        }
+        p
     }
 
     /// 이번 프레임에 그릴 씬 명령을 쌓는다.
@@ -324,11 +428,13 @@ impl Editor {
 
         for item in &self.scene.items {
             self.commands.push(RenderCommand::DrawRect {
+                rotation: 0.0,
                 center: item.pos,
                 size: Vec2::splat(scene::marker_half_extent(item, px) * 2.0),
                 z: Z_MARKER,
                 color: item.kind.color(),
             });
+            draw_arrow(item, px, &mut self.commands);
 
             let target = Target::Item(item.entity);
             let (color, z, pad, thick) = if self.editing.is_selected(target) {
@@ -348,6 +454,65 @@ impl Editor {
                 &mut self.commands,
             );
         }
+
+        self.draw_rotate_handle(px);
+        self.draw_box_selection(px);
+    }
+
+    /// 단독 선택된 마커의 회전 핸들 — 화살표 끝에서 이어지는 가는 선 + 원 대신 마름모.
+    fn draw_rotate_handle(&mut self, px: f32) {
+        let Some(item) = self.editing.rotatable().and_then(|e| self.scene.item(e)) else {
+            return;
+        };
+        let tip = scene::arrow_tip(item, px);
+        let at = scene::rotate_handle_pos(item, px);
+        push_segment(
+            tip,
+            at,
+            THIN_LINE_PX * px,
+            Z_HANDLE,
+            SELECT_COLOR,
+            &mut self.commands,
+        );
+
+        let hot = self.hover == Some(Pick::RotateHandle(item.entity));
+        let diamond = std::f32::consts::FRAC_PI_4;
+        self.commands.push(RenderCommand::DrawRect {
+            center: at,
+            size: Vec2::splat(scene::HANDLE_SIZE_PX * px),
+            rotation: diamond,
+            z: Z_HANDLE,
+            color: HANDLE_BORDER,
+        });
+        self.commands.push(RenderCommand::DrawRect {
+            center: at,
+            size: Vec2::splat((scene::HANDLE_SIZE_PX - 3.0) * px),
+            rotation: diamond,
+            z: Z_HANDLE + 0.1,
+            color: if hot { SELECT_COLOR } else { HANDLE_FILL },
+        });
+    }
+
+    /// 진행 중인 박스 선택 — 반투명 채움 + 테두리. 모든 것 위에 그린다.
+    fn draw_box_selection(&mut self, px: f32) {
+        let Some((min, max)) = self.editing.box_rect() else {
+            return;
+        };
+        self.commands.push(RenderCommand::DrawRect {
+            center: (min + max) * 0.5,
+            size: max - min,
+            rotation: 0.0,
+            z: Z_BOX,
+            color: BOX_FILL,
+        });
+        grid::build_outline(
+            min,
+            max,
+            THIN_LINE_PX * px,
+            Z_BOX + 0.1,
+            SELECT_COLOR,
+            &mut self.commands,
+        );
     }
 
     fn draw_zone(&mut self, px: f32) {
@@ -383,12 +548,14 @@ impl Editor {
                 HANDLE_FILL
             };
             self.commands.push(RenderCommand::DrawRect {
+                rotation: 0.0,
                 center: at,
-                size: Vec2::splat(11.0 * px),
+                size: Vec2::splat(scene::HANDLE_SIZE_PX * px),
                 z: Z_HANDLE,
                 color: HANDLE_BORDER,
             });
             self.commands.push(RenderCommand::DrawRect {
+                rotation: 0.0,
                 center: at,
                 size: Vec2::splat(8.0 * px),
                 z: Z_HANDLE + 0.1,
@@ -489,6 +656,7 @@ impl App for Editor {
         self.camera.viewport = (width, height);
         self.pending_view = Some(ViewRequest::Zone);
         self.apply_env_selection();
+        self.script = Script::from_env();
         self.renderer = Some(renderer);
         self.ui = Some(ui);
         self.target = Some(target.clone());
@@ -578,6 +746,53 @@ impl App for Editor {
         // wgpu 는 Drop 에서 GPU 유휴 대기 후 자원을 해제한다.
         self.renderer = None;
     }
+}
+
+/// 마커의 방향 화살표.
+///
+/// 마커 안쪽 구간은 어두운 색(마커 색 위에서 보이도록), 바깥 구간과 촉은 마커 색
+/// (어두운 배경 위에서 보이도록)으로 그린다. 굵기·촉 크기는 화면 픽셀 기준이다.
+fn draw_arrow(item: &scene::Item, px: f32, out: &mut Vec<RenderCommand>) {
+    const THICK_PX: f32 = 2.0;
+    const HEAD_PX: f32 = 6.0;
+    /// 촉 날개가 화살표 반대쪽으로 벌어진 각도.
+    const HEAD_SPREAD: f32 = 2.5;
+
+    let dir = units::heading_to_dir(item.orientation);
+    let edge = item.pos + dir * scene::marker_half_extent(item, px);
+    let tip = scene::arrow_tip(item, px);
+    let color = item.kind.color();
+
+    push_segment(item.pos, edge, THICK_PX * px, Z_ARROW, ARROW_INNER, out);
+    push_segment(edge, tip, THICK_PX * px, Z_ARROW, color, out);
+    for side in [HEAD_SPREAD, -HEAD_SPREAD] {
+        let wing = tip + units::heading_to_dir(item.orientation + side) * HEAD_PX * px;
+        push_segment(tip, wing, THICK_PX * px, Z_ARROW, color, out);
+    }
+}
+
+/// `a` 에서 `b` 까지 굵기 `thick` 의 선분 (회전된 사각형 하나).
+fn push_segment(
+    a: Vec2,
+    b: Vec2,
+    thick: f32,
+    z: f32,
+    color: [f32; 4],
+    out: &mut Vec<RenderCommand>,
+) {
+    let d = b - a;
+    let len = d.length();
+    if len <= f32::EPSILON {
+        return;
+    }
+    out.push(RenderCommand::DrawRect {
+        center: (a + b) * 0.5,
+        // 양 끝을 굵기의 절반씩 늘려 꺾이는 곳(촉)에 틈이 생기지 않게 한다
+        size: Vec2::new(len + thick, thick),
+        rotation: units::dir_to_heading(d),
+        z,
+        color,
+    });
 }
 
 /// 한 프레임을 그린다. 프레임 생명주기를 한 곳에 모아 중간 반환 시에도

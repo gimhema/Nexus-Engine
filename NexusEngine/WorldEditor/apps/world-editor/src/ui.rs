@@ -20,7 +20,7 @@ use nexus_render_wgpu::{UiFrame, egui};
 
 use crate::edit::{InspectorEdit, PointerInput};
 use crate::grid;
-use crate::scene::{Pick, Scene, Target, ZONE_LABEL};
+use crate::scene::{ItemKind, Pick, Scene, Target, ZONE_LABEL};
 
 /// 좌우 패널 기본 폭 (논리 포인트).
 const SIDE_PANEL_WIDTH: f32 = 220.0;
@@ -70,6 +70,10 @@ pub(crate) struct UiActions {
     /// 씬 목록에서 클릭 — (대상, Shift 여부).
     pub(crate) list_select: Option<(Target, bool)>,
     pub(crate) inspector: Option<InspectorEdit>,
+    /// 이 종류의 마커를 화면 한가운데에 추가.
+    pub(crate) add_item: Option<ItemKind>,
+    /// 선택된 마커 삭제.
+    pub(crate) delete: bool,
     /// 뷰포트 포인터 — 뷰포트가 그려진 프레임에만 있다.
     pub(crate) pointer: Option<PointerInput>,
     /// 씬을 그릴 사각형 `[x, y, w, h]` (물리 픽셀).
@@ -214,6 +218,22 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
                 {
                     actions.deselect = true;
                 }
+
+                ui.separator();
+                ui.menu_button("추가", |ui| {
+                    for kind in [ItemKind::PlayerSpawn, ItemKind::Npc, ItemKind::Monster] {
+                        if ui.button(kind.label()).clicked() {
+                            actions.add_item = Some(kind);
+                        }
+                    }
+                });
+                let has_items = model.selection.iter().any(|t| matches!(t, Target::Item(_)));
+                if ui
+                    .add_enabled(has_items, egui::Button::new("삭제").shortcut_text("Delete"))
+                    .clicked()
+                {
+                    actions.delete = true;
+                }
             });
             ui.menu_button("보기", |ui| {
                 if ui
@@ -253,6 +273,7 @@ fn shortcuts(ui: &mut egui::Ui, actions: &mut UiActions) {
         actions.frame_selection |= i.key_pressed(Key::F);
         actions.screenshot |= i.key_pressed(Key::F12);
         actions.deselect |= i.key_pressed(Key::Escape);
+        actions.delete |= i.key_pressed(Key::Delete);
     });
 }
 
@@ -295,6 +316,24 @@ fn outline_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions
         .default_size(SIDE_PANEL_WIDTH)
         .show(ui, |ui| {
             ui.heading("씬");
+            ui.horizontal_wrapped(|ui| {
+                ui.weak("추가");
+                for (kind, text) in [
+                    (ItemKind::PlayerSpawn, "플레이어"),
+                    (ItemKind::Npc, "NPC"),
+                    (ItemKind::Monster, "몬스터"),
+                ] {
+                    let button = egui::Button::new(format!("+ {text}"))
+                        .fill(to_color32(kind.color()).gamma_multiply(0.25));
+                    if ui
+                        .add(button)
+                        .on_hover_text("보고 있는 곳 한가운데에 놓습니다")
+                        .clicked()
+                    {
+                        actions.add_item = Some(kind);
+                    }
+                }
+            });
             ui.separator();
 
             let mut row = |ui: &mut egui::Ui, target: Target, label: &str, color: [f32; 4]| {
@@ -341,7 +380,8 @@ fn inspector_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActio
                     ui.weak("선택된 오브젝트 없음");
                     ui.add_space(8.0);
                     ui.weak(
-                        "왼쪽 클릭: 선택\nShift+클릭: 추가/해제\nCtrl+드래그: 그리드 스냅\n\
+                        "왼쪽 클릭: 선택\nShift+클릭: 추가/해제\n빈 곳 드래그: 박스 선택\n\
+                         Ctrl+드래그: 그리드 스냅\nDelete: 삭제\n\
                          F: 선택 항목 보기 · Home: 존 전체",
                     );
                 }
@@ -363,14 +403,28 @@ fn inspector_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActio
                             });
                         }
 
-                        // 방향: 저장은 라디안, 표시는 도 (nexus_core::units 규약)
-                        let heading = units::normalize_heading(item.orientation);
+                        // 방향: 저장은 라디안, 편집·표시는 도 (nexus_core::units 규약).
+                        // 0~360 을 넘겨 끌어도 되고, 저장할 때 정규화된다.
+                        let mut degrees = units::normalize_heading(item.orientation).to_degrees();
                         ui.horizontal(|ui| {
                             ui.label("방향");
-                            ui.monospace(format!("{:.1}°", heading.to_degrees()));
-                            ui.weak(format!("({:.3} rad)", item.orientation));
+                            let r = ui.add(
+                                egui::DragValue::new(&mut degrees)
+                                    .speed(1.0)
+                                    .fixed_decimals(1)
+                                    .suffix("°"),
+                            );
+                            let finished = r.drag_stopped() || r.lost_focus();
+                            if r.changed() || finished {
+                                actions.inspector = Some(InspectorEdit::ItemHeading {
+                                    entity: *entity,
+                                    heading: degrees.to_radians(),
+                                    finished,
+                                });
+                            }
+                            ui.weak(format!("{:.3} rad", item.orientation));
                         });
-                        ui.weak("방향 편집은 화살표와 함께 추가됩니다 (M5-2).");
+                        ui.weak("뷰포트: 화살표 끝 ◆ 를 끌어 회전 (Ctrl 15°)");
 
                         ui.add_space(10.0);
                         ui.weak("스탯·진영·AI 필드는 패널 명세를 받은 뒤 추가됩니다.");
@@ -378,7 +432,7 @@ fn inspector_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActio
                 }
                 many => {
                     ui.label(format!("{}개 선택됨", many.len()));
-                    ui.weak("뷰포트에서 끌면 함께 이동합니다.");
+                    ui.weak("뷰포트에서 끌면 함께 이동합니다.\nDelete: 모두 삭제");
                 }
             }
         });
