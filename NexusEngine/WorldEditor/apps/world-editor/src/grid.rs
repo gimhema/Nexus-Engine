@@ -21,7 +21,7 @@ const MAJOR_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.14];
 const AXIS_X_COLOR: [f32; 4] = [0.85, 0.30, 0.35, 0.85];
 const AXIS_Y_COLOR: [f32; 4] = [0.35, 0.75, 0.45, 0.85];
 
-/// 현재 줌에 적합한 그리드 간격(cm)을 고른다. 1·2·5 × 10ⁿ 계열.
+/// 현재 줌에 적합한 그리드 간격(m)을 고른다. 1·2·5 × 10ⁿ 계열 (0.1m, 0.2m … 100m, 200m …).
 #[must_use]
 pub(crate) fn pick_spacing(view_height: f32) -> f32 {
     let raw = view_height / TARGET_LINE_COUNT;

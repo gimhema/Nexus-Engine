@@ -5,7 +5,9 @@
 //!   - 존 경계: 변·모서리 핸들을 끌어 크기 조절
 //!   - 언두/리두 (Ctrl+Z / Ctrl+Y · Ctrl+Shift+Z), Esc 선택 해제
 //!   - 인스펙터: 위치·경계 값 편집 (나머지 필드는 패널 명세 대기)
-//!   - 가운데·오른쪽 드래그 팬, 휠 줌, Home 시점 초기화, F12 스크린샷
+//!   - 가운데·오른쪽 드래그 팬, 휠 줌, Home 존 전체, F 선택 항목 보기, F12 스크린샷
+//!
+//! 단위는 미터(m), 방향은 라디안 — `nexus_core::units`.
 //!
 //! 화면에 보이는 배치는 NexusEngine `Server.cpp` 의 기본 존 설정을 옮겨온 것이다.
 //! M6 에서 `ZoneConfig` 로 내보낸다.
@@ -46,6 +48,19 @@ const Z_HANDLE: f32 = 3.0;
 /// 시작 시 미리 선택할 대상 (쉼표 구분 이름). 스크린샷으로 선택 표시를 검증할 때 쓴다.
 const ENV_SELECT: &str = "NEXUS_SELECT";
 
+/// 카메라 시점 맞추기 요청.
+///
+/// 즉시 실행하지 않고 **UI 가 이번 프레임의 뷰포트를 확정한 뒤** 실행한다. 시작 직후에는
+/// 뷰포트가 창 전체 크기였다가 패널이 자리 잡으며 좁아지므로, 그 전에 계산하면
+/// 가로세로비가 어긋나 대상이 화면 밖으로 잘린다 (스크린샷으로 확인한 버그).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewRequest {
+    /// 존 전체 (Home)
+    Zone,
+    /// 선택 항목, 없으면 모든 마커 (F)
+    Selection,
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = WindowConfig::default();
 
@@ -77,6 +92,8 @@ struct Editor {
     camera: Camera2d,
     /// 포인터 아래의 대상 — 직전 프레임 기준.
     hover: Option<Pick>,
+    /// 다음 뷰포트 확정 후 실행할 시점 맞추기.
+    pending_view: Option<ViewRequest>,
     /// 프레임마다 재사용하는 명령 버퍼 — 매 프레임 할당을 피한다.
     commands: Vec<RenderCommand>,
 
@@ -105,6 +122,7 @@ impl Default for Editor {
             editing: Editing::default(),
             camera: Camera2d::default(),
             hover: None,
+            pending_view: None,
             commands: Vec::new(),
             ticks: 0,
             last_frame: None,
@@ -119,12 +137,66 @@ impl Default for Editor {
 }
 
 impl Editor {
+    /// 존 전체가 보이도록 (Home).
     fn reset_view(&mut self) {
-        self.camera.center = Vec2::ZERO;
-        self.camera.view_height = 2600.0;
+        let zone = self.scene.zone;
+        self.frame_rect(zone.min, zone.max);
     }
 
-    /// `NEXUS_SELECT` 로 지정된 대상을 미리 선택한다.
+    /// 선택 항목이 보이도록 (F). 선택이 없으면 모든 마커를 담는다.
+    ///
+    /// 미터 단위에서는 존(수 km)과 스폰 간격(수 m)의 차이가 커서, 존 전체 화면에서는
+    /// 스폰들이 한 점에 모여 보인다. 편집하려면 이 기능으로 다가가야 한다.
+    fn frame_selection(&mut self) {
+        let targets: Vec<Target> = if self.editing.selection().is_empty() {
+            self.scene
+                .items
+                .iter()
+                .map(|i| Target::Item(i.entity))
+                .collect()
+        } else {
+            self.editing.selection().to_vec()
+        };
+
+        let mut bounds: Option<(Vec2, Vec2)> = None;
+        let mut include = |min: Vec2, max: Vec2| {
+            bounds = Some(match bounds {
+                Some((a, b)) => (a.min(min), b.max(max)),
+                None => (min, max),
+            });
+        };
+        for target in targets {
+            match target {
+                Target::Zone => include(self.scene.zone.min, self.scene.zone.max),
+                Target::Item(e) => {
+                    if let Some(item) = self.scene.item(e) {
+                        let half = Vec2::splat(item.size * 0.5);
+                        include(item.pos - half, item.pos + half);
+                    }
+                }
+            }
+        }
+        if let Some((min, max)) = bounds {
+            self.frame_rect(min, max);
+        }
+    }
+
+    /// 사각형이 뷰포트에 여유 있게 들어오도록 카메라를 맞춘다.
+    fn frame_rect(&mut self, min: Vec2, max: Vec2) {
+        /// 너무 작은 대상(마커 하나)을 잡았을 때도 주변이 보이도록 하는 최소 시야 (m).
+        const MIN_FRAME_HEIGHT: f32 = 20.0;
+        /// 가장자리 여유.
+        const MARGIN: f32 = 1.2;
+
+        let size = max - min;
+        let height = size.y.max(size.x / self.camera.aspect()) * MARGIN;
+        self.camera.center = (min + max) * 0.5;
+        self.camera.view_height = height
+            .max(MIN_FRAME_HEIGHT)
+            .clamp(Camera2d::MIN_VIEW_HEIGHT, Camera2d::MAX_VIEW_HEIGHT);
+    }
+
+    /// `NEXUS_SELECT` 로 지정된 대상을 미리 선택하고 그쪽으로 시점을 맞춘다.
     fn apply_env_selection(&mut self) {
         let Ok(list) = std::env::var(ENV_SELECT) else {
             return;
@@ -134,6 +206,9 @@ impl Editor {
                 Some(target) => self.editing.select(target, true),
                 None => eprintln!("{ENV_SELECT}: '{name}' 를 찾지 못함"),
             }
+        }
+        if !self.editing.selection().is_empty() {
+            self.pending_view = Some(ViewRequest::Selection);
         }
     }
 
@@ -185,7 +260,10 @@ impl Editor {
     /// UI 가 요청한 편집을 씬에 반영한다. 모든 씬 변경은 `Editing` 을 거친다.
     fn apply_actions(&mut self, actions: &UiActions) {
         if actions.reset_view {
-            self.reset_view();
+            self.pending_view = Some(ViewRequest::Zone);
+        }
+        if actions.frame_selection {
+            self.pending_view = Some(ViewRequest::Selection);
         }
         self.manual_shot_requested |= actions.screenshot;
 
@@ -207,6 +285,17 @@ impl Editor {
         self.hover = actions
             .pointer
             .and_then(|p| self.editing.handle_pointer(&mut self.scene, &p));
+
+        // UI 가 이번 프레임의 뷰포트 크기를 `camera.viewport` 에 이미 반영했다 — 이제 맞춘다.
+        // 뷰포트가 없는 프레임(UI 미실행)에는 다음 프레임으로 미룬다.
+        if actions.viewport_px.is_some()
+            && let Some(request) = self.pending_view.take()
+        {
+            match request {
+                ViewRequest::Zone => self.reset_view(),
+                ViewRequest::Selection => self.frame_selection(),
+            }
+        }
     }
 
     /// 이번 프레임에 그릴 씬 명령을 쌓는다.
@@ -236,7 +325,7 @@ impl Editor {
         for item in &self.scene.items {
             self.commands.push(RenderCommand::DrawRect {
                 center: item.pos,
-                size: Vec2::splat(item.size),
+                size: Vec2::splat(scene::marker_half_extent(item, px) * 2.0),
                 z: Z_MARKER,
                 color: item.kind.color(),
             });
@@ -249,7 +338,7 @@ impl Editor {
             } else {
                 continue;
             };
-            let half = Vec2::splat(item.size * 0.5 + pad * px);
+            let half = Vec2::splat(scene::marker_half_extent(item, px) + pad * px);
             grid::build_outline(
                 item.pos - half,
                 item.pos + half,
@@ -398,14 +487,14 @@ impl App for Editor {
         println!("{}", ui.font_note());
 
         self.camera.viewport = (width, height);
-        self.reset_view();
+        self.pending_view = Some(ViewRequest::Zone);
         self.apply_env_selection();
         self.renderer = Some(renderer);
         self.ui = Some(ui);
         self.target = Some(target.clone());
 
         println!(
-            "기본 존 로드 — 경계 {:?}~{:?}cm, 마커 {}개",
+            "기본 존 로드 — 경계 {:?}~{:?} m, 마커 {}개",
             self.scene.zone.min.to_array(),
             self.scene.zone.max.to_array(),
             self.scene.items.len()

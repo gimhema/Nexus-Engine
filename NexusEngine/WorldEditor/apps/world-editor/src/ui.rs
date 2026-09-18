@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nexus_core::{Camera2d, Vec2};
+use nexus_core::{Camera2d, Vec2, units};
 use nexus_platform::{WindowEvent, WindowTarget};
 use nexus_render_wgpu::{UiFrame, egui};
 
@@ -24,9 +24,6 @@ use crate::scene::{Pick, Scene, Target, ZONE_LABEL};
 
 /// 좌우 패널 기본 폭 (논리 포인트).
 const SIDE_PANEL_WIDTH: f32 = 220.0;
-
-/// 피킹 허용 오차 (물리 픽셀). 작은 마커도 잡을 수 있게.
-const PICK_TOLERANCE_PX: f32 = 6.0;
 
 /// 한글 표시에 쓸 시스템 폰트 후보. 앞에서부터 처음 찾은 것을 쓴다.
 ///
@@ -64,6 +61,8 @@ pub(crate) struct UiModel<'a> {
 #[derive(Debug, Default)]
 pub(crate) struct UiActions {
     pub(crate) reset_view: bool,
+    /// 선택 항목(없으면 전체 마커)이 화면에 들어오도록 카메라를 맞춘다.
+    pub(crate) frame_selection: bool,
     pub(crate) screenshot: bool,
     pub(crate) undo: bool,
     pub(crate) redo: bool,
@@ -218,10 +217,16 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
             });
             ui.menu_button("보기", |ui| {
                 if ui
-                    .add(egui::Button::new("시점 초기화").shortcut_text("Home"))
+                    .add(egui::Button::new("존 전체 보기").shortcut_text("Home"))
                     .clicked()
                 {
                     actions.reset_view = true;
+                }
+                if ui
+                    .add(egui::Button::new("선택 항목 보기").shortcut_text("F"))
+                    .clicked()
+                {
+                    actions.frame_selection = true;
                 }
             });
         });
@@ -245,6 +250,7 @@ fn shortcuts(ui: &mut egui::Ui, actions: &mut UiActions) {
         actions.undo |= i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Z));
 
         actions.reset_view |= i.key_pressed(Key::Home);
+        actions.frame_selection |= i.key_pressed(Key::F);
         actions.screenshot |= i.key_pressed(Key::F12);
         actions.deselect |= i.key_pressed(Key::Escape);
     });
@@ -254,13 +260,13 @@ fn status_bar(ui: &mut egui::Ui, model: &UiModel<'_>, cursor: Option<Vec2>) {
     egui::Panel::bottom("status_bar").show(ui, |ui| {
         ui.horizontal(|ui| {
             match cursor {
-                Some(p) => ui.monospace(format!("X {:>9.1}  Y {:>9.1} cm", p.x, p.y)),
-                None => ui.monospace("X         —  Y         — cm"),
+                Some(p) => ui.monospace(format!("X {:>9.2}  Y {:>9.2} m", p.x, p.y)),
+                None => ui.monospace("X         —  Y         — m"),
             };
             ui.separator();
             ui.monospace(format!(
-                "시야 {:.1} m · 그리드 {} ",
-                model.camera.view_height / 100.0,
+                "시야 {} · 그리드 {} ",
+                format_length(model.camera.view_height),
                 format_length(grid::pick_spacing(model.camera.view_height)),
             ));
 
@@ -334,7 +340,10 @@ fn inspector_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActio
                 [] => {
                     ui.weak("선택된 오브젝트 없음");
                     ui.add_space(8.0);
-                    ui.weak("왼쪽 클릭: 선택\nShift+클릭: 추가/해제\nCtrl+드래그: 그리드 스냅");
+                    ui.weak(
+                        "왼쪽 클릭: 선택\nShift+클릭: 추가/해제\nCtrl+드래그: 그리드 스냅\n\
+                         F: 선택 항목 보기 · Home: 존 전체",
+                    );
                 }
                 [Target::Zone] => zone_inspector(ui, model, speed, actions),
                 [Target::Item(entity)] => {
@@ -353,6 +362,15 @@ fn inspector_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActio
                                 finished,
                             });
                         }
+
+                        // 방향: 저장은 라디안, 표시는 도 (nexus_core::units 규약)
+                        let heading = units::normalize_heading(item.orientation);
+                        ui.horizontal(|ui| {
+                            ui.label("방향");
+                            ui.monospace(format!("{:.1}°", heading.to_degrees()));
+                            ui.weak(format!("({:.3} rad)", item.orientation));
+                        });
+                        ui.weak("방향 편집은 화살표와 함께 추가됩니다 (M5-2).");
 
                         ui.add_space(10.0);
                         ui.weak("스탯·진영·AI 필드는 패널 명세를 받은 뒤 추가됩니다.");
@@ -388,7 +406,11 @@ fn zone_inspector(ui: &mut egui::Ui, model: &UiModel<'_>, speed: f32, actions: &
 
     ui.add_space(6.0);
     let s = zone.size();
-    ui.monospace(format!("크기 {:.1} × {:.1} m", s.x / 100.0, s.y / 100.0));
+    ui.monospace(format!(
+        "크기 {} × {}",
+        format_length(s.x),
+        format_length(s.y)
+    ));
 }
 
 /// `라벨 | X | Y` 3열 표 안의 한 행 편집기.
@@ -405,7 +427,7 @@ impl Vec2Row<'_> {
         for value in [&mut v.x, &mut v.y] {
             let r = self
                 .ui
-                .add(egui::DragValue::new(value).speed(speed).fixed_decimals(1));
+                .add(egui::DragValue::new(value).speed(speed).fixed_decimals(2));
             changed |= r.changed();
             // 드래그를 놓았거나, 직접 입력 후 포커스를 잃었을 때 = 편집 한 번 끝
             finished |= r.drag_stopped() || r.lost_focus();
@@ -415,7 +437,7 @@ impl Vec2Row<'_> {
     }
 }
 
-/// 좌표 입력 표. 단위(cm)는 머리글에 한 번만 적어 폭을 아낀다 — 좁은 사이드바에서
+/// 좌표 입력 표. 단위(m)는 머리글에 한 번만 적어 폭을 아낀다 — 좁은 사이드바에서
 /// 입력칸마다 단위를 붙이면 패널 밖으로 넘친다 (스크린샷으로 확인한 문제).
 fn vec2_grid<R>(ui: &mut egui::Ui, id: &str, body: impl FnOnce(&mut Vec2Row<'_>) -> R) -> R {
     egui::Grid::new(id)
@@ -423,8 +445,8 @@ fn vec2_grid<R>(ui: &mut egui::Ui, id: &str, body: impl FnOnce(&mut Vec2Row<'_>)
         .spacing([6.0, 4.0])
         .show(ui, |ui| {
             ui.label("");
-            ui.weak("X (cm)");
-            ui.weak("Y (cm)");
+            ui.weak("X (m)");
+            ui.weak("Y (m)");
             ui.end_row();
             body(&mut Vec2Row { ui })
         })
@@ -515,7 +537,7 @@ fn viewport(
             released,
             additive: modifiers.shift,
             snap: modifiers.command,
-            tolerance: PICK_TOLERANCE_PX * world_per_px,
+            px: world_per_px,
             grid: grid::pick_spacing(camera.view_height),
         });
     });
@@ -563,14 +585,22 @@ fn to_color32(c: [f32; 4]) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(byte(c[0]), byte(c[1]), byte(c[2]), byte(c[3]))
 }
 
-/// cm 값을 읽기 쉬운 단위로.
-fn format_length(cm: f32) -> String {
-    if cm >= 100_000.0 {
-        format!("{:.0} km", cm / 100_000.0)
-    } else if cm >= 100.0 {
-        format!("{:.0} m", cm / 100.0)
+/// 미터 값을 읽기 쉬운 단위로. 정수면 소수점을 떼고, 아니면 한 자리까지.
+fn format_length(meters: f32) -> String {
+    let trim = |v: f32, unit: &str| {
+        if (v - v.round()).abs() < 0.05 {
+            format!("{v:.0} {unit}")
+        } else {
+            format!("{v:.1} {unit}")
+        }
+    };
+    let abs = meters.abs();
+    if abs >= units::KILOMETER {
+        trim(meters / units::KILOMETER, "km")
+    } else if abs >= 1.0 {
+        trim(meters, "m")
     } else {
-        format!("{cm:.0} cm")
+        trim(meters / units::CENTIMETER, "cm")
     }
 }
 
@@ -580,9 +610,12 @@ mod tests {
 
     #[test]
     fn length_formatting_picks_units() {
-        assert_eq!(format_length(50.0), "50 cm");
-        assert_eq!(format_length(200.0), "2 m");
-        assert_eq!(format_length(500_000.0), "5 km");
+        // 입력은 미터
+        assert_eq!(format_length(0.5), "50 cm");
+        assert_eq!(format_length(2.0), "2 m");
+        assert_eq!(format_length(12.5), "12.5 m");
+        assert_eq!(format_length(2000.0), "2 km");
+        assert_eq!(format_length(2600.0), "2.6 km");
     }
 
     #[test]

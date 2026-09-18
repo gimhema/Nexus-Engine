@@ -115,9 +115,9 @@ pub(crate) struct PointerInput {
     pub(crate) additive: bool,
     /// Ctrl — 그리드 스냅.
     pub(crate) snap: bool,
-    /// 피킹 허용 오차 (월드 단위).
-    pub(crate) tolerance: f32,
-    /// 스냅 간격 (월드 단위, 보통 현재 그리드 간격).
+    /// 화면 1픽셀의 월드 길이 (m). 피킹 허용 오차·마커 최소 크기 계산에 쓴다.
+    pub(crate) px: f32,
+    /// 스냅 간격 (m, 보통 현재 그리드 간격).
     pub(crate) grid: f32,
 }
 
@@ -261,7 +261,7 @@ impl Editing {
         let hover = input
             .world
             .filter(|_| input.over_viewport)
-            .and_then(|w| scene.pick(w, input.tolerance));
+            .and_then(|w| scene.pick(w, input.px));
 
         if input.pressed
             && let Some(w) = input.world
@@ -435,7 +435,8 @@ mod tests {
     use super::*;
     use crate::scene::ItemKind;
 
-    const TOL: f32 = 2.0;
+    /// 1px = 0.3m (테스트 기준 배율)
+    const PX: f32 = 0.3;
 
     /// 서로 떨어진 마커 두 개 + ±1000 존.
     fn scene() -> (Scene, Entity, Entity) {
@@ -451,7 +452,7 @@ mod tests {
             world: Some(at),
             pressed: true,
             over_viewport: true,
-            tolerance: TOL,
+            px: PX,
             grid: 100.0,
             ..Default::default()
         }
@@ -461,7 +462,7 @@ mod tests {
         PointerInput {
             world: Some(at),
             over_viewport: true,
-            tolerance: TOL,
+            px: PX,
             grid: 100.0,
             ..Default::default()
         }

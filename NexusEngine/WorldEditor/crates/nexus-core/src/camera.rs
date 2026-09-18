@@ -4,7 +4,7 @@
 //! 만들어 낸다. M8 에서 3D 로 갈 때 [`Camera2d::view_proj`] 의 `directx::orthographic` 을
 //! `directx::perspective` 로 바꾸고 궤도 컨트롤러를 붙이면 되며, 렌더 파이프라인은 손대지 않는다.
 //!
-//! 좌표계는 서버와 동일하게 **cm 단위, Z-up** 이다. 따라서 지면은 XY 평면이고,
+//! 좌표계는 **미터(m), Z-up** 이다 ([`crate::units`]). 따라서 지면은 XY 평면이고,
 //! 탑다운 카메라는 +Z 에서 −Z 방향을 내려다본다.
 
 use glam::{Mat4, Vec2, Vec3};
@@ -12,9 +12,9 @@ use glam::{Mat4, Vec2, Vec3};
 /// XY 평면을 내려다보는 정사영 카메라.
 #[derive(Clone, Copy, Debug)]
 pub struct Camera2d {
-    /// 화면 중심이 바라보는 월드 좌표 (cm).
+    /// 화면 중심이 바라보는 월드 좌표 (m).
     pub center: Vec2,
-    /// 화면 세로 방향이 담는 월드 높이 (cm). 줌은 이 값을 조절한다.
+    /// 화면 세로 방향이 담는 월드 높이 (m). 줌은 이 값을 조절한다.
     pub view_height: f32,
     /// 뷰포트 크기 (물리 픽셀).
     pub viewport: (u32, u32),
@@ -24,7 +24,7 @@ impl Default for Camera2d {
     fn default() -> Self {
         Self {
             center: Vec2::ZERO,
-            view_height: 2000.0, // 20m
+            view_height: 20.0,
             viewport: (1, 1),
         }
     }
@@ -32,11 +32,11 @@ impl Default for Camera2d {
 
 impl Camera2d {
     /// 줌 한계 — 너무 좁히거나 넓히면 깊이 정밀도와 그리드가 무너진다.
-    pub const MIN_VIEW_HEIGHT: f32 = 50.0; // 0.5m
-    pub const MAX_VIEW_HEIGHT: f32 = 200_000.0; // 2km
+    pub const MIN_VIEW_HEIGHT: f32 = 0.5;
+    pub const MAX_VIEW_HEIGHT: f32 = 5_000.0;
 
-    /// 카메라가 내려다보는 높이 (cm). 지면(Z=0) 위 오브젝트를 담도록 충분히 높게 둔다.
-    const EYE_HEIGHT: f32 = 10_000.0;
+    /// 카메라가 내려다보는 높이 (m). 지면(Z=0) 위 오브젝트를 담도록 충분히 높게 둔다.
+    const EYE_HEIGHT: f32 = 1_000.0;
 
     /// 뷰포트 종횡비. 크기가 0 이면 1.0 을 반환한다.
     #[must_use]
@@ -48,7 +48,7 @@ impl Camera2d {
         w as f32 / h as f32
     }
 
-    /// 화면 가로 방향이 담는 월드 너비 (cm).
+    /// 화면 가로 방향이 담는 월드 너비 (m).
     #[must_use]
     pub fn view_width(&self) -> f32 {
         self.view_height * self.aspect()

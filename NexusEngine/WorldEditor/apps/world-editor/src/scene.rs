@@ -3,12 +3,12 @@
 //! 서버 `ZoneConfig` 의 편집 가능한 부분(존 경계 AABB, 스폰 위치)을 담는다.
 //! M6 에서 ECS 컴포넌트로 옮기고 `ZoneConfig` 로 직렬화한다.
 //!
-//! 이 모듈은 GPU·UI 를 모른다. 좌표는 모두 월드 공간(cm, XY 평면)이다.
+//! 이 모듈은 GPU·UI 를 모른다. 좌표는 모두 월드 공간(미터, XY 평면)이다 — `nexus_core::units`.
 
 use nexus_core::{Entity, Vec2, World};
 
-/// 존 경계의 최소 한 변 길이 (cm). 핸들을 끌어 뒤집히거나 0 이 되는 것을 막는다.
-pub(crate) const MIN_ZONE_SIZE: f32 = 50.0;
+/// 존 경계의 최소 한 변 길이 (m). 핸들을 끌어 뒤집히거나 0 이 되는 것을 막는다.
+pub(crate) const MIN_ZONE_SIZE: f32 = 1.0;
 
 /// 스폰 마커 종류. 서버의 `playerSpawnPoints` / `npcSpawns(NPC|MONSTER)` 에 대응한다.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,10 +43,12 @@ pub(crate) struct Item {
     pub(crate) entity: Entity,
     pub(crate) name: String,
     pub(crate) kind: ItemKind,
-    /// 월드 위치 (cm).
+    /// 월드 위치 (m).
     pub(crate) pos: Vec2,
-    /// 마커 한 변 크기 (cm).
+    /// 실제 점유 크기, 한 변 (m). 화면에서는 [`MARKER_MIN_PX`] 보다 작게 그려지지 않는다.
     pub(crate) size: f32,
+    /// 바라보는 방향 (라디안, `0 = +X`, 반시계가 +). 서버 `SpawnPoint::orientation` 과 같은 값.
+    pub(crate) orientation: f32,
 }
 
 /// 존 경계 핸들. 모서리는 두 축을, 변은 한 축을 움직인다.
@@ -169,7 +171,7 @@ impl Scene {
     /// NexusEngine `Server.cpp` 의 기본 존 배치.
     ///
     /// `Server.cpp` 는 `boundsMin`/`boundsMax` 를 설정하지 않으므로
-    /// `ZoneConfig` 구조체 기본값(±1000cm)이 실제로 쓰인다.
+    /// `ZoneConfig` 구조체 기본값 ±1000 이 실제로 쓰인다 — 미터로 읽으면 2km × 2km 존.
     pub(crate) fn server_default() -> Self {
         let mut scene = Self {
             world: World::default(),
@@ -180,25 +182,31 @@ impl Scene {
             },
         };
 
+        // Server.cpp 의 숫자를 그대로 옮기고 미터로 읽는다.
+        //
+        // ⚠ 서버 샘플 스폰은 Y-up 으로 작성돼 있다 — 모든 스폰의 y 가 0 이고 x·z 만 바뀐다
+        //   ({10,0,10}, {20,0,-5}, {-8,0,12} …). 문서의 Z-up 대로 읽으면 슬라임이 땅속 5m,
+        //   상인이 공중 12m 에 놓인다. 그래서 여기서는 서버 (x, z) 를 지면 (X, Y) 로 옮긴다.
+        //   엔진 규약은 Z-up 그대로이며, 서버 데이터 쪽을 고쳐야 한다 (CLAUDE.md 참고).
+        //
+        // 점유 크기는 서버에 없으므로 캐릭터 크기 정도로 둔다.
+        // (이름, 종류, 서버 x, 서버 z, 방향 rad)
         let spawns = [
-            (
-                "플레이어 스폰 #1",
-                ItemKind::PlayerSpawn,
-                Vec2::new(0.0, 0.0),
-                40.0,
-            ),
-            (
-                "플레이어 스폰 #2",
-                ItemKind::PlayerSpawn,
-                Vec2::new(5.0, 5.0),
-                40.0,
-            ),
-            ("마을 경비병", ItemKind::Npc, Vec2::new(10.0, 10.0), 30.0),
-            ("상인 NPC", ItemKind::Npc, Vec2::new(-8.0, 12.0), 30.0),
-            ("슬라임", ItemKind::Monster, Vec2::new(20.0, -5.0), 30.0),
+            ("플레이어 스폰 #1", ItemKind::PlayerSpawn, 0.0, 0.0, 0.0),
+            ("플레이어 스폰 #2", ItemKind::PlayerSpawn, 5.0, 5.0, 0.0),
+            ("마을 경비병", ItemKind::Npc, 10.0, 10.0, 0.0),
+            ("상인 NPC", ItemKind::Npc, -8.0, 12.0, 1.5),
+            ("슬라임", ItemKind::Monster, 20.0, -5.0, 0.0),
         ];
-        for (name, kind, pos, size) in spawns {
-            scene.add(name, kind, pos, size);
+        for (name, kind, server_x, server_z, orientation) in spawns {
+            let size = match kind {
+                ItemKind::PlayerSpawn => 1.0,
+                ItemKind::Npc | ItemKind::Monster => 0.8,
+            };
+            let e = scene.add(name, kind, Vec2::new(server_x, server_z), size);
+            if let Some(item) = scene.item_mut(e) {
+                item.orientation = orientation;
+            }
         }
         scene
     }
@@ -211,6 +219,7 @@ impl Scene {
             kind,
             pos,
             size,
+            orientation: 0.0,
         });
         entity
     }
@@ -242,13 +251,16 @@ impl Scene {
         }
     }
 
-    /// `p` 아래의 대상을 찾는다. `tolerance` 는 월드 단위 허용 오차(보통 화면 몇 픽셀).
+    /// `p` 아래의 대상을 찾는다. `px` 는 화면 1픽셀의 월드 길이(m) — 줌에 따라 달라진다.
     ///
     /// 우선순위: 마커(위에 그려진 것부터) → 존 모서리 → 존 변.
     /// 존 내부의 빈 곳은 존을 고르지 않는다 — 존은 화면 대부분을 덮기 때문이다.
-    pub(crate) fn pick(&self, p: Vec2, tolerance: f32) -> Option<Pick> {
+    pub(crate) fn pick(&self, p: Vec2, px: f32) -> Option<Pick> {
+        let tolerance = PICK_TOLERANCE_PX * px;
+
         for item in self.items.iter().rev() {
-            let half = item.size * 0.5 + tolerance;
+            // 그려지는 크기와 같은 규칙을 쓴다 — 보이는 만큼 잡혀야 한다.
+            let half = marker_half_extent(item, px) + tolerance;
             let d = (p - item.pos).abs();
             if d.x <= half && d.y <= half {
                 return Some(Pick::Item(item.entity));
@@ -284,6 +296,20 @@ impl Scene {
 
 /// 씬 목록·인스펙터에 쓰는 존 표시 이름.
 pub(crate) const ZONE_LABEL: &str = "존 경계";
+
+/// 피킹 허용 오차 (화면 픽셀).
+pub(crate) const PICK_TOLERANCE_PX: f32 = 6.0;
+
+/// 마커가 화면에서 최소한 차지하는 한 변 크기 (픽셀).
+///
+/// 존은 수 km, 캐릭터는 1m 안팎이다. 존 전체를 보는 배율에서 실제 크기로 그리면
+/// 마커가 1픽셀도 안 되므로, 아이콘처럼 최소 화면 크기를 보장한다.
+pub(crate) const MARKER_MIN_PX: f32 = 12.0;
+
+/// 마커가 그려지고 잡히는 반폭 (m). 실제 크기와 최소 화면 크기 중 큰 쪽.
+pub(crate) fn marker_half_extent(item: &Item, px: f32) -> f32 {
+    (item.size * 0.5).max(MARKER_MIN_PX * 0.5 * px)
+}
 
 #[cfg(test)]
 mod tests {
@@ -335,30 +361,68 @@ mod tests {
     #[test]
     fn zone_is_picked_by_edges_and_corners_only() {
         let s = Scene::server_default();
-        let tol = 10.0;
+        let px = 1.0; // 허용 오차 6m
         assert_eq!(
-            s.pick(Vec2::new(1000.0, 1000.0), tol),
+            s.pick(Vec2::new(1000.0, 1000.0), px),
             Some(Pick::ZoneHandle(Handle::TopRight))
         );
         assert_eq!(
-            s.pick(Vec2::new(-1005.0, 300.0), tol),
+            s.pick(Vec2::new(-1005.0, 300.0), px),
             Some(Pick::ZoneHandle(Handle::Left))
         );
         assert_eq!(
-            s.pick(Vec2::new(400.0, 400.0), tol),
+            s.pick(Vec2::new(400.0, 400.0), px),
             None,
             "존 내부 빈 곳은 아무것도 고르지 않는다"
         );
     }
 
     #[test]
-    fn small_markers_get_click_tolerance() {
+    fn zoomed_out_markers_are_picked_by_screen_size() {
+        // 2km 존 전체를 보는 배율 (1px ≈ 3m). 0.8m 슬라임은 실제 크기로는 픽셀 이하지만
+        // 최소 화면 크기(12px)로 그려지므로 그만큼 잡혀야 한다.
         let s = Scene::server_default();
-        // 슬라임(20,-5) 크기 30 → 반폭 15. 허용 오차 5 를 더하면 20 까지 잡힌다.
         let slime = s.find_by_label("슬라임").unwrap();
+        let px = 3.0;
+        // 반폭 = 12px/2 × 3m = 18m, 허용 오차 6px × 3m = 18m → 36m 까지
         assert_eq!(
-            s.pick(Vec2::new(39.0, -5.0), 5.0).map(Pick::target),
+            s.pick(Vec2::new(20.0 + 35.0, -5.0), px).map(Pick::target),
             Some(slime)
+        );
+    }
+
+    #[test]
+    fn zoomed_in_markers_are_picked_by_real_size() {
+        // 1px = 1cm. 이때는 실제 크기(0.8m, 반폭 0.4m)가 최소 화면 크기(반폭 6cm)보다 크다.
+        let s = Scene::server_default();
+        let slime = s.find_by_label("슬라임").unwrap();
+        let px = 0.01;
+        assert_eq!(
+            s.pick(Vec2::new(20.45, -5.0), px).map(Pick::target),
+            Some(slime),
+            "반폭 0.4m + 오차 0.06m 안쪽"
+        );
+        assert_eq!(s.pick(Vec2::new(20.5, -5.0), px), None);
+    }
+
+    #[test]
+    fn server_sample_spawns_are_spread_in_meters() {
+        // 서버 (x, z) 를 지면으로 읽고 미터로 해석 → 수 m ~ 20m 간격으로 흩어진다
+        let s = Scene::server_default();
+        let guard = s.find_by_label("마을 경비병").unwrap();
+        let merchant = s.find_by_label("상인 NPC").unwrap();
+        let pos = |t| match t {
+            Target::Item(e) => s.item(e).unwrap().pos,
+            Target::Zone => unreachable!(),
+        };
+        assert!((pos(guard) - pos(merchant)).length() > 10.0);
+
+        let Target::Item(m) = merchant else {
+            unreachable!()
+        };
+        assert!(
+            (s.item(m).unwrap().orientation - 1.5).abs() < 1e-6,
+            "상인 방향 1.5 rad"
         );
     }
 

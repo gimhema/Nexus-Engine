@@ -7,6 +7,7 @@
 
 pub mod camera;
 pub mod time;
+pub mod units;
 
 /// 수학 타입은 `glam` 을 그대로 쓴다.
 ///
@@ -14,7 +15,7 @@ pub mod time;
 /// 호환도 잃는다. 자체 엔진에서 직접 만들 가치가 있는 것은 씬·렌더러이지
 /// 벡터 연산이 아니다. (CLAUDE.md 핵심 원칙 5)
 ///
-/// 월드 좌표계는 서버와 동일한 **cm 단위, Z-up** 이다.
+/// 월드 좌표계는 **미터(m), Z-up** 이다. 전체 규약은 [`units`] 모듈 참고.
 pub use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
 
 pub use camera::Camera2d;

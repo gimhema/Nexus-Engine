@@ -56,9 +56,9 @@ pub enum RenderCommand {
     /// 렌더러는 아무것도 달라지지 않는다.
     SetCamera { view_proj: Mat4 },
 
-    /// 월드 공간 축 정렬 사각형. `center` / `size` 는 cm 단위.
+    /// 월드 공간 축 정렬 사각형. `center` / `size` 는 미터.
     ///
-    /// `z` 는 높이(cm)이자 깊이 정렬 기준이다 — 값이 큰 쪽이 위에 그려진다.
+    /// `z` 는 높이(m)이자 깊이 정렬 기준이다 — 값이 큰 쪽이 위에 그려진다.
     DrawRect {
         center: Vec2,
         size: Vec2,
