@@ -1,45 +1,50 @@
 //! Nexus WorldEditor — 에디터 애플리케이션.
 //!
-//! 현재 단계: 2D 정사영 월드 뷰포트 + egui 에디터 골격.
-//!   - 메뉴 바 / 씬 목록 / 인스펙터(빈 칸) / 상태 바
-//!   - 뷰포트: 가운데·오른쪽 드래그 = 팬, 휠 = 커서 기준 줌, Home = 시점 초기화
-//!   - F12 또는 `NEXUS_SCREENSHOT` = 스크린샷
+//! 현재 단계: M5-1 뷰포트 편집.
+//!   - 왼쪽 클릭 선택 / Shift+클릭 추가·해제 / 끌어서 이동 / Ctrl+드래그 그리드 스냅
+//!   - 존 경계: 변·모서리 핸들을 끌어 크기 조절
+//!   - 언두/리두 (Ctrl+Z / Ctrl+Y · Ctrl+Shift+Z), Esc 선택 해제
+//!   - 인스펙터: 위치·경계 값 편집 (나머지 필드는 패널 명세 대기)
+//!   - 가운데·오른쪽 드래그 팬, 휠 줌, Home 시점 초기화, F12 스크린샷
 //!
 //! 화면에 보이는 배치는 NexusEngine `Server.cpp` 의 기본 존 설정을 옮겨온 것이다.
-//! M5 에서 이를 마우스로 편집하고, M6 에서 `ZoneConfig` 로 내보낸다.
+//! M6 에서 `ZoneConfig` 로 내보낸다.
 
+mod edit;
 mod grid;
+mod scene;
 mod screenshot;
 mod ui;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use nexus_core::{Camera2d, Vec2, World};
+use nexus_core::{Camera2d, Vec2};
 use nexus_platform::{App, Input, WindowConfig, WindowEvent, WindowTarget};
 use nexus_render::{FrameStatus, RenderCommand, RenderError, Renderer};
 use nexus_render_wgpu::{TextureCarry, UiFrame, WgpuRenderer};
 
-use ui::{EditorUi, FrameStats, OutlineItem};
+use edit::Editing;
+use scene::{Handle, Pick, Scene, Target};
+use ui::{EditorUi, FrameStats, UiActions, UiModel};
 
 // 색은 모두 sRGB. 렌더러가 선형으로 변환한다.
 const CLEAR_COLOR: [f32; 4] = [0.05, 0.06, 0.08, 1.0];
-const ZONE_BOUNDS_COLOR: [f32; 4] = [0.35, 0.60, 0.95, 0.9];
-const PLAYER_SPAWN_COLOR: [f32; 4] = [0.30, 0.85, 0.55, 1.0];
-const NPC_COLOR: [f32; 4] = [0.90, 0.75, 0.30, 1.0];
-const MONSTER_COLOR: [f32; 4] = [0.90, 0.35, 0.30, 1.0];
+pub(crate) const ZONE_BOUNDS_COLOR: [f32; 4] = [0.35, 0.60, 0.95, 0.9];
+const SELECT_COLOR: [f32; 4] = [1.0, 0.82, 0.25, 1.0];
+const HOVER_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.55];
+const HANDLE_FILL: [f32; 4] = [0.95, 0.97, 1.0, 1.0];
+const HANDLE_BORDER: [f32; 4] = [0.05, 0.06, 0.08, 1.0];
 
-/// 서버 `ZoneConfig` 의 스폰 정의에 대응하는 에디터 측 표현.
-///
-/// M6 에서 이 구조가 씬 컴포넌트로 옮겨가고 `ZoneConfig` 로 직렬화된다.
-#[derive(Clone, Debug)]
-struct Marker {
-    name: String,
-    pos: Vec2,
-    color: [f32; 4],
-    /// 월드 크기 (cm).
-    size: f32,
-}
+// 겹침 순서 (월드 Z, 클수록 위). 그리드는 음수.
+const Z_ZONE: f32 = 0.5;
+const Z_MARKER: f32 = 1.0;
+const Z_HOVER: f32 = 1.5;
+const Z_SELECT: f32 = 2.0;
+const Z_HANDLE: f32 = 3.0;
+
+/// 시작 시 미리 선택할 대상 (쉼표 구분 이름). 스크린샷으로 선택 표시를 검증할 때 쓴다.
+const ENV_SELECT: &str = "NEXUS_SELECT";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = WindowConfig::default();
@@ -48,7 +53,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "WorldEditor 시작 — {}x{}, 시뮬레이션 {}Hz",
         config.width, config.height, config.sim_hz
     );
-    println!("조작: 가운데/오른쪽 드래그 = 팬 | 휠 = 줌 | Home = 시점 초기화 | F12 = 스크린샷");
+    println!(
+        "조작: 왼쪽 = 선택/이동 (Shift 추가, Ctrl 스냅) | 가운데·오른쪽 드래그 = 팬 | 휠 = 줌 \
+         | Ctrl+Z/Y = 실행 취소/다시 | Esc = 선택 해제 | Home | F12"
+    );
 
     nexus_platform::run(config, Editor::default())?;
 
@@ -56,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Editor {
     renderer: Option<WgpuRenderer>,
     ui: Option<EditorUi>,
@@ -64,14 +72,11 @@ struct Editor {
     /// 건너뛴 프레임에서 적용하지 못한 UI 텍스처 변경분.
     texture_carry: TextureCarry,
 
-    world: World,
+    scene: Scene,
+    editing: Editing,
     camera: Camera2d,
-    markers: Vec<Marker>,
-    /// 존 경계 AABB (XY 평면 투영).
-    zone_min: Vec2,
-    zone_max: Vec2,
-    /// 씬 목록 표시용 — 데이터가 바뀔 때만 다시 만든다.
-    outline: Vec<OutlineItem>,
+    /// 포인터 아래의 대상 — 직전 프레임 기준.
+    hover: Option<Pick>,
     /// 프레임마다 재사용하는 명령 버퍼 — 매 프레임 할당을 피한다.
     commands: Vec<RenderCommand>,
 
@@ -89,63 +94,47 @@ struct Editor {
     exit_requested: bool,
 }
 
-impl Editor {
-    /// 서버 기본 존 배치를 불러온다.
-    ///
-    /// `Server.cpp` 는 `boundsMin`/`boundsMax` 를 설정하지 않으므로
-    /// `ZoneConfig` 구조체 기본값(±1000cm)이 실제로 쓰인다.
-    fn load_default_zone(&mut self) {
-        self.zone_min = Vec2::new(-1000.0, -1000.0);
-        self.zone_max = Vec2::new(1000.0, 1000.0);
-
-        let spawns = [
-            // playerSpawnPoints
-            (
-                "플레이어 스폰 #1",
-                Vec2::new(0.0, 0.0),
-                PLAYER_SPAWN_COLOR,
-                40.0,
-            ),
-            (
-                "플레이어 스폰 #2",
-                Vec2::new(5.0, 5.0),
-                PLAYER_SPAWN_COLOR,
-                40.0,
-            ),
-            // npcSpawns
-            ("마을 경비병", Vec2::new(10.0, 10.0), NPC_COLOR, 30.0),
-            ("상인 NPC", Vec2::new(-8.0, 12.0), NPC_COLOR, 30.0),
-            ("슬라임", Vec2::new(20.0, -5.0), MONSTER_COLOR, 30.0),
-        ];
-        for (name, pos, color, size) in spawns {
-            self.markers.push(Marker {
-                name: name.to_owned(),
-                pos,
-                color,
-                size,
-            });
-            self.world.spawn();
+impl Default for Editor {
+    fn default() -> Self {
+        Self {
+            renderer: None,
+            ui: None,
+            target: None,
+            texture_carry: TextureCarry::default(),
+            scene: Scene::server_default(),
+            editing: Editing::default(),
+            camera: Camera2d::default(),
+            hover: None,
+            commands: Vec::new(),
+            ticks: 0,
+            last_frame: None,
+            fps: 0.0,
+            frame_index: 0,
+            auto_shot: None,
+            manual_shot_requested: false,
+            pending_shot: None,
+            exit_requested: false,
         }
-
-        self.rebuild_outline();
     }
+}
 
-    fn rebuild_outline(&mut self) {
-        self.outline.clear();
-        self.outline.push(OutlineItem {
-            label: String::from("존 경계"),
-            color: ZONE_BOUNDS_COLOR,
-        });
-        self.outline
-            .extend(self.markers.iter().map(|m| OutlineItem {
-                label: m.name.clone(),
-                color: m.color,
-            }));
-    }
-
+impl Editor {
     fn reset_view(&mut self) {
         self.camera.center = Vec2::ZERO;
         self.camera.view_height = 2600.0;
+    }
+
+    /// `NEXUS_SELECT` 로 지정된 대상을 미리 선택한다.
+    fn apply_env_selection(&mut self) {
+        let Ok(list) = std::env::var(ENV_SELECT) else {
+            return;
+        };
+        for name in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            match self.scene.find_by_label(name) {
+                Some(target) => self.editing.select(target, true),
+                None => eprintln!("{ENV_SELECT}: '{name}' 를 찾지 못함"),
+            }
+        }
     }
 
     fn update_fps(&mut self) {
@@ -164,30 +153,60 @@ impl Editor {
         }
     }
 
-    /// UI 를 한 프레임 실행하고, 그 결과(뷰포트 영역 등)를 편집기 상태에 반영한다.
-    fn run_ui(&mut self) -> Option<(UiFrame, Option<[u32; 4]>)> {
+    /// UI 를 한 프레임 실행한다. 결과 액션은 [`Self::apply_actions`] 로 반영한다.
+    fn run_ui(&mut self) -> Option<(UiFrame, UiActions)> {
         let (Some(ui), Some(target)) = (self.ui.as_mut(), self.target.as_ref()) else {
             return None;
         };
 
-        let stats = FrameStats {
-            fps: self.fps,
-            quads: self
-                .renderer
-                .as_ref()
-                .map_or(0, WgpuRenderer::last_quad_count),
-            ticks: self.ticks,
+        let history = self.editing.history();
+        let mut model = UiModel {
+            camera: &mut self.camera,
+            scene: &self.scene,
+            selection: self.editing.selection(),
+            hover: self.hover,
+            undo_label: history.undo_label(),
+            redo_label: history.redo_label(),
+            stats: FrameStats {
+                fps: self.fps,
+                quads: self
+                    .renderer
+                    .as_ref()
+                    .map_or(0, WgpuRenderer::last_quad_count),
+                ticks: self.ticks,
+            },
         };
 
-        let (mut frame, actions) = ui.run(target, &mut self.camera, &self.outline, stats);
+        let (mut frame, actions) = ui.run(target, &mut model);
         self.texture_carry.apply_to(&mut frame);
+        Some((frame, actions))
+    }
 
+    /// UI 가 요청한 편집을 씬에 반영한다. 모든 씬 변경은 `Editing` 을 거친다.
+    fn apply_actions(&mut self, actions: &UiActions) {
         if actions.reset_view {
             self.reset_view();
         }
         self.manual_shot_requested |= actions.screenshot;
 
-        Some((frame, actions.viewport_px))
+        if actions.undo {
+            self.editing.undo(&mut self.scene);
+        }
+        if actions.redo {
+            self.editing.redo(&mut self.scene);
+        }
+        if actions.deselect && !self.editing.is_dragging() {
+            self.editing.clear_selection();
+        }
+        if let Some((target, additive)) = actions.list_select {
+            self.editing.select(target, additive);
+        }
+        if let Some(edit) = actions.inspector {
+            self.editing.apply_inspector(&mut self.scene, edit);
+        }
+        self.hover = actions
+            .pointer
+            .and_then(|p| self.editing.handle_pointer(&mut self.scene, &p));
     }
 
     /// 이번 프레임에 그릴 씬 명령을 쌓는다.
@@ -209,22 +228,82 @@ impl Editor {
 
         grid::build(&self.camera, &mut self.commands);
 
-        // 존 경계 — 화면상 두께가 일정하도록 뷰 높이에 비례
+        // 화면 픽셀 → 월드 길이. 선택 테두리·핸들을 화면상 일정한 크기로 그리는 데 쓴다.
+        let px = self.camera.view_height / self.camera.viewport.1.max(1) as f32;
+
+        self.draw_zone(px);
+
+        for item in &self.scene.items {
+            self.commands.push(RenderCommand::DrawRect {
+                center: item.pos,
+                size: Vec2::splat(item.size),
+                z: Z_MARKER,
+                color: item.kind.color(),
+            });
+
+            let target = Target::Item(item.entity);
+            let (color, z, pad, thick) = if self.editing.is_selected(target) {
+                (SELECT_COLOR, Z_SELECT, 4.0, 2.0)
+            } else if self.hover == Some(Pick::Item(item.entity)) {
+                (HOVER_COLOR, Z_HOVER, 3.0, 1.5)
+            } else {
+                continue;
+            };
+            let half = Vec2::splat(item.size * 0.5 + pad * px);
+            grid::build_outline(
+                item.pos - half,
+                item.pos + half,
+                thick * px,
+                z,
+                color,
+                &mut self.commands,
+            );
+        }
+    }
+
+    fn draw_zone(&mut self, px: f32) {
+        let zone = self.scene.zone;
+        let selected = self.editing.is_selected(Target::Zone);
+        let hovered = matches!(self.hover, Some(Pick::ZoneHandle(_)));
+
+        let (color, thick) = if selected {
+            (SELECT_COLOR, 2.5)
+        } else if hovered {
+            ([0.55, 0.75, 1.0, 1.0], 2.5)
+        } else {
+            (ZONE_BOUNDS_COLOR, 2.0)
+        };
         grid::build_outline(
-            self.zone_min,
-            self.zone_max,
-            self.camera.view_height * 0.003,
-            0.5,
-            ZONE_BOUNDS_COLOR,
+            zone.min,
+            zone.max,
+            thick * px,
+            Z_ZONE,
+            color,
             &mut self.commands,
         );
 
-        for m in &self.markers {
+        if !selected {
+            return;
+        }
+        // 핸들 8개 — 어두운 테두리 + 밝은 속. 호버 중인 핸들은 강조색.
+        for handle in Handle::CORNERS.into_iter().chain(Handle::EDGES) {
+            let at = zone.handle_pos(handle);
+            let fill = if self.hover == Some(Pick::ZoneHandle(handle)) {
+                SELECT_COLOR
+            } else {
+                HANDLE_FILL
+            };
             self.commands.push(RenderCommand::DrawRect {
-                center: m.pos,
-                size: Vec2::splat(m.size),
-                z: 1.0,
-                color: m.color,
+                center: at,
+                size: Vec2::splat(11.0 * px),
+                z: Z_HANDLE,
+                color: HANDLE_BORDER,
+            });
+            self.commands.push(RenderCommand::DrawRect {
+                center: at,
+                size: Vec2::splat(8.0 * px),
+                z: Z_HANDLE + 0.1,
+                color: fill,
             });
         }
     }
@@ -320,16 +399,16 @@ impl App for Editor {
 
         self.camera.viewport = (width, height);
         self.reset_view();
-        self.load_default_zone();
+        self.apply_env_selection();
         self.renderer = Some(renderer);
         self.ui = Some(ui);
         self.target = Some(target.clone());
 
         println!(
             "기본 존 로드 — 경계 {:?}~{:?}cm, 마커 {}개",
-            self.zone_min.to_array(),
-            self.zone_max.to_array(),
-            self.markers.len()
+            self.scene.zone.min.to_array(),
+            self.scene.zone.max.to_array(),
+            self.scene.items.len()
         );
 
         self.auto_shot = screenshot::plan_from_env();
@@ -352,7 +431,7 @@ impl App for Editor {
     fn fixed_update(&mut self, _dt: Duration, _input: &Input) {
         self.ticks += 1;
         // M7 에서 Intent → Authority → World 경로가 여기에 들어온다.
-        // 에디터 조작(카메라·단축키)은 뷰 조작이므로 UI 프레임에서 처리한다.
+        // 에디터 조작(카메라·선택·편집)은 뷰·저작 작업이므로 UI 프레임에서 처리한다.
     }
 
     fn render(&mut self, _alpha: f32) {
@@ -360,7 +439,10 @@ impl App for Editor {
         self.update_fps();
 
         let (mut ui_frame, viewport) = match self.run_ui() {
-            Some((frame, viewport)) => (Some(frame), viewport),
+            Some((frame, actions)) => {
+                self.apply_actions(&actions);
+                (Some(frame), actions.viewport_px)
+            }
             None => (None, None),
         };
 
@@ -394,9 +476,10 @@ impl App for Editor {
 
     fn shutdown(&mut self) {
         println!(
-            "종료 — 총 {} tick, 엔티티 {}, 마지막 프레임 쿼드 {}",
+            "종료 — 총 {} tick, 마커 {}, 선택 {}, 마지막 프레임 쿼드 {}",
             self.ticks,
-            self.world.entity_count(),
+            self.scene.items.len(),
+            self.editing.selection().len(),
             self.renderer
                 .as_ref()
                 .map_or(0, WgpuRenderer::last_quad_count),
