@@ -9,6 +9,8 @@ use nexus_core::{Entity, Vec2};
 
 use crate::combat::SkillId;
 use crate::faction::FactionId;
+use crate::item::Inventory;
+use crate::loot::LootTableId;
 
 /// 전투 AI 행동 유형. 서버 `EAIType` 과 같은 의미다.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -45,6 +47,8 @@ pub struct UnitDef {
     pub leash_range: f32,
     /// AI 가 쓰는 기본 공격. 없으면 AI 는 싸우지 않는다.
     pub basic_attack: Option<SkillId>,
+    /// 죽을 때 굴릴 드롭 테이블.
+    pub loot: Option<LootTableId>,
 }
 
 impl Default for UnitDef {
@@ -61,6 +65,7 @@ impl Default for UnitDef {
             aggro_range: 0.0,
             leash_range: 0.0,
             basic_attack: None,
+            loot: None,
         }
     }
 }
@@ -118,6 +123,10 @@ pub struct Unit {
     /// 스폰 지점. AI 의 추격 한계(leash)와 귀환 기준.
     pub(crate) home: Vec2,
     pub(crate) ai: AiState,
+    pub(crate) inventory: Inventory,
+    /// 장착 장비의 수치 합. 장착·해제 때 다시 계산한다.
+    pub(crate) bonus_attack: u32,
+    pub(crate) bonus_defense: u32,
 }
 
 impl Unit {
@@ -133,6 +142,9 @@ impl Unit {
             cooldowns: HashMap::new(),
             home: pos,
             ai: AiState::default(),
+            inventory: Inventory::default(),
+            bonus_attack: 0,
+            bonus_defense: 0,
         }
     }
 
@@ -150,6 +162,23 @@ impl Unit {
     #[must_use]
     pub fn home(&self) -> Vec2 {
         self.home
+    }
+
+    /// 장비가 더해진 공격력 — 전투는 이 값을 쓴다.
+    #[must_use]
+    pub fn attack(&self) -> u32 {
+        self.def.attack.saturating_add(self.bonus_attack)
+    }
+
+    /// 장비가 더해진 방어력.
+    #[must_use]
+    pub fn defense(&self) -> u32 {
+        self.def.defense.saturating_add(self.bonus_defense)
+    }
+
+    #[must_use]
+    pub fn inventory(&self) -> &Inventory {
+        &self.inventory
     }
 
     /// AI 가 지금 싸우는 상대.

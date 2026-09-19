@@ -18,6 +18,7 @@ use nexus_core::{Entity, Vec2};
 
 use crate::ai;
 use crate::combat::SkillId;
+use crate::item::{BagKind, EquipSlot, ItemStack};
 use crate::world::SimWorld;
 
 /// 플레이어(또는 AI)가 하려는 일. **요청일 뿐** — 받아들일지는 Authority 가 정한다.
@@ -34,6 +35,20 @@ pub enum Intent {
         target: Entity,
         skill: SkillId,
     },
+    /// 땅의 아이템을 줍는다. 줍기 사거리 안이어야 한다 — 다가가는 것은 내는 쪽의 일.
+    PickUp { unit: Entity, item: Entity },
+    /// 가방 한 칸을 통째로 발밑에 버린다.
+    DropItem {
+        unit: Entity,
+        bag: BagKind,
+        slot: u16,
+    },
+    /// 소모품 가방의 `slot` 에서 하나를 쓴다.
+    UseItem { unit: Entity, slot: u16 },
+    /// 장비 가방의 `slot` 을 장착한다 (그 자리의 장비와 맞바꿈).
+    Equip { unit: Entity, slot: u16 },
+    /// `slot` 자리의 장비를 벗는다.
+    Unequip { unit: Entity, slot: EquipSlot },
 }
 
 impl Intent {
@@ -41,7 +56,14 @@ impl Intent {
     #[must_use]
     pub fn unit(&self) -> Entity {
         match *self {
-            Self::MoveTo { unit, .. } | Self::Stop { unit } | Self::Attack { unit, .. } => unit,
+            Self::MoveTo { unit, .. }
+            | Self::Stop { unit }
+            | Self::Attack { unit, .. }
+            | Self::PickUp { unit, .. }
+            | Self::DropItem { unit, .. }
+            | Self::UseItem { unit, .. }
+            | Self::Equip { unit, .. }
+            | Self::Unequip { unit, .. } => unit,
         }
     }
 }
@@ -71,6 +93,14 @@ pub enum Rejection {
     Invulnerable,
     /// 우호 진영은 공격할 수 없다.
     Friendly,
+    /// 없는 땅의 아이템, 또는 정의되지 않은 아이템.
+    UnknownItem,
+    /// 빈 칸.
+    EmptySlot,
+    /// 가방에 다 들어가지 않는다. 일부만 줍지 않는다.
+    InventoryFull,
+    /// 그 방식으로 쓸 수 없는 아이템 (장비를 "사용" 등).
+    NotUsable,
 }
 
 /// tick 동안 일어난 일.
@@ -96,6 +126,26 @@ pub enum Event {
     Engaged { unit: Entity, target: Entity },
     /// AI 가 추격 한계를 넘어 포기하고 스폰 지점으로 돌아간다.
     Evading { unit: Entity },
+    /// 땅에 아이템이 생겼다 (몬스터 드롭 또는 버리기).
+    ItemSpawned {
+        item: Entity,
+        stack: ItemStack,
+        pos: Vec2,
+    },
+    /// 땅의 아이템을 주웠다. `item` 핸들은 이제 무효다.
+    PickedUp {
+        unit: Entity,
+        item: Entity,
+        stack: ItemStack,
+    },
+    /// 소모품으로 HP 가 올랐다. `amount` 는 실제로 오른 양 (가득이면 0).
+    Healed {
+        unit: Entity,
+        amount: u32,
+        remaining_hp: u32,
+    },
+    /// 장착 상태가 바뀌었다. 공격력·방어력이 달라졌을 수 있다.
+    EquipmentChanged { unit: Entity, slot: EquipSlot },
 }
 
 /// 게임플레이 상태의 권한자.
@@ -181,6 +231,11 @@ fn apply(world: &mut SimWorld, intent: Intent, events: &mut Vec<Event>) -> Resul
             target,
             skill,
         } => world.attack(unit, target, skill, events),
+        Intent::PickUp { unit, item } => world.pick_up(unit, item, events),
+        Intent::DropItem { unit, bag, slot } => world.drop_item(unit, bag, slot, events),
+        Intent::UseItem { unit, slot } => world.use_item(unit, slot, events),
+        Intent::Equip { unit, slot } => world.equip(unit, slot, events),
+        Intent::Unequip { unit, slot } => world.unequip(unit, slot, events),
     }
 }
 
