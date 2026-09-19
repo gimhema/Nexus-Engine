@@ -1,0 +1,90 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# WorldEditor CI
+#
+# 목적: 클라이언트 엔진의 Windows / Linux 빌드를 매 커밋 검증한다.
+#
+# 이 저장소의 C++ 서버는 Platform/ 밖 9개 파일에서 #ifdef _WIN32 를 쓰고 있고
+# CombatProcessor.cpp 의 strncpy_s 때문에 리눅스 빌드가 이미 깨져 있다.
+# 크로스플랫폼성은 문서에 적어서가 아니라 CI 가 매번 돌아야 유지된다.
+# ─────────────────────────────────────────────────────────────────────────────
+name: WorldEditor CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "NexusEngine/WorldEditor/**"
+      - ".github/workflows/world-editor.yml"
+  pull_request:
+    paths:
+      - "NexusEngine/WorldEditor/**"
+      - ".github/workflows/world-editor.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    working-directory: NexusEngine/WorldEditor
+
+jobs:
+  # ── 포맷 검사 (플랫폼 무관하므로 1회만) ────────────────────────────────────
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show           # rust-toolchain.toml 의 툴체인 설치
+      - run: cargo fmt --all --check
+
+  # ── 빌드 + 린트 (Windows / Linux 양쪽) ─────────────────────────────────────
+  check:
+    name: check (${{ matrix.os }})
+    strategy:
+      fail-fast: false             # 한쪽이 깨져도 다른 쪽 결과를 봐야 함
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: NexusEngine/WorldEditor
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # 워크스페이스 빌드에서는 에디터가 `ui` 피처를 켜므로 피처가 합쳐진다.
+      # 게임 런타임 구성(ui 없음)은 단독으로 따로 검사해야 한다.
+      - name: clippy (렌더러, ui 피처 없음)
+        run: cargo clippy -p nexus-render-wgpu --all-targets --locked -- -D warnings
+
+      - name: test
+        run: cargo test --workspace --locked
+
+  # ── 경계 검증 ──────────────────────────────────────────────────────────────
+  # 클라이언트 엔진은 NexusEngine 서버와 독립적으로 서야 한다.
+  # 렌더/코어 계층이 프로토콜·네트워크 크레이트에 의존하기 시작하면 실패한다.
+  # (단계 2 에서 nexus-protocol / nexus-net 이 생긴 뒤부터 실질적인 의미를 갖는다)
+  boundary:
+    name: 경계 검증 (렌더 ↮ 네트워크)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+
+      - name: 렌더 계층은 네트워크를 몰라야 한다
+        shell: bash
+        run: |
+          # cargo tree 결과를 먼저 받아 둔다. 파이프 안에서 실패하면 `if` 가 삼켜
+          # 없는 크레이트 이름도 조용히 통과했다 (nexus-render-vulkan 이 그랬다).
+          for crate in nexus-core nexus-platform nexus-render nexus-render-wgpu nexus-assets nexus-sim; do
+            tree=$(cargo tree -p "$crate" --locked --prefix none --no-dedupe)
+            if grep -qE '^nexus-(net|protocol)\b' <<< "$tree"; then
+              echo "::error::$crate 가 네트워크 계층에 의존합니다 — 경계 위반"
+              exit 1
+            fi
+          done
+          echo "OK — 렌더/코어/애셋/시뮬 계층에 네트워크 의존 없음"

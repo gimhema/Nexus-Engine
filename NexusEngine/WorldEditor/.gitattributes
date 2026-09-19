@@ -1,0 +1,19 @@
+# WorldEditor 워크스페이스 전용 설정.
+# 저장소 루트가 아니라 이 디렉터리에만 적용되므로 C++ 프로젝트에는 영향이 없다.
+
+# 텍스트 파일은 저장소·작업 디렉터리 모두 LF 로 통일 (rustfmt.toml 과 일치)
+*           text=auto eol=lf
+*.rs        text eol=lf
+*.toml      text eol=lf
+*.md        text eol=lf
+*.yml       text eol=lf
+*.wgsl      text eol=lf
+*.glsl      text eol=lf
+
+# 에셋 / 컴파일된 셰이더는 바이너리로 취급
+*.spv       binary
+*.png       binary
+*.jpg       binary
+*.ktx2      binary
+*.glb       binary
+*.ttf       binary

@@ -1,0 +1,8 @@
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock 은 커밋한다 (애플리케이션 워크스페이스이므로 재현 가능한 빌드가 필요)
+
+# 에디터 F12 스크린샷
+/screenshots/
