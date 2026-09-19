@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use nexus_core::{Entity, Vec2};
 
+use crate::ai;
 use crate::combat::SkillId;
 use crate::world::SimWorld;
 
@@ -68,6 +69,8 @@ pub enum Rejection {
     InvalidTarget,
     /// 대상이 피해를 받지 않는다 (`UnitDef::immortal`).
     Invulnerable,
+    /// 우호 진영은 공격할 수 없다.
+    Friendly,
 }
 
 /// tick 동안 일어난 일.
@@ -89,6 +92,10 @@ pub enum Event {
     },
     /// 유닛이 죽었다. 월드에는 시체로 남는다 — 치울지는 스폰한 쪽이 정한다.
     Died { unit: Entity, killer: Entity },
+    /// AI 가 싸울 상대를 정했다 (먼저 발견했거나 반격).
+    Engaged { unit: Entity, target: Entity },
+    /// AI 가 추격 한계를 넘어 포기하고 스폰 지점으로 돌아간다.
+    Evading { unit: Entity },
 }
 
 /// 게임플레이 상태의 권한자.
@@ -143,17 +150,15 @@ impl Authority for LocalAuthority {
         let mut events = Vec::new();
         // 낸 순서대로 처리한다 — 같은 유닛에 두 번 내면 나중 것이 이긴다.
         for intent in std::mem::take(&mut self.pending) {
-            let result = match intent {
-                Intent::MoveTo { unit, target } => self.world.plan_move(unit, target),
-                Intent::Stop { unit } => self.world.stop(unit),
-                Intent::Attack {
-                    unit,
-                    target,
-                    skill,
-                } => self.world.attack(unit, target, skill, &mut events),
-            };
-            if let Err(reason) = result {
+            if let Err(reason) = apply(&mut self.world, intent, &mut events) {
                 events.push(Event::Rejected { intent, reason });
+            }
+        }
+        // AI 는 플레이어 Intent 가 반영된 상태를 보고 판단한다. 같은 규칙으로 판정받지만,
+        // 거절은 호출한 쪽에 알리지 않는다 (호출한 쪽이 낸 Intent 가 아니므로).
+        for intent in ai::think(&mut self.world, &mut events) {
+            if let Err(reason) = apply(&mut self.world, intent, &mut events) {
+                ai::on_rejected(&mut self.world, intent, reason);
             }
         }
         self.world.step(dt, &mut events);
@@ -163,6 +168,19 @@ impl Authority for LocalAuthority {
 
     fn world(&self) -> &SimWorld {
         &self.world
+    }
+}
+
+/// Intent 하나를 월드 규칙으로 판정·적용한다.
+fn apply(world: &mut SimWorld, intent: Intent, events: &mut Vec<Event>) -> Result<(), Rejection> {
+    match intent {
+        Intent::MoveTo { unit, target } => world.plan_move(unit, target),
+        Intent::Stop { unit } => world.stop(unit),
+        Intent::Attack {
+            unit,
+            target,
+            skill,
+        } => world.attack(unit, target, skill, events),
     }
 }
 

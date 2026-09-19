@@ -11,14 +11,17 @@
 
 #![forbid(unsafe_code)]
 
+mod ai;
 mod authority;
 mod combat;
+mod faction;
 mod tilemap;
 mod unit;
 mod world;
 
 pub use authority::{Authority, Event, Intent, LocalAuthority, Rejection};
 pub use combat::{SkillDef, SkillId, damage};
+pub use faction::{FactionId, FactionTable, Relation};
 pub use tilemap::{Tile, TileCoord, TileMap};
-pub use unit::{Unit, UnitDef};
+pub use unit::{AiKind, Unit, UnitDef};
 pub use world::SimWorld;

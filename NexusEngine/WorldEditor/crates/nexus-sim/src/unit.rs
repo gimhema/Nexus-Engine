@@ -5,13 +5,27 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
-use nexus_core::Vec2;
+use nexus_core::{Entity, Vec2};
 
 use crate::combat::SkillId;
+use crate::faction::FactionId;
+
+/// 전투 AI 행동 유형. 서버 `EAIType` 과 같은 의미다.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AiKind {
+    /// AI 없음 / 공격받아도 반격하지 않는다 (플레이어·토끼·상인). **기본값.**
+    #[default]
+    Passive,
+    /// 공격받으면 반격하고, 먼저 덤비지 않는다 (경비병).
+    Defensive,
+    /// 어그로 범위 안의 **적대** 진영을 보면 먼저 덤빈다 (슬라임).
+    Aggressive,
+}
 
 /// 유닛 종류별 정적 수치. 스폰 시 복사되어 유닛마다 따로 갖는다.
 ///
-/// 전투 수치는 서버 `GameDataEntityBase` (maxHp / attack / defense) 와 같은 의미다.
+/// 전투·AI 수치는 서버 `GameDataEntityBase` (maxHp / attack / defense / factionId / aiType /
+/// aggroRange) 와 같은 의미다.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct UnitDef {
     /// 이동 속도 (m/s). 음수·NaN 은 0 으로 본다.
@@ -22,6 +36,15 @@ pub struct UnitDef {
     pub defense: u32,
     /// 피해를 받지 않는다 (서버 `NpcEntityData::isImmortal`). 공격 대상이 되면 거절된다.
     pub immortal: bool,
+    pub faction: FactionId,
+    pub ai: AiKind,
+    /// 공격형 AI 가 적을 알아채는 거리 (m).
+    pub aggro_range: f32,
+    /// 스폰 지점에서 이만큼(m) 벗어나면 추격을 포기하고 돌아간다. `aggro_range` 보다 작으면
+    /// `aggro_range` 로 올린다 — 알아챈 자리에서 곧바로 포기하게 되므로.
+    pub leash_range: f32,
+    /// AI 가 쓰는 기본 공격. 없으면 AI 는 싸우지 않는다.
+    pub basic_attack: Option<SkillId>,
 }
 
 impl Default for UnitDef {
@@ -33,25 +56,46 @@ impl Default for UnitDef {
             attack: 0,
             defense: 0,
             immortal: false,
+            faction: FactionId::NONE,
+            ai: AiKind::Passive,
+            aggro_range: 0.0,
+            leash_range: 0.0,
+            basic_attack: None,
         }
     }
+}
+
+/// 음수·NaN·∞ 를 0 으로.
+fn non_negative(v: f32) -> f32 {
+    if v.is_finite() && v > 0.0 { v } else { 0.0 }
 }
 
 impl UnitDef {
     /// 수치를 보정한다 — 음수 속도는 뒤로 걷고, NaN 은 위치를 NaN 으로 오염시킨다.
     #[must_use]
     pub(crate) fn sanitized(self) -> Self {
-        let move_speed = if self.move_speed.is_finite() && self.move_speed > 0.0 {
-            self.move_speed
-        } else {
-            0.0
-        };
+        let aggro_range = non_negative(self.aggro_range);
         Self {
-            move_speed,
+            move_speed: non_negative(self.move_speed),
             max_hp: self.max_hp.max(1),
+            aggro_range,
+            leash_range: non_negative(self.leash_range).max(aggro_range),
             ..self
         }
     }
+}
+
+/// AI 가 tick 사이에 기억하는 것.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct AiState {
+    /// 지금 싸우는 상대.
+    pub(crate) target: Option<Entity>,
+    /// 마지막으로 경로를 잡은 추격 지점. 대상이 조금 움직일 때마다 A* 를 다시 돌지 않기 위해.
+    pub(crate) chase_goal: Option<Vec2>,
+    /// 추격을 포기하고 스폰 지점으로 돌아가는 중. 이 동안은 싸움을 받지 않는다.
+    pub(crate) returning: bool,
+    /// 이 시각 전에는 새 적을 찾지 않는다 — 갈 수 없는 적을 매 tick 다시 쫓지 않게.
+    pub(crate) acquire_after: Duration,
 }
 
 /// 시뮬레이션 유닛 한 개의 상태.
@@ -71,6 +115,9 @@ pub struct Unit {
     pub(crate) hp: u32,
     /// 스킬별 다시 쓸 수 있는 시각 (시뮬레이션 시계 기준).
     pub(crate) cooldowns: HashMap<SkillId, Duration>,
+    /// 스폰 지점. AI 의 추격 한계(leash)와 귀환 기준.
+    pub(crate) home: Vec2,
+    pub(crate) ai: AiState,
 }
 
 impl Unit {
@@ -84,6 +131,8 @@ impl Unit {
             waypoints: VecDeque::new(),
             hp: def.max_hp,
             cooldowns: HashMap::new(),
+            home: pos,
+            ai: AiState::default(),
         }
     }
 
@@ -95,6 +144,24 @@ impl Unit {
     #[must_use]
     pub fn hp(&self) -> u32 {
         self.hp
+    }
+
+    /// 스폰 지점.
+    #[must_use]
+    pub fn home(&self) -> Vec2 {
+        self.home
+    }
+
+    /// AI 가 지금 싸우는 상대.
+    #[must_use]
+    pub fn target(&self) -> Option<Entity> {
+        self.ai.target
+    }
+
+    /// AI 가 추격을 포기하고 돌아가는 중인가.
+    #[must_use]
+    pub fn is_returning(&self) -> bool {
+        self.ai.returning
     }
 
     /// 살아 있는가. 죽은 유닛은 움직이지도 공격하지도 않지만 월드에는 남는다

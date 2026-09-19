@@ -21,8 +21,9 @@ use nexus_core::{Entity, Vec2, World};
 
 use crate::authority::{Event, Rejection};
 use crate::combat::{self, SkillDef, SkillId};
+use crate::faction::{FactionId, FactionTable, Relation};
 use crate::tilemap::TileMap;
-use crate::unit::{Unit, UnitDef};
+use crate::unit::{AiKind, AiState, Unit, UnitDef};
 
 /// 도착 판정 거리 (m). 부동소수 오차로 경유점 바로 앞에서 멈추지 않게 한다.
 const ARRIVE_EPSILON: f32 = 1e-4;
@@ -36,6 +37,7 @@ pub struct SimWorld {
     units: Vec<Option<(Entity, Unit)>>,
     /// 스킬 정적 데이터. 존을 읽을 때 채운다.
     skills: HashMap<SkillId, SkillDef>,
+    factions: FactionTable,
     /// 시뮬레이션 시계 — tick 마다 `dt` 만큼 정확히 늘어난다. 쿨타임의 기준.
     now: Duration,
 }
@@ -48,6 +50,7 @@ impl SimWorld {
             entities: World::default(),
             units: Vec::new(),
             skills: HashMap::new(),
+            factions: FactionTable::default(),
             now: Duration::ZERO,
         }
     }
@@ -66,6 +69,16 @@ impl SimWorld {
     #[must_use]
     pub fn now(&self) -> Duration {
         self.now
+    }
+
+    /// 두 진영의 관계를 정한다 (설정 작업). 대칭이다.
+    pub fn set_relation(&mut self, a: FactionId, b: FactionId, relation: Relation) {
+        self.factions.set(a, b, relation);
+    }
+
+    #[must_use]
+    pub fn relation(&self, a: FactionId, b: FactionId) -> Relation {
+        self.factions.get(a, b)
     }
 
     #[must_use]
@@ -110,7 +123,7 @@ impl SimWorld {
             .map(|(_, unit)| unit)
     }
 
-    fn unit_mut(&mut self, entity: Entity) -> Option<&mut Unit> {
+    pub(crate) fn unit_mut(&mut self, entity: Entity) -> Option<&mut Unit> {
         if !self.entities.is_alive(entity) {
             return None;
         }
@@ -202,6 +215,9 @@ impl SimWorld {
         if t.def.immortal {
             return Err(Rejection::Invulnerable);
         }
+        if self.factions.get(a.def.faction, t.def.faction) == Relation::Friendly {
+            return Err(Rejection::Friendly);
+        }
 
         let amount = combat::damage(a.def.attack, def.damage_mult, t.def.defense);
         let facing = t.pos - a.pos;
@@ -225,9 +241,17 @@ impl SimWorld {
         });
         if remaining_hp == 0 {
             t.waypoints.clear();
+            t.ai = AiState::default();
             events.push(Event::Died {
                 unit: target,
                 killer: attacker,
+            });
+        } else if t.def.ai != AiKind::Passive && t.ai.target.is_none() && !t.ai.returning {
+            // 반격 — 싸우는 상대가 없을 때만 갈아탄다. 귀환 중에는 받지 않는다.
+            t.ai.target = Some(attacker);
+            events.push(Event::Engaged {
+                unit: target,
+                target: attacker,
             });
         }
         Ok(())

@@ -9,7 +9,11 @@
 //! 서버와 다른 점 (의도적):
 //! - 사거리를 **지면(XY) 거리**로 잰다. 지형이 평지이고 높이는 이산 레벨이라 Z 는 0 이다.
 //! - `immortal` 대상 공격을 거절한다. 서버는 `isImmortal` 필드만 있고 판정에 쓰지 않는다.
+//! - **우호 진영**은 공격할 수 없다 (서버 `EFactionRelation::FRIENDLY` 의 정의). 서버
+//!   `CombatProcessor` 는 진영을 보지 않는다.
 //! - 자기 자신은 대상이 될 수 없다.
+//!
+//! 위 셋은 사거리 확인 **뒤에** 본다 — 서버와 겹치는 판정의 순서를 그대로 두기 위해서다.
 
 use std::time::Duration;
 
@@ -96,7 +100,7 @@ mod flow_tests {
             max_hp: 100,
             attack: 30,
             defense: 10,
-            immortal: false,
+            ..UnitDef::default()
         }
     }
 
