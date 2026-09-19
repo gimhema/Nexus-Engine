@@ -121,12 +121,18 @@ pub enum RenderCommand {
     /// `rotation` 은 Z 축 기준 라디안 (`0` = 축 정렬, 위에서 볼 때 반시계가 +) —
     /// `nexus_core::units` 의 방향 규약과 같다. `size.x` 가 회전 후 방향 쪽 길이다.
     ///
-    /// `z` 는 높이(m)이자 깊이 정렬 기준이다 — 값이 큰 쪽이 위에 그려진다.
+    /// `z` 는 **월드 높이(m)** 다. 카메라가 기울어져 있으면(쿼터뷰) 화면 세로 위치를
+    /// 밀어 올린다 — 키 큰 것이 위로 솟아 보이는, 의도된 동작이다.
+    ///
+    /// 따라서 **단순히 그리는 순서를 정하려고 `z` 를 쓰면 안 된다.** 같은 높이에 있는
+    /// 것들의 앞뒤를 정할 때는 `depth_bias` 를 쓴다 — 화면 위치는 건드리지 않고
+    /// 깊이만 민다. 단위는 NDC 깊이([`DEPTH_LAYER`] 참고)이고 **양수가 앞**이다.
     DrawRect {
         center: Vec2,
         size: Vec2,
         rotation: f32,
         z: f32,
+        depth_bias: f32,
         color: [f32; 4],
     },
 
@@ -143,11 +149,18 @@ pub enum RenderCommand {
         size: Vec2,
         rotation: f32,
         z: f32,
+        depth_bias: f32,
         uv: UvRect,
         texture: TextureId,
         tint: [f32; 4],
     },
 }
+
+/// 겹침 순서를 한 칸 옮기는 [`depth_bias`](RenderCommand::DrawRect) 단위.
+///
+/// 깊이 버퍼 해상도(NDC 에서 약 `1e-7`)보다 세 자릿수 크고, 전체 깊이 범위에 비하면
+/// 무시할 만큼 작다. 몇 십 칸을 쌓아도 문제가 없다.
+pub const DEPTH_LAYER: f32 = 1e-4;
 
 /// 스프라이트 알파 컷아웃 기준. 이 값 미만의 알파는 그리지 않는다.
 ///

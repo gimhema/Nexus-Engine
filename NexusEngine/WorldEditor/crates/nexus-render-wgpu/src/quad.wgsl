@@ -26,6 +26,7 @@ struct Instance {
     @location(4) color:    vec4<f32>, // 선형 색 공간. 텍스처에 곱해진다
     @location(5) uv_min:   vec2<f32>, // 아틀라스 영역 좌상단 (정규화)
     @location(6) uv_max:   vec2<f32>, // 아틀라스 영역 우하단 (정규화)
+    @location(7) depth_bias: f32,     // NDC 깊이 편향. 양수가 앞. 화면 위치에는 영향 없음
 };
 
 struct VsOut {
@@ -69,6 +70,9 @@ fn vs_main(@builtin(vertex_index) vi: u32, inst: Instance) -> VsOut {
 
     var out: VsOut;
     out.clip = camera.view_proj * vec4<f32>(world, 1.0);
+    // 정사영이라 w = 1 이므로 clip.z 가 곧 NDC 깊이다. 빼면 앞으로 당겨진다.
+    // 화면 위치(x, y)는 건드리지 않는다 — 월드 Z 와 달리 표시가 대상에서 떨어지지 않는다.
+    out.clip.z = out.clip.z - inst.depth_bias;
     out.color = inst.color;
     out.uv = uv;
     return out;

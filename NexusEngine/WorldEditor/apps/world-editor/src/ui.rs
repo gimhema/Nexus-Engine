@@ -78,6 +78,8 @@ pub(crate) struct UiActions {
     pub(crate) add_item: Option<ItemKind>,
     /// 선택된 마커 삭제.
     pub(crate) delete: bool,
+    /// 카메라 pitch 변경 (라디안).
+    pub(crate) set_pitch: Option<f32>,
     /// 뷰포트 포인터 — 뷰포트가 그려진 프레임에만 있다.
     pub(crate) pointer: Option<PointerInput>,
     /// 씬을 그릴 사각형 `[x, y, w, h]` (물리 픽셀).
@@ -251,6 +253,17 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
                     .clicked()
                 {
                     actions.frame_selection = true;
+                }
+                ui.separator();
+
+                // 쿼터뷰는 게임 화면과 같은 시점(WYSIWYG), 탑다운은 좌표를 정밀하게
+                // 찍을 때 쓴다. 기울어져 있으면 세로 방향 거리감이 눌려서 배치가 어렵다.
+                let topdown = model.camera.pitch >= Camera2d::PITCH_TOPDOWN - 1e-3;
+                if ui.radio(!topdown, "쿼터뷰 (게임 시점)").clicked() {
+                    actions.set_pitch = Some(Camera2d::PITCH_QUARTER);
+                }
+                if ui.radio(topdown, "탑다운 (정밀 편집)").clicked() {
+                    actions.set_pitch = Some(Camera2d::PITCH_TOPDOWN);
                 }
             });
         });

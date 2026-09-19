@@ -12,7 +12,7 @@
 
 use nexus_assets::{GridAtlas, Image};
 use nexus_core::Vec2;
-use nexus_render::{RenderCommand, RenderError, Renderer, TextureId, UvRect};
+use nexus_render::{DEPTH_LAYER, RenderCommand, RenderError, Renderer, TextureId, UvRect};
 
 pub(crate) const ENV_DEBUG_ATLAS: &str = "NEXUS_DEBUG_ATLAS";
 
@@ -22,9 +22,9 @@ const CELL_PX: u32 = 32;
 /// 칸 하나를 그릴 월드 크기 (m).
 const CELL_M: f32 = 2.0;
 
-/// 표시 영역의 Z. 마커보다 뒤, 그리드보다 앞.
-const Z_DEMO: f32 = 0.2;
-const Z_BACKDROP: f32 = 0.1;
+/// 표시 영역의 겹침 순서. 존 경계보다 뒤, 그리드보다 앞. 지면에 깔리므로 월드 Z 는 0 이다.
+const BIAS_DEMO: f32 = 0.5 * DEPTH_LAYER;
+const BIAS_BACKDROP: f32 = 0.25 * DEPTH_LAYER;
 
 /// 아틀라스 전체를 표시할 왼쪽 판의 중심.
 const FULL_CENTER: Vec2 = Vec2::new(-9.0, 4.0);
@@ -93,7 +93,8 @@ impl AtlasDemo {
             center: FULL_CENTER,
             size: Vec2::splat(FULL_SIZE),
             rotation: 0.0,
-            z: Z_DEMO,
+            z: 0.0,
+            depth_bias: BIAS_DEMO,
             uv: UvRect::FULL,
             texture: self.texture,
             tint: [1.0; 4],
@@ -111,7 +112,8 @@ impl AtlasDemo {
                 ),
             size: Vec2::new(cols as f32 * CELL_M, rows as f32 * CELL_M),
             rotation: 0.0,
-            z: Z_BACKDROP,
+            z: 0.0,
+            depth_bias: BIAS_BACKDROP,
             color: BACKDROP_COLOR,
         });
 
@@ -122,7 +124,8 @@ impl AtlasDemo {
                     center: CELLS_ORIGIN + Vec2::new(col as f32 * CELL_M, -(row as f32) * CELL_M),
                     size: Vec2::splat(CELL_M * 0.9),
                     rotation: 0.0,
-                    z: Z_DEMO,
+                    z: 0.0,
+                    depth_bias: BIAS_DEMO,
                     uv: self.atlas.uv(col, row),
                     texture: self.texture,
                     tint: [1.0; 4],

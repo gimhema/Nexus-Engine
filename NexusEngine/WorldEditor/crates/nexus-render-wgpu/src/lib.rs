@@ -98,11 +98,13 @@ struct QuadInstance {
     uv_min: [f32; 2],
     /// 아틀라스 영역 우하단 (정규화 UV).
     uv_max: [f32; 2],
+    /// NDC 깊이 편향. 양수가 앞. 화면 위치에는 영향이 없다.
+    depth_bias: f32,
 }
 
 /// 레이아웃이 셰이더 속성 오프셋과 맞는지 컴파일 타임에 확인한다.
 const _: () = {
-    assert!(core::mem::size_of::<QuadInstance>() == 56);
+    assert!(core::mem::size_of::<QuadInstance>() == 60);
     assert!(core::mem::offset_of!(QuadInstance, center) == 0);
     assert!(core::mem::offset_of!(QuadInstance, size) == 8);
     assert!(core::mem::offset_of!(QuadInstance, z) == 16);
@@ -110,6 +112,7 @@ const _: () = {
     assert!(core::mem::offset_of!(QuadInstance, color) == 24);
     assert!(core::mem::offset_of!(QuadInstance, uv_min) == 40);
     assert!(core::mem::offset_of!(QuadInstance, uv_max) == 48);
+    assert!(core::mem::offset_of!(QuadInstance, depth_bias) == 56);
 };
 
 /// 인스턴스를 어느 파이프라인으로 그릴지.
@@ -504,6 +507,7 @@ impl WgpuRenderer {
                             4 => Float32x4,  // color  — 오프셋 24 (위 const 단언으로 검증)
                             5 => Float32x2,  // uv_min — 오프셋 40
                             6 => Float32x2,  // uv_max — 오프셋 48
+                            7 => Float32,    // depth_bias — 오프셋 56
                         ],
                     })],
                 },
@@ -807,6 +811,7 @@ impl Renderer for WgpuRenderer {
                 size,
                 rotation,
                 z,
+                depth_bias,
                 color,
             } => {
                 frame.push(
@@ -820,6 +825,7 @@ impl Renderer for WgpuRenderer {
                         color: linear_rgba(color),
                         uv_min: UvRect::FULL.min.to_array(),
                         uv_max: UvRect::FULL.max.to_array(),
+                        depth_bias,
                     },
                 );
             }
@@ -828,6 +834,7 @@ impl Renderer for WgpuRenderer {
                 size,
                 rotation,
                 z,
+                depth_bias,
                 uv,
                 texture,
                 tint,
@@ -850,6 +857,7 @@ impl Renderer for WgpuRenderer {
                         color: linear_rgba(tint),
                         uv_min: uv.min.to_array(),
                         uv_max: uv.max.to_array(),
+                        depth_bias,
                     },
                 );
             }

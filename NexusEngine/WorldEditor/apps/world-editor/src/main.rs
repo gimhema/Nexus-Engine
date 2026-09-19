@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use nexus_core::{Camera2d, Vec2, units};
 use nexus_platform::{App, Input, WindowConfig, WindowEvent, WindowTarget};
-use nexus_render::{FrameStatus, RenderCommand, RenderError, Renderer};
+use nexus_render::{DEPTH_LAYER, FrameStatus, RenderCommand, RenderError, Renderer};
 use nexus_render_wgpu::{TextureCarry, UiFrame, WgpuRenderer};
 
 use atlas_demo::AtlasDemo;
@@ -48,14 +48,17 @@ const ARROW_INNER: [f32; 4] = [0.08, 0.09, 0.12, 0.9];
 /// (0.04 → sRGB 약 0.23, 스크린샷으로 확인). 그래서 아주 낮게 둔다.
 const BOX_FILL: [f32; 4] = [1.0, 0.82, 0.25, 0.012];
 
-// 겹침 순서 (월드 Z, 클수록 위). 그리드는 음수.
-const Z_ZONE: f32 = 0.5;
-const Z_MARKER: f32 = 1.0;
-const Z_ARROW: f32 = 1.2;
-const Z_HOVER: f32 = 1.5;
-const Z_SELECT: f32 = 2.0;
-const Z_HANDLE: f32 = 3.0;
-const Z_BOX: f32 = 4.0;
+// 겹침 순서 — **월드 Z 가 아니라 깊이 편향**이다. 클수록 앞에 그려진다.
+//
+// 이것들은 전부 지면에 깔리는 표시이므로 월드 Z 는 0 이다. 월드 Z 로 순서를 주면
+// 쿼터뷰에서 화면 세로 위치가 밀려 선택 테두리가 마커에서 떨어져 나간다.
+const BIAS_ZONE: f32 = 1.0 * DEPTH_LAYER;
+const BIAS_MARKER: f32 = 3.0 * DEPTH_LAYER;
+const BIAS_ARROW: f32 = 4.0 * DEPTH_LAYER;
+const BIAS_HOVER: f32 = 5.0 * DEPTH_LAYER;
+const BIAS_SELECT: f32 = 6.0 * DEPTH_LAYER;
+const BIAS_HANDLE: f32 = 7.0 * DEPTH_LAYER;
+const BIAS_BOX: f32 = 9.0 * DEPTH_LAYER;
 
 /// 가는 선의 최소 굵기 (픽셀). 1px 쿼드는 픽셀 경계에 걸리면 어떤 픽셀 중심도 덮지 못해
 /// 통째로 사라진다 (그리드 선 위에 놓인 박스 테두리에서 확인).
@@ -63,6 +66,12 @@ const THIN_LINE_PX: f32 = 1.5;
 
 /// 시작 시 미리 선택할 대상 (쉼표 구분 이름). 스크린샷으로 선택 표시를 검증할 때 쓴다.
 const ENV_SELECT: &str = "NEXUS_SELECT";
+
+/// 카메라 pitch 를 도(°) 단위로 지정한다. 90 = 탑다운, 45 = 쿼터뷰(기본).
+const ENV_PITCH: &str = "NEXUS_PITCH";
+
+/// 고정 줌 배율 (화면 px / 월드 m). 설정하면 자유 줌 대신 이 배율로 고정된다 — 게임 모드 확인용.
+const ENV_PIXELS_PER_METER: &str = "NEXUS_PIXELS_PER_METER";
 
 /// 카메라 시점 맞추기 요청.
 ///
@@ -117,6 +126,10 @@ struct Editor {
     commands: Vec<RenderCommand>,
     /// S1 확인용 디버그 아틀라스. `NEXUS_DEBUG_ATLAS` 가 있을 때만 존재한다.
     atlas_demo: Option<AtlasDemo>,
+    /// 고정 줌 배율 (px/m). `Some` 이면 매 프레임 이 배율로 잠그고 픽셀 격자에 스냅한다.
+    ///
+    /// 게임 모드의 동작을 에디터에서 확인하기 위한 것이다 — S7 에서 플레이 모드의 기본이 된다.
+    fixed_zoom: Option<f32>,
 
     // ── 통계 ─────────────────────────────────────────────────────────────
     ticks: u64,
@@ -154,6 +167,7 @@ impl Default for Editor {
             pending_view: None,
             commands: Vec::new(),
             atlas_demo: None,
+            fixed_zoom: None,
             ticks: 0,
             last_frame: None,
             fps: 0.0,
@@ -245,6 +259,22 @@ impl Editor {
         }
     }
 
+    /// `NEXUS_PITCH` / `NEXUS_PIXELS_PER_METER` 를 반영한다.
+    fn apply_env_camera(&mut self) {
+        if let Ok(v) = std::env::var(ENV_PITCH) {
+            match v.parse::<f32>() {
+                Ok(deg) => self.camera.pitch = deg.to_radians(),
+                Err(_) => eprintln!("{ENV_PITCH}: '{v}' 는 숫자가 아님"),
+            }
+        }
+        if let Ok(v) = std::env::var(ENV_PIXELS_PER_METER) {
+            match v.parse::<f32>() {
+                Ok(ppm) => self.fixed_zoom = Some(ppm),
+                Err(_) => eprintln!("{ENV_PIXELS_PER_METER}: '{v}' 는 숫자가 아님"),
+            }
+        }
+    }
+
     fn update_fps(&mut self) {
         let now = Instant::now();
         if let Some(prev) = self.last_frame.replace(now) {
@@ -306,6 +336,9 @@ impl Editor {
         if actions.redo {
             self.editing.redo(&mut self.scene);
         }
+        if let Some(pitch) = actions.set_pitch {
+            self.camera.pitch = pitch;
+        }
         if actions.deselect && !self.editing.is_dragging() {
             self.editing.clear_selection();
         }
@@ -329,6 +362,15 @@ impl Editor {
             other => other,
         };
         self.hover = pointer.and_then(|p| self.editing.handle_pointer(&mut self.scene, &p));
+
+        // 고정 줌이면 자유 줌·시점 맞추기 결과를 덮어쓴다. 뷰포트가 확정된 뒤여야
+        // 배율 계산이 맞는다. 게임 모드가 생기는 S7 에서는 이쪽이 기본이 된다.
+        if let Some(ppm) = self.fixed_zoom
+            && actions.viewport_px.is_some()
+        {
+            self.camera.set_pixels_per_meter(ppm);
+            self.camera.snap_to_pixel_grid();
+        }
 
         // UI 가 이번 프레임의 뷰포트 크기를 `camera.viewport` 에 이미 반영했다 — 이제 맞춘다.
         // 뷰포트가 없는 프레임(UI 미실행)에는 다음 프레임으로 미룬다.
@@ -448,16 +490,17 @@ impl Editor {
                 rotation: 0.0,
                 center: item.pos,
                 size: Vec2::splat(scene::marker_half_extent(item, px) * 2.0),
-                z: Z_MARKER,
+                z: 0.0,
+                depth_bias: BIAS_MARKER,
                 color: item.kind.color(),
             });
             draw_arrow(item, px, &mut self.commands);
 
             let target = Target::Item(item.entity);
             let (color, z, pad, thick) = if self.editing.is_selected(target) {
-                (SELECT_COLOR, Z_SELECT, 4.0, 2.0)
+                (SELECT_COLOR, BIAS_SELECT, 4.0, 2.0)
             } else if self.hover == Some(Pick::Item(item.entity)) {
-                (HOVER_COLOR, Z_HOVER, 3.0, 1.5)
+                (HOVER_COLOR, BIAS_HOVER, 3.0, 1.5)
             } else {
                 continue;
             };
@@ -487,7 +530,7 @@ impl Editor {
             tip,
             at,
             THIN_LINE_PX * px,
-            Z_HANDLE,
+            BIAS_HANDLE,
             SELECT_COLOR,
             &mut self.commands,
         );
@@ -498,14 +541,16 @@ impl Editor {
             center: at,
             size: Vec2::splat(scene::HANDLE_SIZE_PX * px),
             rotation: diamond,
-            z: Z_HANDLE,
+            z: 0.0,
+            depth_bias: BIAS_HANDLE,
             color: HANDLE_BORDER,
         });
         self.commands.push(RenderCommand::DrawRect {
             center: at,
             size: Vec2::splat((scene::HANDLE_SIZE_PX - 3.0) * px),
             rotation: diamond,
-            z: Z_HANDLE + 0.1,
+            z: 0.0,
+            depth_bias: BIAS_HANDLE + DEPTH_LAYER,
             color: if hot { SELECT_COLOR } else { HANDLE_FILL },
         });
     }
@@ -519,14 +564,15 @@ impl Editor {
             center: (min + max) * 0.5,
             size: max - min,
             rotation: 0.0,
-            z: Z_BOX,
+            z: 0.0,
+            depth_bias: BIAS_BOX,
             color: BOX_FILL,
         });
         grid::build_outline(
             min,
             max,
             THIN_LINE_PX * px,
-            Z_BOX + 0.1,
+            BIAS_BOX + DEPTH_LAYER,
             SELECT_COLOR,
             &mut self.commands,
         );
@@ -548,7 +594,7 @@ impl Editor {
             zone.min,
             zone.max,
             thick * px,
-            Z_ZONE,
+            BIAS_ZONE,
             color,
             &mut self.commands,
         );
@@ -568,14 +614,16 @@ impl Editor {
                 rotation: 0.0,
                 center: at,
                 size: Vec2::splat(scene::HANDLE_SIZE_PX * px),
-                z: Z_HANDLE,
+                z: 0.0,
+                depth_bias: BIAS_HANDLE,
                 color: HANDLE_BORDER,
             });
             self.commands.push(RenderCommand::DrawRect {
                 rotation: 0.0,
                 center: at,
                 size: Vec2::splat(8.0 * px),
-                z: Z_HANDLE + 0.1,
+                z: 0.0,
+                depth_bias: BIAS_HANDLE + DEPTH_LAYER,
                 color: fill,
             });
         }
@@ -672,6 +720,7 @@ impl App for Editor {
 
         self.camera.viewport = (width, height);
         self.pending_view = Some(ViewRequest::Zone);
+        self.apply_env_camera();
         self.apply_env_selection();
         self.script = Script::from_env();
 
@@ -792,11 +841,11 @@ fn draw_arrow(item: &scene::Item, px: f32, out: &mut Vec<RenderCommand>) {
     let tip = scene::arrow_tip(item, px);
     let color = item.kind.color();
 
-    push_segment(item.pos, edge, THICK_PX * px, Z_ARROW, ARROW_INNER, out);
-    push_segment(edge, tip, THICK_PX * px, Z_ARROW, color, out);
+    push_segment(item.pos, edge, THICK_PX * px, BIAS_ARROW, ARROW_INNER, out);
+    push_segment(edge, tip, THICK_PX * px, BIAS_ARROW, color, out);
     for side in [HEAD_SPREAD, -HEAD_SPREAD] {
         let wing = tip + units::heading_to_dir(item.orientation + side) * HEAD_PX * px;
-        push_segment(tip, wing, THICK_PX * px, Z_ARROW, color, out);
+        push_segment(tip, wing, THICK_PX * px, BIAS_ARROW, color, out);
     }
 }
 
@@ -805,7 +854,7 @@ fn push_segment(
     a: Vec2,
     b: Vec2,
     thick: f32,
-    z: f32,
+    depth_bias: f32,
     color: [f32; 4],
     out: &mut Vec<RenderCommand>,
 ) {
@@ -819,7 +868,8 @@ fn push_segment(
         // 양 끝을 굵기의 절반씩 늘려 꺾이는 곳(촉)에 틈이 생기지 않게 한다
         size: Vec2::new(len + thick, thick),
         rotation: units::dir_to_heading(d),
-        z,
+        z: 0.0,
+        depth_bias,
         color,
     });
 }
