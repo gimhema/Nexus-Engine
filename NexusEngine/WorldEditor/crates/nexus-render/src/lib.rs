@@ -110,6 +110,12 @@ pub enum RenderCommand {
         height: u32,
     },
 
+    /// 이후 그리기 명령이 속할 층을 정한다. 프레임 시작값은 [`DrawLayer::Object`] 다.
+    ///
+    /// **층으로 묶어서 제출하면 드로우 콜도 줄어든다** — 배치가 파이프라인·텍스처가
+    /// 바뀌는 지점에서만 끊기기 때문이다.
+    SetLayer(DrawLayer),
+
     /// 카메라 설정. 드로우 명령보다 먼저 제출해야 한다.
     ///
     /// `right` / `up` 은 **빌보드 축**이다 — [`DrawSprite`](Self::DrawSprite) 가 이 두 축으로
@@ -132,6 +138,9 @@ pub enum RenderCommand {
     /// 따라서 **단순히 그리는 순서를 정하려고 `z` 를 쓰면 안 된다.** 같은 높이에 있는
     /// 것들의 앞뒤를 정할 때는 `depth_bias` 를 쓴다 — 화면 위치는 건드리지 않고
     /// 깊이만 민다. 단위는 NDC 깊이([`DEPTH_LAYER`] 참고)이고 **양수가 앞**이다.
+    ///
+    /// 층(지면/오브젝트/표시)이 다르면 `depth_bias` 가 아니라
+    /// [`SetLayer`](Self::SetLayer) 로 나눈다.
     DrawRect {
         center: Vec2,
         size: Vec2,
@@ -194,6 +203,42 @@ impl SpriteAnchor {
         match self {
             Self::BottomCenter => 0.5,
             Self::Center => 0.0,
+        }
+    }
+}
+
+/// 그리기 층. **깊이 범위를 나눠 써서** 층 사이 순서를 보장한다.
+///
+/// # 왜 필요한가
+///
+/// 지면 쿼드는 월드 Y 로 퍼져 있어서 **먼 쪽 절반이 같은 자리에 선 빌보드보다 앞선다**
+/// (빌보드 깊이는 발밑 한 점으로 정해지므로). 타일 위에 선 캐릭터의 발이 타일에 가려진다는 뜻이고,
+/// 그 차이는 `depth_bias` 로 덮을 수 있는 양이 아니다.
+///
+/// 층마다 NDC 깊이의 서로 다른 구간을 쓰면 **패스를 나누지 않고** 이 문제가 사라진다.
+/// 층 안에서는 실제 깊이 정렬이 그대로 살아 있다 — 스프라이트끼리는 여전히 발밑 Y 로 정렬된다.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DrawLayer {
+    /// 지면 — 타일·그리드·데칼·그림자. **[`Object`](Self::Object) 를 절대 가리지 않는다.**
+    Ground,
+    /// 월드 오브젝트 — 빌보드 스프라이트. 서로는 실제 깊이로 정렬된다. **기본값.**
+    #[default]
+    Object,
+    /// 표시 — 선택 테두리·핸들·조준선. **모든 것 위에** 그린다.
+    Overlay,
+}
+
+impl DrawLayer {
+    /// 이 층이 쓰는 NDC 깊이 구간 `(시작, 크기)`.
+    ///
+    /// 층 사이에 틈을 둔다 — 경계에서 깊이가 같아지면 `LessEqual` 비교가 어느 쪽 손을
+    /// 들어줄지 애매해진다.
+    #[must_use]
+    pub fn depth_range(self) -> (f32, f32) {
+        match self {
+            Self::Overlay => (0.00, 0.32),
+            Self::Object => (0.34, 0.32),
+            Self::Ground => (0.68, 0.32),
         }
     }
 }

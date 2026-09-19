@@ -32,6 +32,7 @@ struct Instance {
     @location(7) depth_bias: f32,     // NDC 깊이 편향. 양수가 앞. 화면 위치에는 영향 없음
     @location(8) billboard:  f32,     // 0 = 지면에 눕는 쿼드, 1 = 카메라를 향해 서는 빌보드
     @location(9) anchor:     f32,     // 빌보드 전용. 0 = 중앙, 0.5 = 발밑
+    @location(10) depth_span: vec2<f32>, // 층의 NDC 깊이 구간 (시작, 크기)
 };
 
 struct VsOut {
@@ -86,9 +87,12 @@ fn vs_main(@builtin(vertex_index) vi: u32, inst: Instance) -> VsOut {
 
     var out: VsOut;
     out.clip = camera.view_proj * vec4<f32>(world, 1.0);
-    // 정사영이라 w = 1 이므로 clip.z 가 곧 NDC 깊이다. 빼면 앞으로 당겨진다.
-    // 화면 위치(x, y)는 건드리지 않는다 — 월드 Z 와 달리 표시가 대상에서 떨어지지 않는다.
-    out.clip.z = out.clip.z - inst.depth_bias;
+
+    // 정사영이라 w = 1 이고 clip.z 가 곧 NDC 깊이다 (0..1).
+    // ① 층이 쓰는 구간으로 눌러 넣는다 — 지면이 오브젝트를 가리지 못하게 하는 장치다.
+    // ② depth_bias 로 같은 층 안의 앞뒤를 정한다. 화면 위치(x, y)는 건드리지 않으므로
+    //    월드 Z 와 달리 표시가 대상에서 떨어지지 않는다.
+    out.clip.z = inst.depth_span.x + out.clip.z * inst.depth_span.y - inst.depth_bias;
     out.color = inst.color;
     out.uv = uv;
     return out;

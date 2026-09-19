@@ -12,12 +12,28 @@
 
 use core::f32::consts::PI;
 
+use std::collections::BTreeMap;
+
 use nexus_core::{Entity, Vec2, units};
+use nexus_sim::{Tile, TileCoord};
 
 use crate::scene::{Handle, Item, ItemKind, Pick, Scene, Target, ZoneBounds};
 
+/// 뷰포트에서 포인터가 무슨 일을 하는가.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum Tool {
+    /// 마커·존을 고르고 옮긴다.
+    #[default]
+    Select,
+    /// 타일을 칠한다.
+    PaintTile,
+}
+
 /// 언두 기록 상한. 오래된 것부터 버린다.
 const HISTORY_LIMIT: usize = 256;
+
+/// 한 프레임에 이어 칠할 최대 칸 수. 포인터가 화면 밖에서 튀어 들어와도 폭주하지 않게.
+const PAINT_MAX_STEPS: f32 = 512.0;
 
 /// Ctrl 회전 스냅 간격 — 15°.
 pub(crate) const ROTATE_SNAP: f32 = PI / 12.0;
@@ -37,6 +53,8 @@ pub(crate) enum Command {
         from: ZoneBounds,
         to: ZoneBounds,
     },
+    /// 칠하기 한 번(누름→뗌)이 통째로 한 스텝이다. `(좌표, 원래, 새것)`.
+    PaintTiles(Vec<(TileCoord, Tile, Tile)>),
 }
 
 impl Command {
@@ -55,6 +73,11 @@ impl Command {
             Self::AddItems(items) => insert_all(scene, items),
             Self::RemoveItems(items) => remove_all(scene, items),
             Self::SetZone { to, .. } => scene.zone = *to,
+            Self::PaintTiles(edits) => {
+                for &(at, _, to) in edits {
+                    scene.tiles.set(at, to);
+                }
+            }
         }
     }
 
@@ -73,6 +96,11 @@ impl Command {
             Self::AddItems(items) => remove_all(scene, items),
             Self::RemoveItems(items) => insert_all(scene, items),
             Self::SetZone { from, .. } => scene.zone = *from,
+            Self::PaintTiles(edits) => {
+                for &(at, from, _) in edits {
+                    scene.tiles.set(at, from);
+                }
+            }
         }
     }
 
@@ -82,6 +110,7 @@ impl Command {
             Self::RotateItems(turns) => turns.iter().all(|&(_, from, to)| from == to),
             Self::AddItems(items) | Self::RemoveItems(items) => items.is_empty(),
             Self::SetZone { from, to } => from == to,
+            Self::PaintTiles(edits) => edits.is_empty(),
         }
     }
 
@@ -106,6 +135,7 @@ impl Command {
                 _ => count(items.len(), "삭제"),
             },
             Self::SetZone { .. } => String::from("존 경계 변경"),
+            Self::PaintTiles(edits) => count(edits.len(), "타일 칠하기"),
         }
     }
 }
@@ -243,6 +273,17 @@ pub(crate) struct Editing {
     history: History,
     drag: Option<Drag>,
     live: Option<LiveEdit>,
+    tool: Tool,
+    /// 칠하기용 붓.
+    brush: Tile,
+    /// 칠하는 중이면 `Some`. 칸마다 **맨 처음 값**을 기억해 둔다 —
+    /// 같은 칸을 여러 번 지나가도 언두가 원래대로 돌아가도록.
+    ///
+    /// 순서가 고정된 맵을 쓴다. `HashMap` 이면 언두 기록 순서가 실행마다 달라져
+    /// 테스트가 불안정해진다.
+    stroke: Option<BTreeMap<TileCoord, Tile>>,
+    /// 직전 칠하기 지점. 두 지점 사이를 이어 칠하는 데 쓴다.
+    paint_last: Option<Vec2>,
 }
 
 impl Editing {
@@ -256,6 +297,75 @@ impl Editing {
 
     pub(crate) fn history(&self) -> &History {
         &self.history
+    }
+
+    pub(crate) fn tool(&self) -> Tool {
+        self.tool
+    }
+
+    pub(crate) fn set_tool(&mut self, tool: Tool) {
+        self.tool = tool;
+    }
+
+    pub(crate) fn brush(&self) -> Tile {
+        self.brush
+    }
+
+    pub(crate) fn set_brush(&mut self, brush: Tile) {
+        self.brush = brush;
+    }
+
+    /// 칠하는 중인가. 진행 중에는 언두·삭제 같은 다른 편집을 막는다.
+    pub(crate) fn is_painting(&self) -> bool {
+        self.stroke.is_some()
+    }
+
+    /// 타일 칠하기 — [`Tool::PaintTile`] 일 때 포인터 입력을 받는다.
+    ///
+    /// 누름→끌기→뗌 한 번이 **언두 한 스텝**이다. 칸 하나를 여러 번 지나가도
+    /// 기록은 하나로 남는다.
+    pub(crate) fn paint_pointer(&mut self, scene: &mut Scene, p: &PointerInput) {
+        if p.pressed && p.over_viewport {
+            self.stroke = Some(BTreeMap::new());
+            self.paint_last = None;
+        }
+        if let (Some(stroke), Some(world)) = (self.stroke.as_mut(), p.world)
+            && p.over_viewport
+        {
+            // 직전 지점과 이어서 칠한다. 한 프레임에 포인터가 여러 칸을 건너뛰면
+            // (빠른 드래그, 스크립트 입력) 사이가 비어 점선이 된다.
+            let from = self.paint_last.unwrap_or(world);
+            let delta = world - from;
+            let step = scene.tiles.tile_size().max(f32::EPSILON) * 0.5;
+            let steps = (delta.length() / step).ceil().clamp(1.0, PAINT_MAX_STEPS) as u32;
+
+            for i in 0..=steps {
+                let at = scene
+                    .tiles
+                    .world_to_tile(from + delta * (i as f32 / steps as f32));
+                if let Some(before) = scene.tiles.get(at) {
+                    // 이 칸의 **맨 처음** 값만 남긴다 — 같은 칸을 여러 번 지나가도
+                    // 언두가 원래대로 돌아가도록.
+                    stroke.entry(at).or_insert(before);
+                    scene.tiles.set(at, self.brush);
+                }
+            }
+            self.paint_last = Some(world);
+        }
+        if p.released
+            && let Some(stroke) = self.stroke.take()
+        {
+            self.paint_last = None;
+            let edits: Vec<_> = stroke
+                .into_iter()
+                .filter_map(|(at, before)| {
+                    let after = scene.tiles.get(at)?;
+                    (before != after).then_some((at, before, after))
+                })
+                .collect();
+            // 값이 그대로면 기록하지 않는다 — 같은 붓으로 덧칠한 경우.
+            self.history.record(Command::PaintTiles(edits));
+        }
     }
 
     pub(crate) fn is_dragging(&self) -> bool {
@@ -709,6 +819,106 @@ mod tests {
         ed.handle_pointer(s, &press(from));
         ed.handle_pointer(s, &move_to(to));
         ed.handle_pointer(s, &release_at(to));
+    }
+
+    // ── 타일 칠하기 ──────────────────────────────────────────────────────────
+
+    fn blocked() -> Tile {
+        Tile {
+            walkable: false,
+            ..Tile::default()
+        }
+    }
+
+    /// 칠하기용 씬 — 원점 주변 타일맵만 쓴다.
+    fn paint_setup() -> (Scene, Editing) {
+        let s = Scene::server_default();
+        let mut ed = Editing::default();
+        ed.set_tool(Tool::PaintTile);
+        ed.set_brush(blocked());
+        (s, ed)
+    }
+
+    /// 한 번의 칠하기 (누름 → 지점들 → 뗌).
+    fn paint(ed: &mut Editing, s: &mut Scene, points: &[Vec2]) {
+        let (first, rest) = points.split_first().expect("지점이 필요하다");
+        ed.paint_pointer(s, &press(*first));
+        for p in rest {
+            ed.paint_pointer(s, &move_to(*p));
+        }
+        ed.paint_pointer(s, &release_at(*points.last().unwrap()));
+    }
+
+    fn tile_at(s: &Scene, world: Vec2) -> Tile {
+        let at = s.tiles.world_to_tile(world);
+        s.tiles.get(at).expect("타일맵 밖")
+    }
+
+    #[test]
+    fn a_stroke_is_a_single_undo_step() {
+        let (mut s, mut ed) = paint_setup();
+        paint(&mut ed, &mut s, &[Vec2::new(0.5, 0.5), Vec2::new(3.5, 0.5)]);
+
+        assert!(!tile_at(&s, Vec2::new(0.5, 0.5)).walkable);
+        assert!(!tile_at(&s, Vec2::new(3.5, 0.5)).walkable);
+
+        // 여러 칸을 칠해도 언두 한 번에 전부 돌아와야 한다.
+        assert!(ed.undo(&mut s));
+        assert!(tile_at(&s, Vec2::new(0.5, 0.5)).walkable);
+        assert!(tile_at(&s, Vec2::new(3.5, 0.5)).walkable);
+        assert!(!ed.undo(&mut s), "스텝이 하나여야 한다");
+    }
+
+    #[test]
+    fn fast_drag_does_not_leave_gaps() {
+        // 포인터가 한 프레임에 여러 칸을 건너뛰어도 사이가 비면 안 된다.
+        let (mut s, mut ed) = paint_setup();
+        paint(&mut ed, &mut s, &[Vec2::new(0.5, 0.5), Vec2::new(8.5, 0.5)]);
+
+        for x in 0..=8 {
+            let at = Vec2::new(x as f32 + 0.5, 0.5);
+            assert!(!tile_at(&s, at).walkable, "x={x} 가 비었다");
+        }
+    }
+
+    #[test]
+    fn repainting_a_tile_keeps_the_original_for_undo() {
+        // 같은 칸을 여러 번 지나가도 언두는 맨 처음 값으로 돌아가야 한다.
+        let (mut s, mut ed) = paint_setup();
+        let at = Vec2::new(0.5, 0.5);
+        paint(&mut ed, &mut s, &[at, Vec2::new(2.5, 0.5), at]);
+
+        assert!(!tile_at(&s, at).walkable);
+        ed.undo(&mut s);
+        assert!(tile_at(&s, at).walkable, "원래 값으로 안 돌아갔다");
+    }
+
+    #[test]
+    fn painting_the_same_value_records_nothing() {
+        // 같은 붓으로 덧칠하면 기록이 남지 않아야 한다 — 언두가 빈 스텝으로 더럽혀진다.
+        let (mut s, mut ed) = paint_setup();
+        ed.set_brush(Tile::default());
+        paint(&mut ed, &mut s, &[Vec2::new(0.5, 0.5), Vec2::new(2.5, 0.5)]);
+        assert!(ed.history().undo_label().is_none());
+    }
+
+    #[test]
+    fn painting_outside_the_map_is_ignored() {
+        let (mut s, mut ed) = paint_setup();
+        paint(&mut ed, &mut s, &[Vec2::new(900.0, 900.0)]);
+        assert!(ed.history().undo_label().is_none());
+        assert!(!ed.is_painting(), "칠하기가 끝나지 않았다");
+    }
+
+    #[test]
+    fn redo_reapplies_the_stroke() {
+        let (mut s, mut ed) = paint_setup();
+        let at = Vec2::new(0.5, 0.5);
+        paint(&mut ed, &mut s, &[at]);
+        ed.undo(&mut s);
+        assert!(tile_at(&s, at).walkable);
+        assert!(ed.redo(&mut s));
+        assert!(!tile_at(&s, at).walkable);
     }
 
     #[test]

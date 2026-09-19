@@ -6,9 +6,16 @@
 //! 이 모듈은 GPU·UI 를 모른다. 좌표는 모두 월드 공간(미터, XY 평면)이다 — `nexus_core::units`.
 
 use nexus_core::{Entity, Vec2, World, units};
+use nexus_sim::{Tile, TileCoord, TileMap};
 
 /// 존 경계의 최소 한 변 길이 (m). 핸들을 끌어 뒤집히거나 0 이 되는 것을 막는다.
 pub(crate) const MIN_ZONE_SIZE: f32 = 1.0;
+
+/// 기본 타일맵 크기 (칸). 존 전체(2km)를 1m 타일로 덮으면 400만 칸이라,
+/// 지금은 원점 주변만 저작 영역으로 둔다. 존 전체 덮기는 청크 분할과 함께 온다.
+pub(crate) const TILEMAP_SIZE: u32 = 64;
+/// 타일 한 변 (m).
+pub(crate) const TILE_SIZE: f32 = 1.0;
 
 /// 스폰 마커 종류. 서버의 `playerSpawnPoints` / `npcSpawns(NPC|MONSTER)` 에 대응한다.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,6 +182,8 @@ pub(crate) struct Scene {
     /// 그리기 순서 = 목록 순서. 뒤쪽이 위에 그려지고 피킹도 뒤쪽이 우선이다.
     pub(crate) items: Vec<Item>,
     pub(crate) zone: ZoneBounds,
+    /// 걷기 가능 여부·높이 레벨. 서버 이동 검증과 클라 길찾기가 같은 데이터를 본다.
+    pub(crate) tiles: TileMap,
 }
 
 impl Scene {
@@ -190,6 +199,14 @@ impl Scene {
                 min: Vec2::new(-1000.0, -1000.0),
                 max: Vec2::new(1000.0, 1000.0),
             },
+            // 원점을 한가운데 두어 기본 시점에서 바로 보이게 한다.
+            tiles: TileMap::new(
+                TILEMAP_SIZE,
+                TILEMAP_SIZE,
+                TILE_SIZE,
+                Vec2::splat(-(TILEMAP_SIZE as f32) * TILE_SIZE * 0.5),
+                Tile::default(),
+            ),
         };
 
         // Server.cpp 의 숫자를 그대로 옮기고 미터로 읽는다.
@@ -208,6 +225,8 @@ impl Scene {
             ("상인 NPC", ItemKind::Npc, -8.0, 12.0, 1.5),
             ("슬라임", ItemKind::Monster, 20.0, -5.0, 0.0),
         ];
+        scene.seed_sample_terrain();
+
         for (name, kind, server_x, server_z, orientation) in spawns {
             let e = scene.add(
                 name,
@@ -220,6 +239,40 @@ impl Scene {
             }
         }
         scene
+    }
+
+    /// 샘플 지형 — 고지대 한 덩이 + 경사로 하나 + 벽 한 줄.
+    ///
+    /// 스폰 마커와 같은 성격의 예시 데이터다. 존 파일을 읽어 오게 되면(S7) 사라진다.
+    /// 배치는 마커들이 보이는 범위와 겹치도록 잡았다.
+    fn seed_sample_terrain(&mut self) {
+        let put = |map: &mut TileMap, x: i32, y: i32, tile: Tile| {
+            map.set(TileCoord::new(x, y), tile);
+        };
+        let high = Tile {
+            walkable: true,
+            level: 1,
+            ramp: false,
+        };
+        let ramp = Tile { ramp: true, ..high };
+        let wall = Tile {
+            walkable: false,
+            ..Tile::default()
+        };
+
+        // 동쪽 고지대. 서쪽 변 가운데 한 칸만 경사로라 거기로만 오르내린다.
+        for y in 28..40 {
+            for x in 40..52 {
+                put(&mut self.tiles, x, y, high);
+            }
+        }
+        for y in 33..36 {
+            put(&mut self.tiles, 40, y, ramp);
+        }
+        // 서쪽 벽 — 길찾기가 돌아가야 하는 장애물.
+        for y in 26..38 {
+            put(&mut self.tiles, 26, y, wall);
+        }
     }
 
     pub(crate) fn add(&mut self, name: &str, kind: ItemKind, pos: Vec2, size: f32) -> Entity {

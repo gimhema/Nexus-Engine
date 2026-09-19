@@ -6,6 +6,7 @@ members = [
     "crates/nexus-platform",
     "crates/nexus-render",
     "crates/nexus-render-wgpu",
+    "crates/nexus-sim",
     "apps/world-editor",
 ]
 
@@ -22,6 +23,7 @@ nexus-core       = { path = "crates/nexus-core" }
 nexus-platform   = { path = "crates/nexus-platform" }
 nexus-render     = { path = "crates/nexus-render" }
 nexus-render-wgpu = { path = "crates/nexus-render-wgpu" }
+nexus-sim        = { path = "crates/nexus-sim" }
 
 # ── 외부 의존 ────────────────────────────────────────────────────────────────
 # egui / egui-wgpu / egui-winit 은 반드시 같은 마이너 버전이어야 한다.

@@ -19,6 +19,7 @@ mod scene;
 mod screenshot;
 mod script;
 mod sprites;
+mod tiles;
 mod ui;
 
 use std::path::PathBuf;
@@ -26,10 +27,10 @@ use std::time::{Duration, Instant};
 
 use nexus_core::{Camera2d, Vec2, units};
 use nexus_platform::{App, Input, WindowConfig, WindowEvent, WindowTarget};
-use nexus_render::{DEPTH_LAYER, FrameStatus, RenderCommand, RenderError, Renderer};
+use nexus_render::{DEPTH_LAYER, DrawLayer, FrameStatus, RenderCommand, RenderError, Renderer};
 use nexus_render_wgpu::{TextureCarry, UiFrame, WgpuRenderer};
 
-use edit::{Editing, PointerInput};
+use edit::{Editing, PointerInput, Tool};
 use scene::{Handle, Pick, Scene, Target};
 use script::{Anchor, Button, Script, Step};
 use sprites::MarkerSprites;
@@ -52,6 +53,8 @@ const BOX_FILL: [f32; 4] = [1.0, 0.82, 0.25, 0.012];
 //
 // 이것들은 전부 지면에 깔리는 표시이므로 월드 Z 는 0 이다. 월드 Z 로 순서를 주면
 // 쿼터뷰에서 화면 세로 위치가 밀려 선택 테두리가 마커에서 떨어져 나간다.
+/// 타일 — 지면 층에서 그리드 바로 위.
+const BIAS_TILE: f32 = 0.5 * DEPTH_LAYER;
 const BIAS_ZONE: f32 = 1.0 * DEPTH_LAYER;
 const BIAS_MARKER: f32 = 2.0 * DEPTH_LAYER;
 /// 마커 스프라이트. 발밑 지면 표시 바로 위에 선다 — 빌보드는 발밑과 깊이가 같아
@@ -306,6 +309,8 @@ impl Editor {
             hover: self.hover,
             undo_label: history.undo_label(),
             redo_label: history.redo_label(),
+            tool: self.editing.tool(),
+            brush: self.editing.brush(),
             stats: FrameStats {
                 fps: self.fps,
                 quads: self
@@ -340,7 +345,13 @@ impl Editor {
         if let Some(pitch) = actions.set_pitch {
             self.camera.pitch = pitch;
         }
-        if actions.deselect && !self.editing.is_dragging() {
+        if let Some(tool) = actions.set_tool {
+            self.editing.set_tool(tool);
+        }
+        if let Some(brush) = actions.set_brush {
+            self.editing.set_brush(brush);
+        }
+        if actions.deselect && !self.editing.is_dragging() && !self.editing.is_painting() {
             self.editing.clear_selection();
         }
         if let Some((target, additive)) = actions.list_select {
@@ -354,7 +365,7 @@ impl Editor {
             self.editing
                 .add_item(&mut self.scene, kind, self.camera.center);
         }
-        if actions.delete && !self.editing.is_dragging() {
+        if actions.delete && !self.editing.is_dragging() && !self.editing.is_painting() {
             self.editing.delete_selected(&mut self.scene);
         }
 
@@ -362,7 +373,15 @@ impl Editor {
             Some(p) if self.script.is_some() => Some(self.scripted_pointer(p, actions)),
             other => other,
         };
-        self.hover = pointer.and_then(|p| self.editing.handle_pointer(&mut self.scene, &p));
+        // 도구에 따라 포인터가 하는 일이 다르다. 칠하는 중에는 선택이 끼어들지 않는다.
+        self.hover = match (self.editing.tool(), pointer) {
+            (Tool::PaintTile, Some(p)) => {
+                self.editing.paint_pointer(&mut self.scene, &p);
+                None
+            }
+            (Tool::Select, Some(p)) => self.editing.handle_pointer(&mut self.scene, &p),
+            (_, None) => None,
+        };
 
         // 고정 줌이면 자유 줌·시점 맞추기 결과를 덮어쓴다. 뷰포트가 확정된 뒤여야
         // 배율 계산이 맞는다. 게임 모드가 생기는 S7 에서는 이쪽이 기본이 된다.
@@ -438,6 +457,9 @@ impl Editor {
             Step::Add(kind, pos) => {
                 self.editing.add_item(&mut self.scene, kind, pos);
             }
+            Step::SetTool(tool) => {
+                self.editing.set_tool(tool);
+            }
             Step::Delete => {
                 self.editing.delete_selected(&mut self.scene);
             }
@@ -472,20 +494,24 @@ impl Editor {
             up,
         });
 
-        grid::build(&self.camera, &mut self.commands);
-
-        // 화면 픽셀 → 월드 길이. 선택 테두리·핸들을 화면상 일정한 크기로 그리는 데 쓴다.
+        // 화면 픽셀 → 월드 길이. 표시를 화면상 일정한 크기로 그리는 데 쓴다.
         let px = self.camera.view_height / self.camera.viewport.1.max(1) as f32;
 
-        self.draw_zone(px);
+        // ── 지면 층 ──────────────────────────────────────────────────────────
+        // 여기 있는 것은 오브젝트를 절대 가리지 않는다.
+        self.commands
+            .push(RenderCommand::SetLayer(DrawLayer::Ground));
+        grid::build(&self.camera, &mut self.commands);
+        tiles::build(
+            &self.scene.tiles,
+            &self.camera,
+            BIAS_TILE,
+            &mut self.commands,
+        );
+        self.draw_zone_bounds();
 
         for item in &self.scene.items {
-            // 발판(지면 테두리) + 그 위에 서는 스프라이트.
-            //
-            // 발판을 채우지 않는 이유는 보기 문제만이 아니다 — 지면 쿼드는 Y 방향으로
-            // 퍼져 있어 **먼 쪽 절반이 빌보드보다 앞선다**(빌보드 깊이는 발밑 한 점으로
-            // 정해지므로). 채우면 스프라이트 다리가 통째로 가려진다.
-            // 테두리면 먼 변이 발끝을 살짝 가리는데, 그건 오히려 올바른 앞뒤 관계다.
+            // 발판 — 스폰 지점과 클릭 범위를 보여 준다. 스프라이트는 이 위에 선다.
             let half = Vec2::splat(scene::marker_half_extent(item, px));
             grid::build_outline(
                 &self.camera,
@@ -496,13 +522,27 @@ impl Editor {
                 item.kind.color(),
                 &mut self.commands,
             );
-            if let Some(sprites) = &self.sprites {
+            draw_arrow(item, px, &mut self.commands);
+        }
+
+        // ── 오브젝트 층 ──────────────────────────────────────────────────────
+        // 같은 텍스처를 연달아 제출하므로 드로우 콜 하나로 묶인다.
+        self.commands
+            .push(RenderCommand::SetLayer(DrawLayer::Object));
+        if let Some(sprites) = &self.sprites {
+            for item in &self.scene.items {
                 sprites.build(item, px, BIAS_SPRITE, &mut self.commands);
             }
-            draw_arrow(item, px, &mut self.commands);
+        }
 
+        // ── 표시 층 ──────────────────────────────────────────────────────────
+        // 스프라이트에 가리면 안 되는 것들.
+        self.commands
+            .push(RenderCommand::SetLayer(DrawLayer::Overlay));
+        self.draw_zone_handles(px);
+        for item in &self.scene.items {
             let target = Target::Item(item.entity);
-            let (color, z, pad, thick) = if self.editing.is_selected(target) {
+            let (color, bias, pad, thick) = if self.editing.is_selected(target) {
                 (SELECT_COLOR, BIAS_SELECT, 4.0, 2.0)
             } else if self.hover == Some(Pick::Item(item.entity)) {
                 (HOVER_COLOR, BIAS_HOVER, 3.0, 1.5)
@@ -515,7 +555,7 @@ impl Editor {
                 item.pos - half,
                 item.pos + half,
                 thick,
-                z,
+                bias,
                 color,
                 &mut self.commands,
             );
@@ -585,7 +625,8 @@ impl Editor {
         );
     }
 
-    fn draw_zone(&mut self, px: f32) {
+    /// 존 경계선 — 지면 층.
+    fn draw_zone_bounds(&mut self) {
         let zone = self.scene.zone;
         let selected = self.editing.is_selected(Target::Zone);
         let hovered = matches!(self.hover, Some(Pick::ZoneHandle(_)));
@@ -606,8 +647,12 @@ impl Editor {
             color,
             &mut self.commands,
         );
+    }
 
-        if !selected {
+    /// 존 크기 조절 핸들 — 표시 층. 스프라이트에 가리면 잡을 수 없다.
+    fn draw_zone_handles(&mut self, px: f32) {
+        let zone = self.scene.zone;
+        if !self.editing.is_selected(Target::Zone) {
             return;
         }
         // 핸들 8개 — 어두운 테두리 + 밝은 속. 호버 중인 핸들은 강조색.

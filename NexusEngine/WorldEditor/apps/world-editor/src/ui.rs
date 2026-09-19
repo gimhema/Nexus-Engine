@@ -17,8 +17,9 @@ use std::sync::Arc;
 use nexus_core::{Camera2d, Vec2, units};
 use nexus_platform::{WindowEvent, WindowTarget};
 use nexus_render_wgpu::{UiFrame, egui};
+use nexus_sim::Tile;
 
-use crate::edit::{InspectorEdit, PointerInput};
+use crate::edit::{InspectorEdit, PointerInput, Tool};
 use crate::grid;
 use crate::scene::{ItemKind, Pick, Scene, Target, ZONE_LABEL};
 
@@ -58,6 +59,8 @@ pub(crate) struct UiModel<'a> {
     pub(crate) hover: Option<Pick>,
     pub(crate) undo_label: Option<String>,
     pub(crate) redo_label: Option<String>,
+    pub(crate) tool: Tool,
+    pub(crate) brush: Tile,
     pub(crate) stats: FrameStats,
 }
 
@@ -80,6 +83,10 @@ pub(crate) struct UiActions {
     pub(crate) delete: bool,
     /// 카메라 pitch 변경 (라디안).
     pub(crate) set_pitch: Option<f32>,
+    /// 뷰포트 포인터가 할 일 변경.
+    pub(crate) set_tool: Option<Tool>,
+    /// 타일 붓 변경.
+    pub(crate) set_brush: Option<Tile>,
     /// 뷰포트 포인터 — 뷰포트가 그려진 프레임에만 있다.
     pub(crate) pointer: Option<PointerInput>,
     /// 씬을 그릴 사각형 `[x, y, w, h]` (물리 픽셀).
@@ -294,6 +301,20 @@ fn shortcuts(ui: &mut egui::Ui, actions: &mut UiActions) {
     });
 }
 
+/// 커서 아래 타일을 사람이 읽을 문자열로. 저작 중 데이터를 바로 확인하는 수단이다.
+fn tile_label(model: &UiModel<'_>, cursor: Option<Vec2>) -> Option<String> {
+    let at = model.scene.tiles.world_to_tile(cursor?);
+    let tile = model.scene.tiles.get(at)?;
+    let mut s = format!("타일 ({}, {}) · L{}", at.x, at.y, tile.level);
+    if !tile.walkable {
+        s.push_str(" · 막힘");
+    }
+    if tile.ramp {
+        s.push_str(" · 경사로");
+    }
+    Some(s)
+}
+
 fn status_bar(ui: &mut egui::Ui, model: &UiModel<'_>, cursor: Option<Vec2>) {
     egui::Panel::bottom("status_bar").show(ui, |ui| {
         ui.horizontal(|ui| {
@@ -308,6 +329,10 @@ fn status_bar(ui: &mut egui::Ui, model: &UiModel<'_>, cursor: Option<Vec2>) {
                 format_length(grid::pick_spacing(model.camera.view_height)),
             ));
 
+            if let Some(label) = tile_label(model, cursor) {
+                ui.separator();
+                ui.monospace(label);
+            }
             if let Some(label) = model.hover.and_then(|p| model.scene.label(p.target())) {
                 ui.separator();
                 ui.label(format!("▸ {label}"));
@@ -381,12 +406,59 @@ fn outline_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions
 ///
 /// 지금은 **위치·경계만** 편집한다. 스탯·진영·AI 같은 나머지 필드는 사용자의
 /// 패널 명세를 받은 뒤 채운다 (CLAUDE.md 「UI 명세 전달 형식」).
+/// 도구 선택과 타일 붓. 인스펙터 맨 위에 둔다.
+fn tool_section(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
+    ui.horizontal(|ui| {
+        for (tool, label) in [(Tool::Select, "선택"), (Tool::PaintTile, "타일 칠하기")] {
+            if ui.selectable_label(model.tool == tool, label).clicked() {
+                actions.set_tool = Some(tool);
+            }
+        }
+    });
+
+    if model.tool != Tool::PaintTile {
+        return;
+    }
+
+    ui.separator();
+    ui.label("붓");
+
+    let mut brush = model.brush;
+    let mut changed = false;
+    changed |= ui.checkbox(&mut brush.walkable, "걸을 수 있음").changed();
+    changed |= ui.checkbox(&mut brush.ramp, "경사로").changed();
+    ui.horizontal(|ui| {
+        ui.label("높이 레벨");
+        let mut level = i32::from(brush.level);
+        if ui
+            .add(egui::DragValue::new(&mut level).range(0..=9).speed(0.1))
+            .changed()
+        {
+            brush.level = u8::try_from(level.clamp(0, 9)).unwrap_or(0);
+            changed = true;
+        }
+    });
+    if changed {
+        actions.set_brush = Some(brush);
+    }
+
+    ui.label(
+        egui::RichText::new(
+            "높이는 그리지 않는다 — 이동(경사로로만 오르내림)과 시야 규칙에만 쓰인다.",
+        )
+        .small()
+        .weak(),
+    );
+}
+
 fn inspector_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
     egui::Panel::right("inspector")
         .resizable(true)
         .default_size(SIDE_PANEL_WIDTH)
         .show(ui, |ui| {
             ui.heading("인스펙터");
+            ui.separator();
+            tool_section(ui, model, actions);
             ui.separator();
 
             // 드래그 속도: 화면 1px 당 월드 이동량 — 줌 레벨과 무관하게 손맛이 같다.

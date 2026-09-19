@@ -1391,6 +1391,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-sim"
+version = "0.1.0"
+dependencies = [
+ "nexus-core",
+]
+
+[[package]]
 name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3339,6 +3346,7 @@ dependencies = [
  "nexus-platform",
  "nexus-render",
  "nexus-render-wgpu",
+ "nexus-sim",
  "png",
 ]
 

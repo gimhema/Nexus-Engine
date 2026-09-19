@@ -42,8 +42,8 @@ pub use ui::{TextureCarry, UiFrame, egui};
 use bytemuck::{Pod, Zeroable};
 use nexus_core::{Mat4, Vec3};
 use nexus_render::{
-    Capture, FrameStatus, RenderBackend, RenderCommand, RenderDeviceInfo, RenderError, Renderer,
-    TextureDesc, TextureId, UvRect,
+    Capture, DrawLayer, FrameStatus, RenderBackend, RenderCommand, RenderDeviceInfo, RenderError,
+    Renderer, TextureDesc, TextureId, UvRect,
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
@@ -123,11 +123,13 @@ struct QuadInstance {
     billboard: f32,
     /// 빌보드 전용 앵커 오프셋. 지면 쿼드에서는 쓰이지 않는다.
     anchor: f32,
+    /// 층이 쓰는 NDC 깊이 구간 `(시작, 크기)`.
+    depth_span: [f32; 2],
 }
 
 /// 레이아웃이 셰이더 속성 오프셋과 맞는지 컴파일 타임에 확인한다.
 const _: () = {
-    assert!(core::mem::size_of::<QuadInstance>() == 68);
+    assert!(core::mem::size_of::<QuadInstance>() == 76);
     assert!(core::mem::offset_of!(QuadInstance, center) == 0);
     assert!(core::mem::offset_of!(QuadInstance, size) == 8);
     assert!(core::mem::offset_of!(QuadInstance, z) == 16);
@@ -138,6 +140,7 @@ const _: () = {
     assert!(core::mem::offset_of!(QuadInstance, depth_bias) == 56);
     assert!(core::mem::offset_of!(QuadInstance, billboard) == 60);
     assert!(core::mem::offset_of!(QuadInstance, anchor) == 64);
+    assert!(core::mem::offset_of!(QuadInstance, depth_span) == 68);
 };
 
 /// 인스턴스를 어느 파이프라인으로 그릴지.
@@ -284,6 +287,8 @@ struct Frame {
     /// 빌보드 축. `SetCamera` 로 갱신된다.
     right: Vec3,
     up: Vec3,
+    /// 현재 층. `SetLayer` 로 갱신된다.
+    layer: DrawLayer,
     viewport: Option<ViewportRect>,
     quads: Vec<QuadInstance>,
     batches: Vec<Batch>,
@@ -538,6 +543,7 @@ impl WgpuRenderer {
                             7 => Float32,    // depth_bias — 오프셋 56
                             8 => Float32,    // billboard  — 오프셋 60
                             9 => Float32,    // anchor     — 오프셋 64
+                            10 => Float32x2, // depth_span — 오프셋 68
                         ],
                     })],
                 },
@@ -779,6 +785,7 @@ impl Renderer for WgpuRenderer {
             view_proj: Mat4::IDENTITY,
             right: Vec3::X,
             up: Vec3::Y,
+            layer: DrawLayer::default(),
             viewport: None,
             quads: Vec::new(),
             batches: Vec::new(),
@@ -835,6 +842,9 @@ impl Renderer for WgpuRenderer {
                     height,
                 });
             }
+            RenderCommand::SetLayer(layer) => {
+                frame.layer = layer;
+            }
             RenderCommand::SetCamera {
                 view_proj,
                 right,
@@ -852,6 +862,8 @@ impl Renderer for WgpuRenderer {
                 depth_bias,
                 color,
             } => {
+                let (o, s) = frame.layer.depth_range();
+                let span = [o, s];
                 frame.push(
                     PipelineKind::Blend,
                     TextureId::WHITE,
@@ -866,6 +878,7 @@ impl Renderer for WgpuRenderer {
                         depth_bias,
                         billboard: 0.0,
                         anchor: 0.0,
+                        depth_span: span,
                     },
                 );
             }
@@ -885,6 +898,8 @@ impl Renderer for WgpuRenderer {
                 } else {
                     TextureId::WHITE
                 };
+                let (o, s) = frame.layer.depth_range();
+                let span = [o, s];
                 frame.push(
                     PipelineKind::Cutout,
                     texture,
@@ -900,6 +915,7 @@ impl Renderer for WgpuRenderer {
                         depth_bias,
                         billboard: 1.0,
                         anchor: anchor.offset(),
+                        depth_span: span,
                     },
                 );
             }

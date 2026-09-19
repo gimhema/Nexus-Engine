@@ -12,6 +12,7 @@
 //! release 30 20                왼쪽 버튼 뗌
 //! press rotate                 단독 선택 마커의 회전 핸들 위치 (move/release 도 가능)
 //! add npc|monster|player X Y   마커 추가
+//! tool select|paint            뷰포트 포인터가 할 일 바꾸기
 //! delete | undo | redo | wait
 //! ```
 //!
@@ -21,6 +22,7 @@ use std::collections::VecDeque;
 
 use nexus_core::Vec2;
 
+use crate::edit::Tool;
 use crate::scene::ItemKind;
 
 pub(crate) const ENV_SCRIPT: &str = "NEXUS_SCRIPT";
@@ -49,6 +51,7 @@ pub(crate) enum Step {
         ctrl: bool,
     },
     Add(ItemKind, Vec2),
+    SetTool(Tool),
     Delete,
     Undo,
     Redo,
@@ -106,6 +109,13 @@ fn parse_step(text: &str) -> Result<Step, String> {
         "undo" => return Ok(Step::Undo),
         "redo" => return Ok(Step::Redo),
         "wait" => return Ok(Step::Wait),
+        "tool" => {
+            return match words.get(1).copied() {
+                Some("select") => Ok(Step::SetTool(Tool::Select)),
+                Some("paint") => Ok(Step::SetTool(Tool::PaintTile)),
+                _ => Err(format!("'{text}': 도구는 select|paint")),
+            };
+        }
         "add" => {
             let kind = match words.get(1).copied() {
                 Some("npc") => ItemKind::Npc,
@@ -141,7 +151,7 @@ mod tests {
     #[test]
     fn parses_all_step_kinds() {
         let steps =
-            parse("press 1 2; move rotate ctrl ; release -3.5 4 shift; add npc 5 6; delete; undo;")
+            parse("press 1 2; move rotate ctrl ; release -3.5 4 shift; add npc 5 6; tool paint; delete; undo;")
                 .unwrap();
         assert_eq!(
             steps,
@@ -165,6 +175,7 @@ mod tests {
                     ctrl: false
                 },
                 Step::Add(ItemKind::Npc, Vec2::new(5.0, 6.0)),
+                Step::SetTool(Tool::PaintTile),
                 Step::Delete,
                 Step::Undo,
             ]
@@ -176,5 +187,6 @@ mod tests {
         assert!(parse("jump 1 2").is_err());
         assert!(parse("press 1").is_err());
         assert!(parse("add dragon 0 0").is_err());
+        assert!(parse("tool hammer").is_err());
     }
 }
