@@ -415,6 +415,51 @@ mod tests {
     }
 
     #[test]
+    fn billboards_are_not_foreshortened_at_any_pitch() {
+        // 빌보드의 존재 이유 — 지면 쿼드는 기울이면 sin(pitch) 만큼 눌리지만,
+        // 카메라 축으로 세운 쿼드는 어느 pitch 에서도 size 그대로 보인다.
+        // 이게 깨지면 픽셀아트가 화면에서 비율을 잃는다.
+        for deg in [15.0_f32, 45.0, 90.0] {
+            let c = Camera2d {
+                pitch: deg.to_radians(),
+                ..cam()
+            };
+            let (right, up, forward) = c.basis();
+            let vp = c.view_proj();
+            let base = Vec3::new(c.center.x, c.center.y, 0.0);
+
+            let ndc = |p: Vec3| {
+                let clip = vp * p.extend(1.0);
+                clip.truncate() / clip.w
+            };
+            let origin = ndc(base);
+
+            // 높이 1m 인 빌보드는 항상 view_height 의 1/view_height 만큼 화면을 차지한다.
+            let top = ndc(base + up * 1.0);
+            let expect = 2.0 / c.view_height; // NDC 는 -1..1 이므로 2배
+            assert!(
+                ((top.y - origin.y) - expect).abs() < 1e-4,
+                "{deg}°: 세로 {} 기대 {expect}",
+                top.y - origin.y
+            );
+
+            // 가로도 마찬가지
+            let side = ndc(base + right * 1.0);
+            assert!(
+                ((side.x - origin.x) - 2.0 / c.view_width()).abs() < 1e-4,
+                "{deg}°: 가로가 어긋남"
+            );
+
+            // 그리고 빌보드 축은 깊이를 바꾸지 않는다 — 쿼드 전체가 한 깊이로 정렬된다.
+            assert!(up.dot(forward).abs() < 1e-5 && right.dot(forward).abs() < 1e-5);
+            assert!(
+                (ndc(base + up * 5.0).z - origin.z).abs() < 1e-6,
+                "{deg}°: 깊이가 변함"
+            );
+        }
+    }
+
+    #[test]
     fn height_pushes_sprites_up_the_screen_when_tilted() {
         // 쿼터뷰의 핵심 성질 — 높은 것이 화면 위로 솟는다. S3 빌보드가 이것에 의존한다.
         let c = cam();

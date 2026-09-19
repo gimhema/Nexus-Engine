@@ -40,7 +40,7 @@ mod ui;
 pub use ui::{TextureCarry, UiFrame, egui};
 
 use bytemuck::{Pod, Zeroable};
-use nexus_core::Mat4;
+use nexus_core::{Mat4, Vec3};
 use nexus_render::{
     Capture, FrameStatus, RenderBackend, RenderCommand, RenderDeviceInfo, RenderError, Renderer,
     TextureDesc, TextureId, UvRect,
@@ -74,6 +74,22 @@ impl ViewportRect {
     }
 }
 
+/// GPU 로 넘어가는 카메라 유니폼. WGSL `Camera` 구조체와 레이아웃이 일치해야 한다.
+///
+/// `right` / `up` 은 빌보드 축이다. 유니폼 버퍼는 16바이트 정렬이라 `vec3` 를 그대로
+/// 넣을 수 없어 `vec4` 로 맞춘다 — w 는 쓰이지 않는다.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+struct CameraUniform {
+    view_proj: [[f32; 4]; 4],
+    right: [f32; 4],
+    up: [f32; 4],
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<CameraUniform>() == 96);
+};
+
 /// 깊이 버퍼 포맷. 스텐실 없이 32bit float — 데스크톱 어디서나 지원된다.
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -100,11 +116,18 @@ struct QuadInstance {
     uv_max: [f32; 2],
     /// NDC 깊이 편향. 양수가 앞. 화면 위치에는 영향이 없다.
     depth_bias: f32,
+    /// `0.0` = 지면에 눕는 쿼드, `1.0` = 카메라를 향해 서는 빌보드.
+    ///
+    /// 파이프라인(블렌드/컷아웃)과 **독립**이다 — 텍스처 지면 타일(S5)처럼
+    /// 컷아웃이면서 눕는 조합이 생긴다.
+    billboard: f32,
+    /// 빌보드 전용 앵커 오프셋. 지면 쿼드에서는 쓰이지 않는다.
+    anchor: f32,
 }
 
 /// 레이아웃이 셰이더 속성 오프셋과 맞는지 컴파일 타임에 확인한다.
 const _: () = {
-    assert!(core::mem::size_of::<QuadInstance>() == 60);
+    assert!(core::mem::size_of::<QuadInstance>() == 68);
     assert!(core::mem::offset_of!(QuadInstance, center) == 0);
     assert!(core::mem::offset_of!(QuadInstance, size) == 8);
     assert!(core::mem::offset_of!(QuadInstance, z) == 16);
@@ -113,6 +136,8 @@ const _: () = {
     assert!(core::mem::offset_of!(QuadInstance, uv_min) == 40);
     assert!(core::mem::offset_of!(QuadInstance, uv_max) == 48);
     assert!(core::mem::offset_of!(QuadInstance, depth_bias) == 56);
+    assert!(core::mem::offset_of!(QuadInstance, billboard) == 60);
+    assert!(core::mem::offset_of!(QuadInstance, anchor) == 64);
 };
 
 /// 인스턴스를 어느 파이프라인으로 그릴지.
@@ -256,6 +281,9 @@ struct Frame {
     encoder: wgpu::CommandEncoder,
     clear: wgpu::Color,
     view_proj: Mat4,
+    /// 빌보드 축. `SetCamera` 로 갱신된다.
+    right: Vec3,
+    up: Vec3,
     viewport: Option<ViewportRect>,
     quads: Vec<QuadInstance>,
     batches: Vec<Batch>,
@@ -409,7 +437,7 @@ impl WgpuRenderer {
         // ── 카메라 유니폼 ────────────────────────────────────────────────────
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nexus-camera"),
-            size: core::mem::size_of::<[[f32; 4]; 4]>() as u64,
+            size: core::mem::size_of::<CameraUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -508,6 +536,8 @@ impl WgpuRenderer {
                             5 => Float32x2,  // uv_min — 오프셋 40
                             6 => Float32x2,  // uv_max — 오프셋 48
                             7 => Float32,    // depth_bias — 오프셋 56
+                            8 => Float32,    // billboard  — 오프셋 60
+                            9 => Float32,    // anchor     — 오프셋 64
                         ],
                     })],
                 },
@@ -747,6 +777,8 @@ impl Renderer for WgpuRenderer {
             encoder,
             clear: wgpu::Color::BLACK,
             view_proj: Mat4::IDENTITY,
+            right: Vec3::X,
+            up: Vec3::Y,
             viewport: None,
             quads: Vec::new(),
             batches: Vec::new(),
@@ -803,8 +835,14 @@ impl Renderer for WgpuRenderer {
                     height,
                 });
             }
-            RenderCommand::SetCamera { view_proj } => {
+            RenderCommand::SetCamera {
+                view_proj,
+                right,
+                up,
+            } => {
                 frame.view_proj = view_proj;
+                frame.right = right;
+                frame.up = up;
             }
             RenderCommand::DrawRect {
                 center,
@@ -826,14 +864,15 @@ impl Renderer for WgpuRenderer {
                         uv_min: UvRect::FULL.min.to_array(),
                         uv_max: UvRect::FULL.max.to_array(),
                         depth_bias,
+                        billboard: 0.0,
+                        anchor: 0.0,
                     },
                 );
             }
             RenderCommand::DrawSprite {
-                center,
+                pos,
                 size,
-                rotation,
-                z,
+                anchor,
                 depth_bias,
                 uv,
                 texture,
@@ -850,14 +889,17 @@ impl Renderer for WgpuRenderer {
                     PipelineKind::Cutout,
                     texture,
                     QuadInstance {
-                        center: center.to_array(),
+                        center: [pos.x, pos.y],
                         size: size.to_array(),
-                        z,
-                        rotation,
+                        z: pos.z,
+                        // 빌보드는 화면에 대해 항상 똑바로 선다.
+                        rotation: 0.0,
                         color: linear_rgba(tint),
                         uv_min: uv.min.to_array(),
                         uv_max: uv.max.to_array(),
                         depth_bias,
+                        billboard: 1.0,
+                        anchor: anchor.offset(),
                     },
                 );
             }
@@ -875,11 +917,13 @@ impl Renderer for WgpuRenderer {
         self.last_quad_count = frame.quads.len();
 
         // ── GPU 로 올리기 ────────────────────────────────────────────────────
-        self.queue.write_buffer(
-            &self.camera_buffer,
-            0,
-            bytemuck::cast_slice(&frame.view_proj.to_cols_array()),
-        );
+        let camera = CameraUniform {
+            view_proj: frame.view_proj.to_cols_array_2d(),
+            right: frame.right.extend(0.0).to_array(),
+            up: frame.up.extend(0.0).to_array(),
+        };
+        self.queue
+            .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera));
 
         if !frame.quads.is_empty() {
             self.ensure_instance_capacity(frame.quads.len());

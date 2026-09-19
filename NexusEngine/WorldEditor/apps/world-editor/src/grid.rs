@@ -122,15 +122,25 @@ pub(crate) fn build(camera: &Camera2d, out: &mut Vec<RenderCommand>) {
     }
 }
 
-/// 속이 빈 사각형 테두리를 그린다. 존 경계(AABB) 표시에 쓴다.
+/// 속이 빈 사각형 테두리를 그린다. 존 경계·마커 발판 표시에 쓴다.
+///
+/// 두께는 **화면 픽셀**로 준다. 축마다 따로 환산해야 기울였을 때 가로변만 얇아지지 않고,
+/// 1px 미만으로 내려가 사라지지도 않는다 (`build` 의 주석 참고).
 pub(crate) fn build_outline(
+    camera: &Camera2d,
     min: Vec2,
     max: Vec2,
-    thickness: f32,
+    thickness_px: f32,
     depth_bias: f32,
     color: [f32; 4],
     out: &mut Vec<RenderCommand>,
 ) {
+    let (vw, vh) = camera.viewport;
+    let tx = thickness_px * camera.view_width()
+        / f32::from(u16::try_from(vw.max(1)).unwrap_or(u16::MAX));
+    let ty = thickness_px * camera.ground_height()
+        / f32::from(u16::try_from(vh.max(1)).unwrap_or(u16::MAX));
+
     let size = max - min;
     let center = (min + max) * 0.5;
 
@@ -139,7 +149,7 @@ pub(crate) fn build_outline(
         out.push(RenderCommand::DrawRect {
             rotation: 0.0,
             center: Vec2::new(center.x, y),
-            size: Vec2::new(size.x + thickness, thickness),
+            size: Vec2::new(size.x + tx, ty),
             z: 0.0,
             depth_bias,
             color,
@@ -150,7 +160,7 @@ pub(crate) fn build_outline(
         out.push(RenderCommand::DrawRect {
             rotation: 0.0,
             center: Vec2::new(x, center.y),
-            size: Vec2::new(thickness, size.y + thickness),
+            size: Vec2::new(tx, size.y + ty),
             z: 0.0,
             depth_bias,
             color,
@@ -276,6 +286,12 @@ mod tests {
     fn outline_emits_four_sides() {
         let mut out = Vec::new();
         build_outline(
+            &Camera2d {
+                center: Vec2::ZERO,
+                view_height: 100.0,
+                viewport: (1280, 720),
+                pitch: Camera2d::PITCH_QUARTER,
+            },
             Vec2::new(-100.0, -100.0),
             Vec2::new(100.0, 100.0),
             2.0,

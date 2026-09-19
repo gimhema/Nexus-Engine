@@ -13,12 +13,12 @@
 //! 화면에 보이는 배치는 NexusEngine `Server.cpp` 의 기본 존 설정을 옮겨온 것이다.
 //! M6 에서 `ZoneConfig` 로 내보낸다.
 
-mod atlas_demo;
 mod edit;
 mod grid;
 mod scene;
 mod screenshot;
 mod script;
+mod sprites;
 mod ui;
 
 use std::path::PathBuf;
@@ -29,10 +29,10 @@ use nexus_platform::{App, Input, WindowConfig, WindowEvent, WindowTarget};
 use nexus_render::{DEPTH_LAYER, FrameStatus, RenderCommand, RenderError, Renderer};
 use nexus_render_wgpu::{TextureCarry, UiFrame, WgpuRenderer};
 
-use atlas_demo::AtlasDemo;
 use edit::{Editing, PointerInput};
 use scene::{Handle, Pick, Scene, Target};
 use script::{Anchor, Button, Script, Step};
+use sprites::MarkerSprites;
 use ui::{EditorUi, FrameStats, UiActions, UiModel};
 
 // 색은 모두 sRGB. 렌더러가 선형으로 변환한다.
@@ -53,7 +53,10 @@ const BOX_FILL: [f32; 4] = [1.0, 0.82, 0.25, 0.012];
 // 이것들은 전부 지면에 깔리는 표시이므로 월드 Z 는 0 이다. 월드 Z 로 순서를 주면
 // 쿼터뷰에서 화면 세로 위치가 밀려 선택 테두리가 마커에서 떨어져 나간다.
 const BIAS_ZONE: f32 = 1.0 * DEPTH_LAYER;
-const BIAS_MARKER: f32 = 3.0 * DEPTH_LAYER;
+const BIAS_MARKER: f32 = 2.0 * DEPTH_LAYER;
+/// 마커 스프라이트. 발밑 지면 표시 바로 위에 선다 — 빌보드는 발밑과 깊이가 같아
+/// 편향 없이는 지면 표시와 z-파이팅이 난다.
+const BIAS_SPRITE: f32 = 3.0 * DEPTH_LAYER;
 const BIAS_ARROW: f32 = 4.0 * DEPTH_LAYER;
 const BIAS_HOVER: f32 = 5.0 * DEPTH_LAYER;
 const BIAS_SELECT: f32 = 6.0 * DEPTH_LAYER;
@@ -84,8 +87,6 @@ enum ViewRequest {
     Zone,
     /// 선택 항목, 없으면 모든 마커 (F)
     Selection,
-    /// 디버그 아틀라스 표시 영역 (`NEXUS_DEBUG_ATLAS`)
-    AtlasDemo,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -124,8 +125,8 @@ struct Editor {
     pending_view: Option<ViewRequest>,
     /// 프레임마다 재사용하는 명령 버퍼 — 매 프레임 할당을 피한다.
     commands: Vec<RenderCommand>,
-    /// S1 확인용 디버그 아틀라스. `NEXUS_DEBUG_ATLAS` 가 있을 때만 존재한다.
-    atlas_demo: Option<AtlasDemo>,
+    /// 마커 스프라이트 시트. 렌더러 초기화 후에 올라간다.
+    sprites: Option<MarkerSprites>,
     /// 고정 줌 배율 (px/m). `Some` 이면 매 프레임 이 배율로 잠그고 픽셀 격자에 스냅한다.
     ///
     /// 게임 모드의 동작을 에디터에서 확인하기 위한 것이다 — S7 에서 플레이 모드의 기본이 된다.
@@ -166,7 +167,7 @@ impl Default for Editor {
             hover: None,
             pending_view: None,
             commands: Vec::new(),
-            atlas_demo: None,
+            sprites: None,
             fixed_zoom: None,
             ticks: 0,
             last_frame: None,
@@ -380,12 +381,6 @@ impl Editor {
             match request {
                 ViewRequest::Zone => self.reset_view(),
                 ViewRequest::Selection => self.frame_selection(),
-                ViewRequest::AtlasDemo => {
-                    if let Some(demo) = &self.atlas_demo {
-                        let (min, max) = demo.bounds();
-                        self.frame_rect(min, max);
-                    }
-                }
             }
         }
     }
@@ -470,15 +465,14 @@ impl Editor {
                 height,
             });
         }
+        let (right, up, _) = self.camera.basis();
         self.commands.push(RenderCommand::SetCamera {
             view_proj: self.camera.view_proj(),
+            right,
+            up,
         });
 
         grid::build(&self.camera, &mut self.commands);
-
-        if let Some(demo) = &self.atlas_demo {
-            demo.build(&mut self.commands);
-        }
 
         // 화면 픽셀 → 월드 길이. 선택 테두리·핸들을 화면상 일정한 크기로 그리는 데 쓴다.
         let px = self.camera.view_height / self.camera.viewport.1.max(1) as f32;
@@ -486,14 +480,25 @@ impl Editor {
         self.draw_zone(px);
 
         for item in &self.scene.items {
-            self.commands.push(RenderCommand::DrawRect {
-                rotation: 0.0,
-                center: item.pos,
-                size: Vec2::splat(scene::marker_half_extent(item, px) * 2.0),
-                z: 0.0,
-                depth_bias: BIAS_MARKER,
-                color: item.kind.color(),
-            });
+            // 발판(지면 테두리) + 그 위에 서는 스프라이트.
+            //
+            // 발판을 채우지 않는 이유는 보기 문제만이 아니다 — 지면 쿼드는 Y 방향으로
+            // 퍼져 있어 **먼 쪽 절반이 빌보드보다 앞선다**(빌보드 깊이는 발밑 한 점으로
+            // 정해지므로). 채우면 스프라이트 다리가 통째로 가려진다.
+            // 테두리면 먼 변이 발끝을 살짝 가리는데, 그건 오히려 올바른 앞뒤 관계다.
+            let half = Vec2::splat(scene::marker_half_extent(item, px));
+            grid::build_outline(
+                &self.camera,
+                item.pos - half,
+                item.pos + half,
+                THIN_LINE_PX,
+                BIAS_MARKER,
+                item.kind.color(),
+                &mut self.commands,
+            );
+            if let Some(sprites) = &self.sprites {
+                sprites.build(item, px, BIAS_SPRITE, &mut self.commands);
+            }
             draw_arrow(item, px, &mut self.commands);
 
             let target = Target::Item(item.entity);
@@ -506,9 +511,10 @@ impl Editor {
             };
             let half = Vec2::splat(scene::marker_half_extent(item, px) + pad * px);
             grid::build_outline(
+                &self.camera,
                 item.pos - half,
                 item.pos + half,
-                thick * px,
+                thick,
                 z,
                 color,
                 &mut self.commands,
@@ -516,7 +522,7 @@ impl Editor {
         }
 
         self.draw_rotate_handle(px);
-        self.draw_box_selection(px);
+        self.draw_box_selection();
     }
 
     /// 단독 선택된 마커의 회전 핸들 — 화살표 끝에서 이어지는 가는 선 + 원 대신 마름모.
@@ -556,7 +562,7 @@ impl Editor {
     }
 
     /// 진행 중인 박스 선택 — 반투명 채움 + 테두리. 모든 것 위에 그린다.
-    fn draw_box_selection(&mut self, px: f32) {
+    fn draw_box_selection(&mut self) {
         let Some((min, max)) = self.editing.box_rect() else {
             return;
         };
@@ -569,9 +575,10 @@ impl Editor {
             color: BOX_FILL,
         });
         grid::build_outline(
+            &self.camera,
             min,
             max,
-            THIN_LINE_PX * px,
+            THIN_LINE_PX,
             BIAS_BOX + DEPTH_LAYER,
             SELECT_COLOR,
             &mut self.commands,
@@ -591,9 +598,10 @@ impl Editor {
             (ZONE_BOUNDS_COLOR, 2.0)
         };
         grid::build_outline(
+            &self.camera,
             zone.min,
             zone.max,
-            thick * px,
+            thick,
             BIAS_ZONE,
             color,
             &mut self.commands,
@@ -724,15 +732,10 @@ impl App for Editor {
         self.apply_env_selection();
         self.script = Script::from_env();
 
-        // S1 확인용. 설정돼 있으면 시점도 표시 영역으로 맞춘다.
-        match AtlasDemo::load(&mut renderer) {
-            Ok(demo) => {
-                self.atlas_demo = demo;
-                if self.atlas_demo.is_some() {
-                    self.pending_view = Some(ViewRequest::AtlasDemo);
-                }
-            }
-            Err(e) => eprintln!("{}: {e}", atlas_demo::ENV_DEBUG_ATLAS),
+        // 마커 스프라이트. 실패해도 에디터는 돌아간다 — 마커가 지면 사각형만 남을 뿐이다.
+        match MarkerSprites::load(&mut renderer) {
+            Ok(s) => self.sprites = Some(s),
+            Err(e) => eprintln!("마커 스프라이트 로드 실패: {e}"),
         }
 
         self.renderer = Some(renderer);

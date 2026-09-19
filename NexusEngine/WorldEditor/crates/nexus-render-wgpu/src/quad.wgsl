@@ -11,6 +11,9 @@
 
 struct Camera {
     view_proj: mat4x4<f32>,
+    // 빌보드 축. w 성분은 정렬용 패딩이다 (유니폼 버퍼는 16바이트 정렬).
+    right: vec4<f32>,
+    up:    vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
@@ -27,6 +30,8 @@ struct Instance {
     @location(5) uv_min:   vec2<f32>, // 아틀라스 영역 좌상단 (정규화)
     @location(6) uv_max:   vec2<f32>, // 아틀라스 영역 우하단 (정규화)
     @location(7) depth_bias: f32,     // NDC 깊이 편향. 양수가 앞. 화면 위치에는 영향 없음
+    @location(8) billboard:  f32,     // 0 = 지면에 눕는 쿼드, 1 = 카메라를 향해 서는 빌보드
+    @location(9) anchor:     f32,     // 빌보드 전용. 0 = 중앙, 0.5 = 발밑
 };
 
 struct VsOut {
@@ -52,12 +57,23 @@ const ALPHA_CUTOFF: f32 = 0.5;
 fn vs_main(@builtin(vertex_index) vi: u32, inst: Instance) -> VsOut {
     let corner = CORNERS[vi];
 
-    // 크기를 먼저 곱한 뒤 회전한다 — 순서가 바뀌면 직사각형이 찌그러진다.
-    let local = corner * inst.size;
-    let c = cos(inst.rotation);
-    let s = sin(inst.rotation);
-    let offset = vec2<f32>(local.x * c - local.y * s, local.x * s + local.y * c);
-    let world = vec3<f32>(inst.center + offset, inst.z);
+    var world: vec3<f32>;
+    if (inst.billboard > 0.5) {
+        // 카메라 축으로 세운다. 두 축 모두 시선과 직교하므로 쿼드 전체의 깊이가
+        // inst.center/z 하나로 정해진다 — 발밑 위치로만 정렬된다.
+        let anchored = corner.y + inst.anchor;
+        world = vec3<f32>(inst.center, inst.z)
+              + camera.right.xyz * (corner.x * inst.size.x)
+              + camera.up.xyz    * (anchored * inst.size.y);
+    } else {
+        // 지면(XY 평면)에 눕는다. 크기를 먼저 곱한 뒤 회전한다 —
+        // 순서가 바뀌면 직사각형이 찌그러진다.
+        let local = corner * inst.size;
+        let c = cos(inst.rotation);
+        let s = sin(inst.rotation);
+        let offset = vec2<f32>(local.x * c - local.y * s, local.x * s + local.y * c);
+        world = vec3<f32>(inst.center + offset, inst.z);
+    }
 
     // 코너 오프셋(-0.5~0.5) → 0~1 → UV.
     // V 는 뒤집는다: 월드 +Y(쿼드 위쪽)가 이미지의 **윗줄**(uv_min.y)이어야 한다.

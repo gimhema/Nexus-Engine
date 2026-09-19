@@ -8,7 +8,7 @@
 
 #![forbid(unsafe_code)]
 
-use nexus_core::{Mat4, Vec2};
+use nexus_core::{Mat4, Vec2, Vec3};
 
 /// 실제로 동작 중인 그래픽 백엔드.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -110,11 +110,16 @@ pub enum RenderCommand {
         height: u32,
     },
 
-    /// 카메라 행렬 설정. 드로우 명령보다 먼저 제출해야 한다.
+    /// 카메라 설정. 드로우 명령보다 먼저 제출해야 한다.
     ///
-    /// M8 에서 이 행렬을 만드는 쪽이 정사영에서 원근으로 바뀔 뿐,
-    /// 렌더러는 아무것도 달라지지 않는다.
-    SetCamera { view_proj: Mat4 },
+    /// `right` / `up` 은 **빌보드 축**이다 — [`DrawSprite`](Self::DrawSprite) 가 이 두 축으로
+    /// 쿼드를 세운다. 행렬만으로는 뽑아낼 수 없어 따로 받는다.
+    /// `nexus_core::Camera2d::basis()` 가 그대로 준다.
+    SetCamera {
+        view_proj: Mat4,
+        right: Vec3,
+        up: Vec3,
+    },
 
     /// 월드 공간 사각형. `center` / `size` 는 미터.
     ///
@@ -136,24 +141,61 @@ pub enum RenderCommand {
         color: [f32; 4],
     },
 
-    /// 텍스처가 입혀진 사각형. 좌표 규약은 [`DrawRect`](Self::DrawRect) 와 같다.
+    /// 카메라를 향해 **서 있는** 텍스처 쿼드 — 캐릭터·몬스터·오브젝트.
     ///
-    /// **S1 단계에서는 `DrawRect` 와 마찬가지로 지면(XY 평면)에 눕는다.**
-    /// 서 있는 빌보드는 S3 에서 `anchor` 와 함께 들어온다.
+    /// [`DrawRect`](Self::DrawRect) 가 지면에 눕는 것과 달리, 이것은
+    /// [`SetCamera`](Self::SetCamera) 의 `right`/`up` 축으로 세워진다.
     ///
-    /// `tint` 는 sRGB 이며 텍스처 색에 **곱해진다** — 흰색이면 원본 그대로다.
-    /// 알파는 블렌딩이 아니라 **컷아웃**으로 처리된다
-    /// ([`ALPHA_CUTOFF`] 미만은 버려진다). 그래서 깊이 쓰기를 켠 채로도 정렬이 깨지지 않는다.
+    /// # 왜 눕지 않고 서는가
+    ///
+    /// 지면 쿼드는 카메라가 기울어지면 `sin(pitch)` 만큼 눌린다. 빌보드는 화면 축으로
+    /// 세우므로 **어느 pitch 에서도 `size` 그대로의 크기로 보인다.** 픽셀아트가
+    /// 화면에서 원래 비율을 유지하려면 이래야 한다.
+    ///
+    /// # 깊이
+    ///
+    /// 빌보드 축은 시선과 직교하므로 **쿼드 전체의 깊이가 `pos` 하나로 정해진다.**
+    /// 즉 발밑 위치로만 정렬된다 — 스프라이트 게임이 원하는 Y-정렬이 공짜로 나온다.
+    /// 대신 같은 자리의 지면 쿼드와 깊이가 같아지므로, 지면 위에 얹으려면
+    /// `depth_bias` 를 한 칸 이상 줘야 한다.
+    ///
+    /// `size` 는 미터이고 회전은 없다 — 화면에 대해 항상 똑바로 선다.
+    /// `tint` 는 sRGB 이며 텍스처 색에 **곱해진다**. 알파는 블렌딩이 아니라
+    /// **컷아웃**이다([`ALPHA_CUTOFF`] 미만은 버려진다).
     DrawSprite {
-        center: Vec2,
+        /// [`anchor`](SpriteAnchor) 가 가리키는 월드 위치 (m). 보통 발밑이므로 `z = 0`.
+        pos: Vec3,
+        /// 화면에서 차지할 크기 (m). 기울여도 눌리지 않는다.
         size: Vec2,
-        rotation: f32,
-        z: f32,
+        anchor: SpriteAnchor,
         depth_bias: f32,
         uv: UvRect,
         texture: TextureId,
         tint: [f32; 4],
     },
+}
+
+/// [`RenderCommand::DrawSprite`] 의 `pos` 가 스프라이트의 어디를 가리키는가.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SpriteAnchor {
+    /// 발밑 — 가로 중앙, 세로 아래끝. **캐릭터·오브젝트의 기본값.**
+    ///
+    /// 중앙 기준으로 두면 키가 다른 스프라이트의 접지 위치가 제각각 어긋난다.
+    #[default]
+    BottomCenter,
+    /// 정중앙. 접지 개념이 없는 이펙트·아이콘에 쓴다.
+    Center,
+}
+
+impl SpriteAnchor {
+    /// 쿼드를 위로 밀어 올리는 양 (높이 배수). 셰이더에 넘기는 값이다.
+    #[must_use]
+    pub fn offset(self) -> f32 {
+        match self {
+            Self::BottomCenter => 0.5,
+            Self::Center => 0.0,
+        }
+    }
 }
 
 /// 겹침 순서를 한 칸 옮기는 [`depth_bias`](RenderCommand::DrawRect) 단위.
