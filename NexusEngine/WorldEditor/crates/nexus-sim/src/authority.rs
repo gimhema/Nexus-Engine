@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use nexus_core::{Entity, Vec2};
 
+use crate::combat::SkillId;
 use crate::world::SimWorld;
 
 /// 플레이어(또는 AI)가 하려는 일. **요청일 뿐** — 받아들일지는 Authority 가 정한다.
@@ -25,13 +26,21 @@ pub enum Intent {
     MoveTo { unit: Entity, target: Vec2 },
     /// 제자리에 멈춘다.
     Stop { unit: Entity },
+    /// `skill` 로 `target` 유닛을 공격한다. 사거리 밖이면 거절된다 —
+    /// 다가가는 것은 Intent 를 내는 쪽(입력·AI)의 일이다.
+    Attack {
+        unit: Entity,
+        target: Entity,
+        skill: SkillId,
+    },
 }
 
 impl Intent {
+    /// Intent 를 낸 유닛.
     #[must_use]
     pub fn unit(&self) -> Entity {
         match *self {
-            Self::MoveTo { unit, .. } | Self::Stop { unit } => unit,
+            Self::MoveTo { unit, .. } | Self::Stop { unit } | Self::Attack { unit, .. } => unit,
         }
     }
 }
@@ -39,12 +48,26 @@ impl Intent {
 /// Intent 를 거절한 이유.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Rejection {
-    /// 없는 유닛 (디스폰됐거나 낡은 핸들).
+    /// 없는 유닛 (디스폰됐거나 낡은 핸들). 공격 대상이 없을 때도.
     UnknownEntity,
     /// 목적지까지 걸어서 갈 길이 없다 (벽·레벨·맵 밖).
     NoPath,
     /// 이동 속도가 0 인 유닛.
     Immobile,
+    /// Intent 를 낸 유닛이 죽어 있다.
+    Dead,
+    /// 공격 대상이 이미 죽었다.
+    TargetDead,
+    /// 등록되지 않은 스킬.
+    UnknownSkill,
+    /// 스킬 쿨타임 중.
+    OnCooldown,
+    /// 대상이 스킬 사거리 밖.
+    OutOfRange,
+    /// 자기 자신은 대상이 될 수 없다.
+    InvalidTarget,
+    /// 대상이 피해를 받지 않는다 (`UnitDef::immortal`).
+    Invulnerable,
 }
 
 /// tick 동안 일어난 일.
@@ -56,6 +79,16 @@ pub enum Event {
     Blocked { unit: Entity },
     /// Intent 가 거절됐다. 상태는 바뀌지 않았다.
     Rejected { intent: Intent, reason: Rejection },
+    /// 공격이 맞았다.
+    Damaged {
+        attacker: Entity,
+        target: Entity,
+        skill: SkillId,
+        amount: u32,
+        remaining_hp: u32,
+    },
+    /// 유닛이 죽었다. 월드에는 시체로 남는다 — 치울지는 스폰한 쪽이 정한다.
+    Died { unit: Entity, killer: Entity },
 }
 
 /// 게임플레이 상태의 권한자.
@@ -113,12 +146,17 @@ impl Authority for LocalAuthority {
             let result = match intent {
                 Intent::MoveTo { unit, target } => self.world.plan_move(unit, target),
                 Intent::Stop { unit } => self.world.stop(unit),
+                Intent::Attack {
+                    unit,
+                    target,
+                    skill,
+                } => self.world.attack(unit, target, skill, &mut events),
             };
             if let Err(reason) = result {
                 events.push(Event::Rejected { intent, reason });
             }
         }
-        self.world.step(dt.as_secs_f32(), &mut events);
+        self.world.step(dt, &mut events);
         self.ticks += 1;
         events
     }
@@ -150,9 +188,14 @@ mod tests {
 
     fn setup(map: TileMap, at: Vec2) -> (LocalAuthority, Entity) {
         let mut auth = LocalAuthority::new(SimWorld::new(map));
-        let unit = auth
-            .world_mut()
-            .spawn_unit(at, 0.0, UnitDef { move_speed: SPEED });
+        let unit = auth.world_mut().spawn_unit(
+            at,
+            0.0,
+            UnitDef {
+                move_speed: SPEED,
+                ..UnitDef::default()
+            },
+        );
         (auth, unit)
     }
 
@@ -437,9 +480,14 @@ mod tests {
         let (mut auth, unit) = setup(flat(4, 4), Vec2::new(0.5, 0.5));
         assert!(auth.world_mut().despawn(unit));
         // 같은 슬롯을 재사용한 새 유닛이 낡은 핸들의 명령을 받으면 안 된다.
-        let newcomer =
-            auth.world_mut()
-                .spawn_unit(Vec2::new(0.5, 0.5), 0.0, UnitDef { move_speed: SPEED });
+        let newcomer = auth.world_mut().spawn_unit(
+            Vec2::new(0.5, 0.5),
+            0.0,
+            UnitDef {
+                move_speed: SPEED,
+                ..UnitDef::default()
+            },
+        );
         assert_eq!(newcomer.index(), unit.index());
 
         auth.submit(Intent::Stop { unit });
@@ -458,9 +506,14 @@ mod tests {
     #[test]
     fn immobile_unit_rejects_move() {
         let mut auth = LocalAuthority::new(SimWorld::new(flat(4, 4)));
-        let rock =
-            auth.world_mut()
-                .spawn_unit(Vec2::new(0.5, 0.5), 0.0, UnitDef { move_speed: 0.0 });
+        let rock = auth.world_mut().spawn_unit(
+            Vec2::new(0.5, 0.5),
+            0.0,
+            UnitDef {
+                move_speed: 0.0,
+                ..UnitDef::default()
+            },
+        );
         auth.submit(Intent::MoveTo {
             unit: rock,
             target: Vec2::new(3.5, 0.5),
@@ -478,7 +531,10 @@ mod tests {
     #[test]
     fn units_iterates_live_units_only() {
         let mut world = SimWorld::new(flat(4, 4));
-        let def = UnitDef { move_speed: 1.0 };
+        let def = UnitDef {
+            move_speed: 1.0,
+            ..UnitDef::default()
+        };
         let a = world.spawn_unit(Vec2::ZERO, 0.0, def);
         let b = world.spawn_unit(Vec2::ONE, 0.0, def);
         world.despawn(a);

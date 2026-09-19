@@ -2,15 +2,39 @@
 //!
 //! 수치([`UnitDef`])는 코드가 아니라 **데이터**다. 스폰하는 쪽이 넘겨준다.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::time::Duration;
 
 use nexus_core::Vec2;
 
+use crate::combat::SkillId;
+
 /// 유닛 종류별 정적 수치. 스폰 시 복사되어 유닛마다 따로 갖는다.
+///
+/// 전투 수치는 서버 `GameDataEntityBase` (maxHp / attack / defense) 와 같은 의미다.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct UnitDef {
     /// 이동 속도 (m/s). 음수·NaN 은 0 으로 본다.
     pub move_speed: f32,
+    /// 최대 HP. 0 은 1 로 본다 — 태어나자마자 죽은 유닛은 만들지 않는다.
+    pub max_hp: u32,
+    pub attack: u32,
+    pub defense: u32,
+    /// 피해를 받지 않는다 (서버 `NpcEntityData::isImmortal`). 공격 대상이 되면 거절된다.
+    pub immortal: bool,
+}
+
+impl Default for UnitDef {
+    /// 움직이지 않고 싸우지 않는 최소 유닛. 실제 수치는 데이터에서 채운다.
+    fn default() -> Self {
+        Self {
+            move_speed: 0.0,
+            max_hp: 1,
+            attack: 0,
+            defense: 0,
+            immortal: false,
+        }
+    }
 }
 
 impl UnitDef {
@@ -22,7 +46,11 @@ impl UnitDef {
         } else {
             0.0
         };
-        Self { move_speed }
+        Self {
+            move_speed,
+            max_hp: self.max_hp.max(1),
+            ..self
+        }
     }
 }
 
@@ -39,22 +67,47 @@ pub struct Unit {
     pub(crate) heading: f32,
     /// 남은 경유점. 맨 앞이 다음 목표이고 맨 뒤가 최종 목적지다.
     pub(crate) waypoints: VecDeque<Vec2>,
+    /// 현재 HP. 0 이면 죽은 것이다.
+    pub(crate) hp: u32,
+    /// 스킬별 다시 쓸 수 있는 시각 (시뮬레이션 시계 기준).
+    pub(crate) cooldowns: HashMap<SkillId, Duration>,
 }
 
 impl Unit {
     pub(crate) fn new(pos: Vec2, heading: f32, def: UnitDef) -> Self {
+        let def = def.sanitized();
         Self {
-            def: def.sanitized(),
+            def,
             pos,
             prev_pos: pos,
             heading,
             waypoints: VecDeque::new(),
+            hp: def.max_hp,
+            cooldowns: HashMap::new(),
         }
     }
 
     #[must_use]
     pub fn def(&self) -> UnitDef {
         self.def
+    }
+
+    #[must_use]
+    pub fn hp(&self) -> u32 {
+        self.hp
+    }
+
+    /// 살아 있는가. 죽은 유닛은 움직이지도 공격하지도 않지만 월드에는 남는다
+    /// (시체 — 치울지는 스폰한 쪽이 정한다).
+    #[must_use]
+    pub fn is_alive(&self) -> bool {
+        self.hp > 0
+    }
+
+    /// `skill` 을 `now` 에 쓸 수 있는가.
+    #[must_use]
+    pub fn is_ready(&self, skill: SkillId, now: Duration) -> bool {
+        self.cooldowns.get(&skill).is_none_or(|&ready| now >= ready)
     }
 
     /// 현재 tick 의 위치 (m).
@@ -100,15 +153,34 @@ mod tests {
     #[test]
     fn invalid_speed_is_clamped_to_zero() {
         for bad in [-1.0, f32::NAN, f32::INFINITY] {
-            let def = UnitDef { move_speed: bad }.sanitized();
+            let def = UnitDef {
+                move_speed: bad,
+                ..UnitDef::default()
+            }
+            .sanitized();
             assert_eq!(def.move_speed, 0.0, "{bad}");
         }
-        assert_eq!(UnitDef { move_speed: 2.5 }.sanitized().move_speed, 2.5);
+        assert_eq!(
+            UnitDef {
+                move_speed: 2.5,
+                ..UnitDef::default()
+            }
+            .sanitized()
+            .move_speed,
+            2.5
+        );
     }
 
     #[test]
     fn render_pos_interpolates_between_ticks() {
-        let mut unit = Unit::new(Vec2::ZERO, 0.0, UnitDef { move_speed: 1.0 });
+        let mut unit = Unit::new(
+            Vec2::ZERO,
+            0.0,
+            UnitDef {
+                move_speed: 1.0,
+                ..UnitDef::default()
+            },
+        );
         unit.pos = Vec2::new(2.0, 0.0);
         assert_eq!(unit.render_pos(0.0), Vec2::ZERO);
         assert_eq!(unit.render_pos(0.5), Vec2::new(1.0, 0.0));

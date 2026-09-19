@@ -581,9 +581,14 @@ mod tests {
         let s = Scene::server_default();
         let tiles = s.tiles.clone();
         let mut auth = LocalAuthority::new(SimWorld::new(s.tiles));
-        let unit =
-            auth.world_mut()
-                .spawn_unit(Vec2::new(-10.0, 0.0), 0.0, UnitDef { move_speed: 2.5 });
+        let unit = auth.world_mut().spawn_unit(
+            Vec2::new(-10.0, 0.0),
+            0.0,
+            UnitDef {
+                move_speed: 2.5,
+                ..UnitDef::default()
+            },
+        );
         let target = Vec2::new(15.0, 2.0);
         auth.submit(Intent::MoveTo { unit, target });
 

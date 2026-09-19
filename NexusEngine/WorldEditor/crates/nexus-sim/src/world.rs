@@ -13,10 +13,14 @@
 //! [`Authority`](crate::Authority) 에 넘기는 길만 있다. 예외는 스폰/디스폰 — 존을 읽어
 //! 초기 상태를 만드는 **설정 작업**이라 공개한다.
 
+use std::collections::HashMap;
+use std::time::Duration;
+
 use nexus_core::units::dir_to_heading;
 use nexus_core::{Entity, Vec2, World};
 
 use crate::authority::{Event, Rejection};
+use crate::combat::{self, SkillDef, SkillId};
 use crate::tilemap::TileMap;
 use crate::unit::{Unit, UnitDef};
 
@@ -30,6 +34,10 @@ pub struct SimWorld {
     entities: World,
     /// 엔티티 슬롯 번호로 색인. 핸들을 함께 두어 순회 시 되돌려 준다.
     units: Vec<Option<(Entity, Unit)>>,
+    /// 스킬 정적 데이터. 존을 읽을 때 채운다.
+    skills: HashMap<SkillId, SkillDef>,
+    /// 시뮬레이션 시계 — tick 마다 `dt` 만큼 정확히 늘어난다. 쿨타임의 기준.
+    now: Duration,
 }
 
 impl SimWorld {
@@ -39,7 +47,25 @@ impl SimWorld {
             tiles,
             entities: World::default(),
             units: Vec::new(),
+            skills: HashMap::new(),
+            now: Duration::ZERO,
         }
+    }
+
+    /// 스킬을 등록한다 (설정 작업). 같은 번호는 덮어쓴다.
+    pub fn define_skill(&mut self, id: SkillId, def: SkillDef) {
+        self.skills.insert(id, def);
+    }
+
+    #[must_use]
+    pub fn skill(&self, id: SkillId) -> Option<&SkillDef> {
+        self.skills.get(&id)
+    }
+
+    /// 시뮬레이션 시작 후 흐른 시간.
+    #[must_use]
+    pub fn now(&self) -> Duration {
+        self.now
     }
 
     #[must_use]
@@ -112,6 +138,9 @@ impl SimWorld {
     /// 볼록하므로 경유점 사이 직선이 금지된 칸을 지나지 않는다.
     pub(crate) fn plan_move(&mut self, entity: Entity, target: Vec2) -> Result<(), Rejection> {
         let unit = self.unit(entity).ok_or(Rejection::UnknownEntity)?;
+        if !unit.is_alive() {
+            return Err(Rejection::Dead);
+        }
         if unit.def.move_speed <= 0.0 {
             // 경로를 잡아 두면 영원히 "이동 중" 으로 남는다.
             return Err(Rejection::Immobile);
@@ -139,12 +168,79 @@ impl SimWorld {
         Ok(())
     }
 
-    /// 한 tick 진행. `dt` 는 초.
-    pub(crate) fn step(&mut self, dt: f32, events: &mut Vec<Event>) {
+    /// `attacker` 가 `skill` 로 `target` 을 친다. 판정 순서는 서버와 같다 ([`combat`] 모듈).
+    ///
+    /// 성공하면 [`Event::Damaged`] 를, 그 공격으로 죽으면 [`Event::Died`] 를 더 낸다.
+    /// 공격해도 이동은 멈추지 않는다 — 멈출지는 Intent 를 내는 쪽이 정한다.
+    pub(crate) fn attack(
+        &mut self,
+        attacker: Entity,
+        target: Entity,
+        skill: SkillId,
+        events: &mut Vec<Event>,
+    ) -> Result<(), Rejection> {
+        let def = *self.skills.get(&skill).ok_or(Rejection::UnknownSkill)?;
+        if attacker == target {
+            return Err(Rejection::InvalidTarget);
+        }
+        let a = self.unit(attacker).ok_or(Rejection::UnknownEntity)?;
+        let t = self.unit(target).ok_or(Rejection::UnknownEntity)?;
+
+        // 서버 CombatProcessor 와 같은 순서.
+        if !a.is_alive() {
+            return Err(Rejection::Dead);
+        }
+        if !t.is_alive() {
+            return Err(Rejection::TargetDead);
+        }
+        if !a.is_ready(skill, self.now) {
+            return Err(Rejection::OnCooldown);
+        }
+        if a.pos.distance_squared(t.pos) > def.range * def.range {
+            return Err(Rejection::OutOfRange);
+        }
+        if t.def.immortal {
+            return Err(Rejection::Invulnerable);
+        }
+
+        let amount = combat::damage(a.def.attack, def.damage_mult, t.def.defense);
+        let facing = t.pos - a.pos;
+
+        let now = self.now;
+        let a = self.unit_mut(attacker).ok_or(Rejection::UnknownEntity)?;
+        a.cooldowns.insert(skill, now + def.cooldown());
+        if facing.length_squared() > ARRIVE_EPSILON * ARRIVE_EPSILON {
+            a.heading = dir_to_heading(facing);
+        }
+
+        let t = self.unit_mut(target).ok_or(Rejection::UnknownEntity)?;
+        t.hp = t.hp.saturating_sub(amount);
+        let remaining_hp = t.hp;
+        events.push(Event::Damaged {
+            attacker,
+            target,
+            skill,
+            amount,
+            remaining_hp,
+        });
+        if remaining_hp == 0 {
+            t.waypoints.clear();
+            events.push(Event::Died {
+                unit: target,
+                killer: attacker,
+            });
+        }
+        Ok(())
+    }
+
+    /// 한 tick 진행.
+    pub(crate) fn step(&mut self, dt: Duration, events: &mut Vec<Event>) {
+        self.now += dt;
+        let dt = dt.as_secs_f32();
         let tiles = &self.tiles;
         for (entity, unit) in self.units.iter_mut().flatten() {
             unit.prev_pos = unit.pos;
-            if unit.waypoints.is_empty() {
+            if unit.waypoints.is_empty() || !unit.is_alive() {
                 continue;
             }
             match advance(tiles, unit, unit.def.move_speed * dt) {
