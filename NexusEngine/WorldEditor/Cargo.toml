@@ -1,0 +1,43 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/nexus-core",
+    "crates/nexus-platform",
+    "crates/nexus-render",
+    "crates/nexus-render-wgpu",
+    "apps/world-editor",
+]
+
+[workspace.package]
+edition      = "2024"
+version      = "0.1.0"
+license      = "UNLICENSED"
+rust-version = "1.95"
+
+[workspace.dependencies]
+# ── 내부 크레이트 ────────────────────────────────────────────────────────────
+nexus-core       = { path = "crates/nexus-core" }
+nexus-platform   = { path = "crates/nexus-platform" }
+nexus-render     = { path = "crates/nexus-render" }
+nexus-render-wgpu = { path = "crates/nexus-render-wgpu" }
+
+# ── 외부 의존 ────────────────────────────────────────────────────────────────
+# egui / egui-wgpu / egui-winit 은 반드시 같은 마이너 버전이어야 한다.
+glam              = "0.33"
+winit             = "0.30"
+raw-window-handle = "0.6"
+wgpu              = "30.0"
+pollster          = "1.0"
+bytemuck          = { version = "1.25", features = ["derive"] }
+egui              = "0.36"
+egui-wgpu         = "0.36"
+egui-winit        = "0.36"
+png               = "0.18"
+
+# 윈도우 쪽 원본 매니페스트의 린트 설정을 알 수 없어, 현재 소스가 경고 0건으로
+# 통과하는 선에서 재구성했다. 원본과 다르면 윈도우 쪽에 맞출 것.
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
