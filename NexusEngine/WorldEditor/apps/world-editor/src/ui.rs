@@ -17,10 +17,11 @@ use std::sync::Arc;
 use nexus_core::{Camera2d, Vec2, units};
 use nexus_platform::{WindowEvent, WindowTarget};
 use nexus_render_wgpu::{UiFrame, egui};
-use nexus_sim::Tile;
+use nexus_sim::{BagKind, Tile};
 
 use crate::edit::{InspectorEdit, PointerInput, Tool};
 use crate::grid;
+use crate::play::{self, InventoryAction, PlaySession};
 use crate::scene::{ItemKind, Pick, Scene, Target, ZONE_LABEL};
 
 /// 좌우 패널 기본 폭 (논리 포인트).
@@ -62,11 +63,17 @@ pub(crate) struct UiModel<'a> {
     pub(crate) tool: Tool,
     pub(crate) brush: Tile,
     pub(crate) stats: FrameStats,
+    /// 플레이 중이면 `Some` — 패널이 편집 대신 게임 상태를 보여 준다.
+    pub(crate) play: Option<&'a PlaySession>,
 }
 
 /// 한 프레임 동안 UI 가 편집기에 요청한 것.
 #[derive(Debug, Default)]
 pub(crate) struct UiActions {
+    /// 플레이 시작 / 정지 (F5).
+    pub(crate) toggle_play: bool,
+    /// 플레이 중 인벤토리 패널 조작.
+    pub(crate) inventory: Option<InventoryAction>,
     pub(crate) reset_view: bool,
     /// 선택 항목(없으면 전체 마커)이 화면에 들어오도록 카메라를 맞춘다.
     pub(crate) frame_selection: bool,
@@ -248,6 +255,20 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
                     actions.delete = true;
                 }
             });
+            ui.menu_button("플레이", |ui| {
+                let text = if model.play.is_some() {
+                    "정지 — 편집으로 돌아가기"
+                } else {
+                    "플레이 시작"
+                };
+                if ui
+                    .add(egui::Button::new(text).shortcut_text("F5"))
+                    .clicked()
+                {
+                    actions.toggle_play = true;
+                }
+                ui.weak("씬은 바뀌지 않는다 — 정지하면 플레이 결과는 버려진다.");
+            });
             ui.menu_button("보기", |ui| {
                 if ui
                     .add(egui::Button::new("존 전체 보기").shortcut_text("Home"))
@@ -293,6 +314,7 @@ fn shortcuts(ui: &mut egui::Ui, actions: &mut UiActions) {
         actions.redo |= i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Y));
         actions.undo |= i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Z));
 
+        actions.toggle_play |= i.key_pressed(Key::F5);
         actions.reset_view |= i.key_pressed(Key::Home);
         actions.frame_selection |= i.key_pressed(Key::F);
         actions.screenshot |= i.key_pressed(Key::F12);
@@ -329,6 +351,13 @@ fn status_bar(ui: &mut egui::Ui, model: &UiModel<'_>, cursor: Option<Vec2>) {
                 format_length(grid::pick_spacing(model.camera.view_height)),
             ));
 
+            if let Some(play) = model.play {
+                ui.colored_label(
+                    egui::Color32::from_rgb(120, 220, 140),
+                    format!("▶ 플레이 중 · sim tick {}", play.ticks()),
+                );
+                ui.separator();
+            }
             if let Some(label) = tile_label(model, cursor) {
                 ui.separator();
                 ui.monospace(label);
@@ -357,6 +386,10 @@ fn outline_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions
         .resizable(true)
         .default_size(SIDE_PANEL_WIDTH)
         .show(ui, |ui| {
+            if let Some(play) = model.play {
+                play_units(ui, play);
+                return;
+            }
             ui.heading("씬");
             ui.horizontal_wrapped(|ui| {
                 ui.weak("추가");
@@ -451,11 +484,107 @@ fn tool_section(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions)
     );
 }
 
+/// 플레이 중 왼쪽 패널 — 유닛과 HP.
+fn play_units(ui: &mut egui::Ui, play: &PlaySession) {
+    ui.heading("유닛");
+    ui.separator();
+    let world = play.world();
+    for (unit, u) in world.units() {
+        ui.horizontal(|ui| {
+            let name = play.name(unit);
+            if u.is_alive() {
+                ui.label(name);
+            } else {
+                ui.weak(format!("{name} (쓰러짐)"));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.monospace(format!("{}/{}", u.hp(), u.def().max_hp));
+            });
+        });
+        let ratio = u.hp() as f32 / u.def().max_hp as f32;
+        ui.add(egui::ProgressBar::new(ratio).desired_height(4.0));
+    }
+    let items = world.ground_items().count();
+    if items > 0 {
+        ui.add_space(8.0);
+        ui.weak(format!("땅에 떨어진 아이템 {items}개"));
+    }
+}
+
+/// 플레이 중 오른쪽 패널 — 플레이어 상태·인벤토리·기록.
+fn play_inspector(ui: &mut egui::Ui, play: &PlaySession, actions: &mut UiActions) {
+    ui.heading("플레이어");
+    ui.separator();
+    let Some(me) = play.world().unit(play.player()) else {
+        return;
+    };
+    ui.monospace(format!(
+        "HP {}/{}  공격 {}  방어 {}",
+        me.hp(),
+        me.def().max_hp,
+        me.attack(),
+        me.defense()
+    ));
+
+    ui.add_space(6.0);
+    ui.strong("장착");
+    for (slot, place, item) in play::equipped_lines(me) {
+        ui.horizontal(|ui| {
+            ui.label(format!("{place}:"));
+            match item {
+                Some(name) => {
+                    if ui.small_button(name).on_hover_text("클릭: 해제").clicked() {
+                        actions.inventory = Some(InventoryAction::Unequip(slot));
+                    }
+                }
+                None => {
+                    ui.weak("—");
+                }
+            }
+        });
+    }
+
+    ui.add_space(6.0);
+    ui.strong("소모품");
+    let consumables = play::bag_lines(me, BagKind::Consumable);
+    if consumables.is_empty() {
+        ui.weak("비어 있음");
+    }
+    for line in consumables {
+        let text = format!("{} ×{}", line.name, line.count);
+        if ui.button(text).on_hover_text("클릭: 사용").clicked() {
+            actions.inventory = Some(InventoryAction::Use(line.slot));
+        }
+    }
+
+    ui.add_space(6.0);
+    ui.strong("장비 가방");
+    let gear = play::bag_lines(me, BagKind::Equipment);
+    if gear.is_empty() {
+        ui.weak("비어 있음");
+    }
+    for line in gear {
+        if ui.button(line.name).on_hover_text("클릭: 장착").clicked() {
+            actions.inventory = Some(InventoryAction::Equip(line.slot));
+        }
+    }
+
+    ui.add_space(10.0);
+    ui.strong("기록");
+    for line in play.log() {
+        ui.label(egui::RichText::new(line).small());
+    }
+}
+
 fn inspector_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
     egui::Panel::right("inspector")
         .resizable(true)
         .default_size(SIDE_PANEL_WIDTH)
         .show(ui, |ui| {
+            if let Some(play) = model.play {
+                play_inspector(ui, play, actions);
+                return;
+            }
             ui.heading("인스펙터");
             ui.separator();
             tool_section(ui, model, actions);

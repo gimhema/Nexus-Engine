@@ -150,7 +150,8 @@ fn nearest_hostile(world: &SimWorld, me: Entity) -> Option<Entity> {
 
     let mut best: Option<(f32, Entity)> = None;
     for (other, o) in world.units() {
-        if other == me || !o.is_alive() {
+        // 불사 유닛은 쳐 봐야 거절된다 — 처음부터 노리지 않는다.
+        if other == me || !o.is_alive() || o.def().immortal {
             continue;
         }
         if world.relation(def.faction, o.def().faction) != Relation::Hostile {
@@ -175,9 +176,19 @@ fn set_ai(world: &mut SimWorld, me: Entity, ai: AiState) {
 
 /// AI 가 낸 Intent 가 거절됐을 때. 호출한 쪽에는 알리지 않는다 — 플레이어가 낸 것이 아니므로.
 ///
-/// 길이 없어 쫓을 수 없으면 상대를 버리고 잠시 새 적을 찾지 않는다.
+/// 상대를 버려야 하는 거절이면 버리고 잠시 새 적을 찾지 않는다:
+/// 쫓을 길이 없거나(`NoPath`), 칠 수 없는 상대(`Invulnerable` · `Friendly` — 반격 대상이
+/// 불사였거나 진영 관계가 바뀐 경우). 그대로 두면 매 tick 같은 Intent 를 내며 거절당한다.
 pub(crate) fn on_rejected(world: &mut SimWorld, intent: Intent, reason: Rejection) {
-    if !matches!((intent, reason), (Intent::MoveTo { .. }, Rejection::NoPath)) {
+    let give_up = matches!(
+        (intent, reason),
+        (Intent::MoveTo { .. }, Rejection::NoPath)
+            | (
+                Intent::Attack { .. },
+                Rejection::Invulnerable | Rejection::Friendly
+            )
+    );
+    if !give_up {
         return;
     }
     let now = world.now();
@@ -512,6 +523,35 @@ mod tests {
         assert_eq!(count(&events, |e| matches!(e, Event::Engaged { .. })), 2);
         assert!(!events.iter().any(|e| matches!(e, Event::Rejected { .. })));
         assert_eq!(unit(&auth, s).pos(), start);
+    }
+
+    #[test]
+    fn immortal_units_are_not_hunted_and_an_immortal_attacker_is_dropped() {
+        let mut w = world_with(flat());
+        let s = w.spawn_unit(Vec2::new(10.5, 10.5), 0.0, slime());
+        // 불사 적대 유닛은 어그로 범위 안이어도 노리지 않는다.
+        let saint = UnitDef {
+            immortal: true,
+            ..player()
+        };
+        let g = w.spawn_unit(Vec2::new(11.5, 10.5), 0.0, saint);
+        let mut auth = LocalAuthority::new(w);
+        assert!(run(&mut auth, 10).is_empty());
+
+        // 불사 유닛에게 맞으면 반격하려 하지만, 칠 수 없으니 곧바로 상대를 버린다.
+        auth.submit(Intent::Attack {
+            unit: g,
+            target: s,
+            skill: SWORD,
+        });
+        auth.tick(DT);
+        assert_eq!(
+            unit(&auth, s).target(),
+            None,
+            "칠 수 없는 상대를 붙잡고 있다"
+        );
+        let events = run(&mut auth, 10);
+        assert!(!events.iter().any(|e| matches!(e, Event::Engaged { .. })));
     }
 
     // ── 싸움의 끝 ────────────────────────────────────────────────────────────

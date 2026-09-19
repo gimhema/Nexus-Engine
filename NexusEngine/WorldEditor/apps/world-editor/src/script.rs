@@ -14,6 +14,7 @@
 //! add npc|monster|player X Y   마커 추가
 //! tool select|paint            뷰포트 포인터가 할 일 바꾸기
 //! delete | undo | redo | wait
+//! play                         플레이 시작/정지 (F5 와 같다). 플레이 중 press 는 클릭 명령이 된다
 //! ```
 //!
 //! 예: `NEXUS_SELECT="상인 NPC" NEXUS_SCRIPT="wait; press rotate; move -8 20 ctrl"`
@@ -55,6 +56,8 @@ pub(crate) enum Step {
     Delete,
     Undo,
     Redo,
+    /// 플레이 시작 / 정지.
+    TogglePlay,
     Wait,
 }
 
@@ -109,6 +112,7 @@ fn parse_step(text: &str) -> Result<Step, String> {
         "undo" => return Ok(Step::Undo),
         "redo" => return Ok(Step::Redo),
         "wait" => return Ok(Step::Wait),
+        "play" => return Ok(Step::TogglePlay),
         "tool" => {
             return match words.get(1).copied() {
                 Some("select") => Ok(Step::SetTool(Tool::Select)),
@@ -151,7 +155,7 @@ mod tests {
     #[test]
     fn parses_all_step_kinds() {
         let steps =
-            parse("press 1 2; move rotate ctrl ; release -3.5 4 shift; add npc 5 6; tool paint; delete; undo;")
+            parse("press 1 2; move rotate ctrl ; release -3.5 4 shift; add npc 5 6; tool paint; delete; undo; play;")
                 .unwrap();
         assert_eq!(
             steps,
@@ -178,6 +182,7 @@ mod tests {
                 Step::SetTool(Tool::PaintTile),
                 Step::Delete,
                 Step::Undo,
+                Step::TogglePlay,
             ]
         );
     }

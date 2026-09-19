@@ -1,6 +1,7 @@
 //! Nexus WorldEditor — 에디터 애플리케이션.
 //!
-//! 현재 단계: M5-2 뷰포트 편집.
+//! 현재 단계: S7-1 플레이 모드 (F5) — 편집 중인 씬을 그 자리에서 시뮬레이션으로 돌린다.
+//! 편집 기능 (M5):
 //!   - 왼쪽 클릭 선택 / Shift+클릭 추가·해제 / 끌어서 이동 / Ctrl+드래그 그리드 스냅
 //!   - 빈 곳 드래그 박스 선택, 방향 화살표 + 회전 핸들(Ctrl 15°), 마커 추가 / Delete 삭제
 //!   - 존 경계: 변·모서리 핸들을 끌어 크기 조절
@@ -15,6 +16,7 @@
 
 mod edit;
 mod grid;
+mod play;
 mod scene;
 mod screenshot;
 mod script;
@@ -31,6 +33,7 @@ use nexus_render::{DEPTH_LAYER, DrawLayer, FrameStatus, RenderCommand, RenderErr
 use nexus_render_wgpu::{TextureCarry, UiFrame, WgpuRenderer};
 
 use edit::{Editing, PointerInput, Tool};
+use play::PlaySession;
 use scene::{Handle, Pick, Scene, Target};
 use script::{Anchor, Button, Script, Step};
 use sprites::MarkerSprites;
@@ -102,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "조작: 왼쪽 = 선택/이동/박스 (Shift 추가, Ctrl 스냅) | ◆ = 회전 | Delete = 삭제 \
          | 가운데·오른쪽 드래그 = 팬 | 휠 = 줌 \
-         | Ctrl+Z/Y = 실행 취소/다시 | Esc = 선택 해제 | Home | F12"
+         | Ctrl+Z/Y = 실행 취소/다시 | Esc = 선택 해제 | Home | F5 = 플레이 | F12"
     );
 
     nexus_platform::run(config, Editor::default())?;
@@ -134,6 +137,8 @@ struct Editor {
     ///
     /// 게임 모드의 동작을 에디터에서 확인하기 위한 것이다 — S7 에서 플레이 모드의 기본이 된다.
     fixed_zoom: Option<f32>,
+    /// 진행 중인 플레이 (F5). 있으면 편집 대신 시뮬레이션을 보여 주고 조작한다.
+    play: Option<PlaySession>,
 
     // ── 통계 ─────────────────────────────────────────────────────────────
     ticks: u64,
@@ -172,6 +177,7 @@ impl Default for Editor {
             commands: Vec::new(),
             sprites: None,
             fixed_zoom: None,
+            play: None,
             ticks: 0,
             last_frame: None,
             fps: 0.0,
@@ -311,6 +317,7 @@ impl Editor {
             redo_label: history.redo_label(),
             tool: self.editing.tool(),
             brush: self.editing.brush(),
+            play: self.play.as_ref(),
             stats: FrameStats {
                 fps: self.fps,
                 quads: self
@@ -326,15 +333,78 @@ impl Editor {
         Some((frame, actions))
     }
 
+    /// 플레이 시작 / 정지. 시작하면 씬을 복사해 시뮬레이션을 만들고, 정지하면 버린다 —
+    /// 씬과 언두 기록은 건드리지 않는다.
+    fn toggle_play(&mut self) {
+        if let Some(session) = self.play.take() {
+            self.camera = *session.editor_camera();
+            println!("플레이 정지 — {} tick 진행", session.ticks());
+            return;
+        }
+        match PlaySession::start(&self.scene, self.camera) {
+            Ok(session) => {
+                println!("플레이 시작 — 유닛 {}명", session.world().unit_count());
+                self.hover = None;
+                // 플레이 중에는 카메라가 플레이어를 따라가므로 예약된 시점 맞추기는 의미가 없다.
+                self.pending_view = None;
+                self.camera.pitch = Camera2d::PITCH_QUARTER;
+                self.play = Some(session);
+            }
+            Err(e) => eprintln!("플레이할 수 없음: {e}"),
+        }
+    }
+
+    /// 플레이 중의 UI 요청. 편집 요청(언두·추가·삭제·인스펙터)은 받지 않는다 — 플레이는 씬을 바꾸지 않는다.
+    fn apply_play_actions(&mut self, actions: &UiActions, pointer: Option<PointerInput>) {
+        let Some(session) = self.play.as_mut() else {
+            return;
+        };
+        if let Some(action) = actions.inventory {
+            session.inventory(action);
+        }
+        if let Some(p) = pointer
+            && p.pressed
+            && p.over_viewport
+            && let Some(at) = p.world
+        {
+            session.click(at, p.px);
+        }
+        self.hover = None;
+    }
+
+    /// 플레이 중 카메라 — 게임과 같은 고정 줌으로 플레이어를 따라간다.
+    /// 두 tick 사이 보간된 위치를 쓰므로 20Hz 시뮬레이션에서도 화면은 매 프레임 부드럽다.
+    fn follow_player(&mut self, alpha: f32) {
+        let Some(at) = self.play.as_ref().and_then(|s| s.player_render_pos(alpha)) else {
+            return;
+        };
+        self.camera.center = at;
+        self.camera
+            .set_pixels_per_meter(self.fixed_zoom.unwrap_or(Camera2d::PIXELS_PER_METER));
+        self.camera.snap_to_pixel_grid();
+    }
+
     /// UI 가 요청한 편집을 씬에 반영한다. 모든 씬 변경은 `Editing` 을 거친다.
     fn apply_actions(&mut self, actions: &UiActions) {
+        if actions.toggle_play {
+            self.toggle_play();
+        }
+        self.manual_shot_requested |= actions.screenshot;
+        if self.play.is_some() {
+            let pointer = match actions.pointer {
+                Some(p) if self.script.is_some() => Some(self.scripted_pointer(p, actions)),
+                other => other,
+            };
+            self.apply_play_actions(actions, pointer);
+            return;
+        }
+
         if actions.reset_view {
             self.pending_view = Some(ViewRequest::Zone);
         }
         if actions.frame_selection {
             self.pending_view = Some(ViewRequest::Selection);
         }
-        self.manual_shot_requested |= actions.screenshot;
 
         if actions.undo {
             self.editing.undo(&mut self.scene);
@@ -469,13 +539,16 @@ impl Editor {
             Step::Redo => {
                 self.editing.redo(&mut self.scene);
             }
+            Step::TogglePlay => {
+                self.toggle_play();
+            }
             Step::Wait => {}
         }
         p
     }
 
-    /// 이번 프레임에 그릴 씬 명령을 쌓는다.
-    fn build_commands(&mut self, viewport: Option<[u32; 4]>) {
+    /// 이번 프레임에 그릴 씬 명령을 쌓는다. `alpha` 는 두 시뮬레이션 tick 사이의 보간 계수.
+    fn build_commands(&mut self, viewport: Option<[u32; 4]>, alpha: f32) {
         self.commands.clear();
         self.commands
             .push(RenderCommand::Clear { color: CLEAR_COLOR });
@@ -496,6 +569,11 @@ impl Editor {
 
         // 화면 픽셀 → 월드 길이. 표시를 화면상 일정한 크기로 그리는 데 쓴다.
         let px = self.camera.view_height / self.camera.viewport.1.max(1) as f32;
+
+        if self.play.is_some() {
+            self.build_play_commands(alpha, px);
+            return;
+        }
 
         // ── 지면 층 ──────────────────────────────────────────────────────────
         // 여기 있는 것은 오브젝트를 절대 가리지 않는다.
@@ -563,6 +641,43 @@ impl Editor {
 
         self.draw_rotate_handle(px);
         self.draw_box_selection();
+    }
+
+    /// 플레이 화면 — 편집 표시(그리드·마커·핸들) 없이 게임에 보일 것만.
+    /// 타일 레벨 색과 존 경계는 남긴다 — 아트가 생기기 전에는 지형을 알아볼 수단이 이것뿐이다.
+    fn build_play_commands(&mut self, alpha: f32, px: f32) {
+        let Some(play) = self.play.as_ref() else {
+            return;
+        };
+        self.commands
+            .push(RenderCommand::SetLayer(DrawLayer::Ground));
+        tiles::build(
+            &self.scene.tiles,
+            &self.camera,
+            BIAS_TILE,
+            &mut self.commands,
+        );
+        let zone = self.scene.zone;
+        grid::build_outline(
+            &self.camera,
+            zone.min,
+            zone.max,
+            2.0,
+            BIAS_ZONE,
+            ZONE_BOUNDS_COLOR,
+            &mut self.commands,
+        );
+        play.build_ground(&self.camera, alpha, px, &mut self.commands);
+
+        self.commands
+            .push(RenderCommand::SetLayer(DrawLayer::Object));
+        if let Some(sprites) = &self.sprites {
+            play.build_objects(alpha, px, sprites, &mut self.commands);
+        }
+
+        self.commands
+            .push(RenderCommand::SetLayer(DrawLayer::Overlay));
+        play.build_overlay(alpha, px, &mut self.commands);
     }
 
     /// 단독 선택된 마커의 회전 핸들 — 화살표 끝에서 이어지는 가는 선 + 원 대신 마름모.
@@ -818,12 +933,14 @@ impl App for Editor {
         if let Some(sprites) = self.sprites.as_mut() {
             sprites.advance(dt);
         }
-        // 플레이 모드(S7)에서 `nexus_sim::LocalAuthority::tick` 이 여기서 돈다 —
-        // Intent → Authority → World 경로는 nexus-sim 에 이미 있다(S6).
+        // 플레이 중이면 시뮬레이션이 여기서 돈다 — 게임 규칙은 20Hz 고정 timestep 에서만 진행한다.
         // 에디터 조작(카메라·선택·편집)은 뷰·저작 작업이므로 UI 프레임에서 처리한다.
+        if let Some(play) = self.play.as_mut() {
+            play.tick(dt, self.sprites.as_ref().map(MarkerSprites::sheet));
+        }
     }
 
-    fn render(&mut self, _alpha: f32) {
+    fn render(&mut self, alpha: f32) {
         self.frame_index += 1;
         self.update_fps();
 
@@ -834,8 +951,12 @@ impl App for Editor {
             }
             None => (None, None),
         };
+        // 뷰포트가 확정된 뒤여야 배율이 맞는다.
+        if viewport.is_some() {
+            self.follow_player(alpha);
+        }
 
-        self.build_commands(viewport);
+        self.build_commands(viewport, alpha);
         self.schedule_capture();
 
         if let Some(renderer) = self.renderer.as_mut()
@@ -904,7 +1025,7 @@ fn draw_arrow(item: &scene::Item, px: f32, out: &mut Vec<RenderCommand>) {
 }
 
 /// `a` 에서 `b` 까지 굵기 `thick` 의 선분 (회전된 사각형 하나).
-fn push_segment(
+pub(crate) fn push_segment(
     a: Vec2,
     b: Vec2,
     thick: f32,

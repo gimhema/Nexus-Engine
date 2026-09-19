@@ -35,8 +35,8 @@ const SPRITE_MIN_PX: f32 = 20.0;
 
 /// 로드된 마커 시트와 재생 상태.
 ///
-/// 재생기가 **하나뿐이라 모든 마커가 같은 위상으로 움직인다.** 에디터에서는 그게 낫고,
-/// 엔티티마다 따로 갖는 것은 게임 엔티티가 생기는 S6 에서 한다.
+/// 에디터 마커는 재생기 **하나를 공유해** 모두 같은 위상으로 움직인다 — 에디터에서는 그게 낫다.
+/// 플레이 모드는 유닛마다 따로 재생기를 두고 [`MarkerSprites::push`] 로 그린다.
 #[derive(Debug)]
 pub(crate) struct MarkerSprites {
     texture: TextureId,
@@ -97,7 +97,17 @@ impl MarkerSprites {
         self.animator.advance(&self.sheet, dt);
     }
 
-    /// 마커 하나를 세운다.
+    /// 시트 — 플레이 모드가 유닛마다 따로 재생기를 돌릴 때 쓴다.
+    pub(crate) fn sheet(&self) -> &SpriteSheet {
+        &self.sheet
+    }
+
+    /// 화면에 그려지는 스프라이트 높이 (m). 머리 위 표시(HP 막대)의 기준.
+    pub(crate) fn height(px: f32) -> f32 {
+        SPRITE_HEIGHT_M.max(SPRITE_MIN_PX * px)
+    }
+
+    /// 마커 하나를 세운다 (에디터 — 공용 재생기).
     ///
     /// `px` 는 화면 1픽셀에 해당하는 월드 길이 — 빌보드는 카메라 축을 쓰므로
     /// 가로·세로가 같은 배율이다.
@@ -108,24 +118,50 @@ impl MarkerSprites {
         depth_bias: f32,
         out: &mut Vec<RenderCommand>,
     ) {
-        let height = SPRITE_HEIGHT_M.max(SPRITE_MIN_PX * px);
+        // 시트가 무채색이라 여기서 종류별 색이 입혀진다.
+        let look = Look {
+            heading: item.orientation,
+            tint: item.kind.color(),
+        };
+        self.push(item.pos, look, &self.animator, px, depth_bias, out);
+    }
+
+    /// `pos`(발밑)에 스프라이트 하나를 세운다. 재생기는 호출자 것 — 플레이 모드는 유닛마다 따로 둔다.
+    pub(crate) fn push(
+        &self,
+        pos: Vec2,
+        look: Look,
+        animator: &SpriteAnimator,
+        px: f32,
+        depth_bias: f32,
+        out: &mut Vec<RenderCommand>,
+    ) {
+        let height = Self::height(px);
         // 시트 칸 비율을 유지한다. 늘어나면 픽셀아트가 뭉개져 보인다.
         let width = height * CELL_W as f32 / CELL_H as f32;
 
         // 카메라 yaw 가 고정이라 방향을 그대로 넘긴다. 회전하는 카메라가 생기면
-        // `orientation - camera_yaw` 가 된다.
-        let direction = units::direction_index(item.orientation, self.sheet.directions());
+        // `heading - camera_yaw` 가 된다.
+        let direction = units::direction_index(look.heading, self.sheet.directions());
 
         out.push(RenderCommand::DrawSprite {
-            // 발밑이 스폰 지점이다 — 앵커가 BottomCenter 라 여기서 위로 선다.
-            pos: Vec3::new(item.pos.x, item.pos.y, 0.0),
+            // 앵커가 BottomCenter 라 발밑에서 위로 선다.
+            pos: Vec3::new(pos.x, pos.y, 0.0),
             size: Vec2::new(width, height),
             anchor: SpriteAnchor::BottomCenter,
             depth_bias,
-            uv: self.animator.uv(&self.sheet, direction),
+            uv: animator.uv(&self.sheet, direction),
             texture: self.texture,
-            // 시트가 무채색이라 여기서 종류별 색이 입혀진다.
-            tint: item.kind.color(),
+            tint: look.tint,
         });
     }
+}
+
+/// 스프라이트를 어떻게 보이게 할지.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Look {
+    /// 바라보는 방향 (라디안) — 시트의 방향 행을 고른다.
+    pub(crate) heading: f32,
+    /// 무채색 시트에 곱할 색 (sRGB).
+    pub(crate) tint: [f32; 4],
 }
