@@ -1,0 +1,16 @@
+[package]
+name = "nexus-assets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+nexus-core.workspace   = true
+nexus-render.workspace = true
+png.workspace          = true
+
+[lints]
+workspace = true

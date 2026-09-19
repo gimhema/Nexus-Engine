@@ -7,11 +7,28 @@
 //!
 //! # 파이프라인
 //!
-//! 인스턴스 기반 단색 쿼드 하나뿐이다. 그리드 선도 얇은 쿼드로 그리므로
-//! 파이프라인이 더 필요하지 않다. 정점 버퍼는 없고 `vertex_index` 로 쿼드를 만든다.
+//! 인스턴스 기반 텍스처 쿼드다. 그리드 선·오브젝트·스프라이트를 전부 이것으로 그린다 —
+//! 선은 얇은 쿼드다. 정점 버퍼는 없고 `vertex_index` 로 쿼드를 만든다.
 //!
-//! **깊이 버퍼를 2D 단계에서도 켜 둔다.** 지금은 Z 로 그리기 순서를 정하는 용도지만,
-//! M8 에서 원근 투영으로 바뀔 때 파이프라인을 다시 만들 필요가 없어진다.
+//! 셰이더는 하나이고, **블렌드 상태와 프래그먼트 진입점만 다른 파이프라인 두 개**가 있다:
+//!
+//! | | 용도 | 알파 |
+//! |---|---|---|
+//! | `pipeline_blend` | 그리드·에디터 표시 | 알파 블렌딩 |
+//! | `pipeline_cutout` | 스프라이트 | `discard` 컷아웃, 블렌딩 없음 |
+//!
+//! 스프라이트에 블렌딩을 쓰지 않는 이유는 **블렌딩이 뒤→앞 정렬을 요구하기 때문**이다.
+//! 이 렌더러는 깊이 버퍼로 정렬하므로 그 순서를 보장할 수 없다. 컷아웃은 깊이 쓰기를
+//! 켠 채로도 결과가 맞는다. 진짜 반투명(그림자·이펙트)은 나중에 별도 패스로 분리한다.
+//!
+//! 단색 쿼드는 1×1 흰색 텍스처([`nexus_render::TextureId::WHITE`])를 샘플링한다.
+//! 덕분에 "텍스처 있음/없음"으로 셰이더가 갈리지 않는다.
+//!
+//! 드로우 콜은 **파이프라인이나 텍스처가 바뀌는 지점에서만** 나뉜다. 제출 순서를
+//! 유지해야 블렌딩이 맞으므로 정렬하지 않는다 — 같은 아틀라스를 연속 제출할수록 싸다.
+//!
+//! **깊이 버퍼를 2D 단계에서도 켜 둔다.** 스프라이트를 실제 3D 위치에 세우면
+//! Y-정렬을 CPU 에서 할 필요가 없어진다(S3).
 
 #![forbid(unsafe_code)]
 
@@ -26,6 +43,7 @@ use bytemuck::{Pod, Zeroable};
 use nexus_core::Mat4;
 use nexus_render::{
     Capture, FrameStatus, RenderBackend, RenderCommand, RenderDeviceInfo, RenderError, Renderer,
+    TextureDesc, TextureId, UvRect,
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
@@ -76,17 +94,134 @@ struct QuadInstance {
     // 여기에 패딩을 넣으면 color 를 엉뚱한 위치에서 읽는다 — 실제로 겪은 버그다.
     /// 선형 색 공간 RGBA (sRGB 입력을 변환해 넣는다).
     color: [f32; 4],
+    /// 아틀라스 영역 좌상단 (정규화 UV).
+    uv_min: [f32; 2],
+    /// 아틀라스 영역 우하단 (정규화 UV).
+    uv_max: [f32; 2],
 }
 
 /// 레이아웃이 셰이더 속성 오프셋과 맞는지 컴파일 타임에 확인한다.
 const _: () = {
-    assert!(core::mem::size_of::<QuadInstance>() == 40);
+    assert!(core::mem::size_of::<QuadInstance>() == 56);
     assert!(core::mem::offset_of!(QuadInstance, center) == 0);
     assert!(core::mem::offset_of!(QuadInstance, size) == 8);
     assert!(core::mem::offset_of!(QuadInstance, z) == 16);
     assert!(core::mem::offset_of!(QuadInstance, rotation) == 20);
     assert!(core::mem::offset_of!(QuadInstance, color) == 24);
+    assert!(core::mem::offset_of!(QuadInstance, uv_min) == 40);
+    assert!(core::mem::offset_of!(QuadInstance, uv_max) == 48);
 };
+
+/// 인스턴스를 어느 파이프라인으로 그릴지.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PipelineKind {
+    /// 알파 블렌딩 — 그리드·에디터 표시.
+    Blend,
+    /// 알파 컷아웃 — 스프라이트.
+    Cutout,
+}
+
+/// 파이프라인과 텍스처가 같아 한 번에 그릴 수 있는 인스턴스 구간.
+///
+/// 제출 순서를 유지해야 블렌딩 결과가 맞으므로, 정렬하지 않고
+/// **바뀌는 지점에서만** 끊는다.
+#[derive(Clone, Copy, Debug)]
+struct Batch {
+    kind: PipelineKind,
+    texture: TextureId,
+    /// `Frame::quads` 안의 시작 인덱스.
+    start: u32,
+    count: u32,
+}
+
+/// GPU 에 올라간 텍스처 하나. `bind_group` 이 실제로 쓰이고,
+/// 나머지 둘은 수명을 붙잡아 두기 위해 보관한다.
+#[derive(Debug)]
+struct TextureEntry {
+    _texture: wgpu::Texture,
+    _view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+}
+
+/// 이미지를 GPU 에 올리고 바인드 그룹까지 만든다.
+///
+/// 포맷은 `Rgba8UnormSrgb` 다 — 입력이 sRGB 이므로 GPU 가 샘플링할 때 선형으로 바꿔 준다.
+/// 인스턴스 색도 이미 선형이라, 셰이더의 곱셈이 선형 공간에서 일어난다.
+fn create_texture_entry(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    desc: &TextureDesc<'_>,
+) -> Result<TextureEntry, RenderError> {
+    if desc.width == 0 || desc.height == 0 {
+        return Err(RenderError::TextureFailed(format!(
+            "'{}': 크기가 0 ({}x{})",
+            desc.label, desc.width, desc.height
+        )));
+    }
+
+    let expected = desc.width as usize * desc.height as usize * 4;
+    if desc.rgba.len() != expected {
+        return Err(RenderError::TextureFailed(format!(
+            "'{}': 바이트 수가 맞지 않음 — {}x{} 이면 {expected} 이어야 하는데 {} 임",
+            desc.label,
+            desc.width,
+            desc.height,
+            desc.rgba.len()
+        )));
+    }
+
+    let size = wgpu::Extent3d {
+        width: desc.width,
+        height: desc.height,
+        depth_or_array_layers: 1,
+    };
+
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(desc.label),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    queue.write_texture(
+        texture.as_image_copy(),
+        desc.rgba,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(desc.width * 4),
+            rows_per_image: Some(desc.height),
+        },
+        size,
+    );
+
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(desc.label),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    });
+
+    Ok(TextureEntry {
+        _texture: texture,
+        _view: view,
+        bind_group,
+    })
+}
 
 /// sRGB 한 채널을 선형으로 변환한다.
 ///
@@ -120,8 +255,29 @@ struct Frame {
     view_proj: Mat4,
     viewport: Option<ViewportRect>,
     quads: Vec<QuadInstance>,
+    batches: Vec<Batch>,
     #[cfg(feature = "ui")]
     ui: Option<UiFrame>,
+}
+
+impl Frame {
+    /// 인스턴스를 쌓으면서 배치를 잇는다.
+    ///
+    /// 직전과 파이프라인·텍스처가 같으면 배치를 늘리고, 다르면 새로 연다.
+    fn push(&mut self, kind: PipelineKind, texture: TextureId, instance: QuadInstance) {
+        let start = u32::try_from(self.quads.len()).unwrap_or(u32::MAX);
+        self.quads.push(instance);
+
+        match self.batches.last_mut() {
+            Some(last) if last.kind == kind && last.texture == texture => last.count += 1,
+            _ => self.batches.push(Batch {
+                kind,
+                texture,
+                start,
+                count: 1,
+            }),
+        }
+    }
 }
 
 impl core::fmt::Debug for Frame {
@@ -142,9 +298,18 @@ pub struct WgpuRenderer {
     config: wgpu::SurfaceConfiguration,
     info: RenderDeviceInfo,
 
-    pipeline: wgpu::RenderPipeline,
+    /// 알파 블렌딩 — 그리드·에디터 표시용.
+    pipeline_blend: wgpu::RenderPipeline,
+    /// 알파 컷아웃 — 스프라이트용. 블렌딩과 깊이 정렬은 같이 갈 수 없어 나눴다.
+    pipeline_cutout: wgpu::RenderPipeline,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
+    /// 텍스처 + 샘플러 바인드 그룹 레이아웃. 올릴 때마다 이것으로 그룹을 만든다.
+    texture_layout: wgpu::BindGroupLayout,
+    /// 픽셀아트용 Nearest 샘플러. 모든 텍스처가 공유한다.
+    sampler: wgpu::Sampler,
+    /// [`TextureId`] 의 인덱스로 찾는다. 0 번은 항상 1×1 흰색.
+    textures: Vec<TextureEntry>,
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
     depth_view: wgpu::TextureView,
@@ -277,61 +442,125 @@ impl WgpuRenderer {
             source: wgpu::ShaderSource::Wgsl(include_str!("quad.wgsl").into()),
         });
 
+        // ── 텍스처 바인딩 ────────────────────────────────────────────────────
+        let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("nexus-texture-layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
+        // 픽셀아트는 확대해도 픽셀 경계가 또렷해야 한다.
+        // Linear 로 두면 스프라이트가 뿌옇게 뭉개진다 — 이 장르에서 가장 눈에 띄는 실수다.
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("nexus-sampler-nearest"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("nexus-quad-layout"),
-            bind_group_layouts: &[Some(&camera_layout)],
+            bind_group_layouts: &[Some(&camera_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("nexus-quad-pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: core::mem::size_of::<QuadInstance>() as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x2,  // center
-                        1 => Float32x2,  // size
-                        2 => Float32,    // z
-                        3 => Float32,    // rotation
-                        4 => Float32x4,  // color — 오프셋 24 (위 const 단언으로 검증)
-                    ],
-                })],
+        // 두 파이프라인은 프래그먼트 진입점과 블렌드 상태만 다르다.
+        let make_pipeline = |label: &str, entry: &str, blend: Option<wgpu::BlendState>| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: core::mem::size_of::<QuadInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![
+                            0 => Float32x2,  // center
+                            1 => Float32x2,  // size
+                            2 => Float32,    // z
+                            3 => Float32,    // rotation
+                            4 => Float32x4,  // color  — 오프셋 24 (위 const 단언으로 검증)
+                            5 => Float32x2,  // uv_min — 오프셋 40
+                            6 => Float32x2,  // uv_max — 오프셋 48
+                        ],
+                    })],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(entry),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: config.format,
+                        blend,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    // 2D 쿼드는 양면이 다 보여야 한다. 빌보드가 들어오는 S3 에서 다시 본다.
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    // 일반 Z 투영: 카메라에서 멀수록 깊이 값이 크다. 월드 Z 가 큰(= 카메라에 가까운)
+                    // 쪽이 작은 깊이를 가지므로 LessEqual 로 위에 그려진다.
+                    // (GreaterEqual 은 reverse-Z 투영용이다 — 섞어 쓰면 먼 것이 이긴다. 실제로 겪은 버그)
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+
+        let pipeline_blend = make_pipeline(
+            "nexus-quad-blend",
+            "fs_blend",
+            Some(wgpu::BlendState::ALPHA_BLENDING),
+        );
+        // 컷아웃은 블렌딩을 끈다 — discard 로 이미 구멍을 뚫었으므로 섞을 것이 없다.
+        let pipeline_cutout = make_pipeline("nexus-quad-cutout", "fs_cutout", None);
+
+        // TextureId::WHITE — 단색 쿼드가 샘플링할 1×1 흰색.
+        // 이것이 있어야 DrawRect 와 DrawSprite 가 같은 셰이더를 지난다.
+        let white = create_texture_entry(
+            &device,
+            &queue,
+            &texture_layout,
+            &sampler,
+            &TextureDesc {
+                label: "nexus-white",
+                width: 1,
+                height: 1,
+                rgba: &[0xFF; 4],
             },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                // 2D 쿼드는 양면이 다 보여야 한다. 3D 메시가 들어오는 M8 에서 조정한다.
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                // 일반 Z 투영: 카메라에서 멀수록 깊이 값이 크다. 월드 Z 가 큰(= 카메라에 가까운)
-                // 쪽이 작은 깊이를 가지므로 LessEqual 로 위에 그려진다.
-                // (GreaterEqual 은 reverse-Z 투영용이다 — 섞어 쓰면 먼 것이 이긴다. 실제로 겪은 버그)
-                depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        )?;
 
         let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nexus-instances"),
@@ -357,9 +586,13 @@ impl WgpuRenderer {
             queue,
             config,
             info,
-            pipeline,
+            pipeline_blend,
+            pipeline_cutout,
             camera_buffer,
             camera_bind_group,
+            texture_layout,
+            sampler,
+            textures: vec![white],
             instance_buffer,
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
             depth_view,
@@ -512,6 +745,7 @@ impl Renderer for WgpuRenderer {
             view_proj: Mat4::IDENTITY,
             viewport: None,
             quads: Vec::new(),
+            batches: Vec::new(),
             #[cfg(feature = "ui")]
             ui: None,
         });
@@ -519,7 +753,24 @@ impl Renderer for WgpuRenderer {
         Ok(FrameStatus::Acquired)
     }
 
+    fn load_texture(&mut self, desc: &TextureDesc<'_>) -> Result<TextureId, RenderError> {
+        let entry = create_texture_entry(
+            &self.device,
+            &self.queue,
+            &self.texture_layout,
+            &self.sampler,
+            desc,
+        )?;
+
+        let index = u32::try_from(self.textures.len())
+            .map_err(|_| RenderError::TextureFailed(String::from("텍스처 수가 u32 를 넘음")))?;
+        self.textures.push(entry);
+        Ok(TextureId::from_index(index))
+    }
+
     fn submit(&mut self, command: RenderCommand) -> Result<(), RenderError> {
+        // frame 을 빌리기 전에 읽어 둔다 — 아래에서 self 를 다시 빌릴 수 없다.
+        let texture_count = self.textures.len();
         let frame = self
             .frame
             .as_mut()
@@ -558,13 +809,49 @@ impl Renderer for WgpuRenderer {
                 z,
                 color,
             } => {
-                frame.quads.push(QuadInstance {
-                    center: center.to_array(),
-                    size: size.to_array(),
-                    z,
-                    rotation,
-                    color: linear_rgba(color),
-                });
+                frame.push(
+                    PipelineKind::Blend,
+                    TextureId::WHITE,
+                    QuadInstance {
+                        center: center.to_array(),
+                        size: size.to_array(),
+                        z,
+                        rotation,
+                        color: linear_rgba(color),
+                        uv_min: UvRect::FULL.min.to_array(),
+                        uv_max: UvRect::FULL.max.to_array(),
+                    },
+                );
+            }
+            RenderCommand::DrawSprite {
+                center,
+                size,
+                rotation,
+                z,
+                uv,
+                texture,
+                tint,
+            } => {
+                // 없는 텍스처는 흰색으로 떨어뜨린다. 프레임 도중이라 오류를 반환할 수 없고,
+                // 화면이 통째로 사라지는 것보다 단색으로 눈에 띄는 편이 낫다.
+                let texture = if (texture.index() as usize) < texture_count {
+                    texture
+                } else {
+                    TextureId::WHITE
+                };
+                frame.push(
+                    PipelineKind::Cutout,
+                    texture,
+                    QuadInstance {
+                        center: center.to_array(),
+                        size: size.to_array(),
+                        z,
+                        rotation,
+                        color: linear_rgba(tint),
+                        uv_min: uv.min.to_array(),
+                        uv_max: uv.max.to_array(),
+                    },
+                );
             }
         }
 
@@ -644,11 +931,25 @@ impl Renderer for WgpuRenderer {
                 pass.set_scissor_rect(rect.x, rect.y, rect.width, rect.height);
 
                 let used = (frame.quads.len() * core::mem::size_of::<QuadInstance>()) as u64;
-                pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &self.camera_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.instance_buffer.slice(..used));
-                // 정점 6개(쿼드 2삼각형) × 인스턴스 N개 — 드로우 콜 한 번.
-                pass.draw(0..6, 0..frame.quads.len() as u32);
+
+                // 배치마다 드로우 콜 하나. 같은 파이프라인·텍스처가 이어지는 동안은
+                // 인스턴싱으로 묶이므로, 단색만 그리던 때와 드로우 콜 수가 같다.
+                let mut bound: Option<(PipelineKind, TextureId)> = None;
+                for batch in &frame.batches {
+                    if bound != Some((batch.kind, batch.texture)) {
+                        pass.set_pipeline(match batch.kind {
+                            PipelineKind::Blend => &self.pipeline_blend,
+                            PipelineKind::Cutout => &self.pipeline_cutout,
+                        });
+                        let entry = &self.textures[batch.texture.index() as usize];
+                        pass.set_bind_group(1, &entry.bind_group, &[]);
+                        bound = Some((batch.kind, batch.texture));
+                    }
+                    // 정점 6개(쿼드 2삼각형) × 인스턴스 N개.
+                    pass.draw(0..6, batch.start..batch.start + batch.count);
+                }
             }
         }
 

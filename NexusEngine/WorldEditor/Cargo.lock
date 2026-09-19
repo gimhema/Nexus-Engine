@@ -1345,6 +1345,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-assets"
+version = "0.1.0"
+dependencies = [
+ "nexus-core",
+ "nexus-render",
+ "png",
+]
+
+[[package]]
 name = "nexus-core"
 version = "0.1.0"
 dependencies = [
@@ -3325,6 +3334,7 @@ version = "0.1.0"
 dependencies = [
  "egui",
  "egui-winit",
+ "nexus-assets",
  "nexus-core",
  "nexus-platform",
  "nexus-render",

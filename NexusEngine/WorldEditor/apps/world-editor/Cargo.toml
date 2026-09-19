@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+nexus-assets.workspace   = true
 nexus-core.workspace     = true
 nexus-platform.workspace = true
 nexus-render.workspace   = true

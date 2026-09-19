@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/nexus-assets",
     "crates/nexus-core",
     "crates/nexus-platform",
     "crates/nexus-render",
@@ -16,6 +17,7 @@ rust-version = "1.95"
 
 [workspace.dependencies]
 # ── 내부 크레이트 ────────────────────────────────────────────────────────────
+nexus-assets     = { path = "crates/nexus-assets" }
 nexus-core       = { path = "crates/nexus-core" }
 nexus-platform   = { path = "crates/nexus-platform" }
 nexus-render     = { path = "crates/nexus-render" }

@@ -13,6 +13,7 @@
 //! 화면에 보이는 배치는 NexusEngine `Server.cpp` 의 기본 존 설정을 옮겨온 것이다.
 //! M6 에서 `ZoneConfig` 로 내보낸다.
 
+mod atlas_demo;
 mod edit;
 mod grid;
 mod scene;
@@ -28,6 +29,7 @@ use nexus_platform::{App, Input, WindowConfig, WindowEvent, WindowTarget};
 use nexus_render::{FrameStatus, RenderCommand, RenderError, Renderer};
 use nexus_render_wgpu::{TextureCarry, UiFrame, WgpuRenderer};
 
+use atlas_demo::AtlasDemo;
 use edit::{Editing, PointerInput};
 use scene::{Handle, Pick, Scene, Target};
 use script::{Anchor, Button, Script, Step};
@@ -73,6 +75,8 @@ enum ViewRequest {
     Zone,
     /// 선택 항목, 없으면 모든 마커 (F)
     Selection,
+    /// 디버그 아틀라스 표시 영역 (`NEXUS_DEBUG_ATLAS`)
+    AtlasDemo,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -111,6 +115,8 @@ struct Editor {
     pending_view: Option<ViewRequest>,
     /// 프레임마다 재사용하는 명령 버퍼 — 매 프레임 할당을 피한다.
     commands: Vec<RenderCommand>,
+    /// S1 확인용 디버그 아틀라스. `NEXUS_DEBUG_ATLAS` 가 있을 때만 존재한다.
+    atlas_demo: Option<AtlasDemo>,
 
     // ── 통계 ─────────────────────────────────────────────────────────────
     ticks: u64,
@@ -147,6 +153,7 @@ impl Default for Editor {
             hover: None,
             pending_view: None,
             commands: Vec::new(),
+            atlas_demo: None,
             ticks: 0,
             last_frame: None,
             fps: 0.0,
@@ -331,6 +338,12 @@ impl Editor {
             match request {
                 ViewRequest::Zone => self.reset_view(),
                 ViewRequest::Selection => self.frame_selection(),
+                ViewRequest::AtlasDemo => {
+                    if let Some(demo) = &self.atlas_demo {
+                        let (min, max) = demo.bounds();
+                        self.frame_rect(min, max);
+                    }
+                }
             }
         }
     }
@@ -420,6 +433,10 @@ impl Editor {
         });
 
         grid::build(&self.camera, &mut self.commands);
+
+        if let Some(demo) = &self.atlas_demo {
+            demo.build(&mut self.commands);
+        }
 
         // 화면 픽셀 → 월드 길이. 선택 테두리·핸들을 화면상 일정한 크기로 그리는 데 쓴다.
         let px = self.camera.view_height / self.camera.viewport.1.max(1) as f32;
@@ -632,7 +649,7 @@ impl App for Editor {
 
         // WindowTarget 은 Clone + Send + Sync + 'static 이므로 wgpu 서피스 타깃으로
         // 그대로 넘길 수 있다. 플랫폼 분기는 wgpu 내부에 있다.
-        let renderer =
+        let mut renderer =
             WgpuRenderer::new(target.clone(), width, height).map_err(|e| e.to_string())?;
 
         let info = renderer.device_info();
@@ -657,6 +674,18 @@ impl App for Editor {
         self.pending_view = Some(ViewRequest::Zone);
         self.apply_env_selection();
         self.script = Script::from_env();
+
+        // S1 확인용. 설정돼 있으면 시점도 표시 영역으로 맞춘다.
+        match AtlasDemo::load(&mut renderer) {
+            Ok(demo) => {
+                self.atlas_demo = demo;
+                if self.atlas_demo.is_some() {
+                    self.pending_view = Some(ViewRequest::AtlasDemo);
+                }
+            }
+            Err(e) => eprintln!("{}: {e}", atlas_demo::ENV_DEBUG_ATLAS),
+        }
+
         self.renderer = Some(renderer);
         self.ui = Some(ui);
         self.target = Some(target.clone());
