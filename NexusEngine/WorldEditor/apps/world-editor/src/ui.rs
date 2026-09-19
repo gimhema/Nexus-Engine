@@ -35,6 +35,10 @@ const KOREAN_FONT_CANDIDATES: &[&str] = &[
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+    // Fedora (google-noto-sans-cjk-fonts 패키지)
+    "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",
+    // Fedora / Arch 의 나눔 패키지
+    "/usr/share/fonts/nanum/NanumGothic.ttf",
     "/System/Library/Fonts/AppleSDGothicNeo.ttc",
 ];
 
