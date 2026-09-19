@@ -11,7 +11,7 @@
 //!
 //! 카메라만 예외로 여기서 직접 움직인다 — 카메라는 편집 대상이 아니라 보는 방식이다.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use nexus_core::{Camera2d, Vec2, units};
@@ -21,8 +21,9 @@ use nexus_sim::{BagKind, Tile};
 
 use crate::edit::{InspectorEdit, PointerInput, Tool};
 use crate::grid;
-use crate::play::{self, InventoryAction, PlaySession};
+use crate::play::{InventoryAction, PlaySession};
 use crate::scene::{ItemKind, Pick, Scene, Target, ZONE_LABEL};
+use crate::zone_file;
 
 /// 좌우 패널 기본 폭 (논리 포인트).
 const SIDE_PANEL_WIDTH: f32 = 220.0;
@@ -52,6 +53,13 @@ pub(crate) struct FrameStats {
     pub(crate) ticks: u64,
 }
 
+/// 상태 바에 띄우는 알림 (저장·열기·플레이의 결과와 실패 이유).
+#[derive(Clone, Debug)]
+pub(crate) struct Notice {
+    pub(crate) message: String,
+    pub(crate) error: bool,
+}
+
 /// UI 가 그리는 데 필요한 편집기 상태 (읽기 전용 + 카메라).
 pub(crate) struct UiModel<'a> {
     pub(crate) camera: &'a mut Camera2d,
@@ -65,11 +73,22 @@ pub(crate) struct UiModel<'a> {
     pub(crate) stats: FrameStats,
     /// 플레이 중이면 `Some` — 패널이 편집 대신 게임 상태를 보여 준다.
     pub(crate) play: Option<&'a PlaySession>,
+    /// 열어 둔 존 파일. 새 씬이면 `None`.
+    pub(crate) zone_path: Option<&'a Path>,
+    /// 마지막 저장 이후 바뀌었다.
+    pub(crate) dirty: bool,
+    pub(crate) notice: Option<&'a Notice>,
 }
 
 /// 한 프레임 동안 UI 가 편집기에 요청한 것.
 #[derive(Debug, Default)]
 pub(crate) struct UiActions {
+    /// 이 경로의 존을 연다.
+    pub(crate) open_zone: Option<PathBuf>,
+    /// 이 경로로 저장한다.
+    pub(crate) save_zone: Option<PathBuf>,
+    /// 열기/저장 창을 띄운다 (UI 내부에서 소비).
+    file_dialog: Option<FileDialogMode>,
     /// 플레이 시작 / 정지 (F5).
     pub(crate) toggle_play: bool,
     /// 플레이 중 인벤토리 패널 조작.
@@ -107,6 +126,39 @@ pub(crate) struct EditorUi {
     /// 커서 아래 월드 좌표 — 상태 바 표시용.
     cursor_world: Option<Vec2>,
     font_note: String,
+    /// 열려 있는 존 열기/저장 창.
+    file_dialog: Option<FileDialog>,
+}
+
+/// 존 열기 / 다른 이름으로 저장 창.
+///
+/// OS 파일 대화 상자(`rfd` 등)를 쓰지 않는다 — 리눅스에서 GTK·포털 같은 시스템 패키지를
+/// 끌어들여 "빌드에 시스템 패키지가 필요 없다" 는 규칙을 깬다. 대신 `zones/` 폴더 목록과
+/// 경로 입력칸만 둔다. 두 OS 에서 똑같이 동작한다.
+#[derive(Debug)]
+struct FileDialog {
+    mode: FileDialogMode,
+    /// 입력칸 내용.
+    path: String,
+    /// 창을 열 때 읽은 `zones/` 목록.
+    files: Vec<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FileDialogMode {
+    Open,
+    SaveAs,
+}
+
+impl FileDialog {
+    fn new(mode: FileDialogMode, current: Option<&Path>) -> Self {
+        let path = current.map_or_else(|| zone_file::default_path("untitled"), Path::to_path_buf);
+        Self {
+            mode,
+            path: path.display().to_string(),
+            files: zone_file::list(Path::new(zone_file::ZONE_DIR)),
+        }
+    }
 }
 
 impl std::fmt::Debug for EditorUi {
@@ -136,7 +188,18 @@ impl EditorUi {
             state,
             cursor_world: None,
             font_note,
+            file_dialog: None,
         }
+    }
+
+    /// 열기(`save = false`) / 다른 이름으로 저장 창을 띄운다 — 자동 검증(`NEXUS_SCRIPT`)용.
+    pub(crate) fn show_file_dialog(&mut self, save: bool, current: Option<&Path>) {
+        let mode = if save {
+            FileDialogMode::SaveAs
+        } else {
+            FileDialogMode::Open
+        };
+        self.file_dialog = Some(FileDialog::new(mode, current));
     }
 
     /// 어떤 폰트를 쓰게 됐는지 (시작 로그용).
@@ -158,10 +221,15 @@ impl EditorUi {
         let raw = self.state.take_egui_input(target.window());
         let mut actions = UiActions::default();
         let cursor_world = &mut self.cursor_world;
+        let dialog = &mut self.file_dialog;
 
         let output = self.ctx.run_ui(raw, |ui| {
             menu_bar(ui, model, &mut actions);
-            shortcuts(ui, &mut actions);
+            shortcuts(ui, model, &mut actions);
+            if let Some(mode) = actions.file_dialog.take() {
+                *dialog = Some(FileDialog::new(mode, model.zone_path));
+            }
+            file_dialog(ui, dialog, model.dirty, &mut actions);
             status_bar(ui, model, *cursor_world);
             outline_panel(ui, model, &mut actions);
             inspector_panel(ui, model, &mut actions);
@@ -189,8 +257,26 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
     egui::Panel::top("menu_bar").show(ui, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("파일", |ui| {
-                ui.add_enabled(false, egui::Button::new("존 열기…"));
-                ui.add_enabled(false, egui::Button::new("존 저장"));
+                // 플레이 중에는 씬을 바꾸지 않는다 — 열기는 막고, 저장은 편집 상태를 저장하므로 둔다.
+                let editing = model.play.is_none();
+                if ui
+                    .add_enabled(
+                        editing,
+                        egui::Button::new("존 열기…").shortcut_text("Ctrl+O"),
+                    )
+                    .clicked()
+                {
+                    actions.file_dialog = Some(FileDialogMode::Open);
+                }
+                if ui
+                    .add(egui::Button::new("존 저장").shortcut_text("Ctrl+S"))
+                    .clicked()
+                {
+                    request_save(model, actions);
+                }
+                if ui.button("다른 이름으로 저장…").clicked() {
+                    actions.file_dialog = Some(FileDialogMode::SaveAs);
+                }
                 ui.separator();
                 if ui
                     .add(egui::Button::new("스크린샷 저장").shortcut_text("F12"))
@@ -298,8 +384,88 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
     });
 }
 
+/// 저장 — 열어 둔 파일이 있으면 거기에, 없으면 "다른 이름으로 저장" 창.
+fn request_save(model: &UiModel<'_>, actions: &mut UiActions) {
+    match model.zone_path {
+        Some(path) => actions.save_zone = Some(path.to_path_buf()),
+        None => actions.file_dialog = Some(FileDialogMode::SaveAs),
+    }
+}
+
+/// 존 열기 / 다른 이름으로 저장 창.
+fn file_dialog(
+    ui: &mut egui::Ui,
+    dialog: &mut Option<FileDialog>,
+    dirty: bool,
+    actions: &mut UiActions,
+) {
+    let Some(d) = dialog.as_mut() else {
+        return;
+    };
+    let (title, confirm) = match d.mode {
+        FileDialogMode::Open => ("존 열기", "열기"),
+        FileDialogMode::SaveAs => ("다른 이름으로 저장", "저장"),
+    };
+
+    let mut close = false;
+    egui::Window::new(title)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ui.ctx(), |ui| {
+            ui.weak(format!("{}/ 폴더의 존 파일", zone_file::ZONE_DIR));
+            egui::ScrollArea::vertical()
+                .max_height(160.0)
+                .show(ui, |ui| {
+                    if d.files.is_empty() {
+                        ui.weak("(없음)");
+                    }
+                    for file in &d.files {
+                        let shown = file.display().to_string();
+                        if ui.selectable_label(d.path == shown, &shown).clicked() {
+                            d.path = shown;
+                        }
+                    }
+                });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("경로");
+                ui.add(egui::TextEdit::singleline(&mut d.path).desired_width(260.0));
+            });
+            if d.mode == FileDialogMode::SaveAs {
+                ui.weak("파일 이름은 소문자로 저장된다 — 리눅스는 대소문자를 가린다.");
+            }
+            if d.mode == FileDialogMode::Open && dirty {
+                ui.colored_label(
+                    egui::Color32::from_rgb(240, 190, 90),
+                    "저장하지 않은 변경이 있다 — 열면 사라진다.",
+                );
+            }
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button(confirm).clicked() {
+                    match d.mode {
+                        FileDialogMode::Open => {
+                            actions.open_zone = Some(PathBuf::from(d.path.trim()));
+                        }
+                        FileDialogMode::SaveAs => {
+                            actions.save_zone = Some(zone_file::save_path_from_input(&d.path));
+                        }
+                    }
+                    close = true;
+                }
+                if ui.button("취소").clicked() {
+                    close = true;
+                }
+            });
+        });
+    if close {
+        *dialog = None;
+    }
+}
+
 /// 전역 단축키. 텍스트 입력 중에는 받지 않는다 (입력칸 안의 Ctrl+Z 는 글자 되돌리기다).
-fn shortcuts(ui: &mut egui::Ui, actions: &mut UiActions) {
+fn shortcuts(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
     let ctx = ui.ctx().clone();
     if ctx.egui_wants_keyboard_input() {
         return;
@@ -307,6 +473,19 @@ fn shortcuts(ui: &mut egui::Ui, actions: &mut UiActions) {
 
     use egui::{Key, KeyboardShortcut, Modifiers};
     let ctrl_shift = Modifiers::COMMAND | Modifiers::SHIFT;
+
+    let (save, open) = ctx.input_mut(|i| {
+        (
+            i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::S)),
+            i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::O)),
+        )
+    });
+    if save {
+        request_save(model, actions);
+    }
+    if open && model.play.is_none() {
+        actions.file_dialog = Some(FileDialogMode::Open);
+    }
 
     ctx.input_mut(|i| {
         // Shift 는 "상관없음"으로 판정되므로 Ctrl+Shift+Z 를 Ctrl+Z 보다 먼저 소비해야 한다.
@@ -340,6 +519,30 @@ fn tile_label(model: &UiModel<'_>, cursor: Option<Vec2>) -> Option<String> {
 fn status_bar(ui: &mut egui::Ui, model: &UiModel<'_>, cursor: Option<Vec2>) {
     egui::Panel::bottom("status_bar").show(ui, |ui| {
         ui.horizontal(|ui| {
+            // 파일 이름 + 저장하지 않은 변경 표시(*).
+            let name = model.zone_path.and_then(Path::file_name).map_or_else(
+                || String::from("(새 존)"),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            let mark = if model.dirty { " *" } else { "" };
+            ui.label(format!("{name}{mark}"))
+                .on_hover_text(model.zone_path.map_or_else(
+                    || String::from("아직 저장하지 않았다 — Ctrl+S"),
+                    |p| p.display().to_string(),
+                ));
+            ui.separator();
+            if let Some(notice) = model.notice {
+                // 긴 오류는 잘라서 보이고, 전체는 마우스를 올리면 본다.
+                let text = egui::RichText::new(&notice.message).small();
+                let text = if notice.error {
+                    text.color(egui::Color32::from_rgb(240, 110, 100))
+                } else {
+                    text.weak()
+                };
+                ui.add(egui::Label::new(text).truncate())
+                    .on_hover_text(&notice.message);
+                ui.separator();
+            }
             match cursor {
                 Some(p) => ui.monospace(format!("X {:>9.2}  Y {:>9.2} m", p.x, p.y)),
                 None => ui.monospace("X         —  Y         — m"),
@@ -528,7 +731,7 @@ fn play_inspector(ui: &mut egui::Ui, play: &PlaySession, actions: &mut UiActions
 
     ui.add_space(6.0);
     ui.strong("장착");
-    for (slot, place, item) in play::equipped_lines(me) {
+    for (slot, place, item) in play.equipped_lines() {
         ui.horizontal(|ui| {
             ui.label(format!("{place}:"));
             match item {
@@ -546,7 +749,7 @@ fn play_inspector(ui: &mut egui::Ui, play: &PlaySession, actions: &mut UiActions
 
     ui.add_space(6.0);
     ui.strong("소모품");
-    let consumables = play::bag_lines(me, BagKind::Consumable);
+    let consumables = play.bag_lines(BagKind::Consumable);
     if consumables.is_empty() {
         ui.weak("비어 있음");
     }
@@ -559,7 +762,7 @@ fn play_inspector(ui: &mut egui::Ui, play: &PlaySession, actions: &mut UiActions
 
     ui.add_space(6.0);
     ui.strong("장비 가방");
-    let gear = play::bag_lines(me, BagKind::Equipment);
+    let gear = play.bag_lines(BagKind::Equipment);
     if gear.is_empty() {
         ui.weak("비어 있음");
     }

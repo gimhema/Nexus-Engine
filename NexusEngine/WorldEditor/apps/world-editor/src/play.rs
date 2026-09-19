@@ -11,7 +11,7 @@
 //! - 입력은 Intent 로만 들어간다. 클릭한 대상에 **다가가는 것은 입력 쪽의 일**이다 (S6 설계) —
 //!   [`PlaySession`] 의 주문(`Order`)이 매 tick `MoveTo`/`Attack`/`PickUp` 을 낸다.
 //! - 에디터 `Scene` 과 `SimWorld` 는 핸들 공간이 다르다. 이름·색은 시작할 때 만든 대응표로 찾는다.
-//! - 규칙 수치는 [`rules`] 에 있다 — **예시 데이터**이며 S7-2 에서 파일로 옮긴다.
+//! - 규칙 수치·아이템 이름은 [`GameData`] (`data/rules.ron` · `data/display.ron`) 에서 온다 — 코드에 수치가 없다.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
@@ -21,9 +21,9 @@ use nexus_core::{Camera2d, Entity, Vec2, Vec3};
 use nexus_render::{DEPTH_LAYER, RenderCommand, SpriteAnchor, TextureId, UvRect};
 use nexus_sim::{
     Authority, BagKind, EquipSlot, Event, Intent, LocalAuthority, Rejection, Relation, SimWorld,
-    Unit,
 };
 
+use crate::game_data::GameData;
 use crate::scene::{ItemKind, Scene};
 use crate::sprites::{Look, MarkerSprites};
 
@@ -86,6 +86,8 @@ pub(crate) struct PlaySession {
     log: VecDeque<String>,
     /// 시작 전 에디터 카메라 — 정지하면 되돌린다.
     editor_camera: Camera2d,
+    /// 이번 판의 게임 데이터 (규칙 수치 + 이름·색). 시작할 때 파일에서 읽는다.
+    data: GameData,
 }
 
 impl PlaySession {
@@ -94,9 +96,13 @@ impl PlaySession {
     ///
     /// # Errors
     /// 플레이어 스폰이 없으면 플레이할 수 없다.
-    pub(crate) fn start(scene: &Scene, editor_camera: Camera2d) -> Result<Self, String> {
+    pub(crate) fn start(
+        scene: &Scene,
+        editor_camera: Camera2d,
+        data: GameData,
+    ) -> Result<Self, String> {
         let mut world = SimWorld::new(scene.tiles.clone());
-        rules::install(&mut world);
+        data.install(&mut world);
 
         let mut labels = HashMap::new();
         let mut player = None;
@@ -105,7 +111,7 @@ impl PlaySession {
             if is_player && player.is_some() {
                 continue;
             }
-            let unit = world.spawn_unit(item.pos, item.orientation, rules::unit_def(item.kind));
+            let unit = world.spawn_unit(item.pos, item.orientation, data.unit_def(item.kind));
             let name = if is_player {
                 String::from("플레이어")
             } else {
@@ -119,7 +125,7 @@ impl PlaySession {
                 },
             );
             if is_player {
-                rules::starting_kit(&mut world, unit);
+                data.give_starting_kit(&mut world, unit);
                 player = Some(unit);
             }
         }
@@ -134,6 +140,7 @@ impl PlaySession {
             chase_goal: None,
             log: VecDeque::new(),
             editor_camera,
+            data,
         };
         session.note(String::from(
             "플레이 시작 — 클릭: 이동 · 적 클릭: 공격 · 아이템 클릭: 줍기",
@@ -255,6 +262,7 @@ impl PlaySession {
 
     /// 주문을 이번 tick 의 Intent 로 바꾼다. 다가가기는 여기서 — 규칙(사거리·줍기 거리)은 월드에 묻는다.
     fn follow_order(&mut self) -> Vec<Intent> {
+        let attack_skill = self.data.player_attack();
         let world = self.auth.world();
         let me = self.player;
         let Some(u) = world.unit(me).filter(|u| u.is_alive()) else {
@@ -269,7 +277,7 @@ impl PlaySession {
                     self.order = Order::Idle;
                     return Vec::new();
                 };
-                let range = world.skill(rules::PLAYER_ATTACK).map_or(0.0, |s| s.range);
+                let range = world.skill(attack_skill).map_or(0.0, |s| s.range);
                 (t.pos(), range)
             }
             Order::PickUp(item) => {
@@ -288,11 +296,11 @@ impl PlaySession {
             }
             self.chase_goal = None;
             match self.order {
-                Order::Attack(target) if u.is_ready(rules::PLAYER_ATTACK, world.now()) => {
+                Order::Attack(target) if u.is_ready(attack_skill, world.now()) => {
                     out.push(Intent::Attack {
                         unit: me,
                         target,
-                        skill: rules::PLAYER_ATTACK,
+                        skill: attack_skill,
                     });
                 }
                 Order::PickUp(item) => {
@@ -341,10 +349,14 @@ impl PlaySession {
             }
             Event::Died { unit, .. } => format!("{} 쓰러짐", self.name(unit)),
             Event::ItemSpawned { stack, .. } => {
-                format!("{} ×{} 떨어짐", rules::item_name(stack.item), stack.count)
+                format!(
+                    "{} ×{} 떨어짐",
+                    self.data.item_name(stack.item),
+                    stack.count
+                )
             }
             Event::PickedUp { stack, .. } => {
-                format!("{} ×{} 획득", rules::item_name(stack.item), stack.count)
+                format!("{} ×{} 획득", self.data.item_name(stack.item), stack.count)
             }
             Event::Healed {
                 amount,
@@ -359,8 +371,8 @@ impl PlaySession {
                     .unit(unit)
                     .and_then(|u| u.inventory().equipped(slot));
                 match now {
-                    Some(item) => format!("{} 장착", rules::item_name(item)),
-                    None => format!("{} 해제", rules::slot_name(slot)),
+                    Some(item) => format!("{} 장착", self.data.item_name(item)),
+                    None => format!("{} 해제", text::slot_name(slot)),
                 }
             }
             Event::Engaged { unit, target } => {
@@ -380,7 +392,7 @@ impl PlaySession {
                 }
                 self.order = Order::Idle;
                 self.chase_goal = None;
-                format!("할 수 없음: {}", rules::rejection_text(reason))
+                format!("할 수 없음: {}", text::rejection(reason))
             }
             _ => return,
         };
@@ -392,6 +404,40 @@ impl PlaySession {
             self.log.pop_front();
         }
         self.log.push_back(line);
+    }
+
+    // ── 패널 ─────────────────────────────────────────────────────────────────
+
+    /// 플레이어 가방 내용 — UI 가 그대로 그린다.
+    pub(crate) fn bag_lines(&self, kind: BagKind) -> Vec<BagLine> {
+        let Some(me) = self.world().unit(self.player) else {
+            return Vec::new();
+        };
+        me.inventory()
+            .bag(kind)
+            .iter()
+            .filter_map(|(slot, s)| {
+                Some(BagLine {
+                    slot: u16::try_from(slot).ok()?,
+                    name: self.data.item_name(s.item),
+                    count: s.count,
+                })
+            })
+            .collect()
+    }
+
+    /// 장착 자리마다 (자리, 자리 이름, 장착한 아이템 이름).
+    pub(crate) fn equipped_lines(&self) -> Vec<(EquipSlot, &'static str, Option<String>)> {
+        let me = self.world().unit(self.player);
+        EquipSlot::ALL
+            .into_iter()
+            .map(|slot| {
+                let item = me
+                    .and_then(|u| u.inventory().equipped(slot))
+                    .map(|i| self.data.item_name(i));
+                (slot, text::slot_name(slot), item)
+            })
+            .collect()
     }
 
     // ── 그리기 ───────────────────────────────────────────────────────────────
@@ -414,7 +460,7 @@ impl PlaySession {
                 (
                     0.0,
                     BIAS_ITEM + DEPTH_LAYER,
-                    rules::item_color(g.stack.item),
+                    self.data.item_color(g.stack.item),
                 ),
             ] {
                 out.push(RenderCommand::DrawRect {
@@ -481,12 +527,19 @@ impl PlaySession {
     /// 표시 층 — 살아 있는 유닛 머리 위 HP 막대.
     ///
     /// 막대는 **빌보드**(흰 텍스처 스프라이트)다 — 화면을 향해 서므로 쿼터뷰에서도 눌리지 않는다.
-    pub(crate) fn build_overlay(&self, alpha: f32, px: f32, out: &mut Vec<RenderCommand>) {
+    /// `sprite_height` 는 스프라이트가 화면에 그려지는 높이 (m) — 막대는 그 위에 뜬다.
+    pub(crate) fn build_overlay(
+        &self,
+        alpha: f32,
+        px: f32,
+        sprite_height: f32,
+        out: &mut Vec<RenderCommand>,
+    ) {
         const WIDTH_PX: f32 = 30.0;
         const HEIGHT_PX: f32 = 4.0;
         const GAP_PX: f32 = 6.0;
 
-        let above = MarkerSprites::height(px) + GAP_PX * px;
+        let above = sprite_height + GAP_PX * px;
         for (_, u) in self.world().units().filter(|(_, u)| u.is_alive()) {
             let at = u.render_pos(alpha);
             let ratio = u.hp() as f32 / u.def().max_hp as f32;
@@ -543,178 +596,15 @@ fn push_bar(
 #[derive(Clone, Debug)]
 pub(crate) struct BagLine {
     pub(crate) slot: u16,
-    pub(crate) name: &'static str,
+    pub(crate) name: String,
     pub(crate) count: u32,
 }
 
-/// 플레이어 가방 내용 — UI 가 그대로 그린다.
-pub(crate) fn bag_lines(unit: &Unit, kind: BagKind) -> Vec<BagLine> {
-    unit.inventory()
-        .bag(kind)
-        .iter()
-        .filter_map(|(slot, s)| {
-            Some(BagLine {
-                slot: u16::try_from(slot).ok()?,
-                name: rules::item_name(s.item),
-                count: s.count,
-            })
-        })
-        .collect()
-}
+/// 화면 문구 — 데이터가 아니라 UI 의 일부라 코드에 둔다.
+mod text {
+    use nexus_sim::{EquipSlot, Rejection};
 
-/// 장착 자리 이름과 그 자리의 아이템 이름.
-pub(crate) fn equipped_lines(unit: &Unit) -> Vec<(EquipSlot, &'static str, Option<&'static str>)> {
-    EquipSlot::ALL
-        .into_iter()
-        .map(|slot| {
-            let item = unit.inventory().equipped(slot).map(rules::item_name);
-            (slot, rules::slot_name(slot), item)
-        })
-        .collect()
-}
-
-/// 예시 게임 데이터 — **코드가 아니라 데이터가 될 자리다** (S7-2 에서 파일로).
-///
-/// 규칙(`nexus-sim`)은 수치를 모르고, 여기서 넘긴 수치로만 동작한다.
-pub(crate) mod rules {
-    use nexus_sim::{
-        AiKind, EquipSlot, FactionId, ItemDef, ItemId, ItemKind as SimItem, LootEntry, LootTableId,
-        Rejection, Relation, SimWorld, SkillDef, SkillId, UnitDef,
-    };
-
-    use crate::scene::ItemKind;
-
-    const PLAYERS: FactionId = FactionId(1);
-    const TOWN: FactionId = FactionId(100);
-    const WILD: FactionId = FactionId(201);
-
-    /// 플레이어 기본 공격 (근접).
-    pub(crate) const PLAYER_ATTACK: SkillId = SkillId(1);
-    const SLIME_BITE: SkillId = SkillId(2);
-    const GUARD_STRIKE: SkillId = SkillId(3);
-
-    const POTION: ItemId = ItemId(501);
-    const JELLY: ItemId = ItemId(909);
-    const SHORT_SWORD: ItemId = ItemId(1101);
-    const CAP: ItemId = ItemId(2101);
-
-    const SLIME_LOOT: LootTableId = LootTableId(1);
-
-    pub(crate) fn install(world: &mut SimWorld) {
-        world.set_seed(1);
-        world.set_relation(PLAYERS, WILD, Relation::Hostile);
-
-        let skill = |range, cooldown_ms, damage_mult| SkillDef {
-            range,
-            cooldown_ms,
-            damage_mult,
-        };
-        world.define_skill(PLAYER_ATTACK, skill(2.0, 800, 1.0));
-        world.define_skill(SLIME_BITE, skill(1.5, 1200, 1.0));
-        world.define_skill(GUARD_STRIKE, skill(2.0, 1000, 1.2));
-
-        let consumable = |heal, max_stack| ItemDef {
-            kind: SimItem::Consumable { heal },
-            max_stack,
-        };
-        let gear = |slot, attack, defense| ItemDef {
-            kind: SimItem::Equipment {
-                slot,
-                attack,
-                defense,
-            },
-            max_stack: 1,
-        };
-        world.define_item(POTION, consumable(60, 20));
-        world.define_item(JELLY, consumable(15, 99));
-        world.define_item(SHORT_SWORD, gear(EquipSlot::Weapon, 12, 0));
-        world.define_item(CAP, gear(EquipSlot::Head, 0, 4));
-
-        let entry = |item, count, chance_per_mille| LootEntry {
-            item,
-            count,
-            chance_per_mille,
-        };
-        world.define_loot(
-            SLIME_LOOT,
-            vec![
-                entry(JELLY, 1, 800),
-                entry(POTION, 1, 250),
-                entry(CAP, 1, 150),
-            ],
-        );
-    }
-
-    /// 마커 종류별 유닛 수치.
-    pub(crate) fn unit_def(kind: ItemKind) -> UnitDef {
-        match kind {
-            ItemKind::PlayerSpawn => UnitDef {
-                move_speed: 4.0,
-                max_hp: 200,
-                attack: 20,
-                defense: 5,
-                faction: PLAYERS,
-                basic_attack: Some(PLAYER_ATTACK),
-                ..UnitDef::default()
-            },
-            // 서버 NpcEntityData 기본값처럼 불사·방어형.
-            ItemKind::Npc => UnitDef {
-                move_speed: 1.5,
-                max_hp: 300,
-                attack: 25,
-                defense: 10,
-                immortal: true,
-                faction: TOWN,
-                ai: AiKind::Defensive,
-                aggro_range: 6.0,
-                leash_range: 10.0,
-                basic_attack: Some(GUARD_STRIKE),
-                ..UnitDef::default()
-            },
-            // 서버 MonsterEntityData 기본값처럼 공격형.
-            ItemKind::Monster => UnitDef {
-                move_speed: 2.0,
-                max_hp: 80,
-                attack: 18,
-                defense: 2,
-                faction: WILD,
-                ai: AiKind::Aggressive,
-                aggro_range: 6.0,
-                leash_range: 14.0,
-                basic_attack: Some(SLIME_BITE),
-                loot: Some(SLIME_LOOT),
-                ..UnitDef::default()
-            },
-        }
-    }
-
-    /// 플레이어 시작 소지품.
-    pub(crate) fn starting_kit(world: &mut SimWorld, player: nexus_core::Entity) {
-        world.give_item(player, POTION, 3);
-        world.give_item(player, SHORT_SWORD, 1);
-    }
-
-    pub(crate) fn item_name(id: ItemId) -> &'static str {
-        match id {
-            POTION => "빨간 포션",
-            JELLY => "젤리",
-            SHORT_SWORD => "숏소드",
-            CAP => "모자",
-            _ => "알 수 없는 아이템",
-        }
-    }
-
-    /// 땅에 떨어졌을 때의 색 (sRGB).
-    pub(crate) fn item_color(id: ItemId) -> [f32; 4] {
-        match id {
-            POTION => [0.95, 0.30, 0.30, 1.0],
-            JELLY => [0.55, 0.85, 0.95, 1.0],
-            SHORT_SWORD | CAP => [0.95, 0.85, 0.40, 1.0],
-            _ => [0.8, 0.8, 0.8, 1.0],
-        }
-    }
-
-    pub(crate) fn slot_name(slot: EquipSlot) -> &'static str {
+    pub(super) fn slot_name(slot: EquipSlot) -> &'static str {
         match slot {
             EquipSlot::Weapon => "무기",
             EquipSlot::Head => "머리",
@@ -724,7 +614,7 @@ pub(crate) mod rules {
         }
     }
 
-    pub(crate) fn rejection_text(reason: Rejection) -> &'static str {
+    pub(super) fn rejection(reason: Rejection) -> &'static str {
         match reason {
             Rejection::UnknownEntity | Rejection::UnknownItem => "대상이 없습니다",
             Rejection::NoPath => "갈 수 없는 곳입니다",
@@ -753,7 +643,12 @@ mod tests {
     const DT: Duration = Duration::from_millis(50);
 
     fn session() -> PlaySession {
-        PlaySession::start(&Scene::server_default(), Camera2d::default()).unwrap()
+        PlaySession::start(
+            &Scene::server_default(),
+            Camera2d::default(),
+            GameData::embedded(),
+        )
+        .unwrap()
     }
 
     fn find(s: &PlaySession, name: &str) -> Entity {
@@ -784,7 +679,7 @@ mod tests {
     fn starting_does_not_touch_the_scene() {
         let scene = Scene::server_default();
         let before = scene.items.clone();
-        let mut s = PlaySession::start(&scene, Camera2d::default()).unwrap();
+        let mut s = PlaySession::start(&scene, Camera2d::default(), GameData::embedded()).unwrap();
         s.click(Vec2::new(5.0, 0.0), 0.01);
         for _ in 0..40 {
             s.tick(DT, None);
@@ -796,7 +691,7 @@ mod tests {
     fn no_player_spawn_means_no_play() {
         let mut scene = Scene::server_default();
         scene.items.retain(|i| i.kind != ItemKind::PlayerSpawn);
-        assert!(PlaySession::start(&scene, Camera2d::default()).is_err());
+        assert!(PlaySession::start(&scene, Camera2d::default(), GameData::embedded()).is_err());
     }
 
     #[test]

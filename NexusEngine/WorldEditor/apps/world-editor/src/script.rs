@@ -15,11 +15,14 @@
 //! tool select|paint            뷰포트 포인터가 할 일 바꾸기
 //! delete | undo | redo | wait
 //! play                         플레이 시작/정지 (F5 와 같다). 플레이 중 press 는 클릭 명령이 된다
+//! save PATH | open PATH         존 파일 저장 / 열기 (경로에 공백 불가)
+//! dialog open|saveas            열기 / 다른 이름으로 저장 창 띄우기
 //! ```
 //!
 //! 예: `NEXUS_SELECT="상인 NPC" NEXUS_SCRIPT="wait; press rotate; move -8 20 ctrl"`
 
 use std::collections::VecDeque;
+use std::path::PathBuf;
 
 use nexus_core::Vec2;
 
@@ -43,7 +46,7 @@ pub(crate) enum Button {
     Release,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Step {
     Pointer {
         button: Button,
@@ -58,6 +61,11 @@ pub(crate) enum Step {
     Redo,
     /// 플레이 시작 / 정지.
     TogglePlay,
+    /// 존 파일 저장 / 열기 — 경로는 작업 디렉터리 기준.
+    Save(PathBuf),
+    Open(PathBuf),
+    /// 열기(`false`) / 다른 이름으로 저장(`true`) 창 띄우기.
+    Dialog(bool),
     Wait,
 }
 
@@ -113,6 +121,24 @@ fn parse_step(text: &str) -> Result<Step, String> {
         "redo" => return Ok(Step::Redo),
         "wait" => return Ok(Step::Wait),
         "play" => return Ok(Step::TogglePlay),
+        "dialog" => {
+            return match words.get(1).copied() {
+                Some("open") => Ok(Step::Dialog(false)),
+                Some("saveas") => Ok(Step::Dialog(true)),
+                _ => Err(format!("'{text}': 창은 open|saveas")),
+            };
+        }
+        "save" | "open" => {
+            let Some(path) = words.get(1) else {
+                return Err(format!("'{text}': 경로가 없음"));
+            };
+            let path = PathBuf::from(path);
+            return Ok(if words[0] == "save" {
+                Step::Save(path)
+            } else {
+                Step::Open(path)
+            });
+        }
         "tool" => {
             return match words.get(1).copied() {
                 Some("select") => Ok(Step::SetTool(Tool::Select)),
@@ -155,7 +181,7 @@ mod tests {
     #[test]
     fn parses_all_step_kinds() {
         let steps =
-            parse("press 1 2; move rotate ctrl ; release -3.5 4 shift; add npc 5 6; tool paint; delete; undo; play;")
+            parse("press 1 2; move rotate ctrl ; release -3.5 4 shift; add npc 5 6; tool paint; delete; undo; play; save zones/a.zone.ron;")
                 .unwrap();
         assert_eq!(
             steps,
@@ -183,6 +209,7 @@ mod tests {
                 Step::Delete,
                 Step::Undo,
                 Step::TogglePlay,
+                Step::Save(PathBuf::from("zones/a.zone.ron")),
             ]
         );
     }

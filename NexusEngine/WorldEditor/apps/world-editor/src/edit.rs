@@ -163,10 +163,18 @@ fn remove_all(scene: &mut Scene, items: &[(usize, Item)]) {
 }
 
 /// 언두/리두 스택.
+///
+/// 기록마다 **고유 번호**를 붙인다. 씬의 "지금 상태" 는 언두 스택 맨 위의 번호다
+/// ([`state_id`](Self::state_id)) — 저장할 때 이 번호를 적어 두면, 언두로 저장 시점에
+/// 되돌아왔을 때도 "저장 안 됨" 이 풀린다. 편집 횟수를 세는 방식으로는 이것이 안 된다.
 #[derive(Debug, Default)]
 pub(crate) struct History {
-    undo: Vec<Command>,
-    redo: Vec<Command>,
+    undo: Vec<(u64, Command)>,
+    redo: Vec<(u64, Command)>,
+    /// 마지막으로 발급한 번호.
+    last_id: u64,
+    /// 언두 스택이 비었을 때의 상태 번호. 상한 때문에 버린 기록이 있으면 그 번호가 된다.
+    base_id: u64,
 }
 
 impl History {
@@ -175,19 +183,26 @@ impl History {
         if cmd.is_noop() {
             return;
         }
+        self.last_id += 1;
         self.redo.clear();
-        self.undo.push(cmd);
+        self.undo.push((self.last_id, cmd));
         if self.undo.len() > HISTORY_LIMIT {
-            self.undo.remove(0);
+            let (dropped, _) = self.undo.remove(0);
+            self.base_id = dropped;
         }
     }
 
+    /// 지금 씬 상태의 번호. 같은 번호면 같은 편집 상태다.
+    pub(crate) fn state_id(&self) -> u64 {
+        self.undo.last().map_or(self.base_id, |(id, _)| *id)
+    }
+
     pub(crate) fn undo_label(&self) -> Option<String> {
-        self.undo.last().map(Command::describe)
+        self.undo.last().map(|(_, c)| c.describe())
     }
 
     pub(crate) fn redo_label(&self) -> Option<String> {
-        self.redo.last().map(Command::describe)
+        self.redo.last().map(|(_, c)| c.describe())
     }
 }
 
@@ -420,22 +435,22 @@ impl Editing {
 
     pub(crate) fn undo(&mut self, scene: &mut Scene) -> bool {
         self.cancel_pending(scene);
-        let Some(cmd) = self.history.undo.pop() else {
+        let Some((id, cmd)) = self.history.undo.pop() else {
             return false;
         };
         cmd.revert(scene);
-        self.history.redo.push(cmd);
+        self.history.redo.push((id, cmd));
         self.prune_selection(scene);
         true
     }
 
     pub(crate) fn redo(&mut self, scene: &mut Scene) -> bool {
         self.cancel_pending(scene);
-        let Some(cmd) = self.history.redo.pop() else {
+        let Some((id, cmd)) = self.history.redo.pop() else {
             return false;
         };
         cmd.apply(scene);
-        self.history.undo.push(cmd);
+        self.history.undo.push((id, cmd));
         self.prune_selection(scene);
         true
     }
@@ -1224,6 +1239,42 @@ mod tests {
         ed.undo(&mut s);
         assert!(close(s.item(a).unwrap().orientation, 0.0));
         assert!(ed.history().undo_label().is_none());
+    }
+
+    #[test]
+    fn state_id_tracks_undo_back_to_the_saved_point() {
+        let (mut s, _, _) = scene();
+        let mut ed = Editing::default();
+        let saved = ed.history().state_id();
+
+        ed.add_item(&mut s, ItemKind::Npc, Vec2::ZERO);
+        let one = ed.history().state_id();
+        assert_ne!(one, saved, "편집했는데 상태가 같다");
+
+        ed.undo(&mut s);
+        assert_eq!(ed.history().state_id(), saved, "저장 시점으로 되돌아왔다");
+        ed.redo(&mut s);
+        assert_eq!(ed.history().state_id(), one);
+
+        // 되돌린 뒤 다른 편집을 하면, 개수가 같아도 다른 상태다.
+        ed.undo(&mut s);
+        ed.add_item(&mut s, ItemKind::Monster, Vec2::ZERO);
+        assert_ne!(ed.history().state_id(), one);
+        assert_ne!(ed.history().state_id(), saved);
+    }
+
+    #[test]
+    fn state_id_survives_history_trimming() {
+        let (mut s, _, _) = scene();
+        let mut ed = Editing::default();
+        for _ in 0..HISTORY_LIMIT + 5 {
+            ed.add_item(&mut s, ItemKind::Npc, Vec2::ZERO);
+        }
+        let top = ed.history().state_id();
+        while ed.undo(&mut s) {}
+        // 버린 기록이 있으니 "처음 상태(0)" 로 돌아간 것이 아니다.
+        assert_ne!(ed.history().state_id(), 0);
+        assert_ne!(ed.history().state_id(), top);
     }
 
     #[test]

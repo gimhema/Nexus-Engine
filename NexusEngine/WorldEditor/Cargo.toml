@@ -37,6 +37,9 @@ egui              = "0.36"
 egui-wgpu         = "0.36"
 egui-winit        = "0.36"
 png               = "0.18"
+# 존 파일 (S7-2). 앱만 쓴다 — 코어·시뮬레이션 크레이트는 직렬화를 모른다.
+serde             = { version = "1.0", features = ["derive"] }
+ron               = "0.12"
 
 # 워크스페이스 공통 린트. 크레이트별 개별 설정은 두지 않는다.
 # CI 가 clippy 를 -D warnings 로 돌리므로 warn 도 사실상 오류다.

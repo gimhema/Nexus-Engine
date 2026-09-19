@@ -1,0 +1,13 @@
+// markers.png 의 시트 정의. 그림과 짝이라 그림을 바꾸면 이 파일도 함께 바꾼다.
+//
+// 배치: 행 = 클립 시작 행 + 방향, 열 = 프레임. 방향 0 은 +X(동)에서 반시계로 증가.
+// 방향 수는 시트의 성질이다 — 8방향 시트로 바꾸면 directions 만 바꾸면 된다.
+(
+    version: 1,
+    cell: (32, 48),
+    directions: 4,
+    clips: [
+        (state: Idle, row: 0, frames: 4, frame_ms: 250, looping: true),
+        (state: Walk, row: 4, frames: 4, frame_ms: 150, looping: true),
+    ],
+)

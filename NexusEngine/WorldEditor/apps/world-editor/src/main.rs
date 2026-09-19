@@ -12,9 +12,10 @@
 //! 단위는 미터(m), 방향은 라디안 — `nexus_core::units`.
 //!
 //! 화면에 보이는 배치는 NexusEngine `Server.cpp` 의 기본 존 설정을 옮겨온 것이다.
-//! M6 에서 `ZoneConfig` 로 내보낸다.
+//! 존 파일(`zones/*.zone.ron`)로 저장·로드한다 (S7-2). 서버 `ZoneConfig` 내보내기는 단계 2.
 
 mod edit;
+mod game_data;
 mod grid;
 mod play;
 mod scene;
@@ -23,6 +24,7 @@ mod script;
 mod sprites;
 mod tiles;
 mod ui;
+mod zone_file;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -33,11 +35,12 @@ use nexus_render::{DEPTH_LAYER, DrawLayer, FrameStatus, RenderCommand, RenderErr
 use nexus_render_wgpu::{TextureCarry, UiFrame, WgpuRenderer};
 
 use edit::{Editing, PointerInput, Tool};
+use game_data::GameData;
 use play::PlaySession;
 use scene::{Handle, Pick, Scene, Target};
 use script::{Anchor, Button, Script, Step};
 use sprites::MarkerSprites;
-use ui::{EditorUi, FrameStats, UiActions, UiModel};
+use ui::{EditorUi, FrameStats, Notice, UiActions, UiModel};
 
 // 색은 모두 sRGB. 렌더러가 선형으로 변환한다.
 const CLEAR_COLOR: [f32; 4] = [0.05, 0.06, 0.08, 1.0];
@@ -81,6 +84,9 @@ const ENV_PITCH: &str = "NEXUS_PITCH";
 
 /// 고정 줌 배율 (화면 px / 월드 m). 설정하면 자유 줌 대신 이 배율로 고정된다 — 게임 모드 확인용.
 const ENV_PIXELS_PER_METER: &str = "NEXUS_PIXELS_PER_METER";
+
+/// 시작할 때 열 존 파일 경로.
+const ENV_ZONE: &str = "NEXUS_ZONE";
 
 /// 카메라 시점 맞추기 요청.
 ///
@@ -139,6 +145,12 @@ struct Editor {
     fixed_zoom: Option<f32>,
     /// 진행 중인 플레이 (F5). 있으면 편집 대신 시뮬레이션을 보여 주고 조작한다.
     play: Option<PlaySession>,
+    /// 열어 둔 존 파일. 새 씬이면 `None` — 저장할 때 경로를 묻는다.
+    zone_path: Option<PathBuf>,
+    /// 마지막으로 저장·연 시점의 편집 상태 번호 (`History::state_id`). 다르면 저장 안 됨.
+    saved_state: u64,
+    /// 상태 바에 띄울 마지막 알림 (저장·열기·플레이 실패 이유 등).
+    notice: Option<Notice>,
 
     // ── 통계 ─────────────────────────────────────────────────────────────
     ticks: u64,
@@ -178,6 +190,9 @@ impl Default for Editor {
             sprites: None,
             fixed_zoom: None,
             play: None,
+            zone_path: None,
+            saved_state: 0,
+            notice: None,
             ticks: 0,
             last_frame: None,
             fps: 0.0,
@@ -308,6 +323,7 @@ impl Editor {
         };
 
         let history = self.editing.history();
+        let dirty = history.state_id() != self.saved_state;
         let mut model = UiModel {
             camera: &mut self.camera,
             scene: &self.scene,
@@ -318,6 +334,9 @@ impl Editor {
             tool: self.editing.tool(),
             brush: self.editing.brush(),
             play: self.play.as_ref(),
+            zone_path: self.zone_path.as_deref(),
+            dirty,
+            notice: self.notice.as_ref(),
             stats: FrameStats {
                 fps: self.fps,
                 quads: self
@@ -333,6 +352,65 @@ impl Editor {
         Some((frame, actions))
     }
 
+    /// 사용자에게 알릴 일 — 콘솔에 찍고 상태 바에도 남긴다. 창만 보는 사람도 실패 이유를 알 수 있게.
+    fn notify(&mut self, message: String, error: bool) {
+        if error {
+            eprintln!("{message}");
+        } else {
+            println!("{message}");
+        }
+        self.notice = Some(Notice { message, error });
+    }
+
+    /// 존 파일로 저장한다. 성공하면 그 경로가 "열어 둔 파일" 이 되고 저장 안 됨 표시가 풀린다.
+    ///
+    /// 플레이 중에도 저장할 수 있다 — 저장하는 것은 편집 중인 씬이지 플레이 결과가 아니다.
+    fn save_zone(&mut self, path: PathBuf) {
+        match zone_file::save(&self.scene, &path) {
+            Ok(()) => {
+                self.notify(format!("존 저장 — {}", path.display()), false);
+                self.saved_state = self.editing.history().state_id();
+                self.zone_path = Some(path);
+            }
+            Err(e) => self.notify(format!("존 저장 실패: {e}"), true),
+        }
+    }
+
+    /// 존 파일을 연다. 실패하면 지금 씬을 그대로 둔다.
+    ///
+    /// 여는 것은 편집이 아니라 **언두 기록을 비운다** — 다른 파일의 편집을 되돌리면 안 된다.
+    /// 도구·붓은 유지한다.
+    fn open_zone(&mut self, path: PathBuf) {
+        let scene = match zone_file::load(&path) {
+            Ok(scene) => scene,
+            Err(e) => {
+                self.notify(format!("존 열기 실패: {e}"), true);
+                return;
+            }
+        };
+        if self.play.is_some() {
+            self.toggle_play();
+        }
+        self.notify(
+            format!(
+                "존 열기 — {} (마커 {}개)",
+                path.display(),
+                scene.items.len()
+            ),
+            false,
+        );
+        let (tool, brush) = (self.editing.tool(), self.editing.brush());
+        self.editing = Editing::default();
+        self.editing.set_tool(tool);
+        self.editing.set_brush(brush);
+        self.saved_state = self.editing.history().state_id();
+        self.scene = scene;
+        self.zone_path = Some(path);
+        self.hover = None;
+        // 선택이 없으면 모든 마커가 보이도록 맞춘다.
+        self.pending_view = Some(ViewRequest::Selection);
+    }
+
     /// 플레이 시작 / 정지. 시작하면 씬을 복사해 시뮬레이션을 만들고, 정지하면 버린다 —
     /// 씬과 언두 기록은 건드리지 않는다.
     fn toggle_play(&mut self) {
@@ -341,7 +419,15 @@ impl Editor {
             println!("플레이 정지 — {} tick 진행", session.ticks());
             return;
         }
-        match PlaySession::start(&self.scene, self.camera) {
+        // 데이터는 시작할 때마다 새로 읽는다 — `data/*.ron` 을 고치고 F5 만 다시 누르면 된다.
+        let data = match GameData::load() {
+            Ok(data) => data,
+            Err(e) => {
+                self.notify(format!("플레이할 수 없음: {e}"), true);
+                return;
+            }
+        };
+        match PlaySession::start(&self.scene, self.camera, data) {
             Ok(session) => {
                 println!("플레이 시작 — 유닛 {}명", session.world().unit_count());
                 self.hover = None;
@@ -350,7 +436,7 @@ impl Editor {
                 self.camera.pitch = Camera2d::PITCH_QUARTER;
                 self.play = Some(session);
             }
-            Err(e) => eprintln!("플레이할 수 없음: {e}"),
+            Err(e) => self.notify(format!("플레이할 수 없음: {e}"), true),
         }
     }
 
@@ -386,6 +472,12 @@ impl Editor {
 
     /// UI 가 요청한 편집을 씬에 반영한다. 모든 씬 변경은 `Editing` 을 거친다.
     fn apply_actions(&mut self, actions: &UiActions) {
+        if let Some(path) = &actions.save_zone {
+            self.save_zone(path.clone());
+        }
+        if let Some(path) = &actions.open_zone {
+            self.open_zone(path.clone());
+        }
         if actions.toggle_play {
             self.toggle_play();
         }
@@ -542,6 +634,17 @@ impl Editor {
             Step::TogglePlay => {
                 self.toggle_play();
             }
+            Step::Save(path) => {
+                self.save_zone(path);
+            }
+            Step::Open(path) => {
+                self.open_zone(path);
+            }
+            Step::Dialog(save) => {
+                if let Some(ui) = self.ui.as_mut() {
+                    ui.show_file_dialog(save, self.zone_path.as_deref());
+                }
+            }
             Step::Wait => {}
         }
         p
@@ -677,7 +780,12 @@ impl Editor {
 
         self.commands
             .push(RenderCommand::SetLayer(DrawLayer::Overlay));
-        play.build_overlay(alpha, px, &mut self.commands);
+        // 시트가 없으면(로드 실패) 기본 칸 높이 48px 를 기준으로 막대를 띄운다.
+        let sprite_height = self
+            .sprites
+            .as_ref()
+            .map_or(48.0 / Camera2d::PIXELS_PER_METER, |s| s.height(px));
+        play.build_overlay(alpha, px, sprite_height, &mut self.commands);
     }
 
     /// 단독 선택된 마커의 회전 핸들 — 화살표 끝에서 이어지는 가는 선 + 원 대신 마름모.
@@ -888,6 +996,10 @@ impl App for Editor {
 
         self.camera.viewport = (width, height);
         self.pending_view = Some(ViewRequest::Zone);
+        // 선택(NEXUS_SELECT)은 이름으로 찾으므로 존을 먼저 읽는다.
+        if let Some(path) = std::env::var_os(ENV_ZONE) {
+            self.open_zone(PathBuf::from(path));
+        }
         self.apply_env_camera();
         self.apply_env_selection();
         self.script = Script::from_env();

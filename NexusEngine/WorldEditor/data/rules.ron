@@ -1,0 +1,85 @@
+// 게임 규칙 수치 — 서버 테이블과 짝을 이루는 절반. 이름·색·에셋 경로는 display.ron 에.
+//
+// 번호(스킬·아이템·드롭 테이블·진영)는 서버와 같은 ID 공간이다 — ID 공간이 곧 프로토콜.
+// 단위: 거리 m, 속도 m/s, 시간 ms, 확률 천분율(1000 = 반드시).
+// 이 파일을 고치면 다음 플레이 시작(F5)부터 적용된다 — 다시 빌드할 필요 없다.
+(
+    version: 1,
+    // 드롭 난수 시드. 같은 시드·같은 입력이면 같은 드롭이 나온다.
+    seed: 1,
+
+    // 진영 관계 (대칭). 적지 않은 쌍은 중립, 같은 진영은 우호.
+    // 1 = 플레이어, 100 = 마을, 201 = 야생 몬스터 (서버 EFactionId 와 같은 번호 공간)
+    relations: [
+        (a: 1, b: 201, relation: Hostile),
+    ],
+
+    // 스킬 — 서버 SkillDef 의 단일 대상 부분.
+    skills: {
+        1: (range: 2.0, cooldown_ms: 800, damage_mult: 1.0),   // 플레이어 베기
+        2: (range: 1.5, cooldown_ms: 1200, damage_mult: 1.0),  // 슬라임 물기
+        3: (range: 2.0, cooldown_ms: 1000, damage_mult: 1.2),  // 경비병 일격
+    },
+
+    items: {
+        501: Consumable(heal: 60, max_stack: 20),   // 빨간 포션
+        909: Consumable(heal: 15, max_stack: 99),   // 젤리
+        1101: Equipment(slot: Weapon, attack: 12, defense: 0),  // 숏소드
+        2101: Equipment(slot: Head, attack: 0, defense: 4),     // 모자
+    },
+
+    // 드롭 테이블 — 줄마다 따로 굴린다.
+    loot: {
+        1: [
+            (item: 909, count: 1, chance_per_mille: 800),
+            (item: 501, count: 1, chance_per_mille: 250),
+            (item: 2101, count: 1, chance_per_mille: 150),
+        ],
+    },
+
+    // 에디터 마커 종류별 유닛 수치. 마커마다 따로 정하는 것은 인스펙터 명세(M5-3) 이후.
+    units: {
+        Player: (
+            move_speed: 4.0,
+            max_hp: 200,
+            attack: 20,
+            defense: 5,
+            faction: 1,
+            basic_attack: Some(1),
+        ),
+        // 서버 NpcEntityData 기본값처럼 불사·방어형.
+        Npc: (
+            move_speed: 1.5,
+            max_hp: 300,
+            attack: 25,
+            defense: 10,
+            immortal: true,
+            faction: 100,
+            ai: Defensive,
+            aggro_range: 6.0,
+            leash_range: 10.0,
+            basic_attack: Some(3),
+        ),
+        // 서버 MonsterEntityData 기본값처럼 공격형.
+        Monster: (
+            move_speed: 2.0,
+            max_hp: 80,
+            attack: 18,
+            defense: 2,
+            faction: 201,
+            ai: Aggressive,
+            aggro_range: 6.0,
+            leash_range: 14.0,
+            basic_attack: Some(2),
+            loot: Some(1),
+        ),
+    },
+
+    // 플레이어가 클릭으로 공격할 때 쓰는 스킬.
+    player_attack: 1,
+    // 플레이어 시작 소지품.
+    starting_kit: [
+        (item: 501, count: 3),
+        (item: 1101, count: 1),
+    ],
+)
