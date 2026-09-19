@@ -1,37 +1,47 @@
-//! 마커 스프라이트 — 스폰 지점을 빌보드로 그린다.
+//! 마커 스프라이트 — 스폰 지점을 애니메이션 빌보드로 그린다.
 //!
-//! 게임 아트가 아직 없으므로 플레이스홀더 시트를 쓴다. 칸 하나가 종류 하나이고,
-//! 애니메이션·방향은 **S4 에서** 이 위에 올린다. 그때 시트 메타데이터
-//! (프레임 수·방향 수)가 들어오므로, 여기에 그 값을 상수로 박지 말 것.
+//! 게임 아트가 아직 없으므로 플레이스홀더 시트를 쓴다. 시트는 **무채색**이고
+//! 종류별 색은 `tint` 로 입힌다 — 텍스처 하나로 세 종류를 다 그리므로
+//! 드로우 콜도 한 번이다.
 //!
 //! 애셋은 `include_bytes!` 로 실행 파일에 넣는다 — 에디터 기본 표시라 작업 디렉터리에
 //! 의존하지 않아야 한다. 존별 애셋의 파일 로딩은 S5/S7 에서 다룬다.
 
-use nexus_assets::{GridAtlas, Image};
-use nexus_core::{Vec2, Vec3};
-use nexus_render::{RenderCommand, Renderer, SpriteAnchor, TextureId, UvRect};
+use core::time::Duration;
 
-use crate::scene::{Item, ItemKind};
+use nexus_assets::{AnimState, Clip, GridAtlas, Image, SpriteAnimator, SpriteSheet};
+use nexus_core::{Camera2d, Vec2, Vec3, units};
+use nexus_render::{RenderCommand, Renderer, SpriteAnchor, TextureId};
+
+use crate::scene::Item;
 
 /// 시트 한 칸의 픽셀 크기. 애셋과 맞아야 한다.
 const CELL_W: u32 = 32;
 const CELL_H: u32 = 48;
+
+/// 시트가 담고 있는 방향 수. **엔진이 아니라 이 시트의 성질이다** —
+/// 8방향 시트로 갈아끼우면 이 값만 바뀌고 나머지 코드는 그대로다.
+const SHEET_DIRECTIONS: u32 = 4;
 
 /// 스프라이트의 월드 높이 (m).
 ///
 /// 시트 칸 높이를 기준 배율로 나눈 값이다 — 고정 줌에서 **스프라이트 1픽셀이
 /// 화면 1픽셀**이 된다. 픽셀아트가 뭉개지지 않으려면 이 관계를 지켜야 하므로,
 /// 임의의 값(1.8 같은)을 넣지 말 것. 더 큰 캐릭터는 칸을 키운다.
-const SPRITE_HEIGHT_M: f32 = CELL_H as f32 / nexus_core::Camera2d::PIXELS_PER_METER;
+const SPRITE_HEIGHT_M: f32 = CELL_H as f32 / Camera2d::PIXELS_PER_METER;
 
 /// 화면에서 이보다 작게 그리지 않는다 (픽셀). 줌아웃해도 마커가 사라지지 않도록.
 const SPRITE_MIN_PX: f32 = 20.0;
 
-/// 로드된 마커 시트.
+/// 로드된 마커 시트와 재생 상태.
+///
+/// 재생기가 **하나뿐이라 모든 마커가 같은 위상으로 움직인다.** 에디터에서는 그게 낫고,
+/// 엔티티마다 따로 갖는 것은 게임 엔티티가 생기는 S6 에서 한다.
 #[derive(Debug)]
 pub(crate) struct MarkerSprites {
     texture: TextureId,
-    atlas: GridAtlas,
+    sheet: SpriteSheet,
+    animator: SpriteAnimator,
 }
 
 impl MarkerSprites {
@@ -46,17 +56,45 @@ impl MarkerSprites {
         let texture = renderer
             .load_texture(&image.desc("markers"))
             .map_err(|e| e.to_string())?;
-        Ok(Self { texture, atlas })
+
+        // 시트 배치: 행 = 클립 시작 행 + 방향, 열 = 프레임.
+        // 정의 파일에서 읽어 오는 것은 S5/S7 에서 — 지금은 코드가 곧 메타데이터다.
+        let sheet = SpriteSheet::new(
+            atlas,
+            SHEET_DIRECTIONS,
+            vec![
+                (
+                    AnimState::Idle,
+                    Clip {
+                        row: 0,
+                        frames: 4,
+                        frame_time: Duration::from_millis(250),
+                        looping: true,
+                    },
+                ),
+                (
+                    AnimState::Walk,
+                    Clip {
+                        row: SHEET_DIRECTIONS,
+                        frames: 4,
+                        frame_time: Duration::from_millis(150),
+                        looping: true,
+                    },
+                ),
+            ],
+        );
+
+        Ok(Self {
+            texture,
+            sheet,
+            animator: SpriteAnimator::default(),
+        })
     }
 
-    /// 종류에 대응하는 칸.
-    fn uv(&self, kind: ItemKind) -> UvRect {
-        let col = match kind {
-            ItemKind::PlayerSpawn => 0,
-            ItemKind::Npc => 1,
-            ItemKind::Monster => 2,
-        };
-        self.atlas.uv(col, 0)
+    /// 애니메이션을 진행한다. **고정 timestep 에서만** 호출한다 —
+    /// 렌더 프레임에서 부르면 프레임레이트에 따라 속도가 달라진다.
+    pub(crate) fn advance(&mut self, dt: Duration) {
+        self.animator.advance(&self.sheet, dt);
     }
 
     /// 마커 하나를 세운다.
@@ -74,15 +112,20 @@ impl MarkerSprites {
         // 시트 칸 비율을 유지한다. 늘어나면 픽셀아트가 뭉개져 보인다.
         let width = height * CELL_W as f32 / CELL_H as f32;
 
+        // 카메라 yaw 가 고정이라 방향을 그대로 넘긴다. 회전하는 카메라가 생기면
+        // `orientation - camera_yaw` 가 된다.
+        let direction = units::direction_index(item.orientation, self.sheet.directions());
+
         out.push(RenderCommand::DrawSprite {
             // 발밑이 스폰 지점이다 — 앵커가 BottomCenter 라 여기서 위로 선다.
             pos: Vec3::new(item.pos.x, item.pos.y, 0.0),
             size: Vec2::new(width, height),
             anchor: SpriteAnchor::BottomCenter,
             depth_bias,
-            uv: self.uv(item.kind),
+            uv: self.animator.uv(&self.sheet, direction),
             texture: self.texture,
-            tint: [1.0; 4],
+            // 시트가 무채색이라 여기서 종류별 색이 입혀진다.
+            tint: item.kind.color(),
         });
     }
 }

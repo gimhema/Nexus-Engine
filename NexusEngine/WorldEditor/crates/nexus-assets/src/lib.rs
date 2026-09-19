@@ -1,4 +1,4 @@
-//! 애셋 — 이미지 디코딩과 스프라이트 아틀라스.
+//! 애셋 — 이미지 디코딩, 스프라이트 아틀라스, 애니메이션 재생.
 //!
 //! **이 크레이트는 파일 시스템을 건드리지 않는다.** 입력은 항상 바이트 슬라이스이고,
 //! 어디서 읽어 왔는지는 앱이 정한다. 그래야 단위 테스트가 가능하고, 나중에
@@ -7,6 +7,10 @@
 //! GPU 도 모른다 — [`Image::desc`] 로 [`TextureDesc`] 를 만들어 렌더러에 넘길 뿐이다.
 
 #![forbid(unsafe_code)]
+
+mod anim;
+
+pub use anim::{AnimState, Clip, SpriteAnimator, SpriteSheet};
 
 use nexus_core::Vec2;
 use nexus_render::{TextureDesc, UvRect};
@@ -136,6 +140,17 @@ impl Image {
     #[must_use]
     pub fn height(&self) -> u32 {
         self.height
+    }
+
+    /// 격자 계산 테스트 전용 — 디코딩 없이 빈 이미지를 만든다.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn blank_for_test(width: u32, height: u32) -> Self {
+        Self {
+            width,
+            height,
+            rgba: vec![0; width as usize * height as usize * 4],
+        }
     }
 
     /// 렌더러에 넘길 업로드 서술자.
@@ -294,13 +309,8 @@ mod tests {
         assert_eq!(d.rgba.len(), 2 * 4);
     }
 
-    /// 격자 계산 전용 — 디코딩 없이 만든다.
     fn blank(width: u32, height: u32) -> Image {
-        Image {
-            width,
-            height,
-            rgba: vec![0; width as usize * height as usize * 4],
-        }
+        Image::blank_for_test(width, height)
     }
 
     #[test]

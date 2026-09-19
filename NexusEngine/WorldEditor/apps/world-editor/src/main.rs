@@ -766,8 +766,13 @@ impl App for Editor {
             .is_some_and(|ui| ui.on_window_event(target, event))
     }
 
-    fn fixed_update(&mut self, _dt: Duration, _input: &Input) {
+    fn fixed_update(&mut self, dt: Duration, _input: &Input) {
         self.ticks += 1;
+        // 애니메이션은 여기서만 진행한다 — 렌더 프레임에서 진행하면
+        // 프레임레이트에 따라 속도가 달라진다.
+        if let Some(sprites) = self.sprites.as_mut() {
+            sprites.advance(dt);
+        }
         // M7 에서 Intent → Authority → World 경로가 여기에 들어온다.
         // 에디터 조작(카메라·선택·편집)은 뷰·저작 작업이므로 UI 프레임에서 처리한다.
     }

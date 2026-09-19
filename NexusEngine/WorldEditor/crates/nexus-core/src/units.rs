@@ -43,6 +43,30 @@ pub fn dir_to_heading(dir: Vec2) -> f32 {
     dir.y.atan2(dir.x)
 }
 
+/// 방향을 `n` 등분한 인덱스로 바꾼다. 스프라이트 시트의 방향 행을 고르는 데 쓴다.
+///
+/// `0` 번은 **`+X`(화면 오른쪽)를 한가운데 두는** 구간이고, 거기서 반시계로 증가한다.
+/// `n = 4` 면 `0`=동, `1`=북, `2`=서, `3`=남. **스프라이트 시트의 행 순서가 이것과 맞아야 한다.**
+///
+/// `n` 은 시트마다 다르다 — 4방향 시트를 8방향으로 바꿔도 이 함수는 그대로다.
+/// 호출부에서 방향 수를 상수로 박지 말 것.
+///
+/// 카메라가 회전한다면 `heading - camera_yaw` 를 넘긴다. 지금은 yaw 가 고정
+/// ([`crate::Camera2d::YAW`] = 0)이라 방향을 그대로 넘기면 된다.
+///
+/// `n` 이 0 이면 0 을 반환한다.
+#[must_use]
+pub fn direction_index(heading: f32, n: u32) -> u32 {
+    if n == 0 {
+        return 0;
+    }
+    let step = core::f32::consts::TAU / n as f32;
+    // 반 칸 밀어서 자르면 0 번 구간이 +X 를 한가운데 둔다.
+    let shifted = normalize_heading(heading + step * 0.5);
+    // f32 → u32 변환은 음수·NaN 에서 0 이 되므로 normalize_heading 이 앞에 있어야 한다.
+    (shifted / step) as u32 % n
+}
+
 /// 방향을 `[0, 2π)` 로 정규화한다. 저장·비교 전에 쓴다.
 #[must_use]
 pub fn normalize_heading(heading: f32) -> f32 {
@@ -83,6 +107,58 @@ mod tests {
     fn normalize_wraps_into_one_turn() {
         assert!((normalize_heading(-FRAC_PI_2) - 3.0 * FRAC_PI_2).abs() < 1e-5);
         assert!((normalize_heading(TAU + 0.25) - 0.25).abs() < 1e-5);
+    }
+
+    #[test]
+    fn direction_index_centres_bucket_zero_on_plus_x() {
+        // 0 번은 +X 를 한가운데 둔다 — 경계가 아니라 중심이어야 스프라이트가 안 떨린다.
+        for h in [-0.7_f32, -0.1, 0.0, 0.1, 0.7] {
+            assert_eq!(direction_index(h, 4), 0, "heading {h}");
+        }
+    }
+
+    #[test]
+    fn direction_index_goes_counter_clockwise() {
+        // n=4 → 0=동, 1=북, 2=서, 3=남
+        assert_eq!(direction_index(0.0, 4), 0);
+        assert_eq!(direction_index(FRAC_PI_2, 4), 1);
+        assert_eq!(direction_index(PI, 4), 2);
+        assert_eq!(direction_index(-FRAC_PI_2, 4), 3);
+    }
+
+    #[test]
+    fn direction_index_stays_in_range_for_any_input() {
+        for n in [1_u32, 2, 4, 8, 16] {
+            for h in [-100.0_f32, -TAU, -0.001, 0.0, 0.001, TAU, 100.0, 1e9] {
+                let i = direction_index(h, n);
+                assert!(i < n, "n={n} heading={h} → {i}");
+            }
+        }
+        assert_eq!(direction_index(1.0, 0), 0, "0 등분은 0 이어야 한다");
+    }
+
+    #[test]
+    fn direction_index_partitions_the_circle_evenly() {
+        // n 등분이면 각 구간이 정확히 한 번씩 나와야 한다.
+        for n in [4_u32, 8] {
+            let step = TAU / n as f32;
+            for k in 0..n {
+                let centre = step * k as f32;
+                assert_eq!(direction_index(centre, n), k, "n={n} k={k}");
+                // 구간 안쪽 어디를 찍어도 같은 인덱스
+                assert_eq!(direction_index(centre + step * 0.45, n), k);
+                assert_eq!(direction_index(centre - step * 0.45, n), k);
+            }
+        }
+    }
+
+    #[test]
+    fn direction_index_matches_heading_round_trip() {
+        // 벡터 → heading → 인덱스 경로가 실제 방향과 맞는지
+        assert_eq!(direction_index(dir_to_heading(Vec2::X), 4), 0);
+        assert_eq!(direction_index(dir_to_heading(Vec2::Y), 4), 1);
+        assert_eq!(direction_index(dir_to_heading(-Vec2::X), 4), 2);
+        assert_eq!(direction_index(dir_to_heading(-Vec2::Y), 4), 3);
     }
 
     #[test]
