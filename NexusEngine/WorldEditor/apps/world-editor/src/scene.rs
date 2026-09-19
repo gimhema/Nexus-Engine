@@ -573,6 +573,47 @@ mod tests {
     }
 
     #[test]
+    fn sample_terrain_is_walkable_by_simulation() {
+        use nexus_sim::{Authority, Event, Intent, LocalAuthority, SimWorld, UnitDef};
+
+        // 에디터가 저작한 타일을 시뮬레이션이 그대로 쓴다 — 벽 서쪽에서 출발해
+        // 벽을 돌아 경사로로 동쪽 고지대에 오른다.
+        let s = Scene::server_default();
+        let tiles = s.tiles.clone();
+        let mut auth = LocalAuthority::new(SimWorld::new(s.tiles));
+        let unit =
+            auth.world_mut()
+                .spawn_unit(Vec2::new(-10.0, 0.0), 0.0, UnitDef { move_speed: 2.5 });
+        let target = Vec2::new(15.0, 2.0);
+        auth.submit(Intent::MoveTo { unit, target });
+
+        let mut visited = vec![tiles.world_to_tile(Vec2::new(-10.0, 0.0))];
+        let mut arrived = false;
+        for _ in 0..2000 {
+            let events = auth.tick(std::time::Duration::from_millis(50));
+            let here = tiles.world_to_tile(auth.world().unit(unit).unwrap().pos());
+            let last = *visited.last().unwrap();
+            if here != last {
+                assert!(tiles.can_step(last, here), "{last:?} → {here:?} 불법 걸음");
+                visited.push(here);
+            }
+            if events.contains(&Event::Arrived { unit }) {
+                arrived = true;
+                break;
+            }
+            assert!(events.is_empty(), "예상 밖 이벤트: {events:?}");
+        }
+        assert!(arrived, "고지대에 도착하지 못했다");
+        assert!(
+            visited
+                .iter()
+                .any(|&c| tiles.get(c).is_some_and(|t| t.ramp)),
+            "경사로를 지나지 않고 고지대에 올랐다"
+        );
+        assert_eq!(tiles.get(*visited.last().unwrap()).unwrap().level, 1);
+    }
+
+    #[test]
     fn labels_round_trip() {
         let s = Scene::server_default();
         for label in [ZONE_LABEL, "상인 NPC"] {

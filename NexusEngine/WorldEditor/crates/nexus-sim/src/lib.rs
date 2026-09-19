@@ -11,6 +11,12 @@
 
 #![forbid(unsafe_code)]
 
+mod authority;
 mod tilemap;
+mod unit;
+mod world;
 
+pub use authority::{Authority, Event, Intent, LocalAuthority, Rejection};
 pub use tilemap::{Tile, TileCoord, TileMap};
+pub use unit::{Unit, UnitDef};
+pub use world::SimWorld;

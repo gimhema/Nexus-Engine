@@ -818,7 +818,8 @@ impl App for Editor {
         if let Some(sprites) = self.sprites.as_mut() {
             sprites.advance(dt);
         }
-        // M7 에서 Intent → Authority → World 경로가 여기에 들어온다.
+        // 플레이 모드(S7)에서 `nexus_sim::LocalAuthority::tick` 이 여기서 돈다 —
+        // Intent → Authority → World 경로는 nexus-sim 에 이미 있다(S6).
         // 에디터 조작(카메라·선택·편집)은 뷰·저작 작업이므로 UI 프레임에서 처리한다.
     }
 
