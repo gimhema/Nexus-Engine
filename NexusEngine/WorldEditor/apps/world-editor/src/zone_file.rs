@@ -109,6 +109,11 @@ enum MarkerKindFile {
 struct MarkerFile {
     name: String,
     kind: MarkerKindFile,
+    /// 스폰할 **액터 타입** 번호 (`data/rules.ron` 의 `actors`). 0 이면 종류별 기본값.
+    ///
+    /// 생략 가능하게 둔다 — 이 필드가 없는 예전 파일도 읽힌다.
+    #[serde(default)]
+    actor: u32,
     /// 위치 (m, XY).
     pos: [f32; 2],
     /// 점유 크기, 한 변 (m).
@@ -263,6 +268,7 @@ impl ZoneFile {
                         ItemKind::Npc => MarkerKindFile::Npc,
                         ItemKind::Monster => MarkerKindFile::Monster,
                     },
+                    actor: item.actor.raw(),
                     pos: item.pos.to_array(),
                     size: item.size,
                     orientation: item.orientation,
@@ -348,6 +354,9 @@ impl ZoneFile {
             let entity = scene.add(&m.name, kind, pos, m.size);
             if let Some(item) = scene.item_mut(entity) {
                 item.orientation = units::normalize_heading(m.orientation);
+                // 없는 번호여도 여기서 거부하지 않는다 — 데이터를 고치는 동안 존 파일이
+                // 안 열리면 곤란하다. 실제로 쓸 때 `GameData::resolve_actor` 가 기본값으로 푼다.
+                item.actor = crate::scene::ActorId::new(m.actor);
             }
         }
         Ok(scene)

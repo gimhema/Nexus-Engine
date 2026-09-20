@@ -4,13 +4,30 @@
 (
     version: 1,
 
-    // 마커 종류별 스프라이트 시트 정의. 생략하거나 읽지 못하면 내장 플레이스홀더를 쓴다.
-    // 경로는 작업 디렉터리(WorldEditor/) 기준. 시트 교체는 **에디터를 다시 시작**해야 반영된다
+    // 액터 타입의 표시 이름과 스프라이트 시트. 번호는 rules.ron 의 actors 와 같다.
+    //
+    // sheet 를 생략하거나 읽지 못하면 내장 플레이스홀더를 쓴다. 경로는 작업 디렉터리
+    // (WorldEditor/) 기준. 시트 교체는 **에디터를 다시 시작**해야 반영된다
     // (그림은 시작할 때 GPU 에 한 번 올린다).
-    sprites: {
-        Player: "assets/third_party/zelda-like-armm1998/player.sheet.ron",
-        Npc: "assets/third_party/zelda-like-armm1998/npc.sheet.ron",
-        Monster: "assets/third_party/slime-garakh/monster.sheet.ron",
+    actors: {
+        1: (
+            name: "플레이어",
+            sheet: "assets/third_party/zelda-like-armm1998/player.sheet.ron",
+        ),
+        10: (
+            name: "마을 사람",
+            sheet: "assets/third_party/zelda-like-armm1998/npc.sheet.ron",
+        ),
+        100: (
+            name: "슬라임",
+            sheet: "assets/third_party/slime-garakh/monster.sheet.ron",
+        ),
+        101: (
+            name: "붉은 슬라임",
+            sheet: "assets/third_party/slime-garakh/monster.sheet.ron",
+            // 시트를 공유하되 색만 달리한다 (무채색 시트가 아니어도 곱해진다).
+            tint: (1.0, 0.45, 0.45),
+        ),
     },
 
     items: {

@@ -43,6 +43,18 @@ impl ItemKind {
         }
     }
 
+    /// 세 종류 전부 — 종류별 표를 만들 때 쓴다.
+    pub(crate) const ALL: [Self; 3] = [Self::PlayerSpawn, Self::Npc, Self::Monster];
+
+    /// 배열 색인용 번호. [`ALL`](Self::ALL) 순서와 같다.
+    pub(crate) fn index(self) -> usize {
+        match self {
+            Self::PlayerSpawn => 0,
+            Self::Npc => 1,
+            Self::Monster => 2,
+        }
+    }
+
     /// 새로 놓을 때의 점유 크기 (m). 서버에 크기 필드가 없어 캐릭터 크기 정도로 둔다.
     pub(crate) fn default_size(self) -> f32 {
         match self {
@@ -64,6 +76,10 @@ pub(crate) struct Item {
     pub(crate) size: f32,
     /// 바라보는 방향 (라디안, `0 = +X`, 반시계가 +). 서버 `SpawnPoint::orientation` 과 같은 값.
     pub(crate) orientation: f32,
+    /// 이 마커가 스폰할 **액터 타입**. [`ActorId::DEFAULT`] 면 종류별 기본값을 쓴다.
+    ///
+    /// 수치·스프라이트는 전부 여기서 나온다 — 마커는 "어디에 무엇을" 만 정한다.
+    pub(crate) actor: ActorId,
 }
 
 /// 존 경계 핸들. 모서리는 두 축을, 변은 한 축을 움직인다.
@@ -172,6 +188,30 @@ impl Pick {
             Self::Item(e) | Self::RotateHandle(e) => Target::Item(e),
             Self::ZoneHandle(_) => Target::Zone,
         }
+    }
+}
+
+/// 액터 타입 번호 — `data/rules.ron` 의 `actors` 를 가리킨다. 0 은 "마커 종류의 기본값".
+///
+/// **서버 테이블과 같은 번호 공간**이다 (`ItemId`·`SkillId` 와 같은 규칙).
+/// 수치는 `rules.ron`, 이름·스프라이트는 `display.ron` — 표를 반으로 쪼개는 규칙 그대로다.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Hash)]
+pub(crate) struct ActorId(u32);
+
+impl ActorId {
+    /// 마커가 타입을 정하지 않았다 — 종류별 기본 액터를 쓴다 (예전 존 파일도 이 값이다).
+    pub(crate) const DEFAULT: Self = Self(0);
+
+    pub(crate) fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    pub(crate) fn raw(self) -> u32 {
+        self.0
+    }
+
+    pub(crate) fn is_default(self) -> bool {
+        self.0 == 0
     }
 }
 
@@ -318,6 +358,8 @@ impl Scene {
             pos,
             size,
             orientation: 0.0,
+            // 종류의 기본 액터를 쓴다. 인스펙터에서 바꾼다.
+            actor: ActorId::DEFAULT,
         });
         entity
     }
@@ -337,6 +379,7 @@ impl Scene {
             pos,
             size: kind.default_size(),
             orientation: 0.0,
+            actor: ActorId::DEFAULT,
         }
     }
 

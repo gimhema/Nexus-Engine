@@ -20,9 +20,10 @@ use nexus_render_wgpu::{UiFrame, egui};
 use nexus_sim::{BagKind, Tile};
 
 use crate::edit::{InspectorEdit, PointerInput, Tool};
+use crate::game_data::ActorStats;
 use crate::grid;
 use crate::play::{InventoryAction, PlaySession};
-use crate::scene::{ArtId, ItemKind, Pick, Scene, Target, ZONE_LABEL};
+use crate::scene::{ActorId, ArtId, ItemKind, Pick, Scene, Target, ZONE_LABEL};
 use crate::terrain::ArtKind;
 use crate::zone_file;
 
@@ -71,6 +72,10 @@ pub(crate) struct UiModel<'a> {
     pub(crate) redo_label: Option<String>,
     pub(crate) tool: Tool,
     pub(crate) brush: Tile,
+    /// 고를 수 있는 액터 타입 `(번호, 이름, 수치)`. 데이터를 못 읽었으면 빈 목록.
+    pub(crate) actor_catalog: Vec<(ActorId, &'a str, ActorStats)>,
+    /// 마커 종류별 기본 액터 — [`ItemKind::ALL`] 순서.
+    pub(crate) actor_defaults: [ActorId; 3],
     /// 지형 그림 붓 — 0 이면 지우개.
     pub(crate) art_brush: ArtId,
     /// 붓이 칠하는 층.
@@ -85,6 +90,13 @@ pub(crate) struct UiModel<'a> {
     /// 마지막 저장 이후 바뀌었다.
     pub(crate) dirty: bool,
     pub(crate) notice: Option<&'a Notice>,
+}
+
+impl UiModel<'_> {
+    /// 이 마커 종류가 "기본값" 일 때 실제로 쓰이는 액터 타입.
+    fn default_actor(&self, kind: ItemKind) -> ActorId {
+        self.actor_defaults[kind.index()]
+    }
 }
 
 /// 한 프레임 동안 UI 가 편집기에 요청한 것.
@@ -919,15 +931,113 @@ fn inspector_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActio
                         ui.weak("뷰포트: 화살표 끝 ◆ 를 끌어 회전 (Ctrl 15°)");
 
                         ui.add_space(10.0);
-                        ui.weak("스탯·진영·AI 필드는 패널 명세를 받은 뒤 추가됩니다.");
+                        actor_section(ui, model, item.kind, item.actor, actions);
                     }
                 }
                 many => {
                     ui.label(format!("{}개 선택됨", many.len()));
                     ui.weak("뷰포트에서 끌면 함께 이동합니다.\nDelete: 모두 삭제");
+
+                    // 여러 마커의 타입을 한 번에 바꾼다. 값이 다르면 "—" 로 보여 준다
+                    // (CLAUDE.md 「UI 명세 전달 형식」의 다중 선택 규칙).
+                    let actors: Vec<_> = many
+                        .iter()
+                        .filter_map(|t| match t {
+                            Target::Item(e) => model.scene.item(*e),
+                            Target::Zone => None,
+                        })
+                        .collect();
+                    if let Some(first) = actors.first() {
+                        let same = actors.iter().all(|i| i.actor == first.actor);
+                        let shown = if same { first.actor } else { ActorId::DEFAULT };
+                        ui.add_space(10.0);
+                        actor_section(ui, model, first.kind, shown, actions);
+                        if !same {
+                            ui.weak("— (선택한 마커의 타입이 서로 다릅니다)");
+                        }
+                    }
                 }
             }
         });
+}
+
+/// 액터 타입 드롭다운 + 그 타입의 수치 (P1).
+///
+/// 수치는 **읽기 전용**이다 — 값을 고치는 곳은 `data/rules.ron` 이고, 마커는 "어느 타입인가"
+/// 만 정한다. 마커별로 수치를 덮어쓰는 것은 P1-4.
+fn actor_section(
+    ui: &mut egui::Ui,
+    model: &UiModel<'_>,
+    kind: ItemKind,
+    actor: ActorId,
+    actions: &mut UiActions,
+) {
+    ui.strong("액터 타입");
+    if model.actor_catalog.is_empty() {
+        ui.weak("게임 데이터를 읽지 못했습니다 — data/rules.ron 을 확인하세요.");
+        return;
+    }
+
+    let label = |id: ActorId| -> String {
+        if id.is_default() {
+            let base = model
+                .actor_catalog
+                .iter()
+                .find(|(a, _, _)| *a == model.default_actor(kind))
+                .map_or("?", |(_, name, _)| *name);
+            format!("기본값 ({base})")
+        } else {
+            model
+                .actor_catalog
+                .iter()
+                .find(|(a, _, _)| *a == id)
+                .map_or_else(
+                    || format!("없는 타입 #{}", id.raw()),
+                    |(_, n, _)| (*n).to_string(),
+                )
+        }
+    };
+
+    egui::ComboBox::from_id_salt("actor_type")
+        .selected_text(label(actor))
+        .show_ui(ui, |ui| {
+            if ui
+                .selectable_label(actor.is_default(), label(ActorId::DEFAULT))
+                .clicked()
+            {
+                actions.inspector = Some(InspectorEdit::ItemActor {
+                    actor: ActorId::DEFAULT,
+                });
+            }
+            for &(id, name, _) in &model.actor_catalog {
+                if ui
+                    .selectable_label(actor == id, format!("{name} (#{})", id.raw()))
+                    .clicked()
+                {
+                    actions.inspector = Some(InspectorEdit::ItemActor { actor: id });
+                }
+            }
+        });
+
+    // 실제로 쓰일 타입의 수치 — 기본값이면 종류 기본 타입의 것.
+    let effective = if actor.is_default() {
+        model.default_actor(kind)
+    } else {
+        actor
+    };
+    if let Some((_, _, stats)) = model.actor_catalog.iter().find(|(a, _, _)| *a == effective) {
+        ui.add_space(4.0);
+        egui::Grid::new("actor_stats")
+            .num_columns(2)
+            .show(ui, |ui| {
+                for (label, value) in stats.rows() {
+                    ui.weak(label);
+                    ui.label(value);
+                    ui.end_row();
+                }
+            });
+        ui.weak("수치는 data/rules.ron 에서 고칩니다 (F5 로 적용).");
+    }
 }
 
 fn zone_inspector(ui: &mut egui::Ui, model: &UiModel<'_>, speed: f32, actions: &mut UiActions) {

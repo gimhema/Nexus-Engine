@@ -24,7 +24,7 @@ use nexus_sim::{
 };
 
 use crate::game_data::GameData;
-use crate::scene::{ItemKind, Scene};
+use crate::scene::{ActorId, ItemKind, Scene};
 use crate::sprites::{Look, SpriteLibrary};
 
 /// 쫓는 대상이 마지막 경로 지점에서 이만큼(m) 벗어나야 다시 경로를 잡는다 (AI 와 같은 값).
@@ -61,8 +61,10 @@ enum Order {
 #[derive(Clone, Debug)]
 struct Label {
     name: String,
-    /// 어느 마커에서 나온 유닛인가 — 종류별 스프라이트 시트를 고르는 데 쓴다.
+    /// 어느 마커에서 나온 유닛인가 — 목록 정렬·표시에 쓴다.
     kind: ItemKind,
+    /// 이 유닛의 **액터 타입** — 스프라이트 시트를 고르는 기준이다.
+    actor: ActorId,
     tint: [f32; 4],
 }
 
@@ -113,7 +115,9 @@ impl PlaySession {
             if is_player && player.is_some() {
                 continue;
             }
-            let unit = world.spawn_unit(item.pos, item.orientation, data.unit_def(item.kind));
+            // 마커가 가리키는 액터 타입에서 수치·그림이 모두 나온다 (P1).
+            let actor = data.resolve_actor(item.actor, item.kind);
+            let unit = world.spawn_unit(item.pos, item.orientation, data.unit_def(actor));
             let name = if is_player {
                 String::from("플레이어")
             } else {
@@ -124,7 +128,11 @@ impl PlaySession {
                 Label {
                     name,
                     kind: item.kind,
-                    tint: item.kind.color(),
+                    actor,
+                    // 타입이 색을 정했으면 그것을, 아니면 마커 종류 색을.
+                    tint: data
+                        .actor_look(actor)
+                        .map_or_else(|| item.kind.color(), |l| l.tint_or(item.kind.color())),
                 },
             );
             if is_player {
@@ -246,14 +254,14 @@ impl PlaySession {
             self.on_event(event);
         }
 
-        // 유닛마다 자기 종류의 시트로 진행한다 — 시트마다 클립 길이가 다르다.
-        let kinds: Vec<(Entity, ItemKind)> = self
+        // 유닛마다 자기 액터 타입의 시트로 진행한다 — 시트마다 클립 길이가 다르다.
+        let actors: Vec<(Entity, ActorId)> = self
             .labels
             .iter()
-            .map(|(unit, label)| (*unit, label.kind))
+            .map(|(unit, label)| (*unit, label.actor))
             .collect();
         let world = self.auth.world();
-        for (unit, kind) in kinds {
+        for (unit, actor) in actors {
             let Some(u) = world.unit(unit) else { continue };
             let animator = self.animators.entry(unit).or_default();
             if !u.is_alive() {
@@ -265,7 +273,7 @@ impl PlaySession {
                 AnimState::Idle
             });
             if let Some(sprites) = sprites {
-                animator.advance(sprites.sheet(kind).anim(), dt);
+                animator.advance(sprites.sheet(actor).anim(), dt);
             }
         }
     }
@@ -522,7 +530,7 @@ impl PlaySession {
     ) {
         let fallback = SpriteAnimator::default();
         for (unit, u) in self.world().units() {
-            let kind = self.kind_of(unit);
+            let actor = self.actor_of(unit);
             let tint = if u.is_alive() {
                 self.labels.get(&unit).map_or([1.0; 4], |l| l.tint)
             } else {
@@ -534,14 +542,14 @@ impl PlaySession {
             };
             let animator = self.animators.get(&unit).unwrap_or(&fallback);
             sprites
-                .sheet(kind)
+                .sheet(actor)
                 .push(u.render_pos(alpha), look, animator, px, BIAS_SPRITE, out);
         }
     }
 
-    /// 이 유닛이 나온 마커 종류. 모르면 몬스터로 본다(내장 시트로 그려진다).
-    fn kind_of(&self, unit: Entity) -> ItemKind {
-        self.labels.get(&unit).map_or(ItemKind::Monster, |l| l.kind)
+    /// 이 유닛의 액터 타입. 모르면 기본값 — 내장 시트로 그려진다.
+    fn actor_of(&self, unit: Entity) -> ActorId {
+        self.labels.get(&unit).map_or(ActorId::DEFAULT, |l| l.actor)
     }
 
     /// 표시 층 — 살아 있는 유닛 머리 위 HP 막대.
@@ -563,7 +571,7 @@ impl PlaySession {
 
         for (unit, u) in self.world().units().filter(|(_, u)| u.is_alive()) {
             let height =
-                sprites.map_or(NO_SHEET_HEIGHT, |s| s.sheet(self.kind_of(unit)).height(px));
+                sprites.map_or(NO_SHEET_HEIGHT, |s| s.sheet(self.actor_of(unit)).height(px));
             let above = height + GAP_PX * px;
             let at = u.render_pos(alpha);
             let ratio = u.hp() as f32 / u.def().max_hp as f32;

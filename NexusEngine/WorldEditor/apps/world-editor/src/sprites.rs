@@ -18,6 +18,7 @@
 //! 이유를 알린다 (조용히 넘어가지 않는다).
 
 use core::time::Duration;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use nexus_assets::{AnimState, Clip, GridAtlas, Image, SpriteAnimator, SpriteSheet};
@@ -25,7 +26,7 @@ use nexus_core::{Camera2d, Vec2, Vec3, units};
 use nexus_render::{RenderCommand, Renderer, SpriteAnchor, TextureId};
 use serde::Deserialize;
 
-use crate::scene::{Item, ItemKind};
+use crate::scene::{ActorId, Item};
 
 /// 내장 플레이스홀더 — 그림과 정의가 짝이다.
 const EMBEDDED_PNG: &[u8] = include_bytes!("../../../assets/sprites/markers.png");
@@ -233,7 +234,10 @@ fn resolve(rel: &str, base: Option<&Path>) -> PathBuf {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// GPU 에 올라간 시트 하나.
-#[derive(Debug)]
+///
+/// `Clone` 은 **텍스처를 복사하지 않는다** — `TextureId` 는 핸들이라 여러 액터 타입이
+/// 같은 그림을 가리킬 수 있다 (`SpriteLibrary::load` 의 중복 업로드 방지).
+#[derive(Clone, Debug)]
 pub(crate) struct Sheet {
     texture: TextureId,
     sheet: SpriteSheet,
@@ -259,6 +263,11 @@ impl Sheet {
             tinted: plan.tinted,
             pixels_per_meter: plan.pixels_per_meter,
         })
+    }
+
+    /// 같은 그림을 쓰는 다른 액터 타입에 물려준다 — 텍스처는 그대로 공유한다.
+    fn share(&self) -> Self {
+        self.clone()
     }
 
     /// 화면에 그려지는 높이 (m). 머리 위 표시(HP 막대)의 기준.
@@ -307,10 +316,21 @@ impl Sheet {
     }
 }
 
-/// 무채색 시트면 종류 색을, 컬러 시트면 흰색(그림 그대로)을 쓴다.
+/// 이 시트에 실제로 곱할 색.
+///
+/// - **무채색 시트**(`tinted: true`)는 색이 있어야 보이므로 항상 곱한다.
+/// - **컬러 시트**는 그림 그대로 두는 것이 기본이다. 다만 액터 타입이 색을 **명시했으면**
+///   (흰색이 아니면) 그것을 곱한다 — 같은 그림으로 색만 다른 변종(붉은 슬라임)을 만드는 방법이다.
 fn tint_of(tinted: bool, look: Look) -> [f32; 4] {
-    if tinted { look.tint } else { [1.0; 4] }
+    if tinted || look.tint != NO_TINT {
+        look.tint
+    } else {
+        NO_TINT
+    }
 }
+
+/// "색을 정하지 않음" — 곱해도 그림이 그대로다.
+pub(crate) const NO_TINT: [f32; 4] = [1.0; 4];
 
 /// 스프라이트를 어떻게 보이게 할지.
 #[derive(Clone, Copy, Debug)]
@@ -327,50 +347,62 @@ pub(crate) struct Look {
 /// 플레이 모드는 유닛마다 따로 재생기를 두고 [`Sheet::push`] 로 그린다.
 #[derive(Debug)]
 pub(crate) struct SpriteLibrary {
-    /// 내장 플레이스홀더 — 종류별 시트가 없거나 읽기에 실패하면 이것을 쓴다.
+    /// 내장 플레이스홀더 — 타입별 시트가 없거나 읽기에 실패하면 이것을 쓴다.
     fallback: Sheet,
-    /// 종류별 시트 (플레이어·NPC·몬스터).
-    by_kind: [Option<Sheet>; 3],
+    /// 액터 타입별 시트. 여러 타입이 같은 그림을 써도 한 번만 올린다.
+    by_actor: BTreeMap<ActorId, Sheet>,
     animator: SpriteAnimator,
 }
 
 impl SpriteLibrary {
-    /// 내장 시트를 올리고, `sheets` 가 가리키는 종류별 시트를 덮어쓴다.
+    /// 내장 시트를 올리고, `sheets` 가 가리키는 **액터 타입별** 시트를 덮어쓴다.
     ///
-    /// `sheets` 는 `(종류, 정의 파일 경로)` 목록이다 — `data/display.ron` 에서 온다.
+    /// `sheets` 는 `(액터 번호, 정의 파일 경로)` 목록이다 — `data/display.ron` 에서 온다.
+    /// 같은 경로가 여러 타입에 나오면 **그림은 한 번만 GPU 에 올린다** (텍스처 해제 API 가 없다).
     ///
     /// # Errors
-    /// 내장 시트를 올리지 못하면 오류. **종류별 시트 실패는 오류가 아니라** `warnings` 에 남기고
-    /// 그 종류만 내장 시트를 쓴다 — 애셋 하나가 잘못됐다고 에디터가 안 열리면 곤란하다.
+    /// 내장 시트를 올리지 못하면 오류. **타입별 시트 실패는 오류가 아니라** `warnings` 에 남기고
+    /// 그 타입만 내장 시트를 쓴다 — 애셋 하나가 잘못됐다고 에디터가 안 열리면 곤란하다.
     pub(crate) fn load(
         renderer: &mut impl Renderer,
-        sheets: &[(ItemKind, String)],
+        sheets: &[(ActorId, String)],
         warnings: &mut Vec<String>,
     ) -> Result<Self, String> {
         let fallback = Sheet::upload(plan_sheet(EMBEDDED_DEF, None)?, renderer)?;
-        let mut by_kind: [Option<Sheet>; 3] = [None, None, None];
+        let mut by_actor: BTreeMap<ActorId, Sheet> = BTreeMap::new();
+        // 경로 → 이미 올린 타입. 같은 그림을 여러 타입이 공유할 때 중복 업로드를 막는다.
+        let mut uploaded: BTreeMap<&str, ActorId> = BTreeMap::new();
 
-        for (kind, path) in sheets {
-            let path = Path::new(path);
+        for (actor, path_str) in sheets {
+            if let Some(first) = uploaded.get(path_str.as_str()) {
+                if let Some(sheet) = by_actor.get(first).map(Sheet::share) {
+                    by_actor.insert(*actor, sheet);
+                }
+                continue;
+            }
+            let path = Path::new(path_str);
             let loaded = std::fs::read_to_string(path)
                 .map_err(|e| format!("{}: {e}", path.display()))
                 .and_then(|def| plan_sheet(&def, path.parent()))
                 .and_then(|plan| Sheet::upload(plan, renderer));
             match loaded {
-                Ok(sheet) => by_kind[slot(*kind)] = Some(sheet),
-                Err(e) => warnings.push(format!("{} 시트를 쓸 수 없음 — {e}", kind.label())),
+                Ok(sheet) => {
+                    by_actor.insert(*actor, sheet);
+                    uploaded.insert(path_str.as_str(), *actor);
+                }
+                Err(e) => warnings.push(format!("액터 {} 시트를 쓸 수 없음 — {e}", actor.raw())),
             }
         }
         Ok(Self {
             fallback,
-            by_kind,
+            by_actor,
             animator: SpriteAnimator::default(),
         })
     }
 
-    /// 이 종류가 쓸 시트.
-    pub(crate) fn sheet(&self, kind: ItemKind) -> &Sheet {
-        self.by_kind[slot(kind)].as_ref().unwrap_or(&self.fallback)
+    /// 이 액터 타입이 쓸 시트. 없으면 내장 플레이스홀더.
+    pub(crate) fn sheet(&self, actor: ActorId) -> &Sheet {
+        self.by_actor.get(&actor).unwrap_or(&self.fallback)
     }
 
     /// 에디터 마커용 공용 재생기를 진행한다. **고정 timestep 에서만** 호출한다 —
@@ -385,28 +417,24 @@ impl SpriteLibrary {
 
     /// 마커 하나를 세운다 (에디터 — 공용 재생기).
     ///
+    /// `actor` 는 마커가 실제로 쓸 액터 타입이다 (`GameData::resolve_actor` 가 푼 값).
+    /// `tint` 는 그 타입의 표시 색 — 무채색 시트에만 곱해진다.
     /// `px` 는 화면 1픽셀에 해당하는 월드 길이 — 빌보드는 카메라 축을 쓰므로 가로·세로가 같은 배율이다.
     pub(crate) fn build(
         &self,
         item: &Item,
+        actor: ActorId,
+        tint: [f32; 4],
         px: f32,
         depth_bias: f32,
         out: &mut Vec<RenderCommand>,
     ) {
         let look = Look {
             heading: item.orientation,
-            tint: item.kind.color(),
+            tint,
         };
-        self.sheet(item.kind)
+        self.sheet(actor)
             .push(item.pos, look, &self.animator, px, depth_bias, out);
-    }
-}
-
-fn slot(kind: ItemKind) -> usize {
-    match kind {
-        ItemKind::PlayerSpawn => 0,
-        ItemKind::Npc => 1,
-        ItemKind::Monster => 2,
     }
 }
 
@@ -478,19 +506,27 @@ mod tests {
     }
 
     #[test]
-    fn colour_sheets_are_not_tinted() {
+    fn colour_sheets_keep_their_own_colours_unless_told_otherwise() {
         let plan = tweaked("tinted: true,", "tinted: false,").unwrap();
-        let look = Look {
-            heading: 0.0,
-            tint: [1.0, 0.0, 0.0, 1.0],
-        };
         assert!(!plan.tinted);
-        assert_eq!(
-            tint_of(plan.tinted, look),
-            [1.0; 4],
-            "컬러 아트에 색을 곱하면 뒤집힌다"
-        );
-        assert_eq!(tint_of(true, look), look.tint, "무채색 시트는 색을 입힌다");
+
+        // 색을 정하지 않았으면(흰색) 컬러 아트는 그대로 둔다 — 곱하면 색이 뒤집힌다.
+        let plain = Look {
+            heading: 0.0,
+            tint: NO_TINT,
+        };
+        assert_eq!(tint_of(plan.tinted, plain), NO_TINT);
+
+        // 액터 타입이 색을 명시했으면 컬러 아트에도 곱한다 — 같은 그림의 색 변종.
+        let recoloured = Look {
+            heading: 0.0,
+            tint: [1.0, 0.45, 0.45, 1.0],
+        };
+        assert_eq!(tint_of(plan.tinted, recoloured), recoloured.tint);
+
+        // 무채색 시트는 색이 없으면 형체만 남으므로 언제나 곱한다.
+        assert_eq!(tint_of(true, plain), NO_TINT);
+        assert_eq!(tint_of(true, recoloured), recoloured.tint);
     }
 
     #[test]

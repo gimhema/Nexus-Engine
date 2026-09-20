@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use nexus_core::{Entity, Vec2, units};
 use nexus_sim::{Tile, TileCoord};
 
-use crate::scene::{ArtId, Handle, Item, ItemKind, Pick, Scene, Target, ZoneBounds};
+use crate::scene::{ActorId, ArtId, Handle, Item, ItemKind, Pick, Scene, Target, ZoneBounds};
 use crate::terrain::ArtKind;
 
 /// 뷰포트에서 포인터가 무슨 일을 하는가.
@@ -58,6 +58,8 @@ pub(crate) enum Command {
     },
     /// 칠하기 한 번(누름→뗌)이 통째로 한 스텝이다. `(좌표, 원래, 새것)`.
     PaintTiles(Vec<(TileCoord, Tile, Tile)>),
+    /// 액터 타입 바꾸기. `(마커, 원래, 새것)`.
+    SetActors(Vec<(Entity, ActorId, ActorId)>),
     /// 그림 칠하기 한 번(누름→뗌). `(좌표, 원래, 새것)`. `kind` 가 어느 층인지 정한다.
     PaintArt {
         kind: ArtKind,
@@ -86,6 +88,7 @@ impl Command {
                     scene.tiles.set(at, to);
                 }
             }
+            Self::SetActors(edits) => set_actors(scene, edits.iter().map(|&(e, _, to)| (e, to))),
             Self::PaintArt { kind, edits } => {
                 for &(at, _, to) in edits {
                     set_art(scene, *kind, at, to);
@@ -114,6 +117,9 @@ impl Command {
                     scene.tiles.set(at, from);
                 }
             }
+            Self::SetActors(edits) => {
+                set_actors(scene, edits.iter().map(|&(e, from, _)| (e, from)))
+            }
             Self::PaintArt { kind, edits } => {
                 for &(at, from, _) in edits {
                     set_art(scene, *kind, at, from);
@@ -129,6 +135,7 @@ impl Command {
             Self::AddItems(items) | Self::RemoveItems(items) => items.is_empty(),
             Self::SetZone { from, to } => from == to,
             Self::PaintTiles(edits) => edits.is_empty(),
+            Self::SetActors(edits) => edits.iter().all(|&(_, from, to)| from == to),
             Self::PaintArt { edits, .. } => edits.is_empty(),
         }
     }
@@ -155,6 +162,7 @@ impl Command {
             },
             Self::SetZone { .. } => String::from("존 경계 변경"),
             Self::PaintTiles(edits) => count(edits.len(), "타일 칠하기"),
+            Self::SetActors(edits) => count(edits.len(), "액터 타입 변경"),
             Self::PaintArt { kind, edits } => count(
                 edits.len(),
                 match kind {
@@ -188,6 +196,14 @@ fn set_art(scene: &mut Scene, kind: ArtKind, at: TileCoord, id: ArtId) {
         layer_mut(scene, kind).remove(&at);
     } else {
         layer_mut(scene, kind).insert(at, id);
+    }
+}
+
+fn set_actors(scene: &mut Scene, actors: impl Iterator<Item = (Entity, ActorId)>) {
+    for (e, actor) in actors {
+        if let Some(item) = scene.item_mut(e) {
+            item.actor = actor;
+        }
     }
 }
 
@@ -296,6 +312,12 @@ pub(crate) enum InspectorEdit {
     Zone {
         bounds: ZoneBounds,
         finished: bool,
+    },
+    /// 액터 타입 바꾸기 — 드롭다운은 한 번에 끝나므로 `finished` 가 없다.
+    ///
+    /// 선택한 마커 **전부**에 적용한다 (여러 개를 한 번에 바꾸는 것이 저작에 편하다).
+    ItemActor {
+        actor: ActorId,
     },
 }
 
@@ -836,6 +858,23 @@ impl Editing {
                 } else {
                     self.live = Some(LiveEdit::ItemHeading(entity, original));
                 }
+            }
+            InspectorEdit::ItemActor { actor } => {
+                let edits: Vec<_> = self
+                    .selection
+                    .iter()
+                    .filter_map(|t| match t {
+                        Target::Item(e) => Some(*e),
+                        Target::Zone => None,
+                    })
+                    .filter_map(|e| {
+                        let item = scene.item_mut(e)?;
+                        let before = item.actor;
+                        item.actor = actor;
+                        (before != actor).then_some((e, before, actor))
+                    })
+                    .collect();
+                self.history.record(Command::SetActors(edits));
             }
             InspectorEdit::Zone { bounds, finished } => {
                 let original = match self.live {

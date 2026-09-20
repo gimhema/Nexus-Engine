@@ -31,7 +31,7 @@ use nexus_sim::{
 };
 use serde::Deserialize;
 
-use crate::scene::ItemKind;
+use crate::scene::{ActorId, ItemKind};
 
 /// 지금 읽을 수 있는 형식 번호.
 const FORMAT_VERSION: u32 = 1;
@@ -57,7 +57,10 @@ struct RulesFile {
     items: BTreeMap<u32, ItemFile>,
     #[serde(default)]
     loot: BTreeMap<u32, Vec<LootFile>>,
-    units: BTreeMap<MarkerKindFile, UnitFile>,
+    /// 액터 타입별 수치. 마커가 이 번호를 가리킨다 (이름·시트는 `display.ron`).
+    actors: BTreeMap<u32, UnitFile>,
+    /// 마커 종류별 기본 액터 — 마커가 타입을 정하지 않았을 때.
+    default_actors: BTreeMap<MarkerKindFile, u32>,
     player_attack: u32,
     #[serde(default)]
     starting_kit: Vec<StackFile>,
@@ -185,9 +188,30 @@ struct StackFile {
 struct DisplayFile {
     version: u32,
     items: BTreeMap<u32, ItemLookFile>,
-    /// 마커 종류별 스프라이트 시트 정의 파일 경로. 생략하면 내장 플레이스홀더를 쓴다.
+    /// 액터 타입의 표시 이름과 시트. 번호는 `rules.ron` 의 `actors` 와 같다.
     #[serde(default)]
-    sprites: BTreeMap<MarkerKindFile, String>,
+    actors: BTreeMap<u32, ActorLookFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ActorLookFile {
+    /// 인스펙터 드롭다운에 나오는 이름.
+    name: String,
+    /// 스프라이트 시트 정의 파일 경로. **비우면** 내장 플레이스홀더를 쓴다.
+    ///
+    /// `Option` 이 아니라 빈 문자열인 이유: 손으로 쓰는 파일에서 `Some("...")` 은 번거롭고,
+    /// RON 은 `Option` 에 반드시 `Some` 을 요구한다 (시트 정의의 `image` 와 같은 규칙).
+    #[serde(default)]
+    sheet: String,
+    /// 시트에 곱할 색 (sRGB). 같은 시트를 색만 바꿔 재사용할 때 쓴다. 기본은 흰색(그림 그대로).
+    #[serde(default = "white")]
+    tint: (f32, f32, f32),
+}
+
+/// 색을 적지 않았을 때 — 그림 그대로.
+fn white() -> (f32, f32, f32) {
+    (1.0, 1.0, 1.0)
 }
 
 #[derive(Debug, Deserialize)]
@@ -209,7 +233,90 @@ struct ItemLook {
     color: [f32; 4],
 }
 
-/// 검증을 마친 게임 데이터. 플레이 한 판이 소유한다.
+/// 인스펙터에 보여 줄 액터 수치 — **읽기 전용 요약**이다.
+///
+/// 값을 고치는 곳은 `data/rules.ron` 이다. 여기서 편집하게 만들면 수치가 두 곳에 생긴다.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ActorStats {
+    move_speed: f32,
+    max_hp: u32,
+    attack: u32,
+    defense: u32,
+    faction: u32,
+    ai: AiKind,
+    aggro_range: f32,
+    immortal: bool,
+}
+
+impl ActorStats {
+    fn of(def: &UnitDef) -> Self {
+        Self {
+            move_speed: def.move_speed,
+            max_hp: def.max_hp,
+            attack: def.attack,
+            defense: def.defense,
+            faction: def.faction.0,
+            ai: def.ai,
+            aggro_range: def.aggro_range,
+            immortal: def.immortal,
+        }
+    }
+
+    /// 패널에 뿌릴 `(항목, 값)` 줄.
+    pub(crate) fn rows(&self) -> Vec<(&'static str, String)> {
+        let mut rows = vec![
+            ("HP", self.max_hp.to_string()),
+            ("공격", self.attack.to_string()),
+            ("방어", self.defense.to_string()),
+            ("이동", format!("{:.1} m/s", self.move_speed)),
+            ("진영", self.faction.to_string()),
+            (
+                "AI",
+                match self.ai {
+                    AiKind::Passive => "수동",
+                    AiKind::Defensive => "방어",
+                    AiKind::Aggressive => "공격",
+                }
+                .to_string(),
+            ),
+        ];
+        if self.ai == AiKind::Aggressive {
+            rows.push(("어그로", format!("{:.1} m", self.aggro_range)));
+        }
+        if self.immortal {
+            rows.push(("불사", String::from("예")));
+        }
+        rows
+    }
+}
+
+/// 액터 타입 하나의 표시 정보.
+#[derive(Clone, Debug)]
+pub(crate) struct ActorLook {
+    pub(crate) name: String,
+    /// 시트 정의 파일 경로. 없으면 내장 플레이스홀더.
+    pub(crate) sheet: Option<String>,
+    /// 시트에 곱할 색 (sRGB). 흰색이면 **정하지 않음** — 무채색 시트는 마커 종류 색을 쓴다.
+    tint: [f32; 4],
+}
+
+impl ActorLook {
+    /// 이 타입을 그릴 때 쓸 색. 타입이 색을 정하지 않았으면 `fallback`(마커 종류 색).
+    ///
+    /// 내장 플레이스홀더는 무채색이라 색이 없으면 형체만 남는다 — 그래서 기본값이 필요하다.
+    pub(crate) fn tint_or(&self, fallback: [f32; 4]) -> [f32; 4] {
+        if self.tint == crate::sprites::NO_TINT {
+            fallback
+        } else {
+            self.tint
+        }
+    }
+}
+
+/// 검증을 마친 게임 데이터.
+///
+/// 플레이 한 판이 소유하고, **에디터도 하나 들고 있다** — 인스펙터가 액터 타입 목록을
+/// 보여 줘야 하기 때문이다. 플레이를 시작할 때마다 새로 읽는다.
 #[derive(Debug)]
 pub(crate) struct GameData {
     seed: u64,
@@ -217,11 +324,14 @@ pub(crate) struct GameData {
     skills: Vec<(SkillId, SkillDef)>,
     items: Vec<(ItemId, ItemDef)>,
     loot: Vec<(LootTableId, Vec<LootEntry>)>,
-    units: BTreeMap<MarkerKindFile, UnitDef>,
+    /// 액터 타입별 수치.
+    actors: BTreeMap<ActorId, UnitDef>,
+    /// 마커 종류별 기본 액터.
+    default_actors: BTreeMap<MarkerKindFile, ActorId>,
     player_attack: SkillId,
     starting_kit: Vec<(ItemId, u32)>,
     looks: BTreeMap<u32, ItemLook>,
-    sprites: BTreeMap<MarkerKindFile, String>,
+    actor_looks: BTreeMap<ActorId, ActorLook>,
 }
 
 impl GameData {
@@ -270,32 +380,56 @@ impl GameData {
                 );
             }
         }
-        for (kind, u) in &r.units {
+        for (id, u) in &r.actors {
+            check(*id != 0, String::from("액터 번호 0 은 '기본값' 예약"));
             let finite = [u.move_speed, u.aggro_range, u.leash_range]
                 .iter()
                 .all(|v| v.is_finite() && *v >= 0.0);
-            check(finite, format!("{kind:?}: 속도·거리는 0 이상의 수"));
+            check(finite, format!("액터 {id}: 속도·거리는 0 이상의 수"));
             if let Some(skill) = u.basic_attack {
                 check(
                     r.skills.contains_key(&skill),
-                    format!("{kind:?}: 없는 스킬 {skill}"),
+                    format!("액터 {id}: 없는 스킬 {skill}"),
                 );
             }
             if let Some(table) = u.loot {
                 check(
                     r.loot.contains_key(&table),
-                    format!("{kind:?}: 없는 드롭 테이블 {table}"),
+                    format!("액터 {id}: 없는 드롭 테이블 {table}"),
                 );
             }
+            // 이름이 없으면 인스펙터 드롭다운에 번호만 나온다 — 저작에 쓸 수 없다.
+            check(
+                d.actors.contains_key(id),
+                format!("액터 {id}: display.ron 에 이름이 없음"),
+            );
         }
         for kind in [
             MarkerKindFile::Player,
             MarkerKindFile::Npc,
             MarkerKindFile::Monster,
         ] {
+            match r.default_actors.get(&kind) {
+                Some(id) => check(
+                    r.actors.contains_key(id),
+                    format!("default_actors 의 {kind:?}: 없는 액터 {id}"),
+                ),
+                None => check(false, format!("default_actors 에 {kind:?} 가 없음")),
+            }
+        }
+        for (id, look) in &d.actors {
             check(
-                r.units.contains_key(&kind),
-                format!("units 에 {kind:?} 가 없음"),
+                r.actors.contains_key(id),
+                format!("표시 액터 {id}: rules.ron 에 수치가 없음"),
+            );
+            check(
+                !look.name.trim().is_empty(),
+                format!("표시 액터 {id}: 이름이 비어 있음"),
+            );
+            let (r_, g, b) = look.tint;
+            check(
+                [r_, g, b].iter().all(|c| (0.0..=1.0).contains(c)),
+                format!("표시 액터 {id}: 색은 0~1"),
             );
         }
         check(
@@ -368,7 +502,16 @@ impl GameData {
                     )
                 })
                 .collect(),
-            units: r.units.iter().map(|(k, u)| (*k, (*u).into())).collect(),
+            actors: r
+                .actors
+                .iter()
+                .map(|(id, u)| (ActorId::new(*id), (*u).into()))
+                .collect(),
+            default_actors: r
+                .default_actors
+                .iter()
+                .map(|(k, id)| (*k, ActorId::new(*id)))
+                .collect(),
             player_attack: SkillId(r.player_attack),
             starting_kit: r
                 .starting_kit
@@ -389,7 +532,21 @@ impl GameData {
                     )
                 })
                 .collect(),
-            sprites: d.sprites,
+            actor_looks: d
+                .actors
+                .into_iter()
+                .map(|(id, l)| {
+                    let (r_, g, b) = l.tint;
+                    (
+                        ActorId::new(id),
+                        ActorLook {
+                            name: l.name,
+                            sheet: (!l.sheet.is_empty()).then_some(l.sheet),
+                            tint: [r_, g, b, 1.0],
+                        },
+                    )
+                })
+                .collect(),
         })
     }
 
@@ -410,13 +567,49 @@ impl GameData {
         }
     }
 
-    /// 마커 종류의 유닛 수치.
-    pub(crate) fn unit_def(&self, kind: ItemKind) -> UnitDef {
-        // parse() 가 세 종류가 다 있는지 확인했다.
-        self.units
+    /// 마커가 실제로 쓸 액터 타입.
+    ///
+    /// 마커가 타입을 정하지 않았으면(`ActorId::DEFAULT` — 예전 존 파일도 그렇다) 종류별 기본값,
+    /// 정했는데 데이터에 **없는 번호**면 역시 기본값으로 떨어진다 — 데이터를 고치는 동안
+    /// 존 파일이 못 열리면 곤란하기 때문이다.
+    pub(crate) fn resolve_actor(&self, actor: ActorId, kind: ItemKind) -> ActorId {
+        if !actor.is_default() && self.actors.contains_key(&actor) {
+            return actor;
+        }
+        // parse() 가 세 종류의 기본값이 다 있는지 확인했다.
+        self.default_actors
             .get(&MarkerKindFile::of(kind))
             .copied()
-            .unwrap_or_default()
+            .unwrap_or(ActorId::DEFAULT)
+    }
+
+    /// 액터 타입의 유닛 수치.
+    pub(crate) fn unit_def(&self, actor: ActorId) -> UnitDef {
+        self.actors.get(&actor).copied().unwrap_or_default()
+    }
+
+    /// 액터 타입의 표시 정보 (이름·시트·색).
+    pub(crate) fn actor_look(&self, actor: ActorId) -> Option<&ActorLook> {
+        self.actor_looks.get(&actor)
+    }
+
+    /// 인스펙터 드롭다운에 쓸 목록 — `(번호, 이름, 수치)`, 번호 오름차순.
+    pub(crate) fn actor_catalog(&self) -> Vec<(ActorId, &str, ActorStats)> {
+        self.actors
+            .iter()
+            .map(|(&id, def)| {
+                let name = self
+                    .actor_looks
+                    .get(&id)
+                    .map_or("이름 없음", |l| l.name.as_str());
+                (id, name, ActorStats::of(def))
+            })
+            .collect()
+    }
+
+    /// 마커 종류의 기본 액터 — 새 마커를 만들 때 쓴다.
+    pub(crate) fn default_actor(&self, kind: ItemKind) -> ActorId {
+        self.resolve_actor(ActorId::DEFAULT, kind)
     }
 
     /// 플레이어에게 시작 소지품을 준다.
@@ -446,11 +639,11 @@ impl GameData {
             .map_or([0.8, 0.8, 0.8, 1.0], |l| l.color)
     }
 
-    /// 마커 종류별 스프라이트 시트 정의 파일 — `(종류, 경로)`.
-    pub(crate) fn sprite_sheets(&self) -> Vec<(ItemKind, String)> {
-        self.sprites
+    /// 액터 타입별 스프라이트 시트 정의 파일 — `(번호, 경로)`. 시트를 안 적은 타입은 빠진다.
+    pub(crate) fn sprite_sheets(&self) -> Vec<(ActorId, String)> {
+        self.actor_looks
             .iter()
-            .map(|(kind, path)| (kind.to_marker(), path.clone()))
+            .filter_map(|(id, look)| look.sheet.clone().map(|path| (*id, path)))
             .collect()
     }
 }
@@ -539,8 +732,53 @@ mod tests {
     fn embedded_data_is_valid() {
         let data = GameData::embedded();
         assert_eq!(data.player_attack(), SkillId(1));
-        assert_eq!(data.unit_def(ItemKind::Monster).loot, Some(LootTableId(1)));
-        assert!(data.unit_def(ItemKind::Npc).immortal);
+        let monster = data.default_actor(ItemKind::Monster);
+        assert_eq!(data.unit_def(monster).loot, Some(LootTableId(1)));
+        let npc = data.default_actor(ItemKind::Npc);
+        assert!(data.unit_def(npc).immortal);
+    }
+
+    #[test]
+    fn a_marker_uses_its_actor_type_not_its_kind() {
+        // P1 의 요점 — 같은 몬스터 마커라도 타입이 다르면 수치가 다르다.
+        let data = GameData::embedded();
+        let default_monster = data.default_actor(ItemKind::Monster);
+        let other = data
+            .actor_catalog()
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .find(|&id| id != default_monster && data.unit_def(id).max_hp > 0)
+            .expect("액터 타입이 둘 이상이어야 이 기능에 의미가 있다");
+
+        let resolved = data.resolve_actor(other, ItemKind::Monster);
+        assert_eq!(resolved, other, "마커가 정한 타입이 무시됐다");
+        assert_ne!(
+            data.unit_def(resolved).max_hp,
+            data.unit_def(default_monster).max_hp,
+            "타입이 달라도 수치가 같으면 시험이 되지 않는다"
+        );
+    }
+
+    #[test]
+    fn an_unset_or_unknown_actor_falls_back_to_the_kind_default() {
+        // 존 파일이 예전 것이거나(0), 데이터를 고치는 중에 번호가 사라져도 열려야 한다.
+        let data = GameData::embedded();
+        for kind in ItemKind::ALL {
+            let fallback = data.default_actor(kind);
+            assert_eq!(data.resolve_actor(ActorId::DEFAULT, kind), fallback);
+            assert_eq!(data.resolve_actor(ActorId::new(9999), kind), fallback);
+            assert!(!fallback.is_default(), "{kind:?} 의 기본 액터가 없다");
+        }
+    }
+
+    #[test]
+    fn every_actor_has_a_name_and_every_name_has_stats() {
+        // 이름 없는 타입은 드롭다운에서 고를 수 없고, 수치 없는 이름은 스폰할 수 없다.
+        let data = GameData::embedded();
+        for (id, name, _) in data.actor_catalog() {
+            assert!(!name.trim().is_empty(), "액터 {}", id.raw());
+            assert!(data.actor_look(id).is_some(), "액터 {}", id.raw());
+        }
     }
 
     #[test]
@@ -595,13 +833,26 @@ mod tests {
     }
 
     #[test]
-    fn missing_unit_kind_is_reported() {
-        let start = EMBEDDED_RULES.find("        Player: (").unwrap();
-        let end =
-            start + EMBEDDED_RULES[start..].find("        ),\n").unwrap() + "        ),\n".len();
-        let rules = format!("{}{}", &EMBEDDED_RULES[..start], &EMBEDDED_RULES[end..]);
+    fn a_missing_kind_default_is_reported() {
+        // 종류별 기본 액터가 없으면 그 종류의 마커를 스폰할 수 없다.
+        let rules = EMBEDDED_RULES.replacen("        Player: 1,\n", "", 1);
         let err = GameData::parse(&rules, EMBEDDED_DISPLAY).unwrap_err();
         assert!(err.contains("Player"), "{err}");
+    }
+
+    #[test]
+    fn a_kind_default_pointing_at_nothing_is_reported() {
+        let rules = EMBEDDED_RULES.replacen("        Monster: 100,", "        Monster: 777,", 1);
+        let err = GameData::parse(&rules, EMBEDDED_DISPLAY).unwrap_err();
+        assert!(err.contains("777"), "{err}");
+    }
+
+    #[test]
+    fn an_actor_without_a_display_entry_is_reported() {
+        // 이름이 없으면 인스펙터에서 고를 수 없다 — 데이터 누락이다.
+        let display = EMBEDDED_DISPLAY.replacen("        101: (", "        999: (", 1);
+        let err = GameData::parse(EMBEDDED_RULES, &display).unwrap_err();
+        assert!(err.contains("101") && err.contains("999"), "{err}");
     }
 
     #[test]

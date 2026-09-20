@@ -37,9 +37,14 @@
         ],
     },
 
-    // 에디터 마커 종류별 유닛 수치. 마커마다 따로 정하는 것은 인스펙터 명세(M5-3) 이후.
-    units: {
-        Player: (
+    // 액터 타입별 수치. 마커가 이 번호를 가리킨다 (이름·스프라이트는 display.ron).
+    //
+    // 번호는 서버 테이블과 같은 ID 공간이다. 지금 쓰는 구간:
+    //   1~9    플레이어블
+    //   10~99  NPC
+    //   100~   몬스터
+    actors: {
+        1: (
             move_speed: 4.0,
             max_hp: 200,
             attack: 20,
@@ -48,7 +53,7 @@
             basic_attack: Some(1),
         ),
         // 서버 NpcEntityData 기본값처럼 불사·방어형.
-        Npc: (
+        10: (
             move_speed: 1.5,
             max_hp: 300,
             attack: 25,
@@ -61,7 +66,7 @@
             basic_attack: Some(3),
         ),
         // 서버 MonsterEntityData 기본값처럼 공격형.
-        Monster: (
+        100: (
             move_speed: 2.0,
             max_hp: 80,
             attack: 18,
@@ -73,6 +78,26 @@
             basic_attack: Some(2),
             loot: Some(1),
         ),
+        // 같은 몬스터 마커라도 타입이 다르면 수치가 다르다 — 액터 타입의 요점.
+        101: (
+            move_speed: 2.6,
+            max_hp: 140,
+            attack: 26,
+            defense: 6,
+            faction: 201,
+            ai: Aggressive,
+            aggro_range: 9.0,
+            leash_range: 18.0,
+            basic_attack: Some(2),
+            loot: Some(1),
+        ),
+    },
+
+    // 마커 종류별 기본 액터 — 마커가 타입을 정하지 않았을 때(예전 존 파일 포함) 쓴다.
+    default_actors: {
+        Player: 1,
+        Npc: 10,
+        Monster: 100,
     },
 
     // 플레이어가 클릭으로 공격할 때 쓰는 스킬.

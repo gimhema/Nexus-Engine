@@ -150,6 +150,11 @@ struct Editor {
     sprites: Option<SpriteLibrary>,
     /// 지형 그림(타일 아트·건물). 렌더러 초기화 후에 올라간다. 실패하면 비어 있다.
     terrain: Terrain,
+    /// 에디터가 보는 게임 데이터 — **액터 타입 목록**(인스펙터)과 마커 그림에 쓴다.
+    ///
+    /// 플레이는 시작할 때 자기 것을 새로 읽는다. 이쪽도 그때 함께 갱신해 에디터와 플레이가
+    /// 같은 데이터를 본다. 못 읽으면 `None` — 마커는 종류 기본값으로 그려진다.
+    data: Option<GameData>,
     /// 고정 줌 배율 (px/m). `Some` 이면 매 프레임 이 배율로 잠그고 픽셀 격자에 스냅한다.
     ///
     /// 게임 모드의 동작을 에디터에서 확인하기 위한 것이다 — S7 에서 플레이 모드의 기본이 된다.
@@ -200,6 +205,7 @@ impl Default for Editor {
             commands: Vec::new(),
             sprites: None,
             terrain: Terrain::default(),
+            data: None,
             fixed_zoom: None,
             play: None,
             zone_path: None,
@@ -345,6 +351,16 @@ impl Editor {
             redo_label: history.redo_label(),
             tool: self.editing.tool(),
             brush: self.editing.brush(),
+            actor_catalog: self
+                .data
+                .as_ref()
+                .map(GameData::actor_catalog)
+                .unwrap_or_default(),
+            actor_defaults: scene::ItemKind::ALL.map(|kind| {
+                self.data
+                    .as_ref()
+                    .map_or(scene::ActorId::DEFAULT, |d| d.default_actor(kind))
+            }),
             art_brush: self.editing.art_brush(),
             art_layer: self.editing.art_layer(),
             art_palette: self.terrain.list(),
@@ -428,6 +444,18 @@ impl Editor {
 
     /// 플레이 시작 / 정지. 시작하면 씬을 복사해 시뮬레이션을 만들고, 정지하면 버린다 —
     /// 씬과 언두 기록은 건드리지 않는다.
+    /// 마커가 실제로 쓸 액터 타입과 표시 색. 데이터를 못 읽었으면 종류 기본값으로.
+    fn actor_look_of(&self, item: &scene::Item) -> (scene::ActorId, [f32; 4]) {
+        let Some(data) = &self.data else {
+            return (scene::ActorId::DEFAULT, item.kind.color());
+        };
+        let actor = data.resolve_actor(item.actor, item.kind);
+        let tint = data
+            .actor_look(actor)
+            .map_or_else(|| item.kind.color(), |l| l.tint_or(item.kind.color()));
+        (actor, tint)
+    }
+
     fn toggle_play(&mut self) {
         if let Some(session) = self.play.take() {
             self.camera = *session.editor_camera();
@@ -442,6 +470,12 @@ impl Editor {
                 return;
             }
         };
+        // 에디터가 보는 목록도 같이 갱신한다 — 인스펙터와 플레이가 같은 데이터를 봐야 한다.
+        // (시트 그림은 시작할 때 GPU 에 한 번 올리므로 교체하려면 다시 시작해야 한다.)
+        match GameData::load() {
+            Ok(fresh) => self.data = Some(fresh),
+            Err(e) => self.notify(format!("액터 목록을 갱신하지 못했습니다 — {e}"), true),
+        }
         match PlaySession::start(&self.scene, self.camera, data) {
             Ok(session) => {
                 println!("플레이 시작 — 유닛 {}명", session.world().unit_count());
@@ -759,7 +793,9 @@ impl Editor {
         );
         if let Some(sprites) = &self.sprites {
             for item in &self.scene.items {
-                sprites.build(item, px, BIAS_SPRITE, &mut self.commands);
+                // 그림은 마커 종류가 아니라 **액터 타입**이 정한다 (P1).
+                let (actor, tint) = self.actor_look_of(item);
+                sprites.build(item, actor, tint, px, BIAS_SPRITE, &mut self.commands);
             }
         }
 
@@ -1075,14 +1111,18 @@ impl App for Editor {
         self.apply_env_selection();
         self.script = Script::from_env();
 
-        // 스프라이트 시트. 종류별 시트 경로는 표시 데이터(`data/display.ron`)에서 온다.
+        // 게임 데이터 — 액터 타입 목록(인스펙터)과 타입별 시트 경로가 여기서 나온다.
         // 그림은 여기서 GPU 에 한 번 올린다 — 시트를 갈아끼우면 다시 시작해야 반영된다
         // (텍스처 해제 API 가 없어 매번 올리면 쌓인다).
         let mut warnings = Vec::new();
         let sheets = match GameData::load() {
-            Ok(data) => data.sprite_sheets(),
+            Ok(data) => {
+                let sheets = data.sprite_sheets();
+                self.data = Some(data);
+                sheets
+            }
             Err(e) => {
-                warnings.push(format!("표시 데이터를 읽지 못해 기본 시트를 씁니다 — {e}"));
+                warnings.push(format!("게임 데이터를 읽지 못해 기본값을 씁니다 — {e}"));
                 Vec::new()
             }
         };

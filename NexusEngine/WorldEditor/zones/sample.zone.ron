@@ -235,6 +235,7 @@
         (
             name: "플레이어 스폰 #1",
             kind: Player,
+            actor: 0,
             pos: (0.0, 0.0),
             size: 1.0,
             orientation: 0.0,
@@ -242,6 +243,7 @@
         (
             name: "플레이어 스폰 #2",
             kind: Player,
+            actor: 0,
             pos: (5.0, 5.0),
             size: 1.0,
             orientation: 0.0,
@@ -249,6 +251,7 @@
         (
             name: "마을 경비병",
             kind: Npc,
+            actor: 0,
             pos: (10.0, 10.0),
             size: 0.8,
             orientation: 0.0,
@@ -256,6 +259,7 @@
         (
             name: "상인 NPC",
             kind: Npc,
+            actor: 0,
             pos: (-8.0, 12.0),
             size: 0.8,
             orientation: 1.5,
@@ -263,6 +267,7 @@
         (
             name: "슬라임",
             kind: Monster,
+            actor: 0,
             pos: (20.0, -5.0),
             size: 0.8,
             orientation: 0.0,
