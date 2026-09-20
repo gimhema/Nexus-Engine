@@ -16,7 +16,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
-use nexus_assets::{AnimState, SpriteAnimator, SpriteSheet};
+use nexus_assets::{AnimState, SpriteAnimator};
 use nexus_core::{Camera2d, Entity, Vec2, Vec3};
 use nexus_render::{DEPTH_LAYER, RenderCommand, SpriteAnchor, TextureId, UvRect};
 use nexus_sim::{
@@ -25,7 +25,7 @@ use nexus_sim::{
 
 use crate::game_data::GameData;
 use crate::scene::{ItemKind, Scene};
-use crate::sprites::{Look, MarkerSprites};
+use crate::sprites::{Look, SpriteLibrary};
 
 /// 쫓는 대상이 마지막 경로 지점에서 이만큼(m) 벗어나야 다시 경로를 잡는다 (AI 와 같은 값).
 const REPATH_DISTANCE: f32 = 0.5;
@@ -61,6 +61,8 @@ enum Order {
 #[derive(Clone, Debug)]
 struct Label {
     name: String,
+    /// 어느 마커에서 나온 유닛인가 — 종류별 스프라이트 시트를 고르는 데 쓴다.
+    kind: ItemKind,
     tint: [f32; 4],
 }
 
@@ -121,6 +123,7 @@ impl PlaySession {
                 unit,
                 Label {
                     name,
+                    kind: item.kind,
                     tint: item.kind.color(),
                 },
             );
@@ -235,7 +238,7 @@ impl PlaySession {
     // ── 진행 ─────────────────────────────────────────────────────────────────
 
     /// 한 tick. **고정 timestep 에서만** 부른다 — 애니메이션도 여기서 진행한다.
-    pub(crate) fn tick(&mut self, dt: Duration, sheet: Option<&SpriteSheet>) {
+    pub(crate) fn tick(&mut self, dt: Duration, sprites: Option<&SpriteLibrary>) {
         for intent in self.follow_order() {
             self.auth.submit(intent);
         }
@@ -243,8 +246,15 @@ impl PlaySession {
             self.on_event(event);
         }
 
+        // 유닛마다 자기 종류의 시트로 진행한다 — 시트마다 클립 길이가 다르다.
+        let kinds: Vec<(Entity, ItemKind)> = self
+            .labels
+            .iter()
+            .map(|(unit, label)| (*unit, label.kind))
+            .collect();
         let world = self.auth.world();
-        for (unit, u) in world.units() {
+        for (unit, kind) in kinds {
+            let Some(u) = world.unit(unit) else { continue };
             let animator = self.animators.entry(unit).or_default();
             if !u.is_alive() {
                 continue; // 시체는 마지막 프레임에 멈춘다
@@ -254,8 +264,8 @@ impl PlaySession {
             } else {
                 AnimState::Idle
             });
-            if let Some(sheet) = sheet {
-                animator.advance(sheet, dt);
+            if let Some(sprites) = sprites {
+                animator.advance(sprites.sheet(kind).anim(), dt);
             }
         }
     }
@@ -505,11 +515,12 @@ impl PlaySession {
         &self,
         alpha: f32,
         px: f32,
-        sprites: &MarkerSprites,
+        sprites: &SpriteLibrary,
         out: &mut Vec<RenderCommand>,
     ) {
         let fallback = SpriteAnimator::default();
         for (unit, u) in self.world().units() {
+            let kind = self.kind_of(unit);
             let tint = if u.is_alive() {
                 self.labels.get(&unit).map_or([1.0; 4], |l| l.tint)
             } else {
@@ -520,27 +531,38 @@ impl PlaySession {
                 tint,
             };
             let animator = self.animators.get(&unit).unwrap_or(&fallback);
-            sprites.push(u.render_pos(alpha), look, animator, px, BIAS_SPRITE, out);
+            sprites
+                .sheet(kind)
+                .push(u.render_pos(alpha), look, animator, px, BIAS_SPRITE, out);
         }
+    }
+
+    /// 이 유닛이 나온 마커 종류. 모르면 몬스터로 본다(내장 시트로 그려진다).
+    fn kind_of(&self, unit: Entity) -> ItemKind {
+        self.labels.get(&unit).map_or(ItemKind::Monster, |l| l.kind)
     }
 
     /// 표시 층 — 살아 있는 유닛 머리 위 HP 막대.
     ///
     /// 막대는 **빌보드**(흰 텍스처 스프라이트)다 — 화면을 향해 서므로 쿼터뷰에서도 눌리지 않는다.
-    /// `sprite_height` 는 스프라이트가 화면에 그려지는 높이 (m) — 막대는 그 위에 뜬다.
+    /// 막대가 뜨는 높이는 **유닛이 쓰는 시트**의 스프라이트 높이다 — 종류마다 칸 크기가 다르다.
     pub(crate) fn build_overlay(
         &self,
         alpha: f32,
         px: f32,
-        sprite_height: f32,
+        sprites: Option<&SpriteLibrary>,
         out: &mut Vec<RenderCommand>,
     ) {
         const WIDTH_PX: f32 = 30.0;
         const HEIGHT_PX: f32 = 4.0;
         const GAP_PX: f32 = 6.0;
+        /// 시트가 없을 때(로드 실패) 쓰는 머리 높이 (m).
+        const NO_SHEET_HEIGHT: f32 = 1.5;
 
-        let above = sprite_height + GAP_PX * px;
-        for (_, u) in self.world().units().filter(|(_, u)| u.is_alive()) {
+        for (unit, u) in self.world().units().filter(|(_, u)| u.is_alive()) {
+            let height =
+                sprites.map_or(NO_SHEET_HEIGHT, |s| s.sheet(self.kind_of(unit)).height(px));
+            let above = height + GAP_PX * px;
             let at = u.render_pos(alpha);
             let ratio = u.hp() as f32 / u.def().max_hp as f32;
             let full = WIDTH_PX * px;

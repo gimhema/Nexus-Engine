@@ -9,6 +9,7 @@
 *.yml       text eol=lf
 *.wgsl      text eol=lf
 *.ron       text eol=lf
+*.html      text eol=lf
 *.glsl      text eol=lf
 
 # 에셋 / 컴파일된 셰이더는 바이너리로 취급

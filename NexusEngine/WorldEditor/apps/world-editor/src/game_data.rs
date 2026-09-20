@@ -124,6 +124,24 @@ enum MarkerKindFile {
     Monster,
 }
 
+impl MarkerKindFile {
+    fn of(kind: ItemKind) -> Self {
+        match kind {
+            ItemKind::PlayerSpawn => Self::Player,
+            ItemKind::Npc => Self::Npc,
+            ItemKind::Monster => Self::Monster,
+        }
+    }
+
+    fn to_marker(self) -> ItemKind {
+        match self {
+            Self::Player => ItemKind::PlayerSpawn,
+            Self::Npc => ItemKind::Npc,
+            Self::Monster => ItemKind::Monster,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UnitFile {
@@ -167,6 +185,9 @@ struct StackFile {
 struct DisplayFile {
     version: u32,
     items: BTreeMap<u32, ItemLookFile>,
+    /// 마커 종류별 스프라이트 시트 정의 파일 경로. 생략하면 내장 플레이스홀더를 쓴다.
+    #[serde(default)]
+    sprites: BTreeMap<MarkerKindFile, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -200,6 +221,7 @@ pub(crate) struct GameData {
     player_attack: SkillId,
     starting_kit: Vec<(ItemId, u32)>,
     looks: BTreeMap<u32, ItemLook>,
+    sprites: BTreeMap<MarkerKindFile, String>,
 }
 
 impl GameData {
@@ -367,6 +389,7 @@ impl GameData {
                     )
                 })
                 .collect(),
+            sprites: d.sprites,
         })
     }
 
@@ -389,13 +412,11 @@ impl GameData {
 
     /// 마커 종류의 유닛 수치.
     pub(crate) fn unit_def(&self, kind: ItemKind) -> UnitDef {
-        let key = match kind {
-            ItemKind::PlayerSpawn => MarkerKindFile::Player,
-            ItemKind::Npc => MarkerKindFile::Npc,
-            ItemKind::Monster => MarkerKindFile::Monster,
-        };
         // parse() 가 세 종류가 다 있는지 확인했다.
-        self.units.get(&key).copied().unwrap_or_default()
+        self.units
+            .get(&MarkerKindFile::of(kind))
+            .copied()
+            .unwrap_or_default()
     }
 
     /// 플레이어에게 시작 소지품을 준다.
@@ -423,6 +444,14 @@ impl GameData {
         self.looks
             .get(&id.0)
             .map_or([0.8, 0.8, 0.8, 1.0], |l| l.color)
+    }
+
+    /// 마커 종류별 스프라이트 시트 정의 파일 — `(종류, 경로)`.
+    pub(crate) fn sprite_sheets(&self) -> Vec<(ItemKind, String)> {
+        self.sprites
+            .iter()
+            .map(|(kind, path)| (kind.to_marker(), path.clone()))
+            .collect()
     }
 }
 

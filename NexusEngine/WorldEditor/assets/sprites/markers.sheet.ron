@@ -6,6 +6,8 @@
     version: 1,
     cell: (32, 48),
     directions: 4,
+    // 무채색 시트라 종류별 색을 곱한다.
+    tinted: true,
     clips: [
         (state: Idle, row: 0, frames: 4, frame_ms: 250, looping: true),
         (state: Walk, row: 4, frames: 4, frame_ms: 150, looping: true),

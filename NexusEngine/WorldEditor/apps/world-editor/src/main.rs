@@ -39,7 +39,7 @@ use game_data::GameData;
 use play::PlaySession;
 use scene::{Handle, Pick, Scene, Target};
 use script::{Anchor, Button, Script, Step};
-use sprites::MarkerSprites;
+use sprites::SpriteLibrary;
 use ui::{EditorUi, FrameStats, Notice, UiActions, UiModel};
 
 // 색은 모두 sRGB. 렌더러가 선형으로 변환한다.
@@ -138,7 +138,7 @@ struct Editor {
     /// 프레임마다 재사용하는 명령 버퍼 — 매 프레임 할당을 피한다.
     commands: Vec<RenderCommand>,
     /// 마커 스프라이트 시트. 렌더러 초기화 후에 올라간다.
-    sprites: Option<MarkerSprites>,
+    sprites: Option<SpriteLibrary>,
     /// 고정 줌 배율 (px/m). `Some` 이면 매 프레임 이 배율로 잠그고 픽셀 격자에 스냅한다.
     ///
     /// 게임 모드의 동작을 에디터에서 확인하기 위한 것이다 — S7 에서 플레이 모드의 기본이 된다.
@@ -781,11 +781,7 @@ impl Editor {
         self.commands
             .push(RenderCommand::SetLayer(DrawLayer::Overlay));
         // 시트가 없으면(로드 실패) 기본 칸 높이 48px 를 기준으로 막대를 띄운다.
-        let sprite_height = self
-            .sprites
-            .as_ref()
-            .map_or(48.0 / Camera2d::PIXELS_PER_METER, |s| s.height(px));
-        play.build_overlay(alpha, px, sprite_height, &mut self.commands);
+        play.build_overlay(alpha, px, self.sprites.as_ref(), &mut self.commands);
     }
 
     /// 단독 선택된 마커의 회전 핸들 — 화살표 끝에서 이어지는 가는 선 + 원 대신 마름모.
@@ -1004,10 +1000,24 @@ impl App for Editor {
         self.apply_env_selection();
         self.script = Script::from_env();
 
-        // 마커 스프라이트. 실패해도 에디터는 돌아간다 — 마커가 지면 사각형만 남을 뿐이다.
-        match MarkerSprites::load(&mut renderer) {
+        // 스프라이트 시트. 종류별 시트 경로는 표시 데이터(`data/display.ron`)에서 온다.
+        // 그림은 여기서 GPU 에 한 번 올린다 — 시트를 갈아끼우면 다시 시작해야 반영된다
+        // (텍스처 해제 API 가 없어 매번 올리면 쌓인다).
+        let mut warnings = Vec::new();
+        let sheets = match GameData::load() {
+            Ok(data) => data.sprite_sheets(),
+            Err(e) => {
+                warnings.push(format!("표시 데이터를 읽지 못해 기본 시트를 씁니다 — {e}"));
+                Vec::new()
+            }
+        };
+        // 실패해도 에디터는 돌아간다 — 마커가 지면 사각형만 남을 뿐이다.
+        match SpriteLibrary::load(&mut renderer, &sheets, &mut warnings) {
             Ok(s) => self.sprites = Some(s),
-            Err(e) => eprintln!("마커 스프라이트 로드 실패: {e}"),
+            Err(e) => warnings.push(format!("스프라이트 시트 로드 실패: {e}")),
+        }
+        for warning in warnings {
+            self.notify(warning, true);
         }
 
         self.renderer = Some(renderer);
@@ -1048,7 +1058,7 @@ impl App for Editor {
         // 플레이 중이면 시뮬레이션이 여기서 돈다 — 게임 규칙은 20Hz 고정 timestep 에서만 진행한다.
         // 에디터 조작(카메라·선택·편집)은 뷰·저작 작업이므로 UI 프레임에서 처리한다.
         if let Some(play) = self.play.as_mut() {
-            play.tick(dt, self.sprites.as_ref().map(MarkerSprites::sheet));
+            play.tick(dt, self.sprites.as_ref());
         }
     }
 

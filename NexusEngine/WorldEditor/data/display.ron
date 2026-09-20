@@ -3,6 +3,16 @@
 // 번호는 rules.ron 의 아이템 번호와 같다. 색은 sRGB (땅에 떨어졌을 때의 마름모 색).
 (
     version: 1,
+
+    // 마커 종류별 스프라이트 시트 정의. 생략하거나 읽지 못하면 내장 플레이스홀더를 쓴다.
+    // 경로는 작업 디렉터리(WorldEditor/) 기준. 시트 교체는 **에디터를 다시 시작**해야 반영된다
+    // (그림은 시작할 때 GPU 에 한 번 올린다).
+    sprites: {
+        Player: "assets/third_party/zelda-like-armm1998/player.sheet.ron",
+        Npc: "assets/third_party/zelda-like-armm1998/npc.sheet.ron",
+        Monster: "assets/third_party/slime-garakh/monster.sheet.ron",
+    },
+
     items: {
         501: (name: "빨간 포션", color: (0.95, 0.30, 0.30)),
         909: (name: "젤리", color: (0.55, 0.85, 0.95)),
