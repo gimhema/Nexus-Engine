@@ -1,0 +1,954 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nexus WorldEditor 사용 설명서</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1a1c20;
+    --muted: #5c6370;
+    --line: #dfe3e8;
+    --card: #f6f7f9;
+    --code-bg: #f2f4f7;
+    --accent: #2f6db5;
+    --ok: #1f7a43;
+    --warn: #9a6400;
+    --bad: #b03030;
+    --sidebar: 280px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --fg: #e6e8ec;
+      --muted: #9aa2ae;
+      --line: #2b2f36;
+      --card: #1b1e24;
+      --code-bg: #1e222a;
+      --accent: #7fb2f0;
+      --ok: #6fd08c;
+      --warn: #e0b154;
+      --bad: #f08a80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.75 "Malgun Gothic", "맑은 고딕", "Noto Sans CJK KR", "Apple SD Gothic Neo", system-ui, sans-serif;
+  }
+  .wrap { display: flex; align-items: flex-start; max-width: 1400px; margin: 0 auto; }
+  nav {
+    position: sticky; top: 0; flex: 0 0 var(--sidebar); width: var(--sidebar);
+    height: 100vh; overflow-y: auto; padding: 28px 18px 40px;
+    border-right: 1px solid var(--line); font-size: 14px;
+  }
+  nav h2 { font-size: 15px; margin: 0 0 4px; }
+  nav .ver { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+  nav ol { list-style: none; margin: 0; padding: 0; }
+  nav ol li { margin: 2px 0; }
+  nav a { color: var(--fg); text-decoration: none; display: block; padding: 3px 6px; border-radius: 5px; }
+  nav a:hover { background: var(--card); color: var(--accent); }
+  main { flex: 1 1 auto; min-width: 0; padding: 32px 40px 120px; }
+  h1 { font-size: 30px; margin: 0 0 6px; }
+  h2 {
+    font-size: 23px; margin: 56px 0 14px; padding-bottom: 8px;
+    border-bottom: 2px solid var(--line); scroll-margin-top: 20px;
+  }
+  h3 { font-size: 18px; margin: 30px 0 10px; scroll-margin-top: 20px; }
+  h4 { font-size: 16px; margin: 20px 0 6px; }
+  p, li { max-width: 78ch; }
+  code, kbd, pre {
+    font-family: "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+  }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; font-size: 13.5px; line-height: 1.6;
+  }
+  pre code { background: none; padding: 0; }
+  kbd {
+    background: var(--card); border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 5px; padding: 1px 6px; font-size: 0.86em; white-space: nowrap;
+  }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 14.5px; }
+  th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--card); font-weight: 600; }
+  td code { white-space: nowrap; }
+  .lead { color: var(--muted); font-size: 17px; max-width: 78ch; }
+  .box {
+    border: 1px solid var(--line); border-left: 4px solid var(--accent);
+    background: var(--card); border-radius: 6px; padding: 12px 16px; margin: 16px 0;
+  }
+  .box.warn { border-left-color: var(--warn); }
+  .box.bad { border-left-color: var(--bad); }
+  .box.ok { border-left-color: var(--ok); }
+  .box p:first-child { margin-top: 0; }
+  .box p:last-child { margin-bottom: 0; }
+  .tag { font-size: 12px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted); }
+  .yes { color: var(--ok); font-weight: 600; }
+  .no { color: var(--bad); font-weight: 600; }
+  .part { color: var(--warn); font-weight: 600; }
+  .layout { font-size: 12.5px; line-height: 1.45; }
+  footer { margin-top: 70px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+  @media (max-width: 900px) {
+    .wrap { flex-direction: column; }
+    nav { position: static; width: 100%; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+    main { padding: 24px 18px 80px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <h2>Nexus WorldEditor</h2>
+  <div class="ver">사용 설명서 · 2026-09-20 기준<br>(S7-3까지 구현된 상태)</div>
+  <ol>
+    <li><a href="#what">1. 지금 할 수 있는 것</a></li>
+    <li><a href="#start">2. 설치와 실행</a></li>
+    <li><a href="#screen">3. 화면 구성</a></li>
+    <li><a href="#t1">4. 존 배치 편집하기</a></li>
+    <li><a href="#t2">5. 지형(타일) 칠하기</a></li>
+    <li><a href="#t3">6. 플레이해 보기</a></li>
+    <li><a href="#t4">7. 존 저장하고 열기</a></li>
+    <li><a href="#t5">8. 게임 수치와 그림 바꾸기</a></li>
+    <li><a href="#keys">9. 조작 요약</a></li>
+    <li><a href="#headless">10. 창 없이 검증하기</a></li>
+    <li><a href="#rules">11. 지금 동작하는 게임 규칙</a></li>
+    <li><a href="#arch">12. 엔진 구조</a></li>
+    <li><a href="#limits">13. 아직 없는 것</a></li>
+    <li><a href="#trouble">14. 문제 해결</a></li>
+  </ol>
+</nav>
+
+<main>
+<h1>Nexus WorldEditor 사용 설명서</h1>
+<p class="lead">
+  라그나로크 계열 <strong>쿼터뷰 2D 스프라이트 MMORPG</strong>를 만들기 위한 Rust 게임 엔진이자,
+  그 위에 올라간 존(맵) 저작 도구입니다. 지금은 <strong>서버 없이 혼자 돌아가는 단계</strong>이고,
+  맵을 만들고 <strong>그 자리에서 바로 플레이</strong>해 볼 수 있습니다.
+</p>
+
+<div class="box">
+  <p>
+    이 문서는 <strong>2026-09-20 시점의 실제 코드</strong>를 기준으로 썼습니다. 여기 적힌 수치·조작·파일 형식은
+    모두 현재 소스에서 확인한 것입니다. 개발 로드맵과 설계 근거는 저장소의 <code>CLAUDE.md</code>에 있습니다.
+  </p>
+</div>
+
+<h2 id="what">1. 지금 할 수 있는 것</h2>
+
+<table>
+  <tr><th style="width:26%">기능</th><th style="width:11%">상태</th><th>내용</th></tr>
+  <tr>
+    <td>존 배치 편집</td><td class="yes">가능</td>
+    <td>플레이어 스폰·NPC·몬스터 마커를 놓고, 옮기고, 방향을 돌리고, 지웁니다. 존 경계(맵 크기)도 핸들로 조절합니다.</td>
+  </tr>
+  <tr>
+    <td>지형 편집</td><td class="yes">가능</td>
+    <td>타일마다 <em>걸을 수 있음 / 경사로 / 높이 레벨</em>을 칠합니다. 높이는 그림으로 그려지지 않고 규칙으로만 쓰입니다.</td>
+  </tr>
+  <tr>
+    <td>존 저장·열기</td><td class="yes">가능</td>
+    <td><code>zones/*.zone.ron</code> 텍스트 파일. 사람이 읽고 손으로 고칠 수 있습니다.</td>
+  </tr>
+  <tr>
+    <td>플레이 모드</td><td class="yes">가능</td>
+    <td><kbd>F5</kbd>로 편집 중인 맵을 즉시 플레이. 클릭 이동·전투·줍기·장착이 됩니다.</td>
+  </tr>
+  <tr>
+    <td>게임 규칙</td><td class="yes">가능</td>
+    <td>길찾기 이동, 근접·원거리 공격, 쿨타임, 몬스터 AI(어그로·추격·귀환), 아이템·가방·장비, 드롭.</td>
+  </tr>
+  <tr>
+    <td>수치 조정</td><td class="yes">가능</td>
+    <td><code>data/rules.ron</code>을 고치고 <kbd>F5</kbd>만 다시 누르면 적용됩니다(재빌드 불필요).</td>
+  </tr>
+  <tr>
+    <td>그래픽</td><td class="part">일부</td>
+    <td>애니메이션 빌보드 스프라이트는 동작하지만 <strong>아트가 플레이스홀더</strong>이고, 지형은 색칠된 타일입니다(타일 그림 없음).</td>
+  </tr>
+  <tr>
+    <td>사운드</td><td class="no">없음</td>
+    <td>오디오 계층이 아직 없습니다.</td>
+  </tr>
+  <tr>
+    <td>네트워크·멀티플레이</td><td class="no">없음</td>
+    <td>의도적으로 빠져 있습니다. C++ 서버(NexusEngine) 연동은 다음 단계의 일입니다.</td>
+  </tr>
+  <tr>
+    <td>퀘스트·대화·상점</td><td class="no">없음</td>
+    <td>NPC는 서 있고 맞으면 반격하는 것까지만 합니다.</td>
+  </tr>
+</table>
+
+<p>
+  한 줄로 요약하면: <strong>맵을 만들고, 몬스터를 배치하고, 직접 걸어가 싸워 보고, 떨어진 아이템을 줍고,
+  수치를 고쳐 다시 시험하는 것</strong>까지가 지금 가능한 범위입니다.
+</p>
+
+<h2 id="start">2. 설치와 실행</h2>
+
+<h3>준비물</h3>
+<table>
+  <tr><th style="width:22%">항목</th><th>내용</th></tr>
+  <tr><td>Rust 툴체인</td><td><strong>1.95.0 고정</strong> — 저장소의 <code>rust-toolchain.toml</code>이 자동으로 맞춰 줍니다. 채널을 <code>stable</code>로 바꾸지 마세요.</td></tr>
+  <tr><td>GPU</td><td>Vulkan을 지원하는 GPU. Windows·Linux 모두 Vulkan 백엔드로 동작합니다.</td></tr>
+  <tr><td>Linux 패키지</td><td><code>vulkan-loader</code>, <code>mesa-vulkan-drivers</code>, 한글 폰트(예: <code>google-noto-sans-cjk-fonts</code>)</td></tr>
+  <tr><td>Windows</td><td>추가 설치 없이 동작합니다(한글 폰트는 시스템의 맑은 고딕을 자동으로 찾습니다).</td></tr>
+</table>
+
+<pre><code># Fedora 계열 예시
+sudo dnf install vulkan-loader mesa-vulkan-drivers google-noto-sans-cjk-fonts</code></pre>
+
+<h3>실행</h3>
+<pre><code>cd NexusEngine/WorldEditor
+cargo run -p world-editor</code></pre>
+
+<p>
+  처음 실행하면 <code>Server.cpp</code>의 기본 존 배치(플레이어 스폰 2, NPC 2, 몬스터 1)와
+  샘플 지형(고지대·경사로·벽)이 들어 있는 씬이 열립니다.
+</p>
+
+<div class="box warn">
+  <p>
+    <strong>작업 디렉터리</strong>는 <code>WorldEditor/</code>로 두는 것이 좋습니다.
+    존 파일(<code>zones/</code>)과 데이터 파일(<code>data/</code>)을 그 기준으로 찾습니다.
+    다른 위치에서 실행하면 실행 파일에 <em>내장된</em> 데이터로 동작하고, 존 폴더는 비어 보입니다.
+  </p>
+</div>
+
+<h3>코드를 고쳤다면 — 검증 명령</h3>
+<pre><code>cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo clippy -p nexus-render-wgpu --all-targets --locked -- -D warnings   # 게임 런타임 구성(UI 제외)
+cargo test --workspace --locked                                          # GPU 불필요
+
+# Windows 에서 리눅스 쪽 타입 검사 (링크는 하지 않음)
+cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gnu -- -D warnings</code></pre>
+<p>현재 테스트는 <strong>258개</strong>이고, 창이나 GPU 없이 모두 돕니다.</p>
+
+<h2 id="screen">3. 화면 구성</h2>
+
+<pre class="layout"><code>┌───────────────────────────────────────────────────────────────────────┐
+│ 파일   편집   플레이   보기                                    ← 메뉴 바 │
+├───────────────┬───────────────────────────────────┬───────────────────┤
+│ 씬            │                                   │ 인스펙터          │
+│               │                                   │                   │
+│ 존 경계       │            뷰포트                 │ 도구: 선택/칠하기 │
+│ 플레이어 스폰 │      (맵을 보고 편집하는 곳)      │ 선택한 것의 값    │
+│ 마을 경비병   │                                   │ 위치·방향 편집    │
+│ 슬라임        │                                   │                   │
+├───────────────┴───────────────────────────────────┴───────────────────┤
+│ 파일이름 *  X 12.7  Y 8.2 m │ 시야 21m · 그리드 1m │ 타일 (44,40)·L0  │
+└───────────────────────────────────────────────────────────────────────┘
+                                                              ↑ 상태 바</code></pre>
+
+<table>
+  <tr><th style="width:18%">영역</th><th>역할</th></tr>
+  <tr><td>메뉴 바</td><td>파일(존 열기·저장), 편집(실행 취소·추가·삭제), 플레이(시작·정지), 보기(시점·화면 맞추기)</td></tr>
+  <tr><td>씬 패널</td><td>맵에 있는 것의 목록. 클릭하면 선택됩니다. 위쪽 <code>+</code> 버튼으로 마커를 추가합니다.<br><strong>플레이 중에는</strong> 유닛 목록과 HP로 바뀝니다.</td></tr>
+  <tr><td>뷰포트</td><td>맵 화면. 기본은 쿼터뷰(게임과 같은 시점)이고, 정밀 작업용 탑다운으로 바꿀 수 있습니다.</td></tr>
+  <tr><td>인스펙터</td><td>도구 선택(선택 / 타일 칠하기)과 선택한 대상의 값 편집.<br><strong>플레이 중에는</strong> 플레이어 스탯·장비·소모품·기록으로 바뀝니다.</td></tr>
+  <tr><td>상태 바</td><td>파일 이름과 저장 여부(<code>*</code>), 커서 좌표, 시야·그리드 간격, 커서 아래 타일 정보, 알림, fps</td></tr>
+</table>
+
+<h2 id="t1">4. 존 배치 편집하기</h2>
+
+<h3>4.1 둘러보기</h3>
+<ul>
+  <li><strong>가운데 버튼 또는 오른쪽 버튼 드래그</strong> — 화면 이동(팬)</li>
+  <li><strong>마우스 휠</strong> — 커서 위치를 기준으로 확대·축소(노치당 10%). 시야 범위는 <strong>0.5m ~ 5km</strong></li>
+  <li><kbd>Home</kbd> — 존 전체 보기 / <kbd>F</kbd> — 선택한 것(없으면 모든 마커) 보기</li>
+</ul>
+<div class="box">
+  <p>
+    기본 존은 2km × 2km인데 스폰은 원점 근처 20m 안에 모여 있습니다.
+    <kbd>Home</kbd>으로 전체를 보면 마커가 한 점에 뭉쳐 보이니, 편집할 때는 <kbd>F</kbd>로 다가가세요.
+  </p>
+</div>
+
+<h3>4.2 선택하고 옮기기</h3>
+<ol>
+  <li><strong>왼쪽 클릭</strong>으로 마커를 선택합니다. 빈 곳을 클릭하면 해제됩니다(<kbd>Esc</kbd>도 해제).</li>
+  <li><kbd>Shift</kbd>+클릭으로 선택에 더하거나 뺍니다.</li>
+  <li>빈 곳에서 <strong>드래그</strong>하면 박스 선택입니다. 끄는 중에도 목록과 인스펙터에 바로 반영됩니다.</li>
+  <li>선택한 것을 <strong>드래그</strong>하면 이동합니다. 여러 개를 골랐으면 함께 움직입니다.</li>
+  <li><kbd>Ctrl</kbd>+드래그하면 <strong>현재 화면의 그리드 간격</strong>으로 위치가 맞춰집니다.</li>
+</ol>
+<p>선택한 대상은 금색 테두리, 커서가 올라간 대상은 흰 테두리로 표시됩니다.</p>
+
+<h3>4.3 방향 돌리기</h3>
+<p>
+  마커를 <strong>하나만</strong> 선택하면 방향 화살표 끝에 마름모(◆) 핸들이 나타납니다.
+  그것을 드래그하면 마커가 커서 쪽을 바라봅니다. <kbd>Ctrl</kbd>을 누르고 돌리면 <strong>15°</strong> 단위로 맞춰집니다.
+</p>
+<p>인스펙터에서 <strong>도(°) 단위</strong>로 직접 입력할 수도 있습니다. 내부 저장은 라디안입니다.</p>
+
+<h3>4.4 추가와 삭제</h3>
+<ul>
+  <li>씬 패널의 <code>+ 플레이어</code> / <code>+ NPC</code> / <code>+ 몬스터</code> 버튼 — <strong>지금 보고 있는 화면 한가운데</strong>에 놓입니다.</li>
+  <li>이름은 종류별로 비어 있는 가장 작은 번호가 자동으로 붙습니다(<code>몬스터 #1</code>).</li>
+  <li><kbd>Delete</kbd> — 선택한 마커 삭제. 여러 개를 지워도 실행 취소 한 번으로 되돌아옵니다.</li>
+</ul>
+
+<h3>4.5 존 경계 조절</h3>
+<p>
+  씬 목록에서 <strong>존 경계</strong>를 선택하면 변과 모서리에 핸들 8개가 나타납니다. 끌어서 맵 크기를 조절합니다.
+  반대편을 넘거나 한 변이 1m보다 작아지지는 않습니다. 인스펙터에서 최소·최대 좌표를 숫자로 넣어도 됩니다.
+</p>
+<div class="box">
+  <p>
+    존 경계는 <strong>서버의 이동 검증 범위</strong>(<code>ZoneConfig.boundsMin/Max</code>)에 대응합니다.
+    지금은 표시와 저장까지만 하고, 플레이 중 이동을 막지는 않습니다(이동은 타일 규칙으로 막습니다).
+  </p>
+</div>
+
+<h3>4.6 실행 취소</h3>
+<p>
+  <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd>(또는 <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd>).
+  편집 메뉴에는 <em>실행 취소: 이동</em>처럼 대상이 표시됩니다.
+</p>
+<p>한 단계로 묶이는 단위는 이렇습니다:</p>
+<ul>
+  <li>드래그 한 번 = 1단계 (움직이지 않은 클릭은 기록하지 않습니다)</li>
+  <li>인스펙터 값 편집 한 번 = 1단계</li>
+  <li>추가·삭제 한 번 = 1단계 (여러 개라도)</li>
+  <li>타일 칠하기: 누르고 끌다 뗀 것 전체 = 1단계</li>
+  <li><strong>선택은 편집이 아닙니다</strong> — 기록되지 않습니다</li>
+</ul>
+<p>기록은 최대 256단계까지 남습니다.</p>
+
+<h2 id="t2">5. 지형(타일) 칠하기</h2>
+
+<p>
+  인스펙터 맨 위에서 도구를 <strong>타일 칠하기</strong>로 바꾸면 붓 설정이 나옵니다.
+  기본 타일맵은 <strong>원점 주변 64 × 64칸</strong>이고 한 칸은 <strong>1m</strong>입니다.
+</p>
+
+<table>
+  <tr><th style="width:20%">붓 항목</th><th>의미</th></tr>
+  <tr><td>걸을 수 있음</td><td>끄면 벽이 됩니다. 유닛이 지나갈 수 없고 길찾기가 돌아갑니다.</td></tr>
+  <tr><td>경사로</td><td>높이가 한 단계 다른 칸을 이어 줍니다. 경사로가 없으면 높이 차이를 넘을 수 없습니다.</td></tr>
+  <tr><td>높이 레벨</td><td>0~9. <strong>그림으로 그려지지 않습니다</strong> — 이동과 시야 규칙에만 쓰입니다.</td></tr>
+</table>
+
+<h3>높이 규칙 (스타크래프트 방식)</h3>
+<ul>
+  <li><strong>이동</strong>: 같은 레벨끼리는 자유, <strong>한 단계</strong> 차이는 둘 중 하나가 경사로일 때만, 두 단계는 불가</li>
+  <li><strong>대각선 이동</strong>: 양옆 두 칸이 모두 지나갈 수 있어야 합니다(벽 모서리를 뚫지 못하게)</li>
+  <li><strong>시야</strong>: 높은 곳에서 낮은 곳은 보이고, <strong>낮은 곳에서 높은 곳은 보이지 않습니다</strong>.
+      그래서 고지대 위의 몬스터는 아래를 먼저 발견합니다.</li>
+</ul>
+
+<div class="box">
+  <p>
+    <strong>화면에서는 레벨이 색으로만 보입니다.</strong> 기본값(걸을 수 있는 레벨 0) 칸은 아무것도 그리지 않습니다 —
+    대부분이 기본값이라 다 그리면 화면이 어지럽기만 합니다. 커서 아래 칸의 정보는 <strong>상태 바</strong>에
+    <code>타일 (44, 40) · L1 · 경사로</code>처럼 표시됩니다.
+  </p>
+</div>
+
+<p>
+  빠르게 끌어도 칸이 빠지지 않습니다 — 포인터가 한 프레임에 여러 칸을 건너뛰면 그 사이를 선으로 이어 칠합니다.
+</p>
+
+<h3>5.1 지형 그림과 건물 칠하기</h3>
+<p>
+  도구를 <strong>그림 칠하기</strong>로 바꾸면 <code>data/terrain.ron</code>에 정의된 그림 목록이 나옵니다.
+  <strong>지면</strong>(풀·물·바닥)은 칸에 눕혀 그려지고, <strong>오브젝트</strong>(집·노점 같은 건물)는
+  칸 중심에 발을 딛고 서 있는 그림으로 그려집니다.
+</p>
+<div class="box">
+  <p>
+    <strong>그림과 걷기 규칙은 다른 층입니다.</strong> 건물을 놓아도 그 칸이 막히지 않고, 풀을 칠해도
+    높이 레벨이 바뀌지 않습니다. 집을 통과하지 못하게 하려면 <strong>타일 칠하기로 그 칸의
+    "걸을 수 있음"을 따로 꺼야</strong> 합니다.
+  </p>
+  <p>
+    라그나로크가 지형 그림과 걷기 맵(GAT)을 따로 두는 것과 같은 방식입니다 — 그림을 바꿔도
+    이동·전투 판정이 달라지지 않아야 나중에 서버와 어긋나지 않습니다.
+  </p>
+</div>
+<p>
+  지면과 오브젝트도 서로 다른 층이라 <strong>건물을 놓아도 그 칸의 지면 그림이 남습니다</strong>(집이 풀 위에 섭니다).
+  그래서 지우개도 <strong>지면 / 오브젝트를 골라서</strong> 지웁니다.
+</p>
+<ul>
+  <li>끌기 한 번 = 언두 한 스텝 (<kbd>Ctrl</kbd>+<kbd>Z</kbd>로 통째로 되돌아갑니다)</li>
+  <li>건물은 <strong>한 칸에 하나</strong>이고 회전은 없습니다. 크기는 그림 크기에서 자동으로 정해집니다</li>
+  <li>캐릭터가 건물 <strong>뒤</strong>에 서면 가려지고 <strong>앞</strong>에 서면 보입니다 — 발밑 위치로 앞뒤가 정해집니다</li>
+  <li>편집 중에는 규칙 색(막힌 칸·높이)이 그림 <em>위에</em> 보이고, <strong>플레이 중에는 감춰집니다</strong></li>
+</ul>
+
+<h2 id="t3">6. 플레이해 보기</h2>
+
+<p><kbd>F5</kbd>(또는 메뉴 <em>플레이 → 플레이 시작</em>)를 누르면 편집 중인 맵이 그대로 게임이 됩니다.</p>
+
+<div class="box ok">
+  <p>
+    <strong>플레이는 씬을 바꾸지 않습니다.</strong> 시작할 때 맵을 복사해서 돌리고, 정지하면 결과를 버립니다.
+    몬스터를 죽이거나 아이템을 떨어뜨려도 편집 중인 맵과 실행 취소 기록에는 영향이 없습니다.
+    정지하면 카메라도 시작 전 위치로 돌아갑니다.
+  </p>
+</div>
+
+<h3>6.1 누가 등장하나</h3>
+<ul>
+  <li><strong>첫 번째 플레이어 스폰</strong>에 플레이어가 섭니다. 나머지 플레이어 스폰은 그냥 지점일 뿐 유닛이 되지 않습니다.</li>
+  <li>NPC·몬스터 마커는 전부 유닛이 됩니다.</li>
+  <li>플레이어 스폰이 하나도 없으면 시작할 수 없고, 그 이유가 상태 바에 표시됩니다.</li>
+</ul>
+
+<h3>6.2 조작</h3>
+<table>
+  <tr><th style="width:26%">입력</th><th>동작</th></tr>
+  <tr><td>빈 곳 왼쪽 클릭</td><td>그 지점으로 걸어갑니다(길찾기). 남은 경로가 흰 선으로 표시됩니다.</td></tr>
+  <tr><td>적 왼쪽 클릭</td><td>사거리까지 <strong>다가가서</strong> 자동으로 공격합니다. 대상에 빨간 테두리가 붙습니다.</td></tr>
+  <tr><td>떨어진 아이템 클릭</td><td>다가가서 줍습니다(줍기 거리 1.5m).</td></tr>
+  <tr><td>소모품 클릭 (오른쪽 패널)</td><td>사용 — 포션은 HP를 회복합니다.</td></tr>
+  <tr><td>장비 가방 클릭</td><td>장착. 이미 끼고 있던 장비는 그 칸으로 돌아옵니다(맞바꿈).</td></tr>
+  <tr><td>장착 칸 클릭</td><td>해제(가방에 빈 칸이 있어야 합니다).</td></tr>
+  <tr><td><kbd>F5</kbd></td><td>정지하고 편집으로 돌아갑니다.</td></tr>
+</table>
+
+<h3>6.3 화면에 보이는 것</h3>
+<ul>
+  <li><strong>HP 막대</strong> — 살아 있는 유닛 머리 위. 30% 이하면 빨갛게 바뀝니다.</li>
+  <li><strong>시체</strong> — 죽은 유닛은 회색으로 그 자리에 남습니다(치우지 않습니다).</li>
+  <li><strong>떨어진 아이템</strong> — 마름모. 아이템마다 색이 다릅니다.</li>
+  <li><strong>기록 패널</strong> — <code>플레이어 → 슬라임 18 피해 (HP 62)</code>처럼 일어난 일이 줄줄이 쌓입니다.</li>
+  <li>카메라는 플레이어를 따라가고, 배율은 <strong>32픽셀 = 1m</strong>로 고정됩니다(게임과 같은 화면).</li>
+</ul>
+
+<h3>6.4 기본 데이터로 하면 이런 일이 일어납니다</h3>
+<ol>
+  <li>슬라임(공격형, 어그로 6m)을 클릭하면 플레이어가 고지대를 돌아 걸어갑니다.</li>
+  <li>가까워지면 슬라임이 <strong>먼저</strong> 달려듭니다.</li>
+  <li>서로 때립니다. 플레이어 공격력 20 − 슬라임 방어 2 = <strong>18 피해</strong>, 슬라임 18 − 플레이어 방어 5 = <strong>13 피해</strong>.</li>
+  <li>슬라임(HP 80)이 다섯 대쯤 맞고 죽으면 <strong>젤리</strong>가 떨어집니다(80% 확률).</li>
+  <li>젤리를 클릭해 줍고, 필요하면 포션을 써서 HP를 채웁니다.</li>
+  <li>마을 경비병은 <strong>불사</strong>라서 클릭해도 공격할 수 없습니다("공격할 수 없는 대상입니다").</li>
+</ol>
+
+<h2 id="t4">7. 존 저장하고 열기</h2>
+
+<table>
+  <tr><th style="width:26%">동작</th><th>방법</th></tr>
+  <tr><td>저장</td><td><kbd>Ctrl</kbd>+<kbd>S</kbd> — 처음 저장이면 이름을 묻습니다.</td></tr>
+  <tr><td>다른 이름으로 저장</td><td>파일 메뉴 → <em>다른 이름으로 저장…</em></td></tr>
+  <tr><td>열기</td><td><kbd>Ctrl</kbd>+<kbd>O</kbd> — <code>zones/</code> 폴더 목록에서 고르거나 경로를 입력합니다.</td></tr>
+  <tr><td>시작할 때 열기</td><td><code>NEXUS_ZONE=zones/sample.zone.ron cargo run -p world-editor</code></td></tr>
+</table>
+
+<p>
+  저장하지 않은 변경이 있으면 상태 바의 파일 이름 뒤에 <code>*</code>가 붙습니다.
+  실행 취소로 저장한 시점까지 되돌아가면 <code>*</code>도 사라집니다.
+</p>
+
+<div class="box warn">
+  <p>
+    <strong>파일 이름은 소문자로 저장됩니다.</strong> Windows는 <code>Town</code>과 <code>town</code>을 같은 파일로 보지만
+    Linux는 다른 파일로 봅니다. 두 OS에서 같은 존을 가리키게 하려고 이름을 소문자로 고정합니다.
+  </p>
+  <p>
+    <strong>여는 것은 편집이 아닙니다.</strong> 존을 열면 실행 취소 기록이 비워집니다 —
+    다른 파일에서 한 편집을 되돌리면 안 되기 때문입니다.
+  </p>
+</div>
+
+<h3>존 파일 형식</h3>
+<p>
+  형식은 RON(텍스트)이고 주석을 달 수 있습니다. 손으로 고쳐도 되고, 잘못된 값은 열 때 이유와 함께 거부됩니다.
+</p>
+<pre><code>// Nexus WorldEditor 존 파일 — 형식 1. 단위: 미터, 방향: 라디안(0 = +X, 반시계 +).
+(
+    version: 1,
+    bounds: (
+        min: (-1000.0, -1000.0),
+        max: (1000.0, 1000.0),
+    ),
+    tiles: (
+        origin: (-32.0, -32.0),   // 타일 (0,0) 의 왼쪽 아래 모서리
+        tile_size: 1.0,
+        width: 64,
+        height: 64,
+        runs: [                   // 기본값이 아닌 칸만, 가로로 이어진 것은 한 줄로
+            (y: 28, x: 40, len: 12, walkable: true, level: 1, ramp: false),
+        ],
+    ),
+    markers: [
+        (
+            name: "슬라임",
+            kind: Monster,        // Player | Npc | Monster
+            pos: (20.0, -5.0),
+            size: 0.8,
+            orientation: 0.0,     // 라디안
+        ),
+    ],
+)</code></pre>
+
+<p>
+  타일은 <strong>바뀐 칸만</strong> 적고 가로로 이어진 같은 칸은 한 줄로 묶습니다.
+  덕분에 샘플 존이 982줄에서 269줄로 줄었고, 변경 사항을 diff로 읽기 쉽습니다.
+</p>
+<p>
+  <code>zones/sample.zone.ron</code>은 기본 씬을 저장해 둔 샘플입니다.
+  테스트가 이 파일을 기본 씬과 바이트 단위로 비교하므로, 기본 씬을 바꿨다면 아래 명령으로 다시 만들어야 합니다.
+</p>
+<pre><code>cargo test -p world-editor -- --ignored regenerate_sample_zone</code></pre>
+
+<h2 id="t5">8. 게임 수치와 그림 바꾸기</h2>
+
+<p>게임 수치는 코드가 아니라 <code>data/</code> 폴더의 두 파일에 있습니다.</p>
+
+<table>
+  <tr><th style="width:24%">파일</th><th>담는 것</th><th style="width:22%">대응</th></tr>
+  <tr>
+    <td><code>data/rules.ron</code></td>
+    <td>스킬, 아이템 수치, 드롭 테이블, 마커 종류별 유닛 수치, 진영 관계, 시작 소지품, 난수 시드</td>
+    <td>나중에 <strong>서버 테이블</strong>과 짝이 되는 절반</td>
+  </tr>
+  <tr>
+    <td><code>data/display.ron</code></td>
+    <td>아이템 이름, 땅에 떨어졌을 때의 색, 마커 종류별 스프라이트 시트 경로</td>
+    <td><strong>클라이언트만</strong> 쓰는 절반</td>
+  </tr>
+  <tr>
+    <td><code>data/terrain.ron</code></td>
+    <td>지형 그림 — 타일셋(그림 경로·축척), 지면 아트, 정적 오브젝트(건물)</td>
+    <td><strong>클라이언트만</strong> (걷기 규칙은 존 파일에 있습니다)</td>
+  </tr>
+</table>
+
+<div class="box ok">
+  <p>
+    <strong>고치고 <kbd>F5</kbd>만 다시 누르면 적용됩니다.</strong> 플레이를 시작할 때마다 파일을 새로 읽으므로
+    다시 빌드할 필요가 없습니다. 수치를 조금씩 바꿔 보며 감을 잡는 데 쓰세요.
+  </p>
+</div>
+
+<h3>8.1 기본 데이터 (지금 들어 있는 값)</h3>
+
+<h4>유닛 — 마커 종류별</h4>
+<table>
+  <tr><th>종류</th><th>HP</th><th>공격</th><th>방어</th><th>속도</th><th>AI</th><th>어그로</th><th>추격 한계</th><th>비고</th></tr>
+  <tr><td>플레이어</td><td>200</td><td>20</td><td>5</td><td>4.0 m/s</td><td>수동</td><td>—</td><td>—</td><td>포션 3개 + 숏소드로 시작</td></tr>
+  <tr><td>NPC(경비병)</td><td>300</td><td>25</td><td>10</td><td>1.5 m/s</td><td>방어형</td><td>6m</td><td>10m</td><td><strong>불사</strong></td></tr>
+  <tr><td>몬스터(슬라임)</td><td>80</td><td>18</td><td>2</td><td>2.0 m/s</td><td>공격형</td><td>6m</td><td>14m</td><td>죽으면 드롭</td></tr>
+</table>
+
+<h4>스킬</h4>
+<table>
+  <tr><th>번호</th><th>용도</th><th>사거리</th><th>쿨타임</th><th>배율</th></tr>
+  <tr><td>1</td><td>플레이어 기본 공격</td><td>2.0m</td><td>800ms</td><td>1.0</td></tr>
+  <tr><td>2</td><td>슬라임 물기</td><td>1.5m</td><td>1200ms</td><td>1.0</td></tr>
+  <tr><td>3</td><td>경비병 일격</td><td>2.0m</td><td>1000ms</td><td>1.2</td></tr>
+</table>
+
+<h4>아이템과 드롭</h4>
+<table>
+  <tr><th>번호</th><th>이름</th><th>효과</th><th>드롭 확률(슬라임)</th></tr>
+  <tr><td>501</td><td>빨간 포션</td><td>HP 60 회복, 한 칸에 20개</td><td>25%</td></tr>
+  <tr><td>909</td><td>젤리</td><td>HP 15 회복, 한 칸에 99개</td><td>80%</td></tr>
+  <tr><td>1101</td><td>숏소드</td><td>무기 — 공격 +12</td><td>—</td></tr>
+  <tr><td>2101</td><td>모자</td><td>머리 — 방어 +4</td><td>15%</td></tr>
+</table>
+
+<h3>8.2 파일 예시와 필드</h3>
+<pre><code>// data/rules.ron 일부
+(
+    version: 1,
+    seed: 1,                                   // 드롭 난수 시드 (같으면 같은 결과)
+    relations: [
+        (a: 1, b: 201, relation: Hostile),     // 1=플레이어, 201=야생 / Hostile|Neutral|Friendly
+    ],
+    skills: {
+        1: (range: 2.0, cooldown_ms: 800, damage_mult: 1.0),
+    },
+    items: {
+        501: Consumable(heal: 60, max_stack: 20),
+        1101: Equipment(slot: Weapon, attack: 12, defense: 0),   // Weapon|Head|Body|Hand|Shoes
+    },
+    loot: {
+        1: [ (item: 909, count: 1, chance_per_mille: 800) ],     // 천분율: 800 = 80%
+    },
+    units: {
+        Monster: (
+            move_speed: 2.0, max_hp: 80, attack: 18, defense: 2,
+            faction: 201,
+            ai: Aggressive,                    // Passive|Defensive|Aggressive
+            aggro_range: 6.0, leash_range: 14.0,
+            basic_attack: Some(2),
+            loot: Some(1),
+        ),
+    },
+    player_attack: 1,
+    starting_kit: [ (item: 501, count: 3) ],
+)</code></pre>
+
+<p>생략할 수 있는 필드: <code>immortal</code>(기본 false), <code>faction</code>(0), <code>ai</code>(Passive),
+<code>aggro_range</code>·<code>leash_range</code>(0), <code>basic_attack</code>·<code>loot</code>(없음).</p>
+
+<pre><code>// data/display.ron
+(
+    version: 1,
+    items: {
+        501: (name: "빨간 포션", color: (0.95, 0.30, 0.30)),   // 색은 0~1 (sRGB)
+    },
+)</code></pre>
+
+<h3>8.3 잘못 고치면 어떻게 되나</h3>
+<p>
+  플레이가 <strong>시작되지 않고</strong> 상태 바에 빨간 글씨로 이유가 나옵니다. 여러 개가 틀렸으면 한 번에 모아서 알려 줍니다.
+</p>
+<pre><code>플레이할 수 없음: 게임 데이터 오류 — Monster: 없는 스킬 77 / 드롭 테이블 1: 없는 아이템 4040</code></pre>
+<p>확인하는 것들:</p>
+<ul>
+  <li>없는 번호를 가리키는지 — 유닛이 쓰는 스킬·드롭 테이블, 드롭에 든 아이템, <code>player_attack</code>, 시작 소지품</li>
+  <li>필드 이름 오타 — <code>agro_range</code>처럼 틀리면 조용히 기본값이 되지 않고 오류입니다</li>
+  <li>마커 세 종류(Player·Npc·Monster)가 모두 있는지, 색이 0~1인지, 같은 진영끼리 관계를 정하지 않았는지</li>
+</ul>
+<div class="box bad">
+  <p>
+    파일이 <strong>있는데 잘못된 경우</strong> 내장 데이터로 몰래 대체하지 않습니다.
+    고친 것이 적용되지 않은 채 모르고 지나가는 일을 막기 위해서입니다.
+    파일이 <strong>아예 없을 때만</strong> 내장 데이터를 씁니다.
+  </p>
+</div>
+
+<h3>8.4 스프라이트 시트 정의</h3>
+<p>
+  캐릭터 그림 하나는 <strong>그림(PNG) + 정의 파일(<code>*.sheet.ron</code>)</strong> 한 쌍입니다.
+  기본 그림은 <code>assets/sprites/markers.png</code>(회색 플레이스홀더)이고 실행 파일에 내장되어
+  작업 디렉터리와 무관하게 항상 뜹니다. <strong>다른 그림으로 바꾸는 방법은 8.5</strong>입니다.
+</p>
+<pre><code>(
+    version: 1,
+    image: "gfx/character.png",   // 비우면 내장 그림. 정의 파일 폴더 기준으로도 찾는다
+    cell: (16, 32),               // 한 칸 픽셀 크기 — 그림 크기를 정확히 나눠야 함
+    directions: 4,                // 이 시트가 담은 방향 수 (8방향 시트면 8, 방향이 없으면 1)
+    direction_rows: [1, 2, 3, 0], // 엔진 방향 → 시트 행 (아래 설명)
+    tinted: false,                // 무채색 시트만 true — 컬러 그림에 색을 곱하면 뒤집힌다
+    clips: [
+        (state: Idle, row: 0, frames: 1, frame_ms: 200, looping: true),
+        (state: Walk, row: 0, frames: 4, frame_ms: 150, looping: true),
+        (state: Attack, row: 4, frames: 4, frame_ms: 90, looping: false),
+    ],
+)</code></pre>
+<p>
+  배치는 <strong>행 = 클립 시작 행 + 방향, 열 = 프레임</strong>입니다. 엔진의 방향 0번은 +X(동)이고
+  반시계로 증가합니다(4방향이면 동·북·서·남). 그림 범위를 벗어나는 클립은 불러올 때 거부됩니다
+  (옆 칸이 비치는 것을 막기 위해).
+</p>
+<div class="box ok">
+  <p>
+    <strong><code>direction_rows</code>가 받아온 그림을 살립니다.</strong> 인터넷 애셋은 보통 행 순서가
+    <em>남·동·북·서</em>인데 엔진은 <em>동·북·서·남</em>입니다. 그림을 다시 자르는 대신
+    <code>[1, 2, 3, 0]</code>이라고 적으면 됩니다 — 동은 1행, 북은 2행, 서는 3행, 남은 0행.
+    순서가 틀리면 캐릭터가 걷는 방향과 다른 쪽을 봅니다.
+  </p>
+</div>
+<p>
+  스프라이트 크기는 <strong>칸 높이 ÷ 32</strong>로 정해집니다. 고정 배율에서 <em>그림 1픽셀 = 화면 1픽셀</em>이
+  되도록 맞춘 것이라, 캐릭터를 크게 만들려면 임의의 키 값을 넣는 대신 <strong>시트 칸을 키우세요</strong>.
+  머리 위 HP 막대 높이도 이 값에서 나옵니다.
+</p>
+
+<h3>8.5 그림 바꾸기 (애셋 교체)</h3>
+<p>
+  마커 종류별로 어떤 시트를 쓸지는 <code>data/display.ron</code>이 정합니다. 적으면 그 종류만 바뀌고,
+  적지 않으면 내장 플레이스홀더를 씁니다.
+</p>
+<pre><code>// data/display.ron
+    sprites: {
+        Player:  "assets/third_party/zelda-like-armm1998/player.sheet.ron",
+        Npc:     "assets/third_party/zelda-like-armm1998/npc.sheet.ron",
+        Monster: "assets/third_party/slime-garakh/monster.sheet.ron",
+    },</code></pre>
+<p>그림을 갈아끼우는 순서:</p>
+<ol>
+  <li><code>assets/third_party/&lt;팩 이름&gt;/</code> 폴더를 만들고 그림을 넣습니다 (<strong>이름은 전부 소문자</strong> — 리눅스는 대소문자를 구분합니다).</li>
+  <li>같은 폴더에 <code>SOURCE.md</code>를 써서 <strong>출처 URL·작성자·라이선스·받은 날짜</strong>를 남깁니다.</li>
+  <li><code>*.sheet.ron</code> 정의를 씁니다. <code>image</code>는 그 폴더 기준 상대 경로로 적으면 폴더를 옮겨도 그대로 통합니다.</li>
+  <li><code>data/display.ron</code>의 <code>sprites</code>에 경로를 적습니다.</li>
+  <li>에디터를 <strong>다시 시작</strong>합니다.</li>
+</ol>
+<div class="box bad">
+  <p>
+    <strong>그림 교체는 <kbd>F5</kbd>로는 안 됩니다.</strong> 수치(<code>rules.ron</code>)는 플레이를 시작할 때마다
+    다시 읽지만, 그림은 프로그램이 시작할 때 한 번 GPU에 올리기 때문에 재시작이 필요합니다.
+  </p>
+</div>
+<p>
+  시트를 읽지 못하면 <strong>그 종류만</strong> 플레이스홀더로 남고 상태 바에 이유가 뜹니다 — 그림이 없어도
+  게임 규칙은 그대로 돌아갑니다. 프레임마다 폭이 다른 시트(균일 격자가 아닌 시트)는 쓸 수 없으니,
+  한 번 잘라 균일 격자 PNG로 다시 묶고 <strong>그 방법을 <code>SOURCE.md</code>에 적어 두세요</strong>.
+</p>
+
+<h3>8.6 지금 들어 있는 애셋과 라이선스</h3>
+<table>
+  <tr><th style="width:30%">팩</th><th style="width:16%">라이선스</th><th>쓰는 곳 · 메모</th></tr>
+  <tr>
+    <td>ArMM1998 <em>Zelda-like tilesets and sprites</em></td>
+    <td><strong>CC0</strong></td>
+    <td>플레이어 · NPC (칸 16×32, 4방향). 타일셋도 함께 들어 있어 나중에 지형 그림에 쓸 수 있습니다</td>
+  </tr>
+  <tr>
+    <td>Garakh <em>Slime</em></td>
+    <td><strong>CC0</strong></td>
+    <td>몬스터. 원본이 균일 격자가 아니라 초록색만 24×24 격자로 다시 묶었습니다(<code>slime_grid.png</code>, 방향 없음)</td>
+  </tr>
+</table>
+<div class="box bad">
+  <p>
+    <strong>라이선스는 받은 페이지에서 직접 확인하세요.</strong> "CC0" 검색 결과에 실제로는 출처 표기가
+    필요한(CC-BY·OGA-BY) 팩이 섞여 나옵니다. 그리고 <strong>라그나로크 온라인의 원본 리소스는 쓰지 않습니다</strong> —
+    이 엔진이 그 장르를 지향하는 것과 별개로 저작권 침해입니다.
+  </p>
+</div>
+
+<h2 id="keys">9. 조작 요약</h2>
+
+<h3>편집 모드</h3>
+<table>
+  <tr><th style="width:34%">입력</th><th>동작</th></tr>
+  <tr><td>왼쪽 클릭</td><td>선택 (빈 곳 = 해제) · 칠하기 도구면 타일/그림 칠하기</td></tr>
+  <tr><td><kbd>Shift</kbd> + 왼쪽 클릭</td><td>선택에 추가 / 해제</td></tr>
+  <tr><td>왼쪽 드래그</td><td>이동 · 존 핸들 조절 · 빈 곳에서 시작하면 박스 선택</td></tr>
+  <tr><td>◆ 핸들 드래그</td><td>방향 회전 (마커 하나만 선택했을 때)</td></tr>
+  <tr><td><kbd>Ctrl</kbd> + 드래그</td><td>그리드 스냅 · 회전은 15° 스냅</td></tr>
+  <tr><td><kbd>Delete</kbd></td><td>선택한 마커 삭제</td></tr>
+  <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>실행 취소 / 다시 실행</td></tr>
+  <tr><td><kbd>Esc</kbd></td><td>선택 해제</td></tr>
+  <tr><td>가운데 / 오른쪽 드래그</td><td>화면 이동</td></tr>
+  <tr><td>휠</td><td>커서 기준 확대·축소</td></tr>
+  <tr><td><kbd>Home</kbd> / <kbd>F</kbd></td><td>존 전체 보기 / 선택 항목 보기</td></tr>
+  <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Ctrl</kbd>+<kbd>O</kbd></td><td>존 저장 / 열기</td></tr>
+  <tr><td><kbd>F5</kbd></td><td>플레이 시작</td></tr>
+  <tr><td><kbd>F12</kbd></td><td>스크린샷 → <code>screenshots/</code></td></tr>
+</table>
+
+<h3>플레이 모드</h3>
+<table>
+  <tr><th style="width:34%">입력</th><th>동작</th></tr>
+  <tr><td>왼쪽 클릭</td><td>빈 곳 = 이동 · 적 = 다가가서 공격 · 아이템 = 다가가서 줍기</td></tr>
+  <tr><td>오른쪽 패널 클릭</td><td>소모품 = 사용 · 장비 가방 = 장착 · 장착 칸 = 해제</td></tr>
+  <tr><td><kbd>F5</kbd></td><td>정지 (편집으로 복귀)</td></tr>
+  <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd></td><td>저장 — 편집 중인 씬이 저장됩니다(플레이 결과가 아닙니다)</td></tr>
+</table>
+
+<h2 id="headless">10. 창 없이 검증하기</h2>
+
+<p>
+  이 엔진은 <strong>사람이 창을 보지 않고도</strong> 동작을 확인할 수 있게 만들어져 있습니다.
+  자동 테스트와 스크린샷 검증에 쓰는 환경변수입니다.
+</p>
+
+<table>
+  <tr><th style="width:38%">환경변수</th><th>동작</th></tr>
+  <tr><td><code>NEXUS_SCREENSHOT=out.png</code></td><td>지정 프레임에서 PNG로 저장하고 <strong>자동 종료</strong></td></tr>
+  <tr><td><code>NEXUS_SCREENSHOT_FRAME=10</code></td><td>캡처할 프레임 번호(기본 10). UI가 자리 잡을 시간이 필요해 너무 이르면 안 됩니다</td></tr>
+  <tr><td><code>NEXUS_SCRIPT="..."</code></td><td>가짜 포인터 입력. 실제 마우스와 <strong>같은 경로</strong>로 들어갑니다</td></tr>
+  <tr><td><code>NEXUS_ZONE=zones/sample.zone.ron</code></td><td>시작할 때 이 존을 엽니다</td></tr>
+  <tr><td><code>NEXUS_SELECT="상인 NPC,슬라임"</code></td><td>이름으로 미리 선택하고 그쪽으로 시점을 맞춥니다</td></tr>
+  <tr><td><code>NEXUS_PITCH=90</code></td><td>카메라 각도(도). 90 = 탑다운, 45 = 쿼터뷰(기본)</td></tr>
+  <tr><td><code>NEXUS_PIXELS_PER_METER=32</code></td><td>고정 배율. 픽셀 격자에 스냅합니다</td></tr>
+  <tr><td><code>NEXUS_UI_FONT=/path/font.ttf</code></td><td>한글 폰트 직접 지정</td></tr>
+  <tr><td><code>NEXUS_EXIT_AFTER_SECS=20</code></td><td>N초 후 자동 종료 — 창이 가려져 캡처가 늦어질 때의 안전장치</td></tr>
+</table>
+
+<h3>스크립트 문법</h3>
+<p>한 단계가 한 프레임이고 <code>;</code>로 구분합니다. 좌표는 월드 미터입니다.</p>
+<table>
+  <tr><th style="width:42%">단계</th><th>뜻</th></tr>
+  <tr><td><code>press X Y [shift] [ctrl]</code></td><td>왼쪽 버튼 누름</td></tr>
+  <tr><td><code>move X Y [shift] [ctrl]</code></td><td>포인터 이동(누른 채면 드래그)</td></tr>
+  <tr><td><code>release X Y</code></td><td>버튼 뗌</td></tr>
+  <tr><td><code>press|move|release rotate</code></td><td>단독 선택한 마커의 회전 핸들 위치</td></tr>
+  <tr><td><code>add npc|monster|player X Y</code></td><td>마커 추가</td></tr>
+  <tr><td><code>tool select|paint|art</code></td><td>도구 전환 (선택 / 타일 / 그림)</td></tr>
+  <tr><td><code>art 번호 [ground|prop]</code></td><td>지형 그림 붓. 0 = 지우기 (이때는 층을 적습니다)</td></tr>
+  <tr><td><code>play</code></td><td>플레이 시작/정지 (<kbd>F5</kbd>와 같음). 플레이 중 <code>press</code>는 클릭 명령이 됩니다</td></tr>
+  <tr><td><code>save 경로</code> / <code>open 경로</code></td><td>존 저장 / 열기 (경로에 공백 불가)</td></tr>
+  <tr><td><code>dialog open|saveas</code></td><td>열기 / 다른 이름으로 저장 창 띄우기</td></tr>
+  <tr><td><code>delete</code> · <code>undo</code> · <code>redo</code> · <code>wait</code></td><td>삭제 · 실행 취소 · 다시 실행 · 한 프레임 쉬기</td></tr>
+</table>
+
+<h3>예시</h3>
+<pre><code># 슬라임을 클릭해 전투하는 화면 (450프레임 ≈ 7.5초 지점)
+NEXUS_SCRIPT="play; wait; press 20 -5; release 20 -5" \
+NEXUS_SCREENSHOT=out.png NEXUS_SCREENSHOT_FRAME=450 cargo run -p world-editor
+
+# 마커를 추가하고 저장
+NEXUS_SCRIPT="add monster 4 -8; save zones/test.zone.ron" NEXUS_EXIT_AFTER_SECS=6 cargo run -p world-editor
+
+# 회전 핸들을 Ctrl 로 끄는 중 (15° 스냅)
+NEXUS_SELECT="상인 NPC" NEXUS_SCRIPT="wait; move rotate; press rotate; move -20 11 ctrl" \
+NEXUS_SCREENSHOT=out.png NEXUS_SCREENSHOT_FRAME=40 cargo run -p world-editor</code></pre>
+
+<div class="box warn">
+  <p>
+    <strong>Linux Wayland에서 스크린샷이 멈추는 경우</strong>가 있습니다. 창이 가려지거나 화면이 절전으로 들어가면
+    컴포지터가 프레임을 요청하지 않아 화면 출력이 영원히 대기합니다. 코드 문제가 아니며 X11로 띄우면 됩니다.
+  </p>
+  <pre><code>env -u WAYLAND_DISPLAY DISPLAY=:0 NEXUS_SCREENSHOT=out.png cargo run -p world-editor</code></pre>
+  <p>또한 <code>pkill -f world-editor</code>는 자기 셸까지 죽입니다 — <code>pkill -x world-editor</code>를 쓰세요.</p>
+</div>
+
+<h2 id="rules">11. 지금 동작하는 게임 규칙</h2>
+
+<p>규칙은 모두 <code>nexus-sim</code> 크레이트에 있고, 화면·파일·네트워크를 전혀 모릅니다. 그래서 전부 단위 테스트가 붙어 있습니다.</p>
+
+<h3>이동</h3>
+<ul>
+  <li>8방향 A* 길찾기. 평지 우회로가 있으면 경사로로 돌아가는 길보다 평지를 고릅니다.</li>
+  <li>이동 중 타일이 바뀌면(편집으로 벽을 칠하면) <strong>뚫고 가지 않고 멈춥니다</strong>.</li>
+  <li>유닛끼리는 서로 막지 않고 겹칩니다(라그나로크와 같습니다).</li>
+  <li>시뮬레이션은 <strong>20Hz 고정</strong>이고, 화면은 두 tick 사이를 보간해 부드럽게 그립니다.</li>
+</ul>
+
+<h3>전투</h3>
+<p>C++ 서버의 <code>CombatProcessor</code>와 <strong>같은 판정 순서·같은 공식</strong>을 씁니다.</p>
+<ul>
+  <li>판정 순서: 공격자 생존 → 대상 생존 → 쿨타임 → 사거리 → (불사·우호 확인)</li>
+  <li>데미지 = <code>max(1, 내림(공격력 × 배율) − 방어력)</code> — 최소 1은 들어갑니다</li>
+  <li>거절된 공격은 쿨타임을 걸지 않습니다</li>
+  <li>사거리는 지면 거리로 재고 경계값은 포함합니다</li>
+  <li>죽은 유닛은 시체로 남고, 이동·공격·아이템 사용이 모두 거절됩니다</li>
+</ul>
+
+<h3>AI</h3>
+<table>
+  <tr><th style="width:16%">종류</th><th style="width:18%">먼저 덤빔</th><th>반격</th></tr>
+  <tr><td>수동형</td><td class="no">안 함</td><td class="no">안 함 — 때려도 가만히 있습니다</td></tr>
+  <tr><td>방어형</td><td class="no">안 함</td><td class="yes">맞으면 공격자와 싸웁니다</td></tr>
+  <tr><td>공격형</td><td class="yes">어그로 범위 안에서 보이는 가장 가까운 적대 유닛</td><td class="yes">함</td></tr>
+</table>
+<ul>
+  <li>AI도 플레이어와 <strong>똑같은 요청(Intent)</strong>을 내고 같은 규칙으로 판정받습니다 — 규칙이 두 벌로 갈라지지 않습니다.</li>
+  <li>사거리 밖이면 쫓아가고, 사거리에 들면 멈춰서 때립니다(쿨타임 중에는 서서 기다립니다).</li>
+  <li><strong>추격 한계</strong>: 스폰 지점에서 정해진 거리 이상 멀어지면 포기하고 집으로 돌아갑니다. 돌아가는 동안은 맞아도 반격하지 않습니다.</li>
+  <li>길이 없거나 칠 수 없는 상대(불사·우호)면 대상을 포기합니다.</li>
+  <li>위협 수치(어그로 테이블)는 없어서, 여럿이 때리면 <strong>첫 공격자만</strong> 쫓습니다.</li>
+</ul>
+
+<h3>아이템</h3>
+<ul>
+  <li>가방은 종류별(소모품·장비)로 <strong>각 120칸</strong>. 칸 번호는 고정이고 빈칸을 당겨 채우지 않습니다.</li>
+  <li>장착 자리 5곳(무기·머리·몸·손·신발). 장비 수치는 공격력·방어력에 그대로 더해지고 전투에 반영됩니다.</li>
+  <li>줍기는 1.5m 안에서만. 가방에 <strong>전부</strong> 들어가지 않으면 아예 줍지 않습니다.</li>
+  <li>드롭은 죽은 자리에 떨어지고, 확률은 <strong>정수 천분율</strong>입니다. 같은 시드면 항상 같은 결과가 나옵니다(리플레이·테스트용).</li>
+</ul>
+
+<h2 id="arch">12. 엔진 구조</h2>
+
+<p>엔진을 고치거나 다른 앱(게임 실행 파일 등)에 쓰려는 경우를 위한 요약입니다.</p>
+
+<table>
+  <tr><th style="width:24%">크레이트</th><th>역할</th><th style="width:26%">모르는 것</th></tr>
+  <tr><td><code>nexus-core</code></td><td>수학(glam 재수출), 엔티티 핸들, 카메라, 고정 timestep, 단위 규약</td><td>GPU·네트워크</td></tr>
+  <tr><td><code>nexus-platform</code></td><td>창·이벤트 루프·입력·프레임 타이밍</td><td>렌더 내부</td></tr>
+  <tr><td><code>nexus-render</code></td><td>백엔드 중립 계약 — <code>Renderer</code> 트레이트와 그리기 명령</td><td>그래픽 API</td></tr>
+  <tr><td><code>nexus-render-wgpu</code></td><td>유일한 구현(wgpu → Vulkan). 쿼드 파이프라인·텍스처·깊이</td><td>게임 규칙</td></tr>
+  <tr><td><code>nexus-assets</code></td><td>PNG 디코딩, 아틀라스, 스프라이트 애니메이션</td><td>파일 시스템·GPU</td></tr>
+  <tr><td><code>nexus-sim</code></td><td>게임 규칙 — 타일맵·이동·전투·AI·아이템·드롭</td><td>렌더·파일·네트워크</td></tr>
+  <tr><td><code>world-editor</code></td><td>에디터 앱. 파일 읽기·쓰기는 전부 여기</td><td>—</td></tr>
+</table>
+
+<h3>지켜지는 규칙</h3>
+<ul>
+  <li>모든 크레이트가 <code>unsafe</code> 금지(<code>forbid(unsafe_code)</code>)입니다.</li>
+  <li>OS별 코드 분기(<code>#[cfg(target_os)]</code>)가 <strong>하나도 없습니다</strong>. 분기는 winit·wgpu 안에 있습니다.</li>
+  <li>게임 규칙은 <code>nexus-sim</code> 한 곳에만 둡니다. 나중에 서버와 규칙을 맞춰 볼 범위를 여기로 한정하기 위해서입니다.</li>
+  <li>상태 변경은 <strong>요청(Intent) → 권한자(Authority) → 월드</strong> 경로만 지납니다.
+      지금은 로컬 권한자이고, 서버를 붙이면 이 자리만 바뀝니다.</li>
+</ul>
+
+<h3>단위와 좌표</h3>
+<table>
+  <tr><th style="width:20%">항목</th><th>규약</th></tr>
+  <tr><td>길이</td><td><strong>미터</strong>. 화면 표시만 cm/km로 바꿉니다</td></tr>
+  <tr><td>축</td><td><strong>Z-up</strong>, 지면은 XY 평면</td></tr>
+  <tr><td>방향</td><td><strong>라디안</strong>, 0 = +X(동), 위에서 볼 때 반시계가 +. 화면에는 도(°)로 표시</td></tr>
+  <tr><td>속도</td><td>m/s</td></tr>
+  <tr><td>시뮬레이션</td><td>20Hz 고정 (서버의 50ms tick과 같은 값)</td></tr>
+  <tr><td>색</td><td>입력은 sRGB. 렌더러가 선형으로 변환합니다</td></tr>
+</table>
+
+<h2 id="limits">13. 아직 없는 것</h2>
+
+<table>
+  <tr><th style="width:32%">항목</th><th>지금 상태</th></tr>
+  <tr><td>네트워크·멀티플레이</td><td>없음. 다음 단계의 일이고, 지금 미리 만들지 않습니다</td></tr>
+  <tr><td>마커별 수치</td><td>같은 종류(예: 몬스터)는 <strong>모두 같은 수치</strong>입니다. 마커마다 다른 HP를 주려면 인스펙터 작업이 필요합니다</td></tr>
+  <tr><td>타일맵 범위</td><td>원점 주변 <strong>64 × 64m</strong> 고정. 존 전체(2km)를 덮으려면 청크 분할이 필요합니다</td></tr>
+  <tr><td>지형 저작 편의</td><td>지면 그림과 건물은 칠할 수 있지만 <strong>한 칸씩</strong>입니다 — 사각형 칠하기, 붓 크기, 절벽 경계 자동 타일, 건물 회전이 없습니다</td></tr>
+  <tr><td>캐릭터 아트</td><td>플레이스홀더(무채색 시트 + 색 입히기). 공격·피격·사망 애니메이션 클립이 없습니다</td></tr>
+  <tr><td>사운드</td><td>없음</td></tr>
+  <tr><td>스킬</td><td>기본 공격 하나만. 스킬 여러 개·단축키·범위 공격·MP가 없습니다</td></tr>
+  <tr><td>경험치·성장</td><td>없음</td></tr>
+  <tr><td>몬스터 리스폰</td><td>없음. 죽은 유닛은 시체로 남습니다</td></tr>
+  <tr><td>퀘스트·대화·상점</td><td>없음</td></tr>
+  <tr><td>서버 존 내보내기</td><td>없음. 서버에 설정 파일을 읽는 코드가 아직 없어 다음 단계로 미뤘습니다</td></tr>
+  <tr><td>다중 선택 회전 / 복제</td><td>회전은 마커 하나만. <kbd>Ctrl</kbd>+<kbd>D</kbd> 복제는 없습니다</td></tr>
+</table>
+
+<h2 id="trouble">14. 문제 해결</h2>
+
+<table>
+  <tr><th style="width:34%">증상</th><th>원인과 해결</th></tr>
+  <tr>
+    <td>한글이 모두 네모(□)로 보인다</td>
+    <td>시스템 한글 폰트를 찾지 못했습니다. 시작 로그에 그 사실이 찍힙니다.
+        <code>NEXUS_UI_FONT=/경로/폰트.ttf</code>로 직접 지정하거나 한글 폰트 패키지를 설치하세요.</td>
+  </tr>
+  <tr>
+    <td><kbd>F5</kbd>를 눌러도 플레이가 시작되지 않는다</td>
+    <td>상태 바의 빨간 알림을 보세요. 흔한 원인은 두 가지입니다 —
+        <strong>플레이어 스폰이 없음</strong>, 또는 <strong><code>data/rules.ron</code>의 값이 잘못됨</strong>.</td>
+  </tr>
+  <tr>
+    <td>데이터를 고쳤는데 반영되지 않는다</td>
+    <td>플레이를 정지했다가 <kbd>F5</kbd>로 다시 시작해야 읽습니다. 또한 작업 디렉터리가
+        <code>WorldEditor/</code>가 아니면 디스크의 <code>data/</code>가 아니라 내장 데이터를 씁니다.</td>
+  </tr>
+  <tr>
+    <td>존 폴더 목록이 비어 있다</td>
+    <td>작업 디렉터리 기준으로 <code>zones/</code>를 찾습니다. 다른 위치에서 실행했다면 경로를 직접 입력하세요.</td>
+  </tr>
+  <tr>
+    <td>존을 열 수 없다</td>
+    <td>형식 번호, 뒤집힌 경계, 범위를 벗어난 타일 등 잘못된 값이면 이유와 함께 거부하고 지금 씬을 그대로 둡니다.</td>
+  </tr>
+  <tr>
+    <td>클릭해도 공격하지 않는다</td>
+    <td>불사 대상(경비병)이거나 우호 진영입니다. 기록 패널에 "공격할 수 없는 대상입니다"가 남습니다.</td>
+  </tr>
+  <tr>
+    <td>몬스터가 쫓아오다 돌아간다</td>
+    <td>정상입니다 — 추격 한계(<code>leash_range</code>)를 넘으면 스폰 지점으로 돌아가고, 그동안은 반격하지 않습니다.</td>
+  </tr>
+  <tr>
+    <td>스크린샷이 저장되지 않는다(Linux)</td>
+    <td>Wayland에서 창이 가려지면 화면 출력이 대기합니다. X11로 실행하세요(10절 참고).</td>
+  </tr>
+  <tr>
+    <td>탑다운에서 캐릭터가 누워 보인다</td>
+    <td>빌보드 스프라이트의 정의상 맞는 동작입니다. 탑다운은 좌표를 정밀하게 찍는 용도이고, 게임 시점은 쿼터뷰입니다.</td>
+  </tr>
+</table>
+
+<footer>
+  <p>
+    Nexus WorldEditor 사용 설명서 · 2026-09-20 (S7-3 시점) · 소스와 함께 관리됩니다.<br>
+    설계 근거와 개발 로드맵은 저장소의 <code>CLAUDE.md</code>, 리눅스 세션 메모는 <code>CLAUDE_LINUX.md</code>를 보세요.
+  </p>
+</footer>
+</main>
+</div>
+</body>
+</html>

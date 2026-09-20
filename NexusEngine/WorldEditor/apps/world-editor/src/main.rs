@@ -346,6 +346,7 @@ impl Editor {
             tool: self.editing.tool(),
             brush: self.editing.brush(),
             art_brush: self.editing.art_brush(),
+            art_layer: self.editing.art_layer(),
             art_palette: self.terrain.list(),
             play: self.play.as_ref(),
             zone_path: self.zone_path.as_deref(),
@@ -527,8 +528,8 @@ impl Editor {
         if let Some(brush) = actions.set_brush {
             self.editing.set_brush(brush);
         }
-        if let Some(id) = actions.set_art_brush {
-            self.editing.set_art_brush(id);
+        if let Some((id, kind)) = actions.set_art_brush {
+            self.editing.set_art_brush(id, kind);
         }
         if actions.deselect && !self.editing.is_dragging() && !self.editing.is_painting() {
             self.editing.clear_selection();
@@ -643,8 +644,12 @@ impl Editor {
             Step::SetTool(tool) => {
                 self.editing.set_tool(tool);
             }
-            Step::SetArtBrush(id) => {
-                self.editing.set_art_brush(id);
+            Step::SetArtBrush(id, explicit) => {
+                // 번호가 어느 층인지는 지형 데이터가 안다. 지우개(0)는 스크립트가 직접 고른다.
+                let kind = explicit
+                    .or_else(|| self.terrain.get(id).map(|art| art.kind))
+                    .unwrap_or(terrain::ArtKind::Ground);
+                self.editing.set_art_brush(id, kind);
             }
             Step::Delete => {
                 self.editing.delete_selected(&mut self.scene);
@@ -745,7 +750,7 @@ impl Editor {
         self.commands
             .push(RenderCommand::SetLayer(DrawLayer::Object));
         terrain::build_props(
-            &self.scene.art,
+            &self.scene.props,
             &self.scene.tiles,
             &self.terrain,
             &self.camera,
@@ -827,7 +832,7 @@ impl Editor {
         self.commands
             .push(RenderCommand::SetLayer(DrawLayer::Object));
         terrain::build_props(
-            &self.scene.art,
+            &self.scene.props,
             &self.scene.tiles,
             &self.terrain,
             &self.camera,

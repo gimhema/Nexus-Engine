@@ -45,11 +45,15 @@ struct ZoneFile {
     /// 존 경계 AABB (m, XY). 서버 `ZoneConfig::boundsMin/Max` 의 XY.
     bounds: BoundsFile,
     tiles: TilesFile,
-    /// 칸마다 칠한 **지형 그림** 번호 (`data/terrain.ron`). 타일(규칙)과는 별개의 층이다.
+    /// 칸마다 칠한 **지면 그림** 번호 (`data/terrain.ron`). 타일(규칙)과는 별개의 층이다.
     ///
     /// 그림을 쓰지 않는 존도 있으므로 생략 가능하게 둔다 — 이 필드가 없는 예전 파일도 읽힌다.
     #[serde(default)]
     art: Vec<ArtRunFile>,
+    /// 칸마다 놓인 **정적 오브젝트**(건물·소품). 지면과 다른 층이라 따로 적는다 —
+    /// 건물이 지면 그림을 덮어쓰지 않는다.
+    #[serde(default)]
+    props: Vec<ArtRunFile>,
     markers: Vec<MarkerFile>,
 }
 
@@ -234,28 +238,6 @@ impl ZoneFile {
             }
         }
 
-        // 그림도 행 단위로 묶는다. 칠한 칸만 들고 있으므로 행·열 순서로 정렬해서 훑는다
-        // (`TileCoord` 의 정렬은 x 가 먼저라 그대로 쓰면 행이 이어지지 않는다).
-        let mut painted: Vec<(u32, u32, u16)> = scene
-            .art
-            .iter()
-            .filter(|(_, id)| !id.is_none())
-            .filter_map(|(at, id)| {
-                let (x, y) = (u32::try_from(at.x).ok()?, u32::try_from(at.y).ok()?);
-                (x < tiles.width() && y < tiles.height()).then_some((y, x, id.raw()))
-            })
-            .collect();
-        painted.sort_unstable();
-
-        let mut art: Vec<ArtRunFile> = Vec::new();
-        for &(y, x, id) in &painted {
-            match art.last_mut() {
-                // 같은 행에서 바로 옆 칸이고 같은 그림이면 이어 붙인다.
-                Some(run) if run.y == y && run.id == id && run.x + run.len == x => run.len += 1,
-                _ => art.push(ArtRunFile { y, x, len: 1, id }),
-            }
-        }
-
         Self {
             version: FORMAT_VERSION,
             bounds: BoundsFile {
@@ -269,7 +251,8 @@ impl ZoneFile {
                 height: tiles.height(),
                 runs,
             },
-            art,
+            art: art_runs(&scene.art, tiles),
+            props: art_runs(&scene.props, tiles),
             markers: scene
                 .items
                 .iter()
@@ -338,28 +321,8 @@ impl ZoneFile {
 
         // 지형 그림. 번호가 `data/terrain.ron` 에 없어도 **파일을 거부하지 않는다** —
         // 그림 데이터는 클라이언트 쪽이라 존 파일보다 자주 바뀌고, 없는 번호는 그리지 않을 뿐이다.
-        let mut art = crate::terrain::ArtLayer::new();
-        for r in &self.art {
-            if r.len == 0
-                || r.y >= self.tiles.height
-                || r.x >= self.tiles.width
-                || r.x + r.len > self.tiles.width
-            {
-                return Err(format!(
-                    "그림 행 (y {}, x {}, {}칸) 이(가) 타일맵 밖이거나 비었음",
-                    r.y, r.x, r.len
-                ));
-            }
-            if r.id == 0 {
-                return Err(format!("그림 행 (y {}, x {}) 의 번호가 0", r.y, r.x));
-            }
-            for x in r.x..r.x + r.len {
-                art.insert(
-                    TileCoord::new(x as i32, r.y as i32),
-                    crate::scene::ArtId::new(r.id),
-                );
-            }
-        }
+        let art = art_layer(&self.art, &self.tiles, "그림")?;
+        let props = art_layer(&self.props, &self.tiles, "오브젝트")?;
 
         let mut scene = Scene {
             world: World::default(),
@@ -367,6 +330,7 @@ impl ZoneFile {
             zone: ZoneBounds { min, max },
             tiles,
             art,
+            props,
         };
         for (i, m) in self.markers.into_iter().enumerate() {
             let pos = finite2(m.pos, &format!("markers[{i}].pos"))?;
@@ -388,6 +352,60 @@ impl ZoneFile {
         }
         Ok(scene)
     }
+}
+
+/// 그림 층을 행 단위로 묶는다. 타일 행 묶음과 같은 이유다.
+///
+/// 칠한 칸만 들고 있으므로 **행·열 순서로 정렬해서** 훑는다 — `TileCoord` 의 정렬은 x 가
+/// 먼저라 그대로 쓰면 행이 이어지지 않는다. 타일맵 밖의 칸은 버린다 (파일 형식이 타일맵
+/// 범위를 기준으로 하므로).
+fn art_runs(layer: &crate::terrain::ArtLayer, tiles: &TileMap) -> Vec<ArtRunFile> {
+    let mut painted: Vec<(u32, u32, u16)> = layer
+        .iter()
+        .filter(|(_, id)| !id.is_none())
+        .filter_map(|(at, id)| {
+            let (x, y) = (u32::try_from(at.x).ok()?, u32::try_from(at.y).ok()?);
+            (x < tiles.width() && y < tiles.height()).then_some((y, x, id.raw()))
+        })
+        .collect();
+    painted.sort_unstable();
+
+    let mut runs: Vec<ArtRunFile> = Vec::new();
+    for &(y, x, id) in &painted {
+        match runs.last_mut() {
+            // 같은 행에서 바로 옆 칸이고 같은 그림이면 이어 붙인다.
+            Some(run) if run.y == y && run.id == id && run.x + run.len == x => run.len += 1,
+            _ => runs.push(ArtRunFile { y, x, len: 1, id }),
+        }
+    }
+    runs
+}
+
+/// 행 묶음을 그림 층으로 되돌린다. `what` 은 오류 문구에 쓰는 층 이름.
+fn art_layer(
+    runs: &[ArtRunFile],
+    tiles: &TilesFile,
+    what: &str,
+) -> Result<crate::terrain::ArtLayer, String> {
+    let mut layer = crate::terrain::ArtLayer::new();
+    for r in runs {
+        if r.len == 0 || r.y >= tiles.height || r.x >= tiles.width || r.x + r.len > tiles.width {
+            return Err(format!(
+                "{what} 행 (y {}, x {}, {}칸) 이(가) 타일맵 밖이거나 비었음",
+                r.y, r.x, r.len
+            ));
+        }
+        if r.id == 0 {
+            return Err(format!("{what} 행 (y {}, x {}) 의 번호가 0", r.y, r.x));
+        }
+        for x in r.x..r.x + r.len {
+            layer.insert(
+                TileCoord::new(x as i32, r.y as i32),
+                crate::scene::ArtId::new(r.id),
+            );
+        }
+    }
+    Ok(layer)
 }
 
 fn finite2(v: [f32; 2], what: &str) -> Result<Vec2, String> {
@@ -454,6 +472,65 @@ mod tests {
             "직사각형 지형이 행 단위로 묶이지 않았다"
         );
         assert!(changed < (scene.tiles.width() * scene.tiles.height()) as usize / 10);
+    }
+
+    /// 그림을 칠한 씬 — `(칸, 번호)` 목록을 그대로 넣는다.
+    fn painted(cells: &[((i32, i32), u16)]) -> Scene {
+        let mut scene = Scene::server_default();
+        for &((x, y), id) in cells {
+            scene
+                .art
+                .insert(TileCoord::new(x, y), crate::scene::ArtId::new(id));
+        }
+        scene
+    }
+
+    #[test]
+    fn art_survives_a_round_trip() {
+        let cells = [
+            ((10, 5), 1u16),
+            ((11, 5), 1),
+            ((12, 5), 2),
+            ((10, 6), 100),
+            ((40, 39), 3),
+        ];
+        let original = painted(&cells);
+        let loaded = from_ron(&to_ron(&original)).unwrap();
+        assert_eq!(loaded.art, original.art, "그림 층이 왕복에서 달라졌다");
+    }
+
+    #[test]
+    fn art_runs_merge_neighbours_in_a_row() {
+        // 이어진 같은 그림은 한 줄로 묶여야 한다 — 칸마다 적으면 파일이 부푼다.
+        let cells: Vec<_> = (10..20).map(|x| ((x, 5), 1u16)).collect();
+        let file = ZoneFile::from_scene(&painted(&cells));
+        assert_eq!(file.art.len(), 1, "{:?}", file.art);
+        assert_eq!(file.art[0].len, 10);
+
+        // 번호가 바뀌면 끊긴다.
+        let file = ZoneFile::from_scene(&painted(&[((10, 5), 1), ((11, 5), 2), ((12, 5), 2)]));
+        assert_eq!(file.art.len(), 2);
+    }
+
+    #[test]
+    fn a_scene_without_art_writes_an_empty_list() {
+        let file = ZoneFile::from_scene(&Scene::server_default());
+        assert!(file.art.is_empty());
+    }
+
+    #[test]
+    fn art_outside_the_tilemap_is_rejected_on_load() {
+        let text = to_ron(&painted(&[((10, 5), 1)]));
+        for bad in [
+            "x: 10,\n            len: 999,",
+            "y: 10,\n            len: 0,",
+        ] {
+            let broken = text.replacen("x: 10,\n            len: 1,", bad, 1);
+            assert!(from_ron(&broken).is_err(), "{bad}");
+        }
+        // 번호 0 은 "그림 없음" 이라 파일에 있어선 안 된다.
+        let broken = text.replacen("id: 1,", "id: 0,", 1);
+        assert!(from_ron(&broken).is_err());
     }
 
     #[test]

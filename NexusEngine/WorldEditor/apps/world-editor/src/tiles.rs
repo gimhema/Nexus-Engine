@@ -186,7 +186,13 @@ mod tests {
             },
         );
         let mut out = Vec::new();
-        build(&map, &camera(10.0, Vec2::new(25.0, 25.0)), 0.0, None, &mut out);
+        build(
+            &map,
+            &camera(10.0, Vec2::new(25.0, 25.0)),
+            0.0,
+            None,
+            &mut out,
+        );
         assert!(out.is_empty());
     }
 

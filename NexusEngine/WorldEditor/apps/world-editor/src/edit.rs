@@ -18,6 +18,7 @@ use nexus_core::{Entity, Vec2, units};
 use nexus_sim::{Tile, TileCoord};
 
 use crate::scene::{ArtId, Handle, Item, ItemKind, Pick, Scene, Target, ZoneBounds};
+use crate::terrain::ArtKind;
 
 /// 뷰포트에서 포인터가 무슨 일을 하는가.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -57,8 +58,11 @@ pub(crate) enum Command {
     },
     /// 칠하기 한 번(누름→뗌)이 통째로 한 스텝이다. `(좌표, 원래, 새것)`.
     PaintTiles(Vec<(TileCoord, Tile, Tile)>),
-    /// 그림 칠하기 한 번(누름→뗌). `(좌표, 원래, 새것)`.
-    PaintArt(Vec<(TileCoord, ArtId, ArtId)>),
+    /// 그림 칠하기 한 번(누름→뗌). `(좌표, 원래, 새것)`. `kind` 가 어느 층인지 정한다.
+    PaintArt {
+        kind: ArtKind,
+        edits: Vec<(TileCoord, ArtId, ArtId)>,
+    },
 }
 
 impl Command {
@@ -82,9 +86,9 @@ impl Command {
                     scene.tiles.set(at, to);
                 }
             }
-            Self::PaintArt(edits) => {
+            Self::PaintArt { kind, edits } => {
                 for &(at, _, to) in edits {
-                    set_art(scene, at, to);
+                    set_art(scene, *kind, at, to);
                 }
             }
         }
@@ -110,9 +114,9 @@ impl Command {
                     scene.tiles.set(at, from);
                 }
             }
-            Self::PaintArt(edits) => {
+            Self::PaintArt { kind, edits } => {
                 for &(at, from, _) in edits {
-                    set_art(scene, at, from);
+                    set_art(scene, *kind, at, from);
                 }
             }
         }
@@ -125,7 +129,7 @@ impl Command {
             Self::AddItems(items) | Self::RemoveItems(items) => items.is_empty(),
             Self::SetZone { from, to } => from == to,
             Self::PaintTiles(edits) => edits.is_empty(),
-            Self::PaintArt(edits) => edits.is_empty(),
+            Self::PaintArt { edits, .. } => edits.is_empty(),
         }
     }
 
@@ -151,18 +155,39 @@ impl Command {
             },
             Self::SetZone { .. } => String::from("존 경계 변경"),
             Self::PaintTiles(edits) => count(edits.len(), "타일 칠하기"),
-            Self::PaintArt(edits) => count(edits.len(), "그림 칠하기"),
+            Self::PaintArt { kind, edits } => count(
+                edits.len(),
+                match kind {
+                    ArtKind::Ground => "지면 칠하기",
+                    ArtKind::Prop => "오브젝트 놓기",
+                },
+            ),
         }
+    }
+}
+
+/// 층을 고른다. 지면과 오브젝트는 좌표만 공유하는 별개의 맵이다.
+fn layer_mut(scene: &mut Scene, kind: ArtKind) -> &mut crate::terrain::ArtLayer {
+    match kind {
+        ArtKind::Ground => &mut scene.art,
+        ArtKind::Prop => &mut scene.props,
+    }
+}
+
+fn layer(scene: &Scene, kind: ArtKind) -> &crate::terrain::ArtLayer {
+    match kind {
+        ArtKind::Ground => &scene.art,
+        ArtKind::Prop => &scene.props,
     }
 }
 
 /// 칸의 그림을 바꾼다. "없음"은 **항목을 지운다** — 칠하지 않은 칸을 들고 있으면
 /// 저장 파일이 부풀고 화면 훑기도 느려진다.
-fn set_art(scene: &mut Scene, at: TileCoord, id: ArtId) {
+fn set_art(scene: &mut Scene, kind: ArtKind, at: TileCoord, id: ArtId) {
     if id.is_none() {
-        scene.art.remove(&at);
+        layer_mut(scene, kind).remove(&at);
     } else {
-        scene.art.insert(at, id);
+        layer_mut(scene, kind).insert(at, id);
     }
 }
 
@@ -325,6 +350,9 @@ pub(crate) struct Editing {
     stroke: Option<BTreeMap<TileCoord, Tile>>,
     /// 그림 칠하기용 붓 — `data/terrain.ron` 의 번호. 기본은 "없음"(지우개).
     art_brush: ArtId,
+    /// 붓이 어느 층을 칠하는가. 지면과 오브젝트는 다른 층이라 **지우개도 층을 골라야** 한다
+    /// (건물만 지우고 지면은 남기는 것이 보통이다).
+    art_layer: ArtKind,
     /// 그림 칠하기 진행 중이면 `Some`. [`Editing::stroke`] 와 같은 이유로 맨 처음 값을 기억한다.
     art_stroke: Option<BTreeMap<TileCoord, ArtId>>,
     /// 직전 칠하기 지점. 두 지점 사이를 이어 칠하는 데 쓴다.
@@ -364,8 +392,14 @@ impl Editing {
         self.art_brush
     }
 
-    pub(crate) fn set_art_brush(&mut self, id: ArtId) {
+    pub(crate) fn art_layer(&self) -> ArtKind {
+        self.art_layer
+    }
+
+    /// 붓을 바꾼다. `kind` 는 그 번호가 속한 층 (`data/terrain.ron` 이 정한다).
+    pub(crate) fn set_art_brush(&mut self, id: ArtId, kind: ArtKind) {
         self.art_brush = id;
+        self.art_layer = kind;
     }
 
     /// 칠하는 중인가. 진행 중에는 언두·삭제 같은 다른 편집을 막는다.
@@ -406,31 +440,32 @@ impl Editing {
             && let Some(world) = p.world
             && p.over_viewport
         {
-            let brush = self.art_brush;
+            let (brush, kind) = (self.art_brush, self.art_layer);
             for at in self.stroke_cells(scene, world) {
                 // 타일맵 밖은 칠하지 않는다 — 저장 파일이 타일맵 범위를 기준으로 묶인다.
                 if scene.tiles.get(at).is_none() {
                     continue;
                 }
-                let before = scene.art.get(&at).copied().unwrap_or(ArtId::NONE);
+                let before = layer(scene, kind).get(&at).copied().unwrap_or(ArtId::NONE);
                 if let Some(stroke) = self.art_stroke.as_mut() {
                     stroke.entry(at).or_insert(before);
                 }
-                set_art(scene, at, brush);
+                set_art(scene, kind, at, brush);
             }
         }
         if p.released
             && let Some(stroke) = self.art_stroke.take()
         {
             self.paint_last = None;
+            let kind = self.art_layer;
             let edits: Vec<_> = stroke
                 .into_iter()
                 .filter_map(|(at, before)| {
-                    let after = scene.art.get(&at).copied().unwrap_or(ArtId::NONE);
+                    let after = layer(scene, kind).get(&at).copied().unwrap_or(ArtId::NONE);
                     (before != after).then_some((at, before, after))
                 })
                 .collect();
-            self.history.record(Command::PaintArt(edits));
+            self.history.record(Command::PaintArt { kind, edits });
         }
     }
 
@@ -1026,6 +1061,117 @@ mod tests {
         assert!(tile_at(&s, at).walkable);
         assert!(ed.redo(&mut s));
         assert!(!tile_at(&s, at).walkable);
+    }
+
+    // ── 지형 그림 칠하기 ────────────────────────────────────────────────────
+
+    /// 그림 칠하기용 씬 — 붓은 `kind` 층의 `id` 번 그림.
+    fn art_setup(id: u16, kind: ArtKind) -> (Scene, Editing) {
+        let s = Scene::server_default();
+        let mut ed = Editing::default();
+        ed.set_tool(Tool::PaintArt);
+        ed.set_art_brush(ArtId::new(id), kind);
+        (s, ed)
+    }
+
+    /// 한 번의 그림 칠하기 (누름 → 지점들 → 뗌).
+    fn paint_art(ed: &mut Editing, s: &mut Scene, points: &[Vec2]) {
+        let (first, rest) = points.split_first().expect("지점이 필요하다");
+        ed.paint_art_pointer(s, &press(*first));
+        for p in rest {
+            ed.paint_art_pointer(s, &move_to(*p));
+        }
+        ed.paint_art_pointer(s, &release_at(*points.last().unwrap()));
+    }
+
+    fn art_at(s: &Scene, world: Vec2) -> ArtId {
+        let at = s.tiles.world_to_tile(world);
+        s.art.get(&at).copied().unwrap_or(ArtId::NONE)
+    }
+
+    fn prop_at(s: &Scene, world: Vec2) -> ArtId {
+        let at = s.tiles.world_to_tile(world);
+        s.props.get(&at).copied().unwrap_or(ArtId::NONE)
+    }
+
+    #[test]
+    fn painting_art_does_not_touch_the_rules() {
+        // 그림과 걷기 규칙은 다른 층이다 — 건물을 놓아도 길이 막히지 않아야 한다.
+        let (mut s, mut ed) = art_setup(100, ArtKind::Prop);
+        let at = Vec2::new(0.5, 0.5);
+        paint_art(&mut ed, &mut s, &[at, Vec2::new(4.5, 0.5)]);
+
+        assert_eq!(prop_at(&s, at), ArtId::new(100));
+        assert!(tile_at(&s, at).walkable, "그림이 규칙을 바꿨다");
+        assert_eq!(tile_at(&s, at), Tile::default());
+    }
+
+    #[test]
+    fn a_prop_does_not_erase_the_ground_under_it() {
+        // 두 층이 따로 있어야 건물이 풀 위에 선다 — 한 층이면 지면이 지워진다.
+        let (mut s, mut ed) = art_setup(1, ArtKind::Ground);
+        let at = Vec2::new(0.5, 0.5);
+        paint_art(&mut ed, &mut s, &[at]);
+
+        ed.set_art_brush(ArtId::new(100), ArtKind::Prop);
+        paint_art(&mut ed, &mut s, &[at]);
+
+        assert_eq!(art_at(&s, at), ArtId::new(1), "지면 그림이 지워졌다");
+        assert_eq!(prop_at(&s, at), ArtId::new(100));
+    }
+
+    #[test]
+    fn an_art_stroke_is_a_single_undo_step() {
+        let (mut s, mut ed) = art_setup(1, ArtKind::Ground);
+        paint_art(&mut ed, &mut s, &[Vec2::new(0.5, 0.5), Vec2::new(5.5, 0.5)]);
+        for x in 0..=5 {
+            assert_eq!(art_at(&s, Vec2::new(x as f32 + 0.5, 0.5)), ArtId::new(1));
+        }
+
+        assert!(ed.undo(&mut s));
+        for x in 0..=5 {
+            assert!(art_at(&s, Vec2::new(x as f32 + 0.5, 0.5)).is_none());
+        }
+        assert!(!ed.undo(&mut s), "스텝이 하나여야 한다");
+    }
+
+    #[test]
+    fn the_eraser_only_clears_its_own_layer() {
+        // "없음"으로 칠하면 항목이 남지 않아야 한다 — 남으면 저장 파일이 부푼다.
+        // 그리고 건물만 지우고 지면은 남길 수 있어야 한다.
+        let (mut s, mut ed) = art_setup(2, ArtKind::Ground);
+        let at = Vec2::new(0.5, 0.5);
+        paint_art(&mut ed, &mut s, &[at]);
+        ed.set_art_brush(ArtId::new(100), ArtKind::Prop);
+        paint_art(&mut ed, &mut s, &[at]);
+
+        ed.set_art_brush(ArtId::NONE, ArtKind::Prop);
+        paint_art(&mut ed, &mut s, &[at]);
+        assert!(s.props.is_empty(), "지운 칸이 남아 있다");
+        assert_eq!(art_at(&s, at), ArtId::new(2), "지면까지 지워졌다");
+
+        // 언두하면 되살아난다.
+        ed.undo(&mut s);
+        assert_eq!(prop_at(&s, at), ArtId::new(100));
+    }
+
+    #[test]
+    fn repainting_the_same_art_records_nothing() {
+        let (mut s, mut ed) = art_setup(3, ArtKind::Ground);
+        let at = Vec2::new(0.5, 0.5);
+        paint_art(&mut ed, &mut s, &[at]);
+        let before = ed.history().undo_label();
+        paint_art(&mut ed, &mut s, &[at]);
+        assert_eq!(ed.history().undo_label(), before, "빈 스텝이 기록됐다");
+    }
+
+    #[test]
+    fn painting_art_outside_the_map_is_ignored() {
+        let (mut s, mut ed) = art_setup(1, ArtKind::Ground);
+        paint_art(&mut ed, &mut s, &[Vec2::new(900.0, 900.0)]);
+        assert!(s.art.is_empty());
+        assert!(ed.history().undo_label().is_none());
+        assert!(!ed.is_painting(), "칠하기가 끝나지 않았다");
     }
 
     #[test]

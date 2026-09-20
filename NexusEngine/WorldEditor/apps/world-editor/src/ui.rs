@@ -73,6 +73,8 @@ pub(crate) struct UiModel<'a> {
     pub(crate) brush: Tile,
     /// 지형 그림 붓 — 0 이면 지우개.
     pub(crate) art_brush: ArtId,
+    /// 붓이 칠하는 층.
+    pub(crate) art_layer: ArtKind,
     /// 고를 수 있는 지형 그림 `(번호, 이름, 종류)`. 그림 데이터가 없으면 빈 목록이다.
     pub(crate) art_palette: Vec<(ArtId, &'a str, ArtKind)>,
     pub(crate) stats: FrameStats,
@@ -118,8 +120,8 @@ pub(crate) struct UiActions {
     pub(crate) set_tool: Option<Tool>,
     /// 타일 붓 변경.
     pub(crate) set_brush: Option<Tile>,
-    /// 지형 그림 붓 변경.
-    pub(crate) set_art_brush: Option<ArtId>,
+    /// 지형 그림 붓 변경 — `(번호, 층)`. 지우개(`ArtId::NONE`)도 층을 골라야 한다.
+    pub(crate) set_art_brush: Option<(ArtId, ArtKind)>,
     /// 뷰포트 포인터 — 뷰포트가 그려진 프레임에만 있다.
     pub(crate) pointer: Option<PointerInput>,
     /// 씬을 그릴 사각형 `[x, y, w, h]` (물리 픽셀).
@@ -715,12 +717,16 @@ fn art_section(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) 
         return;
     }
 
-    if ui
-        .selectable_label(model.art_brush.is_none(), "지우기")
-        .clicked()
-    {
-        actions.set_art_brush = Some(ArtId::NONE);
-    }
+    // 지우개도 층을 고른다 — 건물만 지우고 지면은 남기는 것이 보통이다.
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("지우기").small().weak());
+        for (kind, label) in [(ArtKind::Ground, "지면"), (ArtKind::Prop, "오브젝트")] {
+            let active = model.art_brush.is_none() && model.art_layer == kind;
+            if ui.selectable_label(active, label).clicked() {
+                actions.set_art_brush = Some((ArtId::NONE, kind));
+            }
+        }
+    });
 
     for (kind, title) in [(ArtKind::Ground, "지면"), (ArtKind::Prop, "오브젝트")] {
         let items: Vec<_> = model
@@ -732,21 +738,23 @@ fn art_section(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) 
             continue;
         }
         ui.label(egui::RichText::new(title).small().weak());
-        for &&(id, name, _) in &items {
+        for &&(id, name, art_kind) in &items {
             if ui
                 .selectable_label(model.art_brush == id, name)
                 .on_hover_text(format!("번호 {}", id.raw()))
                 .clicked()
             {
-                actions.set_art_brush = Some(id);
+                actions.set_art_brush = Some((id, art_kind));
             }
         }
     }
 
     ui.label(
-        egui::RichText::new("그림은 걷기 규칙과 별개다 — 건물을 놓아도 막히려면 타일을 칠해야 한다.")
-            .small()
-            .weak(),
+        egui::RichText::new(
+            "그림은 걷기 규칙과 별개다 — 건물을 놓아도 막히려면 타일을 칠해야 한다.",
+        )
+        .small()
+        .weak(),
     );
 }
 

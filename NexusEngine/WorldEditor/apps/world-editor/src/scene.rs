@@ -208,11 +208,14 @@ pub(crate) struct Scene {
     pub(crate) zone: ZoneBounds,
     /// 걷기 가능 여부·높이 레벨. 서버 이동 검증과 클라 길찾기가 같은 데이터를 본다.
     pub(crate) tiles: TileMap,
-    /// 칸마다 칠한 **그림** — 규칙(`tiles`)과 좌표만 공유하는 별개의 층이다.
+    /// 칸마다 칠한 **지면 그림** — 규칙(`tiles`)과 좌표만 공유하는 별개의 층이다.
     ///
     /// 칠한 칸만 담는다 (대부분의 칸은 비어 있다). 순서가 고정된 맵을 쓰는 이유는
     /// 저장 파일이 실행마다 같은 바이트여야 하기 때문이다.
     pub(crate) art: crate::terrain::ArtLayer,
+    /// 칸마다 놓인 **정적 오브젝트**(건물·소품). 지면과 **다른 층**이다 —
+    /// 건물을 놓아도 그 칸의 지면 그림이 지워지지 않아야 한다.
+    pub(crate) props: crate::terrain::ArtLayer,
 }
 
 impl Scene {
@@ -237,6 +240,7 @@ impl Scene {
                 Tile::default(),
             ),
             art: crate::terrain::ArtLayer::new(),
+            props: crate::terrain::ArtLayer::new(),
         };
 
         // Server.cpp 의 숫자를 그대로 옮기고 미터로 읽는다.

@@ -86,8 +86,10 @@ struct ArtFile {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// 지면에 눕는 그림인가, 서는 오브젝트인가.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum ArtKind {
+    /// 기본값 — 붓을 고르기 전에는 지면을 칠한다.
+    #[default]
     Ground,
     Prop,
 }
@@ -125,10 +127,14 @@ fn plan() -> Result<TerrainPlan, String> {
         }
         Err(e) => return Err(format!("{DISK_PATH}: {e}")),
     };
-    parse(&text).map_err(|e| format!("{label}: {e}"))
+    // 그림 경로는 작업 디렉터리 기준이다 (`data/…` 와 같은 규칙).
+    parse(&text, Path::new("")).map_err(|e| format!("{label}: {e}"))
 }
 
-fn parse(text: &str) -> Result<TerrainPlan, String> {
+/// `base` 는 그림 경로의 기준 폴더다. 실행 중에는 작업 디렉터리(`""`)이고, 테스트는
+/// 저장소 루트를 넘긴다 — **작업 디렉터리를 바꾸지 않는다** (테스트가 한 프로세스에서
+/// 병렬로 돌기 때문에 전역 상태를 건드리면 서로 깨진다).
+fn parse(text: &str, base: &Path) -> Result<TerrainPlan, String> {
     let file: TerrainFile = ron::from_str(text).map_err(|e| e.to_string())?;
     if file.version != 1 {
         return Err(format!("형식 {} 은(는) 읽을 수 없음", file.version));
@@ -144,7 +150,7 @@ fn parse(text: &str) -> Result<TerrainPlan, String> {
             ));
             continue;
         }
-        match std::fs::read(&set.image).map_err(|e| e.to_string()) {
+        match std::fs::read(base.join(&set.image)).map_err(|e| e.to_string()) {
             Ok(bytes) => match Image::decode_png(&bytes) {
                 Ok(image) => {
                     images.insert(name.clone(), (image, set.pixels_per_meter));
@@ -170,7 +176,9 @@ fn parse(text: &str) -> Result<TerrainPlan, String> {
                 problems.push(format!("번호 {id}: 이름이 비어 있음"));
             }
             if entries.contains_key(&ArtId::new(id)) {
-                problems.push(format!("번호 {id} 가 두 번 나온다 (지면/오브젝트 공용 번호)"));
+                problems.push(format!(
+                    "번호 {id} 가 두 번 나온다 (지면/오브젝트 공용 번호)"
+                ));
                 continue;
             }
             let Some((image, ppm)) = images.get(&art.tileset) else {
@@ -190,7 +198,9 @@ fn parse(text: &str) -> Result<TerrainPlan, String> {
             if x + w > image.width() || y + h > image.height() {
                 problems.push(format!(
                     "{}: 영역 ({x}, {y}, {w}, {h}) 가 그림 {}×{} 밖",
-                    art.name, image.width(), image.height()
+                    art.name,
+                    image.width(),
+                    image.height()
                 ));
                 continue;
             }
@@ -403,22 +413,20 @@ mod tests {
         TileMap::new(64, 64, 1.0, Vec2::splat(-32.0), Tile::default())
     }
 
+    /// 저장소 루트 — 그림 경로의 기준. 테스트는 크레이트 폴더에서 돌아간다.
+    fn root() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
     /// 파일 형식 한 줄을 바꿔 시험용 데이터를 만든다.
     fn tweaked(from: &str, to: &str) -> Result<TerrainPlan, String> {
-        parse(&EMBEDDED.replacen(from, to, 1))
+        parse(&EMBEDDED.replacen(from, to, 1), &root())
     }
 
     #[test]
     fn shipped_terrain_data_is_valid() {
         // 저장소에 들어 있는 조합(데이터 + 그림)이 실제로 읽히는지.
-        // 그림 경로는 작업 디렉터리 기준이라 크레이트 폴더에서 돌리는 테스트에서는 맞춰 준다.
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let previous = std::env::current_dir().expect("현재 디렉터리");
-        std::env::set_current_dir(&root).expect("저장소 루트로 이동");
-        let result = parse(EMBEDDED);
-        std::env::set_current_dir(previous).expect("디렉터리 복원");
-
-        let plan = result.expect("내장 지형 데이터가 유효해야 한다");
+        let plan = parse(EMBEDDED, &root()).expect("내장 지형 데이터가 유효해야 한다");
         assert!(!plan.entries.is_empty(), "그림이 하나도 없다");
         assert!(
             plan.entries.values().any(|p| p.kind == ArtKind::Ground),
@@ -527,7 +535,10 @@ mod tests {
         let mut props = Vec::new();
         build_props(&layer, &map(), &terrain, &camera(), 0.0, &mut props);
 
-        assert!(matches!(ground.as_slice(), [RenderCommand::DrawRect { .. }]));
+        assert!(matches!(
+            ground.as_slice(),
+            [RenderCommand::DrawRect { .. }]
+        ));
         assert!(matches!(
             props.as_slice(),
             [RenderCommand::DrawSprite { size, .. }] if *size == Vec2::new(5.0, 4.0)
@@ -551,6 +562,9 @@ mod tests {
         let layer = ArtLayer::from([(TileCoord::new(0, 0), ArtId::new(1))]);
         let mut out = Vec::new();
         build_ground(&layer, &map(), &terrain, &camera(), 0.0, &mut out);
-        assert!(out.is_empty(), "화면 밖 칸까지 그리면 비용이 맵 크기에 비례한다");
+        assert!(
+            out.is_empty(),
+            "화면 밖 칸까지 그리면 비용이 맵 크기에 비례한다"
+        );
     }
 }
