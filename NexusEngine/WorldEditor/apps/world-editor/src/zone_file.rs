@@ -45,6 +45,11 @@ struct ZoneFile {
     /// 존 경계 AABB (m, XY). 서버 `ZoneConfig::boundsMin/Max` 의 XY.
     bounds: BoundsFile,
     tiles: TilesFile,
+    /// 칸마다 칠한 **지형 그림** 번호 (`data/terrain.ron`). 타일(규칙)과는 별개의 층이다.
+    ///
+    /// 그림을 쓰지 않는 존도 있으므로 생략 가능하게 둔다 — 이 필드가 없는 예전 파일도 읽힌다.
+    #[serde(default)]
+    art: Vec<ArtRunFile>,
     markers: Vec<MarkerFile>,
 }
 
@@ -77,6 +82,16 @@ struct RunFile {
     walkable: bool,
     level: u8,
     ramp: bool,
+}
+
+/// 한 행에서 `x` 부터 `len` 칸이 같은 그림이다. 타일 행 묶음과 같은 이유로 묶는다.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+struct ArtRunFile {
+    y: u32,
+    x: u32,
+    len: u32,
+    /// `data/terrain.ron` 의 그림 번호. 0(그림 없음)은 저장하지 않는다.
+    id: u16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -219,6 +234,28 @@ impl ZoneFile {
             }
         }
 
+        // 그림도 행 단위로 묶는다. 칠한 칸만 들고 있으므로 행·열 순서로 정렬해서 훑는다
+        // (`TileCoord` 의 정렬은 x 가 먼저라 그대로 쓰면 행이 이어지지 않는다).
+        let mut painted: Vec<(u32, u32, u16)> = scene
+            .art
+            .iter()
+            .filter(|(_, id)| !id.is_none())
+            .filter_map(|(at, id)| {
+                let (x, y) = (u32::try_from(at.x).ok()?, u32::try_from(at.y).ok()?);
+                (x < tiles.width() && y < tiles.height()).then_some((y, x, id.raw()))
+            })
+            .collect();
+        painted.sort_unstable();
+
+        let mut art: Vec<ArtRunFile> = Vec::new();
+        for &(y, x, id) in &painted {
+            match art.last_mut() {
+                // 같은 행에서 바로 옆 칸이고 같은 그림이면 이어 붙인다.
+                Some(run) if run.y == y && run.id == id && run.x + run.len == x => run.len += 1,
+                _ => art.push(ArtRunFile { y, x, len: 1, id }),
+            }
+        }
+
         Self {
             version: FORMAT_VERSION,
             bounds: BoundsFile {
@@ -232,6 +269,7 @@ impl ZoneFile {
                 height: tiles.height(),
                 runs,
             },
+            art,
             markers: scene
                 .items
                 .iter()
@@ -298,11 +336,37 @@ impl ZoneFile {
             }
         }
 
+        // 지형 그림. 번호가 `data/terrain.ron` 에 없어도 **파일을 거부하지 않는다** —
+        // 그림 데이터는 클라이언트 쪽이라 존 파일보다 자주 바뀌고, 없는 번호는 그리지 않을 뿐이다.
+        let mut art = crate::terrain::ArtLayer::new();
+        for r in &self.art {
+            if r.len == 0
+                || r.y >= self.tiles.height
+                || r.x >= self.tiles.width
+                || r.x + r.len > self.tiles.width
+            {
+                return Err(format!(
+                    "그림 행 (y {}, x {}, {}칸) 이(가) 타일맵 밖이거나 비었음",
+                    r.y, r.x, r.len
+                ));
+            }
+            if r.id == 0 {
+                return Err(format!("그림 행 (y {}, x {}) 의 번호가 0", r.y, r.x));
+            }
+            for x in r.x..r.x + r.len {
+                art.insert(
+                    TileCoord::new(x as i32, r.y as i32),
+                    crate::scene::ArtId::new(r.id),
+                );
+            }
+        }
+
         let mut scene = Scene {
             world: World::default(),
             items: Vec::new(),
             zone: ZoneBounds { min, max },
             tiles,
+            art,
         };
         for (i, m) in self.markers.into_iter().enumerate() {
             let pos = finite2(m.pos, &format!("markers[{i}].pos"))?;

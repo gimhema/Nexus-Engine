@@ -43,7 +43,7 @@ use bytemuck::{Pod, Zeroable};
 use nexus_core::{Mat4, Vec3};
 use nexus_render::{
     Capture, DrawLayer, FrameStatus, RenderBackend, RenderCommand, RenderDeviceInfo, RenderError,
-    Renderer, TextureDesc, TextureId, UvRect,
+    Renderer, TextureDesc, TextureId,
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
@@ -861,20 +861,28 @@ impl Renderer for WgpuRenderer {
                 z,
                 depth_bias,
                 color,
+                uv,
+                texture,
             } => {
+                // 없는 텍스처는 흰색으로 떨어뜨린다 — 스프라이트와 같은 이유(아래 참고).
+                let texture = if (texture.index() as usize) < texture_count {
+                    texture
+                } else {
+                    TextureId::WHITE
+                };
                 let (o, s) = frame.layer.depth_range();
                 let span = [o, s];
                 frame.push(
                     PipelineKind::Blend,
-                    TextureId::WHITE,
+                    texture,
                     QuadInstance {
                         center: center.to_array(),
                         size: size.to_array(),
                         z,
                         rotation,
                         color: linear_rgba(color),
-                        uv_min: UvRect::FULL.min.to_array(),
-                        uv_max: UvRect::FULL.max.to_array(),
+                        uv_min: uv.min.to_array(),
+                        uv_max: uv.max.to_array(),
                         depth_bias,
                         billboard: 0.0,
                         anchor: 0.0,

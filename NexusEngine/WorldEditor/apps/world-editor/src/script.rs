@@ -12,7 +12,8 @@
 //! release 30 20                왼쪽 버튼 뗌
 //! press rotate                 단독 선택 마커의 회전 핸들 위치 (move/release 도 가능)
 //! add npc|monster|player X Y   마커 추가
-//! tool select|paint            뷰포트 포인터가 할 일 바꾸기
+//! tool select|paint|art        뷰포트 포인터가 할 일 바꾸기
+//! art 번호                     지형 그림 붓 (0 = 지우기)
 //! delete | undo | redo | wait
 //! play                         플레이 시작/정지 (F5 와 같다). 플레이 중 press 는 클릭 명령이 된다
 //! save PATH | open PATH         존 파일 저장 / 열기 (경로에 공백 불가)
@@ -27,7 +28,7 @@ use std::path::PathBuf;
 use nexus_core::Vec2;
 
 use crate::edit::Tool;
-use crate::scene::ItemKind;
+use crate::scene::{ArtId, ItemKind};
 
 pub(crate) const ENV_SCRIPT: &str = "NEXUS_SCRIPT";
 
@@ -56,6 +57,8 @@ pub(crate) enum Step {
     },
     Add(ItemKind, Vec2),
     SetTool(Tool),
+    /// 지형 그림 붓 번호 (`data/terrain.ron`). 0 이면 지우기.
+    SetArtBrush(ArtId),
     Delete,
     Undo,
     Redo,
@@ -143,8 +146,16 @@ fn parse_step(text: &str) -> Result<Step, String> {
             return match words.get(1).copied() {
                 Some("select") => Ok(Step::SetTool(Tool::Select)),
                 Some("paint") => Ok(Step::SetTool(Tool::PaintTile)),
-                _ => Err(format!("'{text}': 도구는 select|paint")),
+                Some("art") => Ok(Step::SetTool(Tool::PaintArt)),
+                _ => Err(format!("'{text}': 도구는 select|paint|art")),
             };
+        }
+        "art" => {
+            let id = words
+                .get(1)
+                .and_then(|w| w.parse::<u16>().ok())
+                .ok_or_else(|| format!("'{text}': art 뒤에 그림 번호 (0 = 지우기)"))?;
+            return Ok(Step::SetArtBrush(ArtId::new(id)));
         }
         "add" => {
             let kind = match words.get(1).copied() {

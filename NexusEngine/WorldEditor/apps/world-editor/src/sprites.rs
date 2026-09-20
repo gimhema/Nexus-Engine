@@ -49,6 +49,14 @@ struct SheetFile {
     cell: (u32, u32),
     /// 이 시트가 담은 방향 수 — **엔진이 아니라 시트의 성질이다.**
     directions: u32,
+    /// **그림 1미터가 몇 픽셀인가.** 스프라이트의 월드 크기가 여기서 나온다
+    /// (`칸 높이 / pixels_per_meter`).
+    ///
+    /// 받아온 아트마다 축척이 다르다 — 한 팩에서 캐릭터가 16×32px 이고 타일이 16px 이면
+    /// 캐릭터는 타일 두 칸 높이(= 2m)다. 그러려면 이 값이 타일셋과 같은 16 이어야 한다.
+    /// 내장 플레이스홀더는 32 (`Camera2d::PIXELS_PER_METER`)를 쓴다.
+    #[serde(default = "default_pixels_per_meter")]
+    pixels_per_meter: f32,
     /// 엔진 방향 `i` 가 쓸 시트 행 오프셋. 비우면 `0, 1, 2, …` 순서.
     ///
     /// 엔진 순서는 `0 = 동`, 반시계(동·북·서·남). 시트가 남·동·북·서 순서라면
@@ -99,6 +107,11 @@ impl From<StateFile> for AnimState {
 // 검증을 마친 시트 (GPU 업로드 전)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// 시트 정의에서 `pixels_per_meter` 를 적지 않았을 때의 값 — 내장 플레이스홀더의 축척.
+fn default_pixels_per_meter() -> f32 {
+    Camera2d::PIXELS_PER_METER
+}
+
 /// 그림과 검증된 메타데이터. GPU 를 모르므로 테스트가 여기까지 확인한다.
 #[derive(Debug)]
 struct SheetPlan {
@@ -107,6 +120,7 @@ struct SheetPlan {
     cell: (u32, u32),
     direction_rows: Vec<u32>,
     tinted: bool,
+    pixels_per_meter: f32,
 }
 
 /// 시트 정의를 읽고 그림에 맞는지 확인한다.
@@ -185,12 +199,20 @@ fn plan_sheet(def: &str, base: Option<&Path>) -> Result<SheetPlan, String> {
         ));
     }
 
+    if !(file.pixels_per_meter.is_finite() && file.pixels_per_meter > 0.0) {
+        return Err(format!(
+            "pixels_per_meter 는 양수여야 함 (지금 {})",
+            file.pixels_per_meter
+        ));
+    }
+
     Ok(SheetPlan {
         image,
         sheet: SpriteSheet::new(atlas, directions, clips),
         cell: file.cell,
         direction_rows,
         tinted: file.tinted,
+        pixels_per_meter: file.pixels_per_meter,
     })
 }
 
@@ -220,6 +242,8 @@ pub(crate) struct Sheet {
     /// 엔진 방향 → 시트 행.
     direction_rows: Vec<u32>,
     tinted: bool,
+    /// 그림 1미터의 픽셀 수 — 월드 크기의 기준.
+    pixels_per_meter: f32,
 }
 
 impl Sheet {
@@ -233,15 +257,17 @@ impl Sheet {
             cell: plan.cell,
             direction_rows: plan.direction_rows,
             tinted: plan.tinted,
+            pixels_per_meter: plan.pixels_per_meter,
         })
     }
 
     /// 화면에 그려지는 높이 (m). 머리 위 표시(HP 막대)의 기준.
     ///
-    /// 칸 높이를 기준 배율로 나눈 값이다 — 고정 줌에서 **그림 1픽셀이 화면 1픽셀**이 된다.
-    /// 임의의 키(1.8m 같은)를 넣지 말고, 큰 캐릭터가 필요하면 시트 칸을 키운다.
+    /// 칸 높이를 **그 시트의 축척**(`pixels_per_meter`)으로 나눈 값이다 — 카메라 배율이
+    /// 같으면 그림 1픽셀이 화면 1픽셀이 된다. 임의의 키(1.8m 같은)를 넣지 말고,
+    /// 캐릭터를 키우려면 시트 칸을 키우거나 축척을 낮춘다.
     pub(crate) fn height(&self, px: f32) -> f32 {
-        (self.cell.1 as f32 / Camera2d::PIXELS_PER_METER).max(SPRITE_MIN_PX * px)
+        (self.cell.1 as f32 / self.pixels_per_meter).max(SPRITE_MIN_PX * px)
     }
 
     /// 애니메이션 진행에 필요한 시트.

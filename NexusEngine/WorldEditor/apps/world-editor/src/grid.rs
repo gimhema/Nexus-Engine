@@ -7,7 +7,7 @@
 //! 너무 성기지 않도록.
 
 use nexus_core::{Camera2d, Vec2};
-use nexus_render::{DEPTH_LAYER, RenderCommand};
+use nexus_render::{DEPTH_LAYER, RenderCommand, TextureId, UvRect};
 
 /// 그리드 선의 겹침 순서. 지면에 깔리므로 월드 Z 는 0 이고, 깊이 편향만 음수로 둔다.
 ///
@@ -93,6 +93,8 @@ pub(crate) fn build(camera: &Camera2d, out: &mut Vec<RenderCommand>) {
             } else {
                 MINOR_COLOR
             },
+            uv: UvRect::FULL,
+            texture: TextureId::WHITE,
         });
         x += spacing;
     }
@@ -117,6 +119,8 @@ pub(crate) fn build(camera: &Camera2d, out: &mut Vec<RenderCommand>) {
             } else {
                 MINOR_COLOR
             },
+            uv: UvRect::FULL,
+            texture: TextureId::WHITE,
         });
         y += spacing;
     }
@@ -153,6 +157,8 @@ pub(crate) fn build_outline(
             z: 0.0,
             depth_bias,
             color,
+            uv: UvRect::FULL,
+            texture: TextureId::WHITE,
         });
     }
     // 좌 / 우
@@ -164,6 +170,8 @@ pub(crate) fn build_outline(
             z: 0.0,
             depth_bias,
             color,
+            uv: UvRect::FULL,
+            texture: TextureId::WHITE,
         });
     }
 }

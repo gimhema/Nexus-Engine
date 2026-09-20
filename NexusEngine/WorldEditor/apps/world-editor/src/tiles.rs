@@ -2,13 +2,13 @@
 //!
 //! **높이를 지오메트리로 그리지 않는다.** 지형은 화면에서 완전한 평지이고, 레벨은
 //! 색으로만 드러낸다 — 저작 중에는 아트보다 데이터가 보여야 한다.
-//! 진짜 타일 아트(절벽 경계 포함)는 텍스처 지면 쿼드가 생길 때 올라온다.
+//! 지형 **그림**(타일 아트·건물)은 별개의 층이다 — `crate::terrain`. 이 모듈은 규칙만 그린다.
 //!
 //! 기본값(걸을 수 있는 레벨 0)은 **아무것도 그리지 않는다.** 대부분의 칸이 기본값이라
 //! 그리면 화면만 어지럽고 드로우 콜만 늘어난다.
 
 use nexus_core::{Camera2d, Vec2};
-use nexus_render::RenderCommand;
+use nexus_render::{RenderCommand, TextureId, UvRect};
 use nexus_sim::{TileCoord, TileMap};
 
 /// 지나갈 수 없는 칸.
@@ -44,10 +44,15 @@ fn tile_color(tile: nexus_sim::Tile) -> Option<[f32; 4]> {
 /// 보이는 범위의 타일을 [`RenderCommand`] 로 만들어 `out` 에 넣는다.
 ///
 /// **지면 층에서 호출한다** — 스프라이트를 가리면 안 된다.
+///
+/// `covered` 를 주면 **그림이 칠해진 칸은 건너뛴다.** 플레이 모드에서 쓴다 — 완성된 지형
+/// 위에 규칙 색이 덮이면 게임 화면이 아니라 저작 화면이 된다. 에디터에서는 `None` 을 넘겨
+/// 그림 위에도 규칙이 보이게 한다 (걷기 막힘을 눈으로 확인해야 하므로).
 pub(crate) fn build(
     map: &TileMap,
     camera: &Camera2d,
     depth_bias: f32,
+    covered: Option<&crate::terrain::ArtLayer>,
     out: &mut Vec<RenderCommand>,
 ) {
     let (view_min, view_max) = camera.visible_bounds();
@@ -71,6 +76,9 @@ pub(crate) fn build(
             let Some(color) = map.get(at).and_then(tile_color) else {
                 continue;
             };
+            if covered.is_some_and(|art| art.contains_key(&at)) {
+                continue;
+            }
             if drawn >= MAX_TILES_PER_FRAME {
                 return;
             }
@@ -82,6 +90,8 @@ pub(crate) fn build(
                 z: 0.0,
                 depth_bias,
                 color,
+                uv: UvRect::FULL,
+                texture: TextureId::WHITE,
             });
         }
     }
@@ -111,7 +121,7 @@ mod tests {
     fn default_tiles_draw_nothing() {
         let map = TileMap::new(64, 64, 1.0, Vec2::splat(-32.0), Tile::default());
         let mut out = Vec::new();
-        build(&map, &camera(20.0, Vec2::ZERO), 0.0, &mut out);
+        build(&map, &camera(20.0, Vec2::ZERO), 0.0, None, &mut out);
         assert!(out.is_empty(), "기본 칸까지 그리면 화면이 어지럽다");
     }
 
@@ -133,7 +143,7 @@ mod tests {
         ] {
             let map = map_with(TileCoord::new(32, 32), tile);
             let mut out = Vec::new();
-            build(&map, &camera(20.0, Vec2::ZERO), 0.0, &mut out);
+            build(&map, &camera(20.0, Vec2::ZERO), 0.0, None, &mut out);
             assert_eq!(out.len(), 1, "{tile:?}");
         }
     }
@@ -176,7 +186,7 @@ mod tests {
             },
         );
         let mut out = Vec::new();
-        build(&map, &camera(10.0, Vec2::new(25.0, 25.0)), 0.0, &mut out);
+        build(&map, &camera(10.0, Vec2::new(25.0, 25.0)), 0.0, None, &mut out);
         assert!(out.is_empty());
     }
 
@@ -196,7 +206,7 @@ mod tests {
             }
         }
         let mut out = Vec::new();
-        build(&map, &camera(1000.0, Vec2::ZERO), 0.0, &mut out);
+        build(&map, &camera(1000.0, Vec2::ZERO), 0.0, None, &mut out);
         assert!(out.len() <= MAX_TILES_PER_FRAME, "{} 개", out.len());
     }
 }

@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use nexus_core::{Entity, Vec2, units};
 use nexus_sim::{Tile, TileCoord};
 
-use crate::scene::{Handle, Item, ItemKind, Pick, Scene, Target, ZoneBounds};
+use crate::scene::{ArtId, Handle, Item, ItemKind, Pick, Scene, Target, ZoneBounds};
 
 /// 뷰포트에서 포인터가 무슨 일을 하는가.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -25,8 +25,10 @@ pub(crate) enum Tool {
     /// 마커·존을 고르고 옮긴다.
     #[default]
     Select,
-    /// 타일을 칠한다.
+    /// 타일 **규칙**(걷기·레벨·경사로)을 칠한다.
     PaintTile,
+    /// 타일 **그림**(지형 아트·건물)을 칠한다. 규칙은 건드리지 않는다.
+    PaintArt,
 }
 
 /// 언두 기록 상한. 오래된 것부터 버린다.
@@ -55,6 +57,8 @@ pub(crate) enum Command {
     },
     /// 칠하기 한 번(누름→뗌)이 통째로 한 스텝이다. `(좌표, 원래, 새것)`.
     PaintTiles(Vec<(TileCoord, Tile, Tile)>),
+    /// 그림 칠하기 한 번(누름→뗌). `(좌표, 원래, 새것)`.
+    PaintArt(Vec<(TileCoord, ArtId, ArtId)>),
 }
 
 impl Command {
@@ -76,6 +80,11 @@ impl Command {
             Self::PaintTiles(edits) => {
                 for &(at, _, to) in edits {
                     scene.tiles.set(at, to);
+                }
+            }
+            Self::PaintArt(edits) => {
+                for &(at, _, to) in edits {
+                    set_art(scene, at, to);
                 }
             }
         }
@@ -101,6 +110,11 @@ impl Command {
                     scene.tiles.set(at, from);
                 }
             }
+            Self::PaintArt(edits) => {
+                for &(at, from, _) in edits {
+                    set_art(scene, at, from);
+                }
+            }
         }
     }
 
@@ -111,6 +125,7 @@ impl Command {
             Self::AddItems(items) | Self::RemoveItems(items) => items.is_empty(),
             Self::SetZone { from, to } => from == to,
             Self::PaintTiles(edits) => edits.is_empty(),
+            Self::PaintArt(edits) => edits.is_empty(),
         }
     }
 
@@ -136,7 +151,18 @@ impl Command {
             },
             Self::SetZone { .. } => String::from("존 경계 변경"),
             Self::PaintTiles(edits) => count(edits.len(), "타일 칠하기"),
+            Self::PaintArt(edits) => count(edits.len(), "그림 칠하기"),
         }
+    }
+}
+
+/// 칸의 그림을 바꾼다. "없음"은 **항목을 지운다** — 칠하지 않은 칸을 들고 있으면
+/// 저장 파일이 부풀고 화면 훑기도 느려진다.
+fn set_art(scene: &mut Scene, at: TileCoord, id: ArtId) {
+    if id.is_none() {
+        scene.art.remove(&at);
+    } else {
+        scene.art.insert(at, id);
     }
 }
 
@@ -297,6 +323,10 @@ pub(crate) struct Editing {
     /// 순서가 고정된 맵을 쓴다. `HashMap` 이면 언두 기록 순서가 실행마다 달라져
     /// 테스트가 불안정해진다.
     stroke: Option<BTreeMap<TileCoord, Tile>>,
+    /// 그림 칠하기용 붓 — `data/terrain.ron` 의 번호. 기본은 "없음"(지우개).
+    art_brush: ArtId,
+    /// 그림 칠하기 진행 중이면 `Some`. [`Editing::stroke`] 와 같은 이유로 맨 처음 값을 기억한다.
+    art_stroke: Option<BTreeMap<TileCoord, ArtId>>,
     /// 직전 칠하기 지점. 두 지점 사이를 이어 칠하는 데 쓴다.
     paint_last: Option<Vec2>,
 }
@@ -330,9 +360,78 @@ impl Editing {
         self.brush = brush;
     }
 
+    pub(crate) fn art_brush(&self) -> ArtId {
+        self.art_brush
+    }
+
+    pub(crate) fn set_art_brush(&mut self, id: ArtId) {
+        self.art_brush = id;
+    }
+
     /// 칠하는 중인가. 진행 중에는 언두·삭제 같은 다른 편집을 막는다.
     pub(crate) fn is_painting(&self) -> bool {
-        self.stroke.is_some()
+        self.stroke.is_some() || self.art_stroke.is_some()
+    }
+
+    /// 직전 지점부터 `world` 까지 지나가는 칸들. 칠하기 두 종류가 같이 쓴다.
+    ///
+    /// 한 프레임에 포인터가 여러 칸을 건너뛰면(빠른 드래그, 스크립트 입력) 사이가 비어
+    /// 점선이 되므로 **사이를 이어** 칠한다.
+    fn stroke_cells(&mut self, scene: &Scene, world: Vec2) -> Vec<TileCoord> {
+        let from = self.paint_last.unwrap_or(world);
+        let delta = world - from;
+        let step = scene.tiles.tile_size().max(f32::EPSILON) * 0.5;
+        let steps = (delta.length() / step).ceil().clamp(1.0, PAINT_MAX_STEPS) as u32;
+        self.paint_last = Some(world);
+
+        (0..=steps)
+            .map(|i| {
+                scene
+                    .tiles
+                    .world_to_tile(from + delta * (i as f32 / steps as f32))
+            })
+            .collect()
+    }
+
+    /// 지형 그림 칠하기 — [`Tool::PaintArt`] 일 때 포인터 입력을 받는다.
+    ///
+    /// 타일 **규칙은 건드리지 않는다.** 건물을 놓아도 막히는 칸은 저작자가 따로 칠한다
+    /// (`crate::terrain` 머리 주석 참고).
+    pub(crate) fn paint_art_pointer(&mut self, scene: &mut Scene, p: &PointerInput) {
+        if p.pressed && p.over_viewport {
+            self.art_stroke = Some(BTreeMap::new());
+            self.paint_last = None;
+        }
+        if self.art_stroke.is_some()
+            && let Some(world) = p.world
+            && p.over_viewport
+        {
+            let brush = self.art_brush;
+            for at in self.stroke_cells(scene, world) {
+                // 타일맵 밖은 칠하지 않는다 — 저장 파일이 타일맵 범위를 기준으로 묶인다.
+                if scene.tiles.get(at).is_none() {
+                    continue;
+                }
+                let before = scene.art.get(&at).copied().unwrap_or(ArtId::NONE);
+                if let Some(stroke) = self.art_stroke.as_mut() {
+                    stroke.entry(at).or_insert(before);
+                }
+                set_art(scene, at, brush);
+            }
+        }
+        if p.released
+            && let Some(stroke) = self.art_stroke.take()
+        {
+            self.paint_last = None;
+            let edits: Vec<_> = stroke
+                .into_iter()
+                .filter_map(|(at, before)| {
+                    let after = scene.art.get(&at).copied().unwrap_or(ArtId::NONE);
+                    (before != after).then_some((at, before, after))
+                })
+                .collect();
+            self.history.record(Command::PaintArt(edits));
+        }
     }
 
     /// 타일 칠하기 — [`Tool::PaintTile`] 일 때 포인터 입력을 받는다.
@@ -344,28 +443,21 @@ impl Editing {
             self.stroke = Some(BTreeMap::new());
             self.paint_last = None;
         }
-        if let (Some(stroke), Some(world)) = (self.stroke.as_mut(), p.world)
+        if self.stroke.is_some()
+            && let Some(world) = p.world
             && p.over_viewport
         {
-            // 직전 지점과 이어서 칠한다. 한 프레임에 포인터가 여러 칸을 건너뛰면
-            // (빠른 드래그, 스크립트 입력) 사이가 비어 점선이 된다.
-            let from = self.paint_last.unwrap_or(world);
-            let delta = world - from;
-            let step = scene.tiles.tile_size().max(f32::EPSILON) * 0.5;
-            let steps = (delta.length() / step).ceil().clamp(1.0, PAINT_MAX_STEPS) as u32;
-
-            for i in 0..=steps {
-                let at = scene
-                    .tiles
-                    .world_to_tile(from + delta * (i as f32 / steps as f32));
+            let brush = self.brush;
+            for at in self.stroke_cells(scene, world) {
                 if let Some(before) = scene.tiles.get(at) {
                     // 이 칸의 **맨 처음** 값만 남긴다 — 같은 칸을 여러 번 지나가도
                     // 언두가 원래대로 돌아가도록.
-                    stroke.entry(at).or_insert(before);
-                    scene.tiles.set(at, self.brush);
+                    if let Some(stroke) = self.stroke.as_mut() {
+                        stroke.entry(at).or_insert(before);
+                    }
+                    scene.tiles.set(at, brush);
                 }
             }
-            self.paint_last = Some(world);
         }
         if p.released
             && let Some(stroke) = self.stroke.take()

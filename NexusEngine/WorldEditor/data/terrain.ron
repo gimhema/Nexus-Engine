@@ -1,0 +1,41 @@
+// 지형 그림 — 타일 아트와 정적 오브젝트(건물·소품). **클라이언트만 보는 데이터다.**
+//
+// 걷기 가능 여부·높이 레벨은 여기가 아니라 존 파일의 타일(규칙)에 있다. 그림을 바꿔도
+// 이동·전투 판정은 달라지지 않는다 — 라그나로크의 지형 파일과 걷기 맵(GAT)이 나뉜 것과 같다.
+//
+// 번호는 지면·오브젝트가 **한 공간을 나눠 쓴다** (존 파일에 이 번호가 실린다).
+//   1~99   지면 그림
+//   100~   정적 오브젝트
+//
+// px 는 그림 안의 픽셀 사각형 (x, y, 폭, 높이) — 좌상단 원점. 칸 번호가 아니라 픽셀인 이유는
+// 받아온 타일셋의 건물이 칸 경계에 딱 맞지 않기 때문이다.
+//
+// 오브젝트의 월드 크기는 px ÷ pixels_per_meter 로 자동 계산된다 — 손으로 적지 않는다.
+// 80×64px 을 16px/m 로 쓰면 5×4m 짜리 집이 된다.
+(
+    version: 1,
+
+    tilesets: {
+        // ArMM1998 "Zelda-like tilesets and sprites" (CC0).
+        // 16px = 1m — 같은 팩의 캐릭터 시트(16×32px = 1×2m)와 축척이 맞는다.
+        "overworld": (
+            image: "assets/third_party/zelda-like-armm1998/gfx/overworld.png",
+            pixels_per_meter: 16.0,
+        ),
+    },
+
+    // 지면에 눕는 그림. 칸 크기(기본 1m)에 맞춰 늘어난다.
+    ground: {
+        1: (name: "풀", tileset: "overworld", px: (80, 144, 16, 16)),
+        2: (name: "물", tileset: "overworld", px: (64, 48, 16, 16)),
+        3: (name: "돌 바닥", tileset: "overworld", px: (352, 16, 16, 16)),
+    },
+
+    // 서서 그려지는 정적 오브젝트. 칸 중심에 발을 딛는다.
+    props: {
+        100: (name: "집", tileset: "overworld", px: (96, 0, 80, 64)),
+        101: (name: "초가집", tileset: "overworld", px: (48, 352, 48, 80)),
+        102: (name: "노점", tileset: "overworld", px: (288, 352, 80, 96)),
+        103: (name: "석탑", tileset: "overworld", px: (0, 336, 48, 96)),
+    },
+)

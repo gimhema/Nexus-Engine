@@ -175,6 +175,30 @@ impl Pick {
     }
 }
 
+/// 지형 그림 번호 — `data/terrain.ron` 의 항목을 가리킨다. 0 은 "그림 없음".
+///
+/// 그림은 **규칙이 아니다.** 같은 번호가 지면 그림일 수도 정적 오브젝트일 수도 있고,
+/// 어느 쪽인지는 `terrain.ron` 이 정한다 (`crate::terrain`).
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Hash)]
+pub(crate) struct ArtId(u16);
+
+impl ArtId {
+    /// 그림 없음 — 칠하지 않은 칸.
+    pub(crate) const NONE: Self = Self(0);
+
+    pub(crate) fn new(raw: u16) -> Self {
+        Self(raw)
+    }
+
+    pub(crate) fn raw(self) -> u16 {
+        self.0
+    }
+
+    pub(crate) fn is_none(self) -> bool {
+        self.0 == 0
+    }
+}
+
 /// 편집 중인 존 하나.
 #[derive(Debug)]
 pub(crate) struct Scene {
@@ -184,6 +208,11 @@ pub(crate) struct Scene {
     pub(crate) zone: ZoneBounds,
     /// 걷기 가능 여부·높이 레벨. 서버 이동 검증과 클라 길찾기가 같은 데이터를 본다.
     pub(crate) tiles: TileMap,
+    /// 칸마다 칠한 **그림** — 규칙(`tiles`)과 좌표만 공유하는 별개의 층이다.
+    ///
+    /// 칠한 칸만 담는다 (대부분의 칸은 비어 있다). 순서가 고정된 맵을 쓰는 이유는
+    /// 저장 파일이 실행마다 같은 바이트여야 하기 때문이다.
+    pub(crate) art: crate::terrain::ArtLayer,
 }
 
 impl Scene {
@@ -207,6 +236,7 @@ impl Scene {
                 Vec2::splat(-(TILEMAP_SIZE as f32) * TILE_SIZE * 0.5),
                 Tile::default(),
             ),
+            art: crate::terrain::ArtLayer::new(),
         };
 
         // Server.cpp 의 숫자를 그대로 옮기고 미터로 읽는다.

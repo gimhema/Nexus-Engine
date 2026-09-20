@@ -22,7 +22,8 @@ use nexus_sim::{BagKind, Tile};
 use crate::edit::{InspectorEdit, PointerInput, Tool};
 use crate::grid;
 use crate::play::{InventoryAction, PlaySession};
-use crate::scene::{ItemKind, Pick, Scene, Target, ZONE_LABEL};
+use crate::scene::{ArtId, ItemKind, Pick, Scene, Target, ZONE_LABEL};
+use crate::terrain::ArtKind;
 use crate::zone_file;
 
 /// 좌우 패널 기본 폭 (논리 포인트).
@@ -70,6 +71,10 @@ pub(crate) struct UiModel<'a> {
     pub(crate) redo_label: Option<String>,
     pub(crate) tool: Tool,
     pub(crate) brush: Tile,
+    /// 지형 그림 붓 — 0 이면 지우개.
+    pub(crate) art_brush: ArtId,
+    /// 고를 수 있는 지형 그림 `(번호, 이름, 종류)`. 그림 데이터가 없으면 빈 목록이다.
+    pub(crate) art_palette: Vec<(ArtId, &'a str, ArtKind)>,
     pub(crate) stats: FrameStats,
     /// 플레이 중이면 `Some` — 패널이 편집 대신 게임 상태를 보여 준다.
     pub(crate) play: Option<&'a PlaySession>,
@@ -113,6 +118,8 @@ pub(crate) struct UiActions {
     pub(crate) set_tool: Option<Tool>,
     /// 타일 붓 변경.
     pub(crate) set_brush: Option<Tile>,
+    /// 지형 그림 붓 변경.
+    pub(crate) set_art_brush: Option<ArtId>,
     /// 뷰포트 포인터 — 뷰포트가 그려진 프레임에만 있다.
     pub(crate) pointer: Option<PointerInput>,
     /// 씬을 그릴 사각형 `[x, y, w, h]` (물리 픽셀).
@@ -645,13 +652,21 @@ fn outline_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions
 /// 도구 선택과 타일 붓. 인스펙터 맨 위에 둔다.
 fn tool_section(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
     ui.horizontal(|ui| {
-        for (tool, label) in [(Tool::Select, "선택"), (Tool::PaintTile, "타일 칠하기")] {
+        for (tool, label) in [
+            (Tool::Select, "선택"),
+            (Tool::PaintTile, "타일 칠하기"),
+            (Tool::PaintArt, "그림 칠하기"),
+        ] {
             if ui.selectable_label(model.tool == tool, label).clicked() {
                 actions.set_tool = Some(tool);
             }
         }
     });
 
+    if model.tool == Tool::PaintArt {
+        art_section(ui, model, actions);
+        return;
+    }
     if model.tool != Tool::PaintTile {
         return;
     }
@@ -684,6 +699,54 @@ fn tool_section(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions)
         )
         .small()
         .weak(),
+    );
+}
+
+/// 지형 그림 붓 — `data/terrain.ron` 의 목록에서 고른다.
+fn art_section(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
+    ui.separator();
+
+    if model.art_palette.is_empty() {
+        ui.label(
+            egui::RichText::new("지형 그림이 없습니다 — data/terrain.ron 을 확인하세요.")
+                .small()
+                .weak(),
+        );
+        return;
+    }
+
+    if ui
+        .selectable_label(model.art_brush.is_none(), "지우기")
+        .clicked()
+    {
+        actions.set_art_brush = Some(ArtId::NONE);
+    }
+
+    for (kind, title) in [(ArtKind::Ground, "지면"), (ArtKind::Prop, "오브젝트")] {
+        let items: Vec<_> = model
+            .art_palette
+            .iter()
+            .filter(|(_, _, k)| *k == kind)
+            .collect();
+        if items.is_empty() {
+            continue;
+        }
+        ui.label(egui::RichText::new(title).small().weak());
+        for &&(id, name, _) in &items {
+            if ui
+                .selectable_label(model.art_brush == id, name)
+                .on_hover_text(format!("번호 {}", id.raw()))
+                .clicked()
+            {
+                actions.set_art_brush = Some(id);
+            }
+        }
+    }
+
+    ui.label(
+        egui::RichText::new("그림은 걷기 규칙과 별개다 — 건물을 놓아도 막히려면 타일을 칠해야 한다.")
+            .small()
+            .weak(),
     );
 }
 

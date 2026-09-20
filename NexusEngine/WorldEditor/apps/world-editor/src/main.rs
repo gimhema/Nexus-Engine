@@ -22,6 +22,7 @@ mod scene;
 mod screenshot;
 mod script;
 mod sprites;
+mod terrain;
 mod tiles;
 mod ui;
 mod zone_file;
@@ -31,7 +32,9 @@ use std::time::{Duration, Instant};
 
 use nexus_core::{Camera2d, Vec2, units};
 use nexus_platform::{App, Input, WindowConfig, WindowEvent, WindowTarget};
-use nexus_render::{DEPTH_LAYER, DrawLayer, FrameStatus, RenderCommand, RenderError, Renderer};
+use nexus_render::{
+    DEPTH_LAYER, DrawLayer, FrameStatus, RenderCommand, RenderError, Renderer, TextureId, UvRect,
+};
 use nexus_render_wgpu::{TextureCarry, UiFrame, WgpuRenderer};
 
 use edit::{Editing, PointerInput, Tool};
@@ -40,6 +43,7 @@ use play::PlaySession;
 use scene::{Handle, Pick, Scene, Target};
 use script::{Anchor, Button, Script, Step};
 use sprites::SpriteLibrary;
+use terrain::Terrain;
 use ui::{EditorUi, FrameStats, Notice, UiActions, UiModel};
 
 // 색은 모두 sRGB. 렌더러가 선형으로 변환한다.
@@ -59,6 +63,8 @@ const BOX_FILL: [f32; 4] = [1.0, 0.82, 0.25, 0.012];
 //
 // 이것들은 전부 지면에 깔리는 표시이므로 월드 Z 는 0 이다. 월드 Z 로 순서를 주면
 // 쿼터뷰에서 화면 세로 위치가 밀려 선택 테두리가 마커에서 떨어져 나간다.
+/// 지형 그림 — 지면 층 맨 아래. 규칙 색(`BIAS_TILE`)이 이 위에 얹힌다.
+const BIAS_ART: f32 = 0.25 * DEPTH_LAYER;
 /// 타일 — 지면 층에서 그리드 바로 위.
 const BIAS_TILE: f32 = 0.5 * DEPTH_LAYER;
 const BIAS_ZONE: f32 = 1.0 * DEPTH_LAYER;
@@ -66,6 +72,9 @@ const BIAS_MARKER: f32 = 2.0 * DEPTH_LAYER;
 /// 마커 스프라이트. 발밑 지면 표시 바로 위에 선다 — 빌보드는 발밑과 깊이가 같아
 /// 편향 없이는 지면 표시와 z-파이팅이 난다.
 const BIAS_SPRITE: f32 = 3.0 * DEPTH_LAYER;
+/// 정적 오브젝트(건물). 캐릭터와 같은 층이라 **깊이(발밑 Y)로 앞뒤가 정해진다** —
+/// 편향은 지면 표시와 겹치지 않을 만큼만 준다.
+const BIAS_PROP: f32 = 3.0 * DEPTH_LAYER;
 const BIAS_ARROW: f32 = 4.0 * DEPTH_LAYER;
 const BIAS_HOVER: f32 = 5.0 * DEPTH_LAYER;
 const BIAS_SELECT: f32 = 6.0 * DEPTH_LAYER;
@@ -139,6 +148,8 @@ struct Editor {
     commands: Vec<RenderCommand>,
     /// 마커 스프라이트 시트. 렌더러 초기화 후에 올라간다.
     sprites: Option<SpriteLibrary>,
+    /// 지형 그림(타일 아트·건물). 렌더러 초기화 후에 올라간다. 실패하면 비어 있다.
+    terrain: Terrain,
     /// 고정 줌 배율 (px/m). `Some` 이면 매 프레임 이 배율로 잠그고 픽셀 격자에 스냅한다.
     ///
     /// 게임 모드의 동작을 에디터에서 확인하기 위한 것이다 — S7 에서 플레이 모드의 기본이 된다.
@@ -188,6 +199,7 @@ impl Default for Editor {
             pending_view: None,
             commands: Vec::new(),
             sprites: None,
+            terrain: Terrain::default(),
             fixed_zoom: None,
             play: None,
             zone_path: None,
@@ -333,6 +345,8 @@ impl Editor {
             redo_label: history.redo_label(),
             tool: self.editing.tool(),
             brush: self.editing.brush(),
+            art_brush: self.editing.art_brush(),
+            art_palette: self.terrain.list(),
             play: self.play.as_ref(),
             zone_path: self.zone_path.as_deref(),
             dirty,
@@ -513,6 +527,9 @@ impl Editor {
         if let Some(brush) = actions.set_brush {
             self.editing.set_brush(brush);
         }
+        if let Some(id) = actions.set_art_brush {
+            self.editing.set_art_brush(id);
+        }
         if actions.deselect && !self.editing.is_dragging() && !self.editing.is_painting() {
             self.editing.clear_selection();
         }
@@ -539,6 +556,10 @@ impl Editor {
         self.hover = match (self.editing.tool(), pointer) {
             (Tool::PaintTile, Some(p)) => {
                 self.editing.paint_pointer(&mut self.scene, &p);
+                None
+            }
+            (Tool::PaintArt, Some(p)) => {
+                self.editing.paint_art_pointer(&mut self.scene, &p);
                 None
             }
             (Tool::Select, Some(p)) => self.editing.handle_pointer(&mut self.scene, &p),
@@ -622,6 +643,9 @@ impl Editor {
             Step::SetTool(tool) => {
                 self.editing.set_tool(tool);
             }
+            Step::SetArtBrush(id) => {
+                self.editing.set_art_brush(id);
+            }
             Step::Delete => {
                 self.editing.delete_selected(&mut self.scene);
             }
@@ -683,10 +707,20 @@ impl Editor {
         self.commands
             .push(RenderCommand::SetLayer(DrawLayer::Ground));
         grid::build(&self.camera, &mut self.commands);
+        // 지형 그림이 먼저, 규칙 색이 그 위에 — 저작 중에는 걷기 막힘이 그림에 가려선 안 된다.
+        terrain::build_ground(
+            &self.scene.art,
+            &self.scene.tiles,
+            &self.terrain,
+            &self.camera,
+            BIAS_ART,
+            &mut self.commands,
+        );
         tiles::build(
             &self.scene.tiles,
             &self.camera,
             BIAS_TILE,
+            None,
             &mut self.commands,
         );
         self.draw_zone_bounds();
@@ -710,6 +744,14 @@ impl Editor {
         // 같은 텍스처를 연달아 제출하므로 드로우 콜 하나로 묶인다.
         self.commands
             .push(RenderCommand::SetLayer(DrawLayer::Object));
+        terrain::build_props(
+            &self.scene.art,
+            &self.scene.tiles,
+            &self.terrain,
+            &self.camera,
+            BIAS_PROP,
+            &mut self.commands,
+        );
         if let Some(sprites) = &self.sprites {
             for item in &self.scene.items {
                 sprites.build(item, px, BIAS_SPRITE, &mut self.commands);
@@ -754,10 +796,20 @@ impl Editor {
         };
         self.commands
             .push(RenderCommand::SetLayer(DrawLayer::Ground));
+        terrain::build_ground(
+            &self.scene.art,
+            &self.scene.tiles,
+            &self.terrain,
+            &self.camera,
+            BIAS_ART,
+            &mut self.commands,
+        );
+        // 그림이 있는 칸은 규칙 색을 덮지 않는다 — 플레이 중에는 게임 화면이어야 한다.
         tiles::build(
             &self.scene.tiles,
             &self.camera,
             BIAS_TILE,
+            Some(&self.scene.art),
             &mut self.commands,
         );
         let zone = self.scene.zone;
@@ -774,6 +826,14 @@ impl Editor {
 
         self.commands
             .push(RenderCommand::SetLayer(DrawLayer::Object));
+        terrain::build_props(
+            &self.scene.art,
+            &self.scene.tiles,
+            &self.terrain,
+            &self.camera,
+            BIAS_PROP,
+            &mut self.commands,
+        );
         if let Some(sprites) = &self.sprites {
             play.build_objects(alpha, px, sprites, &mut self.commands);
         }
@@ -809,6 +869,8 @@ impl Editor {
             z: 0.0,
             depth_bias: BIAS_HANDLE,
             color: HANDLE_BORDER,
+            uv: UvRect::FULL,
+            texture: TextureId::WHITE,
         });
         self.commands.push(RenderCommand::DrawRect {
             center: at,
@@ -817,6 +879,8 @@ impl Editor {
             z: 0.0,
             depth_bias: BIAS_HANDLE + DEPTH_LAYER,
             color: if hot { SELECT_COLOR } else { HANDLE_FILL },
+            uv: UvRect::FULL,
+            texture: TextureId::WHITE,
         });
     }
 
@@ -832,6 +896,8 @@ impl Editor {
             z: 0.0,
             depth_bias: BIAS_BOX,
             color: BOX_FILL,
+            uv: UvRect::FULL,
+            texture: TextureId::WHITE,
         });
         grid::build_outline(
             &self.camera,
@@ -889,6 +955,8 @@ impl Editor {
                 z: 0.0,
                 depth_bias: BIAS_HANDLE,
                 color: HANDLE_BORDER,
+                uv: UvRect::FULL,
+                texture: TextureId::WHITE,
             });
             self.commands.push(RenderCommand::DrawRect {
                 rotation: 0.0,
@@ -897,6 +965,8 @@ impl Editor {
                 z: 0.0,
                 depth_bias: BIAS_HANDLE + DEPTH_LAYER,
                 color: fill,
+                uv: UvRect::FULL,
+                texture: TextureId::WHITE,
             });
         }
     }
@@ -1015,6 +1085,11 @@ impl App for Editor {
         match SpriteLibrary::load(&mut renderer, &sheets, &mut warnings) {
             Ok(s) => self.sprites = Some(s),
             Err(e) => warnings.push(format!("스프라이트 시트 로드 실패: {e}")),
+        }
+        // 지형 그림(타일 아트·건물). 실패하면 그림 없이 돈다 — 규칙 색만 보인다.
+        match Terrain::load(&mut renderer) {
+            Ok(t) => self.terrain = t,
+            Err(e) => warnings.push(format!("지형 그림을 읽지 못했습니다 — {e}")),
         }
         for warning in warnings {
             self.notify(warning, true);
@@ -1168,6 +1243,8 @@ pub(crate) fn push_segment(
         z: 0.0,
         depth_bias,
         color,
+        uv: UvRect::FULL,
+        texture: TextureId::WHITE,
     });
 }
 

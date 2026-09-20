@@ -480,6 +480,8 @@ impl PlaySession {
                     z: 0.0,
                     depth_bias: bias,
                     color,
+                    uv: UvRect::FULL,
+                    texture: TextureId::WHITE,
                 });
             }
         }
