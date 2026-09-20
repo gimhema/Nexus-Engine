@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ---
 
 Nexus WorldEditor — Rust 워크스페이스. **2D 스프라이트 MMORPG(라그나로크 계열)를 만들기 위한 게임 엔진**이며,
-현재 유일한 앱이 존 저작 에디터다.
+현재 유일한 앱이 존 저작 에디터다. 에디터 안에 **플레이 모드(F5)** 가 있어 편집 중인 씬을 그 자리에서 돌린다.
 
 **지금은 오프라인 싱글플레이가 되는 엔진까지만 만든다(단계 1).** C++ 서버 연동은 그 뒤다 —
 자세한 것은 아래 「목표 장르와 단계 구분」. 상위 `../CLAUDE.md` 는 **C++ 서버** 가이드이고,
@@ -13,32 +13,32 @@ Nexus WorldEditor — Rust 워크스페이스. **2D 스프라이트 MMORPG(라�
 
 소스 주석·문서·UI 문자열은 모두 **한국어**로 작성한다.
 
-## ⚠ 루트 `Cargo.toml` 이 git 에 추적되지 않는다
+## ⚠ `CLAUDE.md` 와 `CLAUDE_LINUX.md` 가 내용이 같은 두 파일이다
 
-`Cargo.toml` / `Cargo.lock` 이 `.gitignore` 에 걸린 것도 아닌데 **한 번도 커밋된 적이 없다.**
-그래서 크레이트 소스만 git 으로 오가고 루트 매니페스트는 머신마다 따로 논다 — 리눅스 체크아웃에
-Vulkan 시절 스캐폴드(`crates/nexus-render-vulkan` 참조, `[workspace.dependencies]` 없음)가
-남아 있어 `cargo metadata` 조차 실패했던 원인이다.
+git 이 추적하는 쪽은 **`CLAUDE_LINUX.md`** 인데, Claude Code 가 읽는 쪽은 **`CLAUDE.md`** 다.
+지금 두 파일은 바이트까지 같다. **한쪽을 고쳤으면 다른 쪽에도 같은 내용을 넣고 커밋할 것** —
+아니면 커밋된 쪽만 최신인 머신이 다시 생긴다. 둘을 하나로 합치는 편이 낫다(`CLAUDE.md` 만 추적).
 
-**루트 `Cargo.toml` 과 `Cargo.lock` 을 커밋할 것.** 그러지 않으면 같은 문제가 다음 머신에서 반복된다.
+예전에 여기 있던 "루트 `Cargo.toml` 이 추적되지 않는다" 경고는 **해결됐다** —
+`Cargo.toml` · `Cargo.lock` 둘 다 커밋돼 있고, `.gitattributes` 가 이 워크스페이스에만 LF 를 강제한다.
 
-현재 리눅스 쪽 매니페스트는 소스가 실제로 쓰는 API 로부터 역산해 재구성한 것이다
-(`wgpu::CurrentSurfaceTexture`, `wgpu::ExperimentalFeatures`, `egui::Panel::top`,
-`egui_wgpu::RendererOptions`, `glam::camera::rh::proj::directx::*` 등):
+## 워크스페이스 매니페스트
 
 | | |
 |---|---|
 | edition | **2024** (let-chains, `gen` 예약어 회피 — `rustfmt.toml` 과 일치) |
-| resolver | `"3"` |
+| resolver | `"3"` · rust-version 1.95 |
 | wgpu | 30.0 |
 | egui / egui-wgpu / egui-winit | 0.36 — **셋은 반드시 같은 마이너 버전** |
 | winit | 0.30 · raw-window-handle 0.6 |
 | glam | 0.33 (`glam::camera` 모듈이 있는 버전) |
 | png 0.18 · pollster 1.0 · bytemuck 1.25 (`derive`) | |
+| serde 1.0 (`derive`) · ron 0.12 | **앱 전용** — 존 파일·게임 데이터용이고, `nexus-core`/`nexus-sim` 은 직렬화를 모른다 |
 
-`[workspace.lints]` 는 원본을 알 수 없어 **현재 소스가 경고 0건으로 통과하는 선**
-(`clippy::all` + `unsafe_code = "deny"`)으로 잡아 두었다. 윈도우 쪽 원본과 다르면 그쪽에 맞출 것.
-참고로 `clippy::pedantic` 을 켜면 46건이 뜨므로 원본은 pedantic 이 아니다.
+린트는 `[workspace.lints]` 한 곳에서만 정한다(크레이트별 설정 없음): `unsafe_code = "deny"` ·
+`missing_debug_implementations = "warn"` · `clippy::all = "warn"` ·
+`clippy::undocumented_unsafe_blocks = "warn"`. CI 가 `-D warnings` 로 돌리므로 warn 도 사실상 오류다.
+`clippy::pedantic` 은 켜지 않는다.
 
 ## 리눅스(Fedora) 준비물
 
@@ -59,7 +59,8 @@ wgpu 는 리눅스에서 Vulkan 백엔드로 뜬다. Wayland/X11 세션 양쪽 �
 
 ```bash
 cargo check --workspace
-cargo test  --workspace                     # 단위 테스트 86개, GPU 불필요
+cargo test  --workspace                     # 단위 테스트 257개 + 문서 테스트 1개, GPU 불필요
+cargo test -p nexus-sim                      # 게임 규칙만 (86개)
 cargo test -p nexus-core camera::            # 크레이트/모듈 한정
 cargo test -p world-editor -- --exact edit::tests::drag_moves_and_undo_redo_round_trips  # 단일 테스트
 cargo run  -p world-editor                   # 에디터 실행 (창 필요)
@@ -72,6 +73,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 렌더러 크레이트는 `ui` 피처(egui 합성)가 **에디터 전용**이다. 게임 런타임 경로를 확인할 때는 `cargo check -p nexus-render-wgpu`(피처 없이) 로 돌린다.
 
+`zones/sample.zone.ron` 은 `scene::server_default()` 를 저장한 것과 **바이트까지 같아야** 한다
+(`zone_file::tests::committed_sample_matches_the_default_scene` 가 지킨다). 기본 씬을 바꿨다면 샘플을 다시 만든다:
+
+```bash
+cargo test -p world-editor -- --ignored regenerate_sample_zone
+```
+
 ## 창 없이 검증하기 — 환경변수
 
 이 프로젝트의 핵심 워크플로다. **사람이 창을 보지 않고도 에디터 동작을 확인**할 수 있게 설계돼 있으니, UI/렌더 변경 후에는 스크린샷을 찍어 눈으로 확인할 것.
@@ -81,19 +89,31 @@ cargo clippy --workspace --all-targets -- -D warnings
 | `NEXUS_SCREENSHOT=out.png` | 지정 프레임에서 PNG 저장 후 **자동 종료** |
 | `NEXUS_SCREENSHOT_FRAME=10` | 캡처 프레임 (기본 10). egui 는 첫 프레임에 레이아웃을 잡으므로 너무 이르면 안 된다 |
 | `NEXUS_SELECT="상인 NPC,슬라임"` | 시작 시 이름으로 미리 선택 + 그쪽으로 시점 맞춤 |
-| `NEXUS_SCRIPT="tool paint; press 1 2; move 8 2; release 8 2"` | 가짜 포인터 입력. 실제 마우스와 **같은 편집 경로**를 탄다. `tool select\|paint` 로 도구도 바꾼다 |
+| `NEXUS_SCRIPT="tool paint; press 1 2; move 8 2; release 8 2"` | 가짜 포인터 입력. 실제 마우스와 **같은 편집 경로**를 탄다. 도구 변경(`tool select\|paint`), 플레이 토글(`play`), 존 저장·열기(`save`/`open`/`dialog`)도 여기서 |
+| `NEXUS_ZONE=zones/sample.zone.ron` | 시작할 때 이 존 파일을 연다. `NEXUS_SELECT` 보다 먼저 처리된다 |
 | `NEXUS_EXIT_AFTER_SECS=3` | 루프 스모크 테스트 — N초 후 창 자동 종료 |
 | `NEXUS_UI_FONT=/path/font.ttf` | 한글 폰트 직접 지정 (기본은 OS별 후보 경로 순회) |
 | `NEXUS_PITCH=90` | 카메라 pitch(도). 90 = 탑다운, 45 = 쿼터뷰(기본) |
 | `NEXUS_PIXELS_PER_METER=32` | 고정 줌. 자유 줌 대신 이 배율로 잠그고 픽셀 격자에 스냅한다 |
 
-예:
+예 — 편집 검증:
 
 ```bash
 NEXUS_SELECT="상인 NPC" \
 NEXUS_SCRIPT="wait; press rotate; move -8 20 ctrl" \
 NEXUS_SCREENSHOT=/tmp/rotate.png cargo run -p world-editor
 ```
+
+예 — 플레이 모드 검증(존을 열고 플레이를 켠 뒤 몇 tick 돌려서 찍는다):
+
+```bash
+env -u WAYLAND_DISPLAY DISPLAY=:0 \
+NEXUS_ZONE=zones/sample.zone.ron NEXUS_PIXELS_PER_METER=24 \
+NEXUS_SCRIPT="play; wait; wait; wait" NEXUS_SCREENSHOT_FRAME=40 \
+NEXUS_SCREENSHOT=/tmp/play.png cargo run -p world-editor
+```
+
+플레이 중에는 `press X Y` 가 **게임 클릭**(이동·공격·줍기)이 된다 — 같은 스크립트로 전투까지 찍을 수 있다.
 
 스크립트 문법은 [script.rs](apps/world-editor/src/script.rs) 모듈 doc 에 있다. 실행 중 F12 는 `screenshots/nexus-<시각>.png` 로 수동 저장.
 
@@ -132,11 +152,14 @@ world-editor  ──┬─→ nexus-platform ─→ nexus-core
 - **`nexus-render-wgpu`** — 유일한 구현. Windows/Linux 에서 wgpu 는 Vulkan 백엔드로 동작하므로 사실상 Vulkan 이되 보일러플레이트가 없다. `#[cfg(target_os)]` 가 **하나도 없다**.
 - **`nexus-assets`** — 이미지 디코딩과 스프라이트 아틀라스. **파일 시스템도 GPU 도 모른다** —
   입력은 항상 바이트 슬라이스이고, 어디서 읽어 오는지는 앱이 정한다.
-- **`nexus-sim`** — 게임 규칙. **렌더·플랫폼·파일·네트워크를 전혀 모른다.** 단계 2 에서
-  C++ 서버와 규칙을 대조·교체할 범위를 여기로 한정하기 위한 것이다(위 ⚠ 참고).
-- **`world-editor`** — 에디터 앱. 파일 읽기 같은 I/O 는 여기가 맡는다.
+- **`nexus-sim`** — 게임 규칙: 타일맵·길찾기, 유닛·이동, 전투·스킬, AI, 진영, 아이템·가방·드롭,
+  그리고 `Intent → Authority → World` 이음매. **렌더·플랫폼·파일·네트워크를 전혀 모르고 직렬화도 모른다.**
+  단계 2 에서 C++ 서버와 규칙을 대조·교체할 범위를 여기로 한정하기 위한 것이다(위 ⚠ 참고).
+  크레이트 안에 단위 테스트 86개가 붙어 있다 — **게임 규칙을 고치면 여기에 테스트가 는다.**
+- **`world-editor`** — 에디터 앱. 파일 읽기·쓰기(존 파일·게임 데이터·스크린샷)와 serde/ron 의존은
+  **전부 여기에만** 있다. 플레이 모드도 이 앱 안에 있다.
 
-`nexus-core` / `nexus-platform` / `nexus-render` / `nexus-render-wgpu` 는 모두 `#![forbid(unsafe_code)]`.
+여섯 크레이트 모두 `#![forbid(unsafe_code)]`.
 
 ## 프레임 루프
 
@@ -171,8 +194,9 @@ RedrawRequested → App::render(alpha)                          ← 화면 주�
 ## 에디터 데이터 흐름
 
 ```text
+                              ┌──▶ zone_file  (RON 저장/열기)
 egui UI ──(읽기 전용 UiModel)── Scene
-   │
+   │                          └──F5─▶ play::PlaySession (씬의 복사본, 씬을 바꾸지 않는다)
    └─→ UiActions ─→ edit::Editing ─→ Scene 변경 (+ 언두 기록)
 ```
 
@@ -183,6 +207,70 @@ egui UI ──(읽기 전용 UiModel)── Scene
 언두 단위: 드래그 1회 = 1스텝, 인스펙터 값 편집 1회 = 1스텝, 추가·삭제 1회 = 1스텝(여러 개라도 하나). 움직이지 않은 클릭과 박스 선택은 기록하지 않는다 — **선택은 편집이 아니다.**
 
 카메라 시점 맞추기(Home/F)는 즉시 실행하지 않고 `pending_view` 에 예약했다가 **UI 가 이번 프레임의 뷰포트를 확정한 뒤** 실행한다. 패널이 자리 잡기 전에 계산하면 가로세로비가 어긋난다.
+
+### 플레이 모드 (F5)
+
+```text
+Scene(편집 데이터) ──시작──▶ SimWorld 복사본 ──LocalAuthority::tick(50ms)──▶ 화면
+      ▲                                                     │
+      └────────── 정지하면 통째로 버린다 (씬은 그대로) ──────┘
+```
+
+- **플레이는 씬을 바꾸지 않는다.** 시작할 때 복사하고 정지하면 버리므로 플레이 중 일어난 일
+  (몬스터 사망·드롭)은 언두 기록과 무관하다. 그래서 플레이 중에는 편집 요청(추가·삭제·인스펙터·언두)을
+  받지 않는다 — 저장은 **편집 상태**를 저장하므로 열어 둔다.
+- 클릭은 Intent 로만 들어간다: 적이면 공격, 땅의 아이템이면 줍기, 아니면 그 자리로 이동.
+  **다가가는 것은 입력 쪽의 일**이라 `play::Order` 가 매 tick `MoveTo`/`Attack`/`PickUp` 을 낸다.
+  AI 도 똑같이 Intent 를 내므로 규칙이 한 벌로 유지된다.
+- 카메라는 게임과 같은 고정 줌으로 플레이어를 따라가고, 두 tick 사이를 `alpha` 로 보간한다
+  (20Hz 시뮬레이션에서도 화면은 매 프레임 부드럽다). 정지하면 시작 전 에디터 카메라로 되돌린다.
+- 에디터 `Scene` 과 `SimWorld` 는 **핸들 공간이 다르다.** 이름·색은 시작할 때 만든 대응표로 찾는다.
+- 첫 **플레이어 스폰**에 플레이어가 서고, 나머지 플레이어 스폰은 유닛을 만들지 않는다.
+
+### 존 파일 — `zones/*.zone.ron`
+
+- 형식은 RON 이고 `version` 필드가 있다. 사람이 읽고 고칠 수 있으며 주석을 달 수 있다.
+- **파일 타입(`*File`)과 내부 구조를 따로 둔다.** `Scene`/`Item`/`TileMap` 에 serde 를 붙이지 않는 이유:
+  `Entity` 핸들처럼 저장하면 안 되는 것이 있고, 내부 구조를 고칠 때마다 옛 파일을 못 읽게 되며,
+  `nexus-core`/`nexus-sim` 이 직렬화 의존성을 갖게 되기 때문이다.
+- 타일은 **기본값이 아닌 칸만**, 한 행에서 이어지는 같은 칸을 한 줄(`RunFile`)로 묶어 적는다.
+- 줄바꿈은 항상 `\n` 으로 강제한다 — `ron` 기본값은 Windows 에서 `\r\n` 이라 같은 존이 OS 마다 다른 파일이 된다.
+- 잘못된 파일은 무엇이 틀렸는지 한국어로 알려 주고 거절한다(형식 번호·뒤집힌 경계·타일맵 밖 좌표 등).
+- 파일 창은 `zones/` 목록 + 경로 입력칸으로 **직접 만들었다.** OS 파일 대화 상자(`rfd` 등)를 쓰지 않는다 —
+  리눅스에서 GTK·포털 같은 시스템 패키지를 끌어들여 "빌드에 시스템 패키지가 필요 없다" 는 규칙을 깬다.
+- 서버 `ZoneConfig` 로 내보내는 것은 **이 파일과 별개이고 단계 2 다.**
+
+### 정적 테이블은 반으로 쪼갠다
+
+패킷은 번호만 실어 나르므로 번호 → 내용 대응표가 필요하다. 그 표를 통째로 공유하면 서버와의
+결합선이 하나 더 생긴다. 그래서 **규칙과 표시를 파일 둘로 나눈다:**
+
+| | `data/rules.ron` (규칙) | `data/display.ron` (표시) |
+|---|---|---|
+| 아이템 1101 | 공격력 12, 무기 자리 | "숏소드", 땅에 떨어진 색 |
+| 대응하는 쪽 | 서버 테이블 | 클라이언트만 |
+
+**규칙 파일에 이름·색을 넣지 말고, 표시 파일에 수치를 넣지 말 것.**
+번호(스킬·아이템·드롭 테이블·진영)는 서버와 **같은 ID 공간**이다 — ID 공간이 곧 프로토콜이다.
+
+두 파일은 `include_str!` 로 실행 파일에 들어 있고, 같은 경로에 디스크 파일이 있으면 **그쪽을 먼저** 읽는다.
+데이터는 플레이를 시작할 때마다 새로 읽으므로 수치를 고치고 F5 만 다시 누르면 적용된다.
+디스크 파일이 잘못됐으면 조용히 내장본으로 넘어가지 않고 오류를 낸다 — 고친 것이 적용되지 않은 줄 모르고 지나가지 않게.
+
+**수치는 코드가 아니라 데이터로 둔다.** 새 수치가 필요하면 먼저 `rules.ron` 에 자리를 만든다.
+
+### UI 명세 전달 형식
+
+인스펙터는 지금 **위치·방향·존 경계만** 편집한다. 스탯·진영·AI 같은 나머지 필드는 사용자의 패널 명세를
+받은 뒤에 채운다(`ui.rs` 의 `inspector` 주석이 이 절을 가리킨다). 명세는 필드마다 넷을 적어 주면 그대로 구현된다:
+
+1. **필드와 단위·범위** — 예: `이동 속도 (m/s, 0~10)`
+2. **편집 위젯** — 슬라이더 / 숫자 입력 / 체크박스 / 드롭다운(선택지 목록)
+3. **저장 위치** — 씬(마커마다 다름 → 존 파일) 인지 `data/rules.ron`(종류마다 같음) 인지
+4. **언두 단위** — 값 한 번 편집이 한 스텝인지, 드래그 전체가 한 스텝인지
+
+지금은 마커 종류(Player/Npc/Monster)별 수치가 `rules.ron` 에 하나씩 있고 **마커마다 따로 줄 수 없다.**
+마커별 수치를 주려면 존 파일의 `MarkerFile` 과 `FORMAT_VERSION` 이 함께 바뀐다.
 
 ## 단위·좌표 규약 (엔진 전체가 따른다)
 
@@ -255,16 +343,21 @@ egui UI ──(읽기 전용 UiModel)── Scene
 
 ### 없는 것 — 큰 것부터
 
-1. **텍스처가 아예 없다.** 씬 파이프라인은 단색 쿼드 하나뿐이고 샘플러·텍스처 바인드 그룹·
-   이미지 디코딩이 전부 없다(`png` 는 스크린샷 *저장* 전용). 스프라이트 게임에서 이게 거의 전부다.
-2. **쿼드가 지면에 누워 있다.** `quad.wgsl` 은 `vec3(center + offset, z)` — XY 평면 사각형이고
-   회전은 Z축뿐이다. 서 있는 빌보드는 정점 생성 자체가 다르다.
-3. **카메라가 정수직 탑다운이다.** `eye = (cx, cy, 1000)`, `target = (cx, cy, 0)`.
-4. **알파 블렌딩 + 깊이 쓰기를 동시에 쓴다.** 지금은 불투명 단색이라 안 드러나지만,
-   반투명 스프라이트를 이 설정으로 그리면 그리는 순서에 따라 뒤가 지워진다.
-5. **게임 로직 레이어가 통째로 없다.** `World` 는 핸들 발급기일 뿐 컴포넌트가 없고,
-   이동·전투·AI·아이템이 전부 없다. 지금은 C++ 서버에만 있다.
-6. 애셋 로딩·애니메이션·타일맵 없음.
+S1~S6 을 지나며 옛 목록(텍스처·빌보드·쿼터뷰 카메라·타일맵·게임 로직)은 전부 채워졌다. 지금 없는 것은:
+
+1. **텍스처 지면 타일.** 타일은 아직 단색 쿼드이고 레벨은 색으로만 드러난다.
+   절벽 경계를 화면에서 구분하려면 타일 아트가 필요하다(S5 이월 항목).
+2. **존 전체 타일맵.** 기본 타일맵은 원점 주변 64×64m 다. 존 전체(2km)를 1m 타일로 덮으면
+   400만 칸이라 **청크 분할**이 먼저다.
+3. **아트가 전부 플레이스홀더다.** `markers.png` 한 장(32×48, 4방향 × Idle/Walk)으로
+   플레이어·NPC·몬스터를 tint 만 바꿔 그린다. 공격·피격·죽음 클립은 시트에 없다
+   (`AnimState` 에는 이미 있고 `clip_or_fallback` 이 Idle 로 떨어뜨린다).
+4. **디스크에서 애셋을 읽지 않는다.** 시트는 `include_bytes!` 로 실행 파일에 들어 있다.
+   존마다 다른 시트를 쓰려면 애셋 경로가 존 파일에 들어가야 한다.
+5. **게임 앱이 따로 없다.** 플레이 모드가 에디터 안에 있다 — 에디터 UI 와 부딪히기 시작하면 나눈다.
+6. **스킬이 단일 대상 즉시 명중뿐이다.** 범위·투사체·상태이상·MP 가 없고,
+   경험치/레벨업(서버 `CharacterEntityData`)도 아직 옮기지 않았다.
+7. 사운드 없음. 저장되는 것은 존과 규칙 데이터뿐이라 **세이브 파일이 없다.**
 
 ### ⚠ 단계 2 를 위해 지금 지켜야 할 것
 
@@ -274,8 +367,15 @@ egui UI ──(읽기 전용 UiModel)── Scene
 
 완화책: **게임 규칙을 I/O 없는 크레이트(`nexus-sim`) 한 곳에 몰아넣고 순수하게 유지한다.**
 수치는 코드가 아니라 데이터로 둔다. 그래야 나중에 서버와 대조하거나 교체할 때 범위가 한정된다.
-그리고 기존 **M7 의 `Intent → Authority → World` 이음매를 지금부터 지킨다** —
-단계 1 에서는 `Authority` 가 로컬이고, 단계 2 에서 원격으로 바뀔 뿐 나머지는 그대로다.
+`Intent → Authority → World` 이음매는 **S6 에서 들어왔다** — 단계 1 에서는 `Authority` 가 로컬이고,
+단계 2 에서 원격(`ServerAuthority`)으로 바뀔 뿐 부르는 쪽은 그대로다.
+
+지켜야 할 것 셋 (전부 이미 코드에 있다 — 풀지 말 것):
+
+1. **상태 변경은 Intent 로만.** 입력·AI·UI 가 `SimWorld` 를 직접 고치면 단계 2 에서 게임플레이 코드를 다시 쓴다.
+2. **`submit` 은 결과를 돌려주지 않는다.** 결과는 `tick` 의 `Event` 로 온다 — 원격이면 늦게 오기 때문이다.
+3. **번호는 서버와 같은 ID 공간**(스킬·아이템·드롭 테이블·진영·장비 자리). ID 공간이 곧 프로토콜이다.
+   규칙 판정의 순서도 서버와 맞춰 두었다(위 S6).
 
 ## 작업 리스트 (S 트랙 — 단계 1)
 
@@ -285,7 +385,8 @@ egui UI ──(읽기 전용 UiModel)── Scene
 ### S1 — 텍스처 파이프라인 ✅ 완료
 
 렌더 계약과 wgpu 구현에 텍스처가 들어갔고, `nexus-assets` 크레이트가 생겼다.
-확인 방법: `NEXUS_DEBUG_ATLAS=1 NEXUS_SCREENSHOT=out.png cargo run -p world-editor`
+확인 방법: `NEXUS_SCREENSHOT=out.png cargo run -p world-editor` — 마커 스프라이트가 보이면 된다.
+(S1 에 있던 `NEXUS_DEBUG_ATLAS` 와 `debug_atlas.png` 는 예정대로 S3 에서 지웠다.)
 
 **계약(`nexus-render`)**
 
@@ -561,32 +662,95 @@ S3 이 경고한 문제(타일의 먼 쪽 절반이 그 위에 선 캐릭터의 
 - **텍스처 지면 쿼드** — 타일 아트가 생길 때 넣는다. 저작 단계에서는 단색이 더 낫고,
   아트 없이 계약만 늘리면 쓰이지 않는 코드가 된다. `DrawRect` 에 `texture`/`uv` 를 붙일지
   별도 명령을 둘지는 그때 정한다.
-- **경로 미리보기 UI** — A\* 는 단위 테스트(경로 연속성 포함)로 검증했다.
-  화면에서 볼 필요는 클릭 이동이 생기는 S7 에 생긴다.
+- ~~**경로 미리보기 UI**~~ — S7-1 플레이 모드에서 들어왔다. 플레이 중 남은 경유점을 지면에 그린다.
 - **존 전체 타일맵** — 지금 기본 타일맵은 원점 주변 64×64m 다. 존 전체(2km)를 1m 타일로
-  덮으면 400만 칸이라 **청크 분할이 필요하다.** 존 파일을 읽게 되는 S7 과 함께.
+  덮으면 400만 칸이라 **청크 분할이 필요하다.** 존 파일 형식(`RunFile`)은 그대로 쓸 수 있다.
 
-### S6 — 게임 시뮬레이션 레이어 (`nexus-sim`)
+### S6 — 게임 시뮬레이션 레이어 (`nexus-sim`) ✅ 완료
 
-**크레이트는 S5 에서 이미 만들었다**(타일맵이 들어 있다). 여기서는 그 위에 엔티티를 얹는다.
+타일맵 위에 유닛·전투·AI·아이템이 올라갔다. 화면에서 보는 방법은 S7 의 플레이 모드다.
 
-- **I/O 없는 크레이트를 유지할 것.** 렌더·플랫폼·파일·네트워크를 모른다.
-  단계 2 에서 서버와 대조할 범위를 여기로 한정하기 위한 것이다(위 ⚠ 참고).
-- 기존 **M6** 를 여기서 처리한다 — `World` 에 컴포넌트 저장소(직접 구현 또는 `hecs`).
-- 기존 **M7** 의 `Intent → Authority → World` 를 `fixed_update` 에 넣는다.
-  단계 1 에서 `Authority` 는 로컬 구현이다.
-- 이동·충돌·전투·AI·인벤토리. **수치는 코드가 아니라 데이터로.**
-- C++ 쪽 `SkillDef`/`CombatProcessor`/`Inventory` 가 규칙의 참고 자료다 — 다만
-  **지금은 의존하지 않는다.** 읽고 옮길 뿐이다.
+**`Intent → Authority → World` 가 상태를 바꾸는 유일한 경로**
 
-### S7 — 에디터와 게임의 왕복
+```text
+입력·AI  →  Intent  →  [ Authority ]  →  SimWorld  →  렌더
+                            │
+               단계 1: LocalAuthority  (즉시 처리)
+               단계 2: ServerAuthority (전송 + 로컬 예측)
+```
 
-- 씬 → `ZoneConfig` 직렬화(기존 M6 의 나머지 절반)와 로드. 타일맵도 같은 포맷에 담는다.
-  **존 전체 타일맵은 청크로 나눠야 한다**(S5 이월 항목). 지금 기본값은 원점 주변 64×64m 뿐이다.
-- 클릭 이동 — S5 의 A\* 를 화면에 연결하는 지점. 경로 미리보기도 여기서 생긴다.
-- 에디터에 **플레이 모드**. 별도 앱을 새로 만들기 전에 에디터 안에서 돌리는 게 싸다.
-  앱을 나누는 건 플레이 모드가 에디터 UI 와 부딪히기 시작한 뒤에 한다.
-- 끝나는 조건: 에디터에서 만든 맵을 그 자리에서 플레이하는 스크린샷.
+- `SimWorld` 의 게임플레이 변경 메서드는 `pub(crate)` 다. 밖에서 상태를 바꾸는 길은
+  `Authority::submit(Intent)` 뿐이고, 예외는 존을 읽어 초기 상태를 만드는 **설정 작업**
+  (스폰·정의 등록·시드)뿐이다. **새 게임플레이 기능은 `Intent` 를 늘려서 넣는다.**
+- `submit` 은 결과를 돌려주지 않는다. 결과는 다음 `tick` 이 `Event` 로 알린다 —
+  원격 권한자면 응답이 몇 tick 뒤에 오기 때문이다. **이 서명을 편하다고 바꾸지 말 것.**
+- 거절은 `Event::Rejected { intent, reason }` 이고 `Rejection` 이 이유별로 나뉘어 있다.
+- 한 tick 순서: 밖에서 낸 Intent → AI Intent → `world.step(dt)`.
+  AI 는 플레이어 Intent 가 반영된 상태를 보고 판단한다.
+
+**AI 도 Intent 를 낸다**
+
+몬스터 AI 는 월드를 직접 고치지 않고 플레이어와 **같은 Intent 를 같은 규칙으로** 판정받는다.
+그래서 AI 가 할 수 있는 일은 플레이어도 할 수 있고, 규칙이 두 벌로 갈라지지 않는다.
+AI 는 권한자 쪽에서 돈다 — 단계 2 에서 서버가 돌릴 자리다.
+
+| | 먼저 덤빔 | 반격 |
+|---|---|---|
+| `Passive` | ✗ | ✗ |
+| `Defensive` | ✗ | ✓ |
+| `Aggressive` | 어그로 범위 안에서 보이는(레벨 규칙) 가장 가까운 **적대** 진영 | ✓ |
+
+스폰 지점에서 `leash_range` 를 넘으면 포기하고 돌아가며, 돌아가는 동안은 반격도 받지 않는다(WoW 의 evade).
+매 tick A\* 를 돌지 않도록 추격 지점이 `REPATH_DISTANCE` 만큼 벗어났을 때만 경로를 다시 잡고,
+갈 수 없는 적을 포기한 뒤에는 잠시(`REACQUIRE_DELAY`) 새 적을 찾지 않는다.
+
+**서버와 맞춘 것 / 일부러 다른 것**
+
+`combat` 모듈은 C++ `CombatProcessor::ProcessSingleTarget` 의 **판정 순서와 공식을 그대로** 옮겼다
+(`max(1, trunc(attack × mult) − defense)`). 일부러 다른 점은 모듈 doc 에 적혀 있다 —
+사거리를 지면(XY) 거리로 재고, `immortal`·우호 진영·자기 자신을 거절한다.
+**서버와 겹치는 판정의 순서는 그대로 두고 추가 판정을 뒤에 붙인다** — 단계 2 에서 대조할 수 있게.
+
+진영표는 서버와 달리 싱글턴이 아니라 `SimWorld` 가 소유한다(존마다 다를 수 있고 테스트가 쉽다).
+가방은 서버 `ItemBag` 처럼 종류별 120칸이고, **칸 번호가 프로토콜이라 빈칸을 당겨 채우지 않는다.**
+
+**결정적이어야 한다**
+
+난수는 `SimWorld` 가 가진 시드 있는 SplitMix64 하나뿐이다 — **전역·시간 기반 난수 금지.**
+드롭 확률은 `f32` 가 아니라 **정수 천분율**이다(경계에서 플랫폼마다 갈리지 않게).
+같은 시드·같은 입력이면 드롭까지 같은 결과가 나온다.
+
+**컴포넌트 저장소는 직접 구현이다**
+
+핸들은 `nexus_core::World` 가 발급하고, `SimWorld` 는 **엔티티 슬롯 번호로 색인하는 벡터**에 유닛을 둔다.
+컴포넌트가 `Unit` 하나뿐인 지금 범용 ECS(`hecs`)는 이득이 없다 — 조회 패턴이 복잡해지면 그때 바꾸되
+바뀌는 범위는 이 크레이트 안이다. 유닛과 땅의 아이템은 **같은 핸들 공간**을 쓰고 저장소만 따로다.
+
+**죽은 유닛은 시체로 남는다** — 치울지는 스폰한 쪽이 정한다. 렌더 보간용 `prev_pos` 는 멈춘 유닛에서
+`pos` 와 같아야 화면이 떨리지 않는다.
+
+### S7 — 에디터와 게임의 왕복 🔶 진행 중
+
+S7-1(플레이 모드) · S7-2(존 파일) · S7-3(게임 데이터 분리)이 끝났다. 확인:
+
+```bash
+env -u WAYLAND_DISPLAY DISPLAY=:0 NEXUS_ZONE=zones/sample.zone.ron \
+NEXUS_PIXELS_PER_METER=24 NEXUS_SCRIPT="play; wait; wait; wait" \
+NEXUS_SCREENSHOT_FRAME=40 NEXUS_SCREENSHOT=/tmp/play.png cargo run -p world-editor
+```
+
+- ✅ **S7-1 플레이 모드 (F5)** — 편집 중인 씬을 그 자리에서 돌린다. 클릭 이동·공격·줍기,
+  경로 미리보기(S5 이월 항목), 머리 위 HP 막대, 유닛 목록·인벤토리·장비 패널, 이벤트 기록.
+  자세한 것은 위 「플레이 모드」.
+- ✅ **S7-2 존 파일** — `zones/*.zone.ron` 저장·열기(Ctrl+S / Ctrl+O / 다른 이름으로 저장),
+  `NEXUS_ZONE` 으로 시작 시 열기, 스크립트 `save`/`open`/`dialog`. 위 「존 파일」.
+- ✅ **S7-3 게임 데이터** — `data/rules.ron` · `data/display.ron`. 위 「정적 테이블은 반으로 쪼갠다」.
+- ⬜ **존 전체 타일맵(청크 분할)** — 기본값은 아직 원점 주변 64×64m 다. 파일 형식은 그대로 쓸 수 있다.
+- ⬜ **텍스처 지면 타일** — 타일 아트가 생길 때(S5 이월 항목).
+- ⬜ **마커별 수치** — 지금은 종류마다 하나다. 인스펙터 확장과 함께 온다(위 「UI 명세 전달 형식」).
+- ⬜ **앱 분리** — 플레이 모드가 에디터 UI 와 부딪히기 시작한 뒤에 한다. 지금은 에디터 안이 싸다.
+
+끝나는 조건: 에디터에서 만든 맵을 **저장하고, 그 파일을 열어** 그 자리에서 플레이하는 스크린샷.
 
 ### 단계 2 (보류 — 지금 건드리지 않는다)
 
@@ -597,14 +761,15 @@ Rust 네트워크 클라이언트(`nexus-protocol`/`nexus-net`), 서버 GridCell
 ## 마일스톤 표기
 
 코드 주석이 `M1`~`M9` 로 미래 작업을 가리키지만, **이 번호는 장르가 정해지기 전에 붙은 것이다.**
-현재 단계는 **M5-2 뷰포트 편집**이고, 앞으로는 위 **S 트랙을 따른다** — 충돌하면 S 가 이긴다.
+현재 단계는 **S7(에디터와 게임의 왕복)** 이고, 앞으로는 위 **S 트랙을 따른다** — 충돌하면 S 가 이긴다.
 주석의 `M` 번호를 읽을 때 쓸 대조표:
 
 | | |
 |---|---|
 | M3 | 유효. `begin_frame` 을 typestate 로 바꿔 호출 순서를 컴파일 타임에 강제 |
-| M6 | **S6 + S7 로 흡수.** 컴포넌트 저장소는 S6, `ZoneConfig` 직렬화는 S7 |
-| M7 | **S6 으로 흡수.** `Intent → Authority → World` — 단계 1 에서는 `Authority` 가 로컬 |
+| M5 | **완료.** 뷰포트 편집·인스펙터 최소 구성까지. 인스펙터 나머지 필드는 「UI 명세 전달 형식」 |
+| M6 | **완료.** 컴포넌트 저장소는 S6(`SimWorld` 직접 구현), 직렬화는 S7-2(`ZoneConfig` 가 아니라 `*.zone.ron`) |
+| M7 | **완료(S6).** `Intent → Authority → World` — 단계 1 에서는 `Authority` 가 로컬이다 |
 | M8 | **폐기.** 목표 장르가 쿼터뷰 정사영이라 원근 전환을 하지 않는다. 대신 S2/S3 |
 | M9 | **단계 2 로 연기.** 서버 `pawnId`/`sessionId` 는 `Entity` 가 아니라 별도 `NetworkId(u64)` 로 다룬다는 원칙만 유효 |
 
