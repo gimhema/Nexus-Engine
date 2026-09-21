@@ -18,6 +18,10 @@
 //! play                         플레이 시작/정지 (F5 와 같다). 플레이 중 press 는 클릭 명령이 된다
 //! save PATH | open PATH         존 파일 저장 / 열기 (경로에 공백 불가)
 //! dialog open|saveas            열기 / 다른 이름으로 저장 창 띄우기
+//! palette [그림경로]           지형 팔레트 창 열기
+//! pick ground|prop 경로 x y w h [칸]  팔레트에서 그림 조각 고르기 (terrain.ron 자동 추가)
+//! brush stroke|rect [반지름]   붓 모양 (반지름 0~3 → 1×1 ~ 7×7)
+//! eyedropper                   스포이드 — 다음 클릭한 칸의 그림·타일을 붓으로 집는다
 //! ```
 //!
 //! 예: `NEXUS_SELECT="상인 NPC" NEXUS_SCRIPT="wait; press rotate; move -8 20 ctrl"`
@@ -27,9 +31,9 @@ use std::path::PathBuf;
 
 use nexus_core::Vec2;
 
-use crate::edit::Tool;
+use crate::edit::{BrushShape, Tool};
 use crate::scene::{ArtId, ItemKind};
-use crate::terrain::ArtKind;
+use crate::terrain::{ArtKind, Pick};
 
 pub(crate) const ENV_SCRIPT: &str = "NEXUS_SCRIPT";
 
@@ -72,6 +76,14 @@ pub(crate) enum Step {
     Open(PathBuf),
     /// 열기(`false`) / 다른 이름으로 저장(`true`) 창 띄우기.
     Dialog(bool),
+    /// 지형 팔레트 창 열기 — 그림 경로를 주면 그 그림을 골라 둔다.
+    Palette(Option<String>),
+    /// 팔레트에서 그림 조각 고르기 — 창의 마우스 조작 없이 같은 경로(`terrain.ron` 자동 추가)를 탄다.
+    Pick(Pick),
+    /// 붓 모양과 반지름.
+    Brush(BrushShape, u8),
+    /// 스포이드 켜기.
+    Eyedropper,
     Wait,
 }
 
@@ -133,6 +145,46 @@ fn parse_step(text: &str) -> Result<Step, String> {
                 Some("saveas") => Ok(Step::Dialog(true)),
                 _ => Err(format!("'{text}': 창은 open|saveas")),
             };
+        }
+        "eyedropper" => return Ok(Step::Eyedropper),
+        "brush" => {
+            let shape = match words.get(1).copied() {
+                Some("stroke") => BrushShape::Stroke,
+                Some("rect") => BrushShape::Rect,
+                _ => return Err(format!("'{text}': brush 뒤에 stroke|rect")),
+            };
+            let radius = match words.get(2) {
+                None => 0,
+                Some(w) => w
+                    .parse()
+                    .map_err(|_| format!("'{text}': 반지름은 0 이상의 정수"))?,
+            };
+            return Ok(Step::Brush(shape, radius));
+        }
+        "palette" => return Ok(Step::Palette(words.get(1).map(|w| (*w).to_string()))),
+        "pick" => {
+            // pick ground|prop 그림경로 x y 폭 높이 [칸크기]
+            let kind = match words.get(1).copied() {
+                Some("ground") => ArtKind::Ground,
+                Some("prop") => ArtKind::Prop,
+                _ => return Err(format!("'{text}': pick 뒤에 ground|prop")),
+            };
+            let image = words
+                .get(2)
+                .ok_or_else(|| format!("'{text}': 그림 경로가 없음"))?;
+            let int = |i: usize| -> Result<u32, String> {
+                words
+                    .get(i)
+                    .and_then(|w| w.parse().ok())
+                    .ok_or_else(|| format!("'{text}': {i}번째 값이 정수가 아님"))
+            };
+            let cell = words.get(7).map_or(Ok(16), |_| int(7))?;
+            return Ok(Step::Pick(Pick {
+                image: (*image).to_string(),
+                px: (int(3)?, int(4)?, int(5)?, int(6)?),
+                kind,
+                pixels_per_meter: cell as f32,
+            }));
         }
         "save" | "open" => {
             let Some(path) = words.get(1) else {
@@ -240,5 +292,19 @@ mod tests {
         assert!(parse("press 1").is_err());
         assert!(parse("add dragon 0 0").is_err());
         assert!(parse("tool hammer").is_err());
+        assert!(parse("brush circle").is_err());
+        assert!(parse("brush rect -1").is_err());
+    }
+
+    #[test]
+    fn parses_brush_steps() {
+        assert_eq!(
+            parse("brush rect; brush stroke 2; eyedropper").unwrap(),
+            [
+                Step::Brush(BrushShape::Rect, 0),
+                Step::Brush(BrushShape::Stroke, 2),
+                Step::Eyedropper,
+            ]
+        );
     }
 }

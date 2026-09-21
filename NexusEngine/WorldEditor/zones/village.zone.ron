@@ -594,7 +594,7 @@
             orientation: 0.0,
         ),
         (
-            name: "붉은 슬라임",
+            name: "늪 슬라임",
             kind: Monster,
             actor: 101,
             pos: (6.0, -3.0),

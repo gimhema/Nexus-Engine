@@ -174,6 +174,17 @@ impl Command {
     }
 }
 
+/// 두 칸을 모서리로 하는 사각형 안의 모든 칸 — 어느 방향으로 끌었든 같다.
+///
+/// 한 변이 타일맵보다 크면 칠하는 쪽이 맵 밖 칸을 거른다. 사각형은 행 우선으로 돌려준다.
+fn rect_cells(a: TileCoord, b: TileCoord) -> Vec<TileCoord> {
+    let (x0, x1) = (a.x.min(b.x), a.x.max(b.x));
+    let (y0, y1) = (a.y.min(b.y), a.y.max(b.y));
+    (y0..=y1)
+        .flat_map(|y| (x0..=x1).map(move |x| TileCoord::new(x, y)))
+        .collect()
+}
+
 /// 층을 고른다. 지면과 오브젝트는 좌표만 공유하는 별개의 맵이다.
 fn layer_mut(scene: &mut Scene, kind: ArtKind) -> &mut crate::terrain::ArtLayer {
     match kind {
@@ -379,7 +390,29 @@ pub(crate) struct Editing {
     art_stroke: Option<BTreeMap<TileCoord, ArtId>>,
     /// 직전 칠하기 지점. 두 지점 사이를 이어 칠하는 데 쓴다.
     paint_last: Option<Vec2>,
+    /// 붓 모양 — 타일·그림 칠하기가 같이 쓴다 (P4-4).
+    brush_shape: BrushShape,
+    /// 붓 반지름 (칸). 0 = 한 칸, 1 = 3×3, … [`MAX_BRUSH_RADIUS`] 까지. 붓 모양일 때만 쓴다.
+    brush_radius: u8,
+    /// 스포이드 — 켜 두면 **다음 누름**이 칠하지 않고 그 칸의 값을 붓으로 집는다 (한 번 쓰면 꺼진다).
+    eyedropper: bool,
+    /// 사각형 칠하기의 누른 칸 / 지금 칸. 누르고 있는 동안만 `Some`.
+    rect_anchor: Option<TileCoord>,
+    rect_current: Option<TileCoord>,
 }
+
+/// 붓 모양 (P4-4).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum BrushShape {
+    /// 누르고 끄는 동안 지나간 칸을 칠한다. 반지름만큼 넓게.
+    #[default]
+    Stroke,
+    /// 누른 칸과 뗀 칸을 모서리로 하는 사각형을 **뗄 때 한 번에** 칠한다.
+    Rect,
+}
+
+/// 붓 반지름 상한 — 7×7. 넓은 지형은 사각형 칠하기가 낫다.
+pub(crate) const MAX_BRUSH_RADIUS: u8 = 3;
 
 impl Editing {
     pub(crate) fn selection(&self) -> &[Target] {
@@ -429,6 +462,99 @@ impl Editing {
         self.stroke.is_some() || self.art_stroke.is_some()
     }
 
+    pub(crate) fn brush_shape(&self) -> BrushShape {
+        self.brush_shape
+    }
+
+    pub(crate) fn brush_radius(&self) -> u8 {
+        self.brush_radius
+    }
+
+    pub(crate) fn eyedropper(&self) -> bool {
+        self.eyedropper
+    }
+
+    /// 붓 모양·크기를 바꾼다. 칠하는 도중에는 바꾸지 않는다 — 한 획이 두 모양으로 섞인다.
+    pub(crate) fn set_brush_shape(&mut self, shape: BrushShape, radius: u8) {
+        if self.is_painting() {
+            return;
+        }
+        self.brush_shape = shape;
+        self.brush_radius = radius.min(MAX_BRUSH_RADIUS);
+    }
+
+    /// 스포이드를 켜거나 끈다. 칠하는 도중에는 켜지 않는다.
+    pub(crate) fn set_eyedropper(&mut self, on: bool) {
+        if on && self.is_painting() {
+            return;
+        }
+        self.eyedropper = on;
+    }
+
+    /// 스포이드가 켜져 있고 이번 입력이 뷰포트 누름이면 그 칸을 돌려주고 스포이드를 끈다.
+    ///
+    /// 켜져 있는 동안의 다른 입력(이동·뗌)은 칠하지 않고 삼킨다 — 누르기 전에 칠해지면 안 된다.
+    /// 집는 것은 **편집이 아니다** (언두에 남지 않는다).
+    fn take_eyedropper(&mut self, scene: &Scene, p: &PointerInput) -> Option<TileCoord> {
+        if !self.eyedropper {
+            return None;
+        }
+        let world = p.world.filter(|_| p.pressed && p.over_viewport)?;
+        self.eyedropper = false;
+        Some(scene.tiles.world_to_tile(world))
+    }
+
+    /// 사각형 칠하기를 끄는 중이면 그 사각형의 두 모서리 칸 — 미리보기용.
+    pub(crate) fn brush_preview(&self) -> Option<(TileCoord, TileCoord)> {
+        match (self.rect_anchor, self.rect_current) {
+            (Some(a), Some(b)) => Some((a, b)),
+            _ => None,
+        }
+    }
+
+    /// 이번 포인터 입력으로 붓이 닿는 칸들 — 모양·크기가 반영된다.
+    ///
+    /// - **붓**: 지나간 칸마다 반지름만큼의 정사각형.
+    /// - **사각형**: 끄는 동안에는 모서리만 기억하고(미리보기) **뗄 때 한 번에** 돌려준다.
+    ///   뗀 곳이 뷰포트 밖이어도 마지막으로 본 칸까지 칠한다.
+    fn brush_cells(&mut self, scene: &Scene, p: &PointerInput) -> Vec<TileCoord> {
+        match self.brush_shape {
+            BrushShape::Stroke => {
+                let Some(world) = p.world.filter(|_| p.over_viewport) else {
+                    return Vec::new();
+                };
+                let r = i32::from(self.brush_radius);
+                let mut cells = std::collections::BTreeSet::new();
+                for c in self.stroke_cells(scene, world) {
+                    for dy in -r..=r {
+                        for dx in -r..=r {
+                            cells.insert(TileCoord::new(c.x + dx, c.y + dy));
+                        }
+                    }
+                }
+                cells.into_iter().collect()
+            }
+            BrushShape::Rect => {
+                if let Some(world) = p.world.filter(|_| p.over_viewport) {
+                    let at = scene.tiles.world_to_tile(world);
+                    if p.pressed {
+                        self.rect_anchor = Some(at);
+                    }
+                    if self.rect_anchor.is_some() {
+                        self.rect_current = Some(at);
+                    }
+                }
+                if !p.released {
+                    return Vec::new();
+                }
+                let (Some(a), Some(b)) = (self.rect_anchor.take(), self.rect_current.take()) else {
+                    return Vec::new();
+                };
+                rect_cells(a, b)
+            }
+        }
+    }
+
     /// 직전 지점부터 `world` 까지 지나가는 칸들. 칠하기 두 종류가 같이 쓴다.
     ///
     /// 한 프레임에 포인터가 여러 칸을 건너뛰면(빠른 드래그, 스크립트 입력) 사이가 비어
@@ -454,16 +580,22 @@ impl Editing {
     /// 타일 **규칙은 건드리지 않는다.** 건물을 놓아도 막히는 칸은 저작자가 따로 칠한다
     /// (`crate::terrain` 머리 주석 참고).
     pub(crate) fn paint_art_pointer(&mut self, scene: &mut Scene, p: &PointerInput) {
+        // 스포이드: 오브젝트가 있으면 오브젝트를, 없으면 지면을 집는다 (보이는 쪽 우선).
+        if let Some(at) = self.take_eyedropper(scene, p) {
+            if let Some(&id) = scene.props.get(&at) {
+                self.set_art_brush(id, ArtKind::Prop);
+            } else if let Some(&id) = scene.art.get(&at) {
+                self.set_art_brush(id, ArtKind::Ground);
+            }
+            return;
+        }
         if p.pressed && p.over_viewport {
             self.art_stroke = Some(BTreeMap::new());
             self.paint_last = None;
         }
-        if self.art_stroke.is_some()
-            && let Some(world) = p.world
-            && p.over_viewport
-        {
+        if self.art_stroke.is_some() {
             let (brush, kind) = (self.art_brush, self.art_layer);
-            for at in self.stroke_cells(scene, world) {
+            for at in self.brush_cells(scene, p) {
                 // 타일맵 밖은 칠하지 않는다 — 저장 파일이 타일맵 범위를 기준으로 묶인다.
                 if scene.tiles.get(at).is_none() {
                     continue;
@@ -496,16 +628,19 @@ impl Editing {
     /// 누름→끌기→뗌 한 번이 **언두 한 스텝**이다. 칸 하나를 여러 번 지나가도
     /// 기록은 하나로 남는다.
     pub(crate) fn paint_pointer(&mut self, scene: &mut Scene, p: &PointerInput) {
+        if let Some(at) = self.take_eyedropper(scene, p) {
+            if let Some(tile) = scene.tiles.get(at) {
+                self.brush = tile;
+            }
+            return;
+        }
         if p.pressed && p.over_viewport {
             self.stroke = Some(BTreeMap::new());
             self.paint_last = None;
         }
-        if self.stroke.is_some()
-            && let Some(world) = p.world
-            && p.over_viewport
-        {
+        if self.stroke.is_some() {
             let brush = self.brush;
-            for at in self.stroke_cells(scene, world) {
+            for at in self.brush_cells(scene, p) {
                 if let Some(before) = scene.tiles.get(at) {
                     // 이 칸의 **맨 처음** 값만 남긴다 — 같은 칸을 여러 번 지나가도
                     // 언두가 원래대로 돌아가도록.
@@ -1102,6 +1237,60 @@ mod tests {
         assert!(!tile_at(&s, at).walkable);
     }
 
+    // ── 액터 타입 (P1) ──────────────────────────────────────────────────────
+
+    #[test]
+    fn changing_the_actor_type_applies_to_every_selected_marker_as_one_step() {
+        // 여러 마커를 골라 한 번에 바꾸는 것이 저작에 편하다 — 언두도 한 번에 돌아와야 한다.
+        let (mut s, a, b) = scene();
+        let mut ed = Editing::default();
+        ed.select(Target::Item(a), false);
+        ed.select(Target::Item(b), true);
+
+        let goblin = ActorId::new(101);
+        ed.apply_inspector(&mut s, InspectorEdit::ItemActor { actor: goblin });
+        assert_eq!(s.item(a).unwrap().actor, goblin);
+        assert_eq!(s.item(b).unwrap().actor, goblin);
+
+        assert!(ed.undo(&mut s));
+        assert!(s.item(a).unwrap().actor.is_default());
+        assert!(s.item(b).unwrap().actor.is_default());
+        assert!(!ed.undo(&mut s), "스텝이 하나여야 한다");
+
+        assert!(ed.redo(&mut s));
+        assert_eq!(s.item(a).unwrap().actor, goblin);
+    }
+
+    #[test]
+    fn choosing_the_same_actor_type_records_nothing() {
+        let (mut s, a, _) = scene();
+        let mut ed = Editing::default();
+        ed.select(Target::Item(a), false);
+        ed.apply_inspector(
+            &mut s,
+            InspectorEdit::ItemActor {
+                actor: ActorId::DEFAULT,
+            },
+        );
+        assert!(ed.history().undo_label().is_none(), "빈 스텝이 기록됐다");
+    }
+
+    #[test]
+    fn the_zone_in_the_selection_is_left_alone() {
+        // 존과 마커를 함께 골라도 존에는 타입이 없다 — 오류 없이 마커만 바뀐다.
+        let (mut s, a, _) = scene();
+        let mut ed = Editing::default();
+        ed.select(Target::Zone, false);
+        ed.select(Target::Item(a), true);
+        ed.apply_inspector(
+            &mut s,
+            InspectorEdit::ItemActor {
+                actor: ActorId::new(10),
+            },
+        );
+        assert_eq!(s.item(a).unwrap().actor, ActorId::new(10));
+    }
+
     // ── 지형 그림 칠하기 ────────────────────────────────────────────────────
 
     /// 그림 칠하기용 씬 — 붓은 `kind` 층의 `id` 번 그림.
@@ -1211,6 +1400,147 @@ mod tests {
         assert!(s.art.is_empty());
         assert!(ed.history().undo_label().is_none());
         assert!(!ed.is_painting(), "칠하기가 끝나지 않았다");
+    }
+
+    // ── 붓 모양·크기·스포이드 (P4-4) ─────────────────────────────────────────
+
+    fn blocked_count(s: &Scene) -> usize {
+        let (w, h) = (s.tiles.width() as i32, s.tiles.height() as i32);
+        (0..h)
+            .flat_map(|y| (0..w).map(move |x| TileCoord::new(x, y)))
+            .filter(|&c| s.tiles.get(c).is_some_and(|t| !t.walkable))
+            .count()
+    }
+
+    #[test]
+    fn a_rectangle_fills_every_cell_as_one_step() {
+        let (mut s, mut ed) = paint_setup();
+        let before = blocked_count(&s);
+        ed.set_brush_shape(BrushShape::Rect, 0);
+        // 칸 (0,0)~(3,2) → 4 × 3 = 12 칸
+        paint(&mut ed, &mut s, &[Vec2::new(0.5, 0.5), Vec2::new(3.5, 2.5)]);
+        assert_eq!(blocked_count(&s) - before, 12);
+
+        assert!(ed.undo(&mut s));
+        assert_eq!(blocked_count(&s), before);
+        assert!(!ed.undo(&mut s), "스텝이 하나여야 한다");
+    }
+
+    #[test]
+    fn a_rectangle_is_the_same_whichever_way_it_is_dragged() {
+        let (mut a, mut ea) = paint_setup();
+        let (mut b, mut eb) = paint_setup();
+        ea.set_brush_shape(BrushShape::Rect, 0);
+        eb.set_brush_shape(BrushShape::Rect, 0);
+        paint(&mut ea, &mut a, &[Vec2::new(0.5, 0.5), Vec2::new(3.5, 2.5)]);
+        paint(&mut eb, &mut b, &[Vec2::new(3.5, 2.5), Vec2::new(0.5, 0.5)]);
+        for x in 0..4 {
+            for y in 0..3 {
+                let at = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+                assert_eq!(tile_at(&a, at), tile_at(&b, at), "({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn a_rectangle_paints_only_when_released() {
+        // 끄는 동안에는 미리보기만 — 칠하면 사각형을 줄일 때 흔적이 남는다.
+        let (mut s, mut ed) = paint_setup();
+        ed.set_brush_shape(BrushShape::Rect, 0);
+        let before = blocked_count(&s);
+        ed.paint_pointer(&mut s, &press(Vec2::new(0.5, 0.5)));
+        ed.paint_pointer(&mut s, &move_to(Vec2::new(5.5, 5.5)));
+        assert_eq!(blocked_count(&s), before, "떼기 전에 칠했다");
+        assert!(ed.brush_preview().is_some(), "미리보기가 없다");
+
+        ed.paint_pointer(&mut s, &move_to(Vec2::new(1.5, 0.5)));
+        ed.paint_pointer(&mut s, &release_at(Vec2::new(1.5, 0.5)));
+        assert_eq!(
+            blocked_count(&s) - before,
+            2,
+            "마지막 모서리 기준이어야 한다"
+        );
+        assert!(ed.brush_preview().is_none());
+    }
+
+    #[test]
+    fn a_wider_brush_paints_a_square_around_the_cell() {
+        let (mut s, mut ed) = paint_setup();
+        ed.set_brush_shape(BrushShape::Stroke, 1);
+        let before = blocked_count(&s);
+        paint(&mut ed, &mut s, &[Vec2::new(5.5, 5.5)]);
+        assert_eq!(blocked_count(&s) - before, 9, "3×3 이어야 한다");
+    }
+
+    #[test]
+    fn brush_radius_is_capped() {
+        let mut ed = Editing::default();
+        ed.set_brush_shape(BrushShape::Stroke, 200);
+        assert_eq!(ed.brush_radius(), MAX_BRUSH_RADIUS);
+    }
+
+    #[test]
+    fn the_eyedropper_picks_the_tile_and_does_not_paint() {
+        let (mut s, mut ed) = paint_setup();
+        let ramp = Tile {
+            ramp: true,
+            level: 2,
+            ..Tile::default()
+        };
+        s.tiles
+            .set(s.tiles.world_to_tile(Vec2::new(7.5, 7.5)), ramp);
+
+        ed.set_eyedropper(true);
+        paint(&mut ed, &mut s, &[Vec2::new(7.5, 7.5)]);
+        assert_eq!(ed.brush(), ramp, "붓이 그 칸의 값이 되어야 한다");
+        assert!(!ed.eyedropper(), "한 번 쓰면 꺼진다");
+        assert!(ed.history().undo_label().is_none(), "집기는 편집이 아니다");
+
+        // 다음 누름은 다시 칠한다.
+        paint(&mut ed, &mut s, &[Vec2::new(0.5, 0.5)]);
+        assert_eq!(tile_at(&s, Vec2::new(0.5, 0.5)), ramp);
+    }
+
+    #[test]
+    fn the_art_eyedropper_prefers_the_visible_prop() {
+        let (mut s, mut ed) = art_setup(1, ArtKind::Ground);
+        let at = s.tiles.world_to_tile(Vec2::new(2.5, 2.5));
+        s.art.insert(at, ArtId::new(3));
+        s.props.insert(at, ArtId::new(100));
+
+        ed.set_eyedropper(true);
+        paint_art(&mut ed, &mut s, &[Vec2::new(2.5, 2.5)]);
+        assert_eq!(ed.art_brush(), ArtId::new(100));
+        assert_eq!(ed.art_layer(), ArtKind::Prop);
+
+        // 오브젝트가 없는 칸이면 지면을 집는다.
+        s.props.clear();
+        ed.set_eyedropper(true);
+        paint_art(&mut ed, &mut s, &[Vec2::new(2.5, 2.5)]);
+        assert_eq!(ed.art_brush(), ArtId::new(3));
+        assert_eq!(ed.art_layer(), ArtKind::Ground);
+    }
+
+    #[test]
+    fn an_art_rectangle_fills_the_chosen_layer() {
+        let (mut s, mut ed) = art_setup(1, ArtKind::Ground);
+        ed.set_brush_shape(BrushShape::Rect, 0);
+        paint_art(&mut ed, &mut s, &[Vec2::new(0.5, 0.5), Vec2::new(4.5, 4.5)]);
+        assert_eq!(s.art.len(), 25);
+        assert!(s.props.is_empty());
+    }
+
+    #[test]
+    fn the_brush_cannot_change_shape_in_the_middle_of_a_stroke() {
+        let (mut s, mut ed) = paint_setup();
+        ed.paint_pointer(&mut s, &press(Vec2::new(0.5, 0.5)));
+        ed.set_brush_shape(BrushShape::Rect, 2);
+        assert_eq!(
+            ed.brush_shape(),
+            BrushShape::Stroke,
+            "한 획이 두 모양으로 섞인다"
+        );
+        ed.paint_pointer(&mut s, &release_at(Vec2::new(0.5, 0.5)));
     }
 
     #[test]

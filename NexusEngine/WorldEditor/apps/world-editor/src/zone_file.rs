@@ -495,6 +495,27 @@ mod tests {
     }
 
     #[test]
+    fn actor_types_survive_a_round_trip() {
+        let mut original = Scene::server_default();
+        original.items[0].actor = crate::scene::ActorId::new(101);
+        let loaded = from_ron(&to_ron(&original)).unwrap();
+        let actors = |s: &Scene| s.items.iter().map(|i| i.actor).collect::<Vec<_>>();
+        assert_eq!(actors(&loaded), actors(&original));
+    }
+
+    #[test]
+    fn a_marker_without_an_actor_field_uses_the_kind_default() {
+        // P1 이전에 저장한 존 파일에는 `actor` 가 없다 — 그래도 열려야 한다.
+        let text = to_ron(&Scene::server_default()).replace("            actor: 0,\n", "");
+        assert!(
+            !text.contains("actor:"),
+            "시험 전제: actor 필드를 지웠어야 한다"
+        );
+        let loaded = from_ron(&text).unwrap();
+        assert!(loaded.items.iter().all(|i| i.actor.is_default()));
+    }
+
+    #[test]
     fn art_survives_a_round_trip() {
         let cells = [
             ((10, 5), 1u16),

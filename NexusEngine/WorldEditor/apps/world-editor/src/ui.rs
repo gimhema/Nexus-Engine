@@ -19,9 +19,10 @@ use nexus_platform::{WindowEvent, WindowTarget};
 use nexus_render_wgpu::{UiFrame, egui};
 use nexus_sim::{BagKind, Tile};
 
-use crate::edit::{InspectorEdit, PointerInput, Tool};
+use crate::edit::{BrushShape, InspectorEdit, MAX_BRUSH_RADIUS, PointerInput, Tool};
 use crate::game_data::ActorStats;
 use crate::grid;
+use crate::palette::Palette;
 use crate::play::{InventoryAction, PlaySession};
 use crate::scene::{ActorId, ArtId, ItemKind, Pick, Scene, Target, ZONE_LABEL};
 use crate::terrain::ArtKind;
@@ -80,6 +81,10 @@ pub(crate) struct UiModel<'a> {
     pub(crate) art_brush: ArtId,
     /// 붓이 칠하는 층.
     pub(crate) art_layer: ArtKind,
+    /// 붓 모양·반지름·스포이드 (타일·그림 공용).
+    pub(crate) brush_shape: BrushShape,
+    pub(crate) brush_radius: u8,
+    pub(crate) eyedropper: bool,
     /// 고를 수 있는 지형 그림 `(번호, 이름, 종류)`. 그림 데이터가 없으면 빈 목록이다.
     pub(crate) art_palette: Vec<(ArtId, &'a str, ArtKind)>,
     pub(crate) stats: FrameStats,
@@ -134,6 +139,14 @@ pub(crate) struct UiActions {
     pub(crate) set_brush: Option<Tile>,
     /// 지형 그림 붓 변경 — `(번호, 층)`. 지우개(`ArtId::NONE`)도 층을 골라야 한다.
     pub(crate) set_art_brush: Option<(ArtId, ArtKind)>,
+    /// 팔레트 창 열기. 안쪽 값이 있으면 그 그림을 골라 둔 채로 연다 (UI 내부에서 소비).
+    open_palette: Option<Option<String>>,
+    /// 팔레트 창에서 고른 그림 조각 — 편집기가 `terrain.ron` 에 추가하고 붓으로 삼는다.
+    pub(crate) pick_art: Option<crate::terrain::Pick>,
+    /// 붓 모양·반지름 바꾸기.
+    pub(crate) set_brush_shape: Option<(BrushShape, u8)>,
+    /// 스포이드 켜기/끄기.
+    pub(crate) set_eyedropper: Option<bool>,
     /// 뷰포트 포인터 — 뷰포트가 그려진 프레임에만 있다.
     pub(crate) pointer: Option<PointerInput>,
     /// 씬을 그릴 사각형 `[x, y, w, h]` (물리 픽셀).
@@ -149,6 +162,8 @@ pub(crate) struct EditorUi {
     font_note: String,
     /// 열려 있는 존 열기/저장 창.
     file_dialog: Option<FileDialog>,
+    /// 지형 그림 팔레트 창 (P4). 닫혀 있어도 상태(고른 그림·확대율)는 남긴다.
+    palette: Palette,
 }
 
 /// 존 열기 / 다른 이름으로 저장 창.
@@ -210,7 +225,13 @@ impl EditorUi {
             cursor_world: None,
             font_note,
             file_dialog: None,
+            palette: Palette::default(),
         }
+    }
+
+    /// 팔레트 창을 연다 — 자동 검증(`NEXUS_SCRIPT`)용. `image` 가 있으면 그 그림을 골라 둔다.
+    pub(crate) fn show_palette(&mut self, image: Option<String>) {
+        self.palette.open(image);
     }
 
     /// 열기(`save = false`) / 다른 이름으로 저장 창을 띄운다 — 자동 검증(`NEXUS_SCRIPT`)용.
@@ -243,6 +264,7 @@ impl EditorUi {
         let mut actions = UiActions::default();
         let cursor_world = &mut self.cursor_world;
         let dialog = &mut self.file_dialog;
+        let palette = &mut self.palette;
 
         let output = self.ctx.run_ui(raw, |ui| {
             menu_bar(ui, model, &mut actions);
@@ -251,10 +273,15 @@ impl EditorUi {
                 *dialog = Some(FileDialog::new(mode, model.zone_path));
             }
             file_dialog(ui, dialog, model.dirty, &mut actions);
+            palette.show(ui, &mut actions);
             status_bar(ui, model, *cursor_world);
             outline_panel(ui, model, &mut actions);
             inspector_panel(ui, model, &mut actions);
             viewport(ui, model, cursor_world, &mut actions);
+            // 인스펙터의 "팔레트 열기" 는 창을 그린 뒤에 눌린다 — 다음 프레임부터 뜬다.
+            if let Some(image) = actions.open_palette.take() {
+                palette.open(image);
+            }
         });
 
         self.state
@@ -686,6 +713,8 @@ fn tool_section(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions)
     }
 
     ui.separator();
+    brush_controls(ui, model, actions);
+    ui.separator();
     ui.label("붓");
 
     let mut brush = model.brush;
@@ -716,8 +745,64 @@ fn tool_section(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions)
     );
 }
 
+/// 붓 모양·크기·스포이드 — 타일 칠하기와 그림 칠하기가 같이 쓴다 (P4-4).
+fn brush_controls(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
+    ui.horizontal(|ui| {
+        for (shape, label, tip) in [
+            (BrushShape::Stroke, "붓", "끄는 동안 지나간 칸을 칠한다"),
+            (
+                BrushShape::Rect,
+                "사각형",
+                "누른 칸과 뗀 칸을 모서리로 하는 사각형을 한 번에",
+            ),
+        ] {
+            if ui
+                .selectable_label(model.brush_shape == shape, label)
+                .on_hover_text(tip)
+                .clicked()
+            {
+                actions.set_brush_shape = Some((shape, model.brush_radius));
+            }
+        }
+        let eyedropper = ui
+            .selectable_label(model.eyedropper, "스포이드")
+            .on_hover_text("다음에 누른 칸의 값을 붓으로 집는다 (한 번 쓰면 꺼진다)");
+        if eyedropper.clicked() {
+            actions.set_eyedropper = Some(!model.eyedropper);
+        }
+    });
+    if model.brush_shape == BrushShape::Stroke {
+        ui.horizontal(|ui| {
+            ui.label("크기");
+            let mut radius = model.brush_radius;
+            let side = |r: u8| u32::from(r) * 2 + 1;
+            egui::ComboBox::from_id_salt("brush_radius")
+                .selected_text(format!("{0}×{0}", side(radius)))
+                .show_ui(ui, |ui| {
+                    for r in 0..=MAX_BRUSH_RADIUS {
+                        ui.selectable_value(&mut radius, r, format!("{0}×{0}", side(r)));
+                    }
+                });
+            if radius != model.brush_radius {
+                actions.set_brush_shape = Some((BrushShape::Stroke, radius));
+            }
+        });
+    }
+}
+
 /// 지형 그림 붓 — `data/terrain.ron` 의 목록에서 고른다.
 fn art_section(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
+    ui.separator();
+
+    // 그림을 눈으로 보고 고르는 창 — 고른 조각은 terrain.ron 에 자동으로 추가된다 (P4).
+    if ui
+        .button("팔레트 열기…")
+        .on_hover_text("그림 파일에서 칸을 골라 붓으로 쓴다")
+        .clicked()
+    {
+        actions.open_palette = Some(None);
+    }
+    brush_controls(ui, model, actions);
     ui.separator();
 
     if model.art_palette.is_empty() {

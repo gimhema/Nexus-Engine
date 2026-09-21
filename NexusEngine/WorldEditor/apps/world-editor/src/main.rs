@@ -17,6 +17,7 @@
 mod edit;
 mod game_data;
 mod grid;
+mod palette;
 mod play;
 mod scene;
 mod screenshot;
@@ -363,6 +364,9 @@ impl Editor {
             }),
             art_brush: self.editing.art_brush(),
             art_layer: self.editing.art_layer(),
+            brush_shape: self.editing.brush_shape(),
+            brush_radius: self.editing.brush_radius(),
+            eyedropper: self.editing.eyedropper(),
             art_palette: self.terrain.list(),
             play: self.play.as_ref(),
             zone_path: self.zone_path.as_deref(),
@@ -442,20 +446,21 @@ impl Editor {
         self.pending_view = Some(ViewRequest::Selection);
     }
 
-    /// 플레이 시작 / 정지. 시작하면 씬을 복사해 시뮬레이션을 만들고, 정지하면 버린다 —
-    /// 씬과 언두 기록은 건드리지 않는다.
-    /// 마커가 실제로 쓸 액터 타입과 표시 색. 데이터를 못 읽었으면 종류 기본값으로.
+    /// 마커가 실제로 쓸 액터 타입과 그 타입이 **명시한** 색(없으면 `NO_TINT`).
+    /// 데이터를 못 읽었으면 종류 기본 타입으로.
     fn actor_look_of(&self, item: &scene::Item) -> (scene::ActorId, [f32; 4]) {
         let Some(data) = &self.data else {
-            return (scene::ActorId::DEFAULT, item.kind.color());
+            return (scene::ActorId::DEFAULT, sprites::NO_TINT);
         };
         let actor = data.resolve_actor(item.actor, item.kind);
         let tint = data
             .actor_look(actor)
-            .map_or_else(|| item.kind.color(), |l| l.tint_or(item.kind.color()));
+            .map_or(sprites::NO_TINT, game_data::ActorLook::tint);
         (actor, tint)
     }
 
+    /// 플레이 시작 / 정지. 시작하면 씬을 복사해 시뮬레이션을 만들고, 정지하면 버린다 —
+    /// 씬과 언두 기록은 건드리지 않는다.
     fn toggle_play(&mut self) {
         if let Some(session) = self.play.take() {
             self.camera = *session.editor_camera();
@@ -520,6 +525,46 @@ impl Editor {
     }
 
     /// UI 가 요청한 편집을 씬에 반영한다. 모든 씬 변경은 `Editing` 을 거친다.
+    /// 팔레트 창에서 고른 그림 조각을 붓으로 삼는다 (P4).
+    ///
+    /// `data/terrain.ron` 에 같은 조각이 있으면 그 번호를, 없으면 **항목을 추가**하고 그 번호를 쓴다.
+    /// 추가했으면 지형 그림을 다시 읽는다 (새 그림 파일만 GPU 에 올린다). 고르는 것은 편집이 아니라
+    /// 언두에 남지 않는다 — 칠하는 것이 편집이다.
+    fn apply_pick(&mut self, pick: &terrain::Pick) {
+        let added = match terrain::add_to_disk(pick) {
+            Ok(added) => added,
+            Err(e) => {
+                self.notify(format!("그림을 추가하지 못했습니다 — {e}"), true);
+                return;
+            }
+        };
+        if added.created
+            && let Some(renderer) = self.renderer.as_mut()
+            && let Err(e) = self.terrain.reload(renderer)
+        {
+            self.notify(format!("추가한 그림을 읽지 못했습니다 — {e}"), true);
+            return;
+        }
+        self.editing.set_tool(Tool::PaintArt);
+        self.editing.set_art_brush(added.id, pick.kind);
+        let name = self
+            .terrain
+            .get(added.id)
+            .map_or_else(String::new, |a| a.name.clone());
+        let message = if added.created {
+            format!(
+                "그림 #{} \"{name}\" 을(를) terrain.ron 에 추가했습니다",
+                added.id.raw()
+            )
+        } else {
+            format!(
+                "이미 있는 그림 #{} \"{name}\" 을(를) 붓으로",
+                added.id.raw()
+            )
+        };
+        self.notify(message, false);
+    }
+
     fn apply_actions(&mut self, actions: &UiActions) {
         if let Some(path) = &actions.save_zone {
             self.save_zone(path.clone());
@@ -564,6 +609,15 @@ impl Editor {
         }
         if let Some((id, kind)) = actions.set_art_brush {
             self.editing.set_art_brush(id, kind);
+        }
+        if let Some(pick) = &actions.pick_art {
+            self.apply_pick(pick);
+        }
+        if let Some((shape, radius)) = actions.set_brush_shape {
+            self.editing.set_brush_shape(shape, radius);
+        }
+        if let Some(on) = actions.set_eyedropper {
+            self.editing.set_eyedropper(on);
         }
         if actions.deselect && !self.editing.is_dragging() && !self.editing.is_painting() {
             self.editing.clear_selection();
@@ -708,6 +762,15 @@ impl Editor {
                     ui.show_file_dialog(save, self.zone_path.as_deref());
                 }
             }
+            Step::Palette(image) => {
+                if let Some(ui) = self.ui.as_mut() {
+                    ui.show_palette(image);
+                }
+            }
+            // 팔레트 창에서 고른 것과 같은 경로를 탄다 — 창의 마우스 조작만 빠진다.
+            Step::Pick(pick) => self.apply_pick(&pick),
+            Step::Brush(shape, radius) => self.editing.set_brush_shape(shape, radius),
+            Step::Eyedropper => self.editing.set_eyedropper(true),
             Step::Wait => {}
         }
         p
@@ -827,6 +890,26 @@ impl Editor {
 
         self.draw_rotate_handle(px);
         self.draw_box_selection();
+        self.draw_brush_preview();
+    }
+
+    /// 사각형 붓으로 끄는 중인 범위 — 뗄 때 이 칸들이 한 번에 칠해진다.
+    fn draw_brush_preview(&mut self) {
+        let Some((a, b)) = self.editing.brush_preview() else {
+            return;
+        };
+        let tiles = &self.scene.tiles;
+        let (min_a, max_a) = tiles.tile_bounds(a);
+        let (min_b, max_b) = tiles.tile_bounds(b);
+        grid::build_outline(
+            &self.camera,
+            min_a.min(min_b),
+            max_a.max(max_b),
+            THIN_LINE_PX,
+            BIAS_BOX + DEPTH_LAYER,
+            SELECT_COLOR,
+            &mut self.commands,
+        );
     }
 
     /// 플레이 화면 — 편집 표시(그리드·마커·핸들) 없이 게임에 보일 것만.

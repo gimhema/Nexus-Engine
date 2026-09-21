@@ -110,6 +110,8 @@ struct Plan {
 struct TerrainPlan {
     /// 타일셋 이름 → (그림, 축척).
     images: BTreeMap<String, (Image, f32)>,
+    /// 타일셋 이름 → 그림 경로 (파일에 적힌 그대로). 다시 읽을 때 같은 그림을 알아보는 열쇠다.
+    paths: BTreeMap<String, String>,
     entries: BTreeMap<ArtId, Plan>,
 }
 
@@ -218,7 +220,16 @@ fn parse(text: &str, base: &Path) -> Result<TerrainPlan, String> {
     }
 
     if problems.is_empty() {
-        Ok(TerrainPlan { images, entries })
+        let paths = file
+            .tilesets
+            .iter()
+            .map(|(name, set)| (name.clone(), set.image.clone()))
+            .collect();
+        Ok(TerrainPlan {
+            images,
+            paths,
+            entries,
+        })
     } else {
         Err(problems.join(" / "))
     }
@@ -243,6 +254,12 @@ pub(crate) struct Art {
 #[derive(Debug, Default)]
 pub(crate) struct Terrain {
     entries: BTreeMap<ArtId, Art>,
+    /// 이미 GPU 에 올린 그림 — **경로** → 텍스처.
+    ///
+    /// 팔레트 창에서 그림을 고를 때마다 `terrain.ron` 이 바뀌어 다시 읽는다. 텍스처 해제 API 가
+    /// 없으므로 같은 그림을 매번 올리면 쌓이기만 한다 — 그래서 경로로 알아보고 새 그림만 올린다.
+    /// (그림 파일의 **내용**을 바꾼 경우는 알아채지 못한다 — 시트와 같이 재시작해야 한다.)
+    uploaded: BTreeMap<String, TextureId>,
 }
 
 impl Terrain {
@@ -252,12 +269,29 @@ impl Terrain {
     /// 파일이나 그림이 잘못되면 오류 — 호출자가 알림으로 띄우고 **그림 없이** 계속한다
     /// (지형 그림이 없어도 편집·플레이는 돌아간다).
     pub(crate) fn load(renderer: &mut impl Renderer) -> Result<Self, String> {
+        let mut terrain = Self::default();
+        terrain.reload(renderer)?;
+        Ok(terrain)
+    }
+
+    /// `terrain.ron` 을 다시 읽는다 — 팔레트 창에서 항목을 추가한 뒤에 부른다.
+    ///
+    /// 실패하면 **지금 목록을 그대로 둔다** (반쯤 바뀐 상태를 만들지 않는다).
+    pub(crate) fn reload(&mut self, renderer: &mut impl Renderer) -> Result<(), String> {
         let plan = plan()?;
         let mut textures: BTreeMap<String, TextureId> = BTreeMap::new();
         for (name, (image, _)) in &plan.images {
-            let id = renderer
-                .load_texture(&image.desc("tileset"))
-                .map_err(|e| format!("타일셋 {name}: {e}"))?;
+            let path = plan.paths.get(name).cloned().unwrap_or_default();
+            let id = match self.uploaded.get(&path) {
+                Some(&id) => id,
+                None => {
+                    let id = renderer
+                        .load_texture(&image.desc("tileset"))
+                        .map_err(|e| format!("타일셋 {name}: {e}"))?;
+                    self.uploaded.insert(path, id);
+                    id
+                }
+            };
             textures.insert(name.clone(), id);
         }
 
@@ -278,7 +312,8 @@ impl Terrain {
                 },
             );
         }
-        Ok(Self { entries })
+        self.entries = entries;
+        Ok(())
     }
 
     pub(crate) fn get(&self, id: ArtId) -> Option<&Art> {
@@ -292,6 +327,232 @@ impl Terrain {
             .map(|(&id, art)| (id, art.name.as_str(), art.kind))
             .collect()
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 팔레트 창에서 고른 그림을 `terrain.ron` 에 추가 (P4)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 이 파일은 **사람이 주석을 달아 쓴 파일**이다. serde 로 읽었다가 다시 쓰면 주석이 전부 사라진다.
+// 그래서 블록(`tilesets` / `ground` / `props`) 끝에 **한 줄을 텍스트로 끼워 넣고**, 쓰기 전에
+// 결과를 다시 파싱해 새 항목이 제대로 들어갔는지 확인한다. 파일 모양을 알아볼 수 없으면
+// 추측해서 고치지 않고 오류를 낸다.
+
+/// 지면 그림 번호 구간. 존 파일에 이 번호가 실린다.
+const GROUND_IDS: core::ops::RangeInclusive<u16> = 1..=99;
+/// 정적 오브젝트 번호 구간.
+const PROP_IDS: core::ops::RangeInclusive<u16> = 100..=u16::MAX;
+
+/// 팔레트 창에서 고른 그림 한 조각.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Pick {
+    /// 그림 경로 — 작업 디렉터리 기준, **`/` 구분**(두 OS 에서 같은 파일이 되도록).
+    pub(crate) image: String,
+    /// 그림 안의 픽셀 사각형 `(x, y, 폭, 높이)`.
+    pub(crate) px: (u32, u32, u32, u32),
+    pub(crate) kind: ArtKind,
+    /// **새 타일셋을 만들 때만** 쓰는 축척 — 팔레트 창의 칸 크기(= 1m 로 본다).
+    pub(crate) pixels_per_meter: f32,
+}
+
+/// [`find_or_add`] 의 결과.
+#[derive(Debug)]
+pub(crate) struct Added {
+    pub(crate) id: ArtId,
+    /// 새 파일 내용. 이미 있던 그림이면 입력과 같다.
+    pub(crate) text: String,
+    /// 새로 추가했나 (이미 있던 그림이면 `false`).
+    pub(crate) created: bool,
+}
+
+/// 같은 그림·같은 영역·같은 층이 이미 있으면 그 번호를, 없으면 항목을 추가한 새 텍스트를 돌려준다.
+///
+/// 타일셋도 없으면 함께 추가한다. 번호는 층의 구간(지면 1~99 / 오브젝트 100~)에서 **비어 있는 가장
+/// 작은 것** — 지면·오브젝트가 번호 공간을 공유하므로 두 표를 다 본다.
+pub(crate) fn find_or_add(text: &str, pick: &Pick) -> Result<Added, String> {
+    let file: TerrainFile = ron::from_str(text).map_err(|e| format!("지형 데이터: {e}"))?;
+    let image = pick.image.replace('\\', "/");
+    let (x, y, w, h) = pick.px;
+    if w == 0 || h == 0 {
+        return Err(String::from("크기가 0 인 영역은 추가할 수 없음"));
+    }
+
+    // 이 그림을 쓰는 타일셋 — 없으면 새로 만든다.
+    let existing_set = file
+        .tilesets
+        .iter()
+        .find(|(_, set)| set.image.replace('\\', "/") == image)
+        .map(|(name, _)| name.clone());
+
+    let table = match pick.kind {
+        ArtKind::Ground => &file.ground,
+        ArtKind::Prop => &file.props,
+    };
+    if let Some(set) = &existing_set
+        && let Some((&id, _)) = table
+            .iter()
+            .find(|(_, art)| &art.tileset == set && art.px == pick.px)
+    {
+        return Ok(Added {
+            id: ArtId::new(id),
+            text: text.to_string(),
+            created: false,
+        });
+    }
+
+    let mut out = text.to_string();
+    let set = match existing_set {
+        Some(name) => name,
+        None => {
+            if !(pick.pixels_per_meter.is_finite() && pick.pixels_per_meter > 0.0) {
+                return Err(format!(
+                    "축척은 양수여야 함 (지금 {})",
+                    pick.pixels_per_meter
+                ));
+            }
+            let name = unique_tileset_name(&file, &image);
+            let entry = format!(
+                "        {}: (\n            image: {},\n            pixels_per_meter: {:?},\n        ),",
+                ron_string(&name),
+                ron_string(&image),
+                pick.pixels_per_meter
+            );
+            out = insert_into_block(&out, "tilesets", &entry)?;
+            name
+        }
+    };
+
+    let range = match pick.kind {
+        ArtKind::Ground => GROUND_IDS,
+        ArtKind::Prop => PROP_IDS,
+    };
+    let id = range
+        .into_iter()
+        .find(|id| !file.ground.contains_key(id) && !file.props.contains_key(id))
+        .ok_or_else(|| String::from("이 층에 쓸 수 있는 번호가 남지 않았음"))?;
+
+    // 이름은 나중에 사람이 고치라고 만들어 둔다 — 파일 이름과 칸 좌표면 어디서 왔는지 안다.
+    let stem = Path::new(&image)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("그림");
+    let name = format!("{stem} {x},{y}");
+    let block = match pick.kind {
+        ArtKind::Ground => "ground",
+        ArtKind::Prop => "props",
+    };
+    let entry = format!(
+        "        {id}: (name: {}, tileset: {}, px: ({x}, {y}, {w}, {h})),",
+        ron_string(&name),
+        ron_string(&set)
+    );
+    out = insert_into_block(&out, block, &entry)?;
+
+    // 끼워 넣은 결과가 여전히 읽히고, 새 항목이 정말 들어갔는지 확인한 뒤에만 돌려준다.
+    let check: TerrainFile =
+        ron::from_str(&out).map_err(|e| format!("추가한 결과를 읽을 수 없음 (버그): {e}"))?;
+    let added = match pick.kind {
+        ArtKind::Ground => check.ground.get(&id),
+        ArtKind::Prop => check.props.get(&id),
+    };
+    if !added.is_some_and(|a| a.tileset == set && a.px == pick.px) {
+        return Err(String::from("추가한 항목이 결과에 없음 (버그)"));
+    }
+    Ok(Added {
+        id: ArtId::new(id),
+        text: out,
+        created: true,
+    })
+}
+
+/// 디스크의 `data/terrain.ron` 에 [`find_or_add`] 를 적용한다. 파일이 없으면 내장본에서 시작해 만든다.
+///
+/// 쓰기는 임시 파일에 쓴 뒤 이름 바꾸기 — 도중에 멈춰도 원래 파일이 반쯤 덮이지 않는다.
+pub(crate) fn add_to_disk(pick: &Pick) -> Result<Added, String> {
+    let path = Path::new(DISK_PATH);
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => EMBEDDED.to_string(),
+        Err(e) => return Err(format!("{DISK_PATH}: {e}")),
+    };
+    let added = find_or_add(&text, pick)?;
+    if added.created {
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        let tmp = path.with_extension("ron.tmp");
+        std::fs::write(&tmp, &added.text).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        std::fs::rename(&tmp, path).map_err(|e| format!("{DISK_PATH}: {e}"))?;
+    }
+    Ok(added)
+}
+
+/// 블록 `    이름: {` 의 닫는 줄 `    },` 바로 앞에 `line` 을 끼워 넣는다.
+///
+/// 블록이 없으면(생략 가능한 `ground`/`props`) 맨 끝 `)` 앞에 새로 만든다.
+/// 우리가 쓰는 들여쓰기(4칸) 그대로일 때만 알아본다 — 모양이 다르면 추측하지 않고 오류.
+fn insert_into_block(text: &str, block: &str, line: &str) -> Result<String, String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let open = format!("    {block}: {{");
+    let start = lines.iter().position(|l| l.trim_end() == open);
+
+    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_string()).collect();
+    match start {
+        Some(start) => {
+            let close = lines[start + 1..]
+                .iter()
+                .position(|l| l.trim_end() == "    },")
+                .map(|i| start + 1 + i)
+                .ok_or_else(|| {
+                    format!("terrain.ron 의 `{block}` 블록 끝을 찾지 못함 — 들여쓰기가 바뀌었나?")
+                })?;
+            out.insert(close, line.to_string());
+        }
+        None => {
+            let end = lines
+                .iter()
+                .rposition(|l| l.trim_start().starts_with(')'))
+                .ok_or_else(|| String::from("terrain.ron 의 끝 `)` 를 찾지 못함"))?;
+            out.splice(end..end, [open, line.to_string(), String::from("    },")]);
+        }
+    }
+    let mut joined = out.join("\n");
+    if text.ends_with('\n') {
+        joined.push('\n');
+    }
+    Ok(joined)
+}
+
+/// 그림 파일 이름에서 타일셋 이름을 만든다. 이미 있으면 `_2`, `_3` … 을 붙인다.
+fn unique_tileset_name(file: &TerrainFile, image: &str) -> String {
+    let stem: String = Path::new(image)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("tileset")
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect();
+    let stem = if stem.is_empty() {
+        String::from("tileset")
+    } else {
+        stem
+    };
+    (1..)
+        .map(|n| {
+            if n == 1 {
+                stem.clone()
+            } else {
+                format!("{stem}_{n}")
+            }
+        })
+        .find(|name| !file.tilesets.contains_key(name))
+        .unwrap_or(stem)
+}
+
+/// RON 문자열 리터럴 — 따옴표와 역슬래시를 이스케이프한다.
+fn ron_string(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// 픽셀 사각형 → 정규화 UV. 좌상단 원점은 양쪽이 같다.
@@ -477,6 +738,155 @@ mod tests {
         assert!(!err.is_empty());
     }
 
+    // ── 팔레트 자동 추가 (P4) ───────────────────────────────────────────────
+
+    const OVERWORLD: &str = "assets/third_party/zelda-like-armm1998/gfx/overworld.png";
+
+    fn pick(image: &str, px: (u32, u32, u32, u32), kind: ArtKind) -> Pick {
+        Pick {
+            image: image.into(),
+            px,
+            kind,
+            pixels_per_meter: 16.0,
+        }
+    }
+
+    #[test]
+    fn a_new_ground_cell_gets_a_free_number_and_keeps_the_comments() {
+        let added = find_or_add(
+            EMBEDDED,
+            &pick(OVERWORLD, (0, 144, 16, 16), ArtKind::Ground),
+        )
+        .expect("추가");
+        assert!(added.created);
+        assert!(GROUND_IDS.contains(&added.id.raw()));
+        let before: TerrainFile = ron::from_str(EMBEDDED).unwrap();
+        assert!(
+            !before.ground.contains_key(&added.id.raw()),
+            "쓰던 번호를 덮었다"
+        );
+        // 사람이 쓴 주석이 남아 있어야 한다 — serde 로 다시 쓰면 사라진다.
+        assert!(added.text.contains("// 지형 그림"), "주석이 사라졌다");
+        assert!(
+            added.text.contains("overworld 0,144"),
+            "이름이 만들어지지 않았다"
+        );
+        // 그림 파일은 그대로라 타일셋이 늘면 안 된다.
+        let after: TerrainFile = ron::from_str(&added.text).unwrap();
+        assert_eq!(after.tilesets.len(), before.tilesets.len());
+    }
+
+    #[test]
+    fn picking_an_existing_region_reuses_its_number() {
+        // 1번 풀이 (80,144,16,16) 이다 — 같은 조각을 또 고르면 새로 만들지 않는다.
+        let added = find_or_add(
+            EMBEDDED,
+            &pick(OVERWORLD, (80, 144, 16, 16), ArtKind::Ground),
+        )
+        .unwrap();
+        assert!(!added.created);
+        assert_eq!(added.id, ArtId::new(1));
+        assert_eq!(added.text, EMBEDDED, "이미 있으면 파일을 바꾸지 않는다");
+    }
+
+    #[test]
+    fn a_prop_gets_a_number_in_the_prop_range() {
+        let added = find_or_add(EMBEDDED, &pick(OVERWORLD, (0, 0, 32, 32), ArtKind::Prop)).unwrap();
+        assert!(PROP_IDS.contains(&added.id.raw()));
+        let after: TerrainFile = ron::from_str(&added.text).unwrap();
+        assert!(after.props.contains_key(&added.id.raw()));
+    }
+
+    #[test]
+    fn a_new_image_creates_its_tileset_once() {
+        let first = find_or_add(
+            EMBEDDED,
+            &pick(
+                "assets/third_party/x/gfx/Cave Tiles.png",
+                (0, 0, 16, 16),
+                ArtKind::Ground,
+            ),
+        )
+        .unwrap();
+        let file: TerrainFile = ron::from_str(&first.text).unwrap();
+        let (name, set) = file
+            .tilesets
+            .iter()
+            .find(|(_, s)| s.image.ends_with("Cave Tiles.png"))
+            .expect("타일셋이 추가되지 않았다");
+        assert_eq!(name, "cave_tiles", "이름은 소문자 + 밑줄");
+        assert_eq!(set.pixels_per_meter, 16.0);
+
+        // 같은 그림의 다른 칸은 타일셋을 또 만들지 않는다.
+        let second = find_or_add(
+            &first.text,
+            &pick(
+                "assets/third_party/x/gfx/Cave Tiles.png",
+                (16, 0, 16, 16),
+                ArtKind::Ground,
+            ),
+        )
+        .unwrap();
+        let file: TerrainFile = ron::from_str(&second.text).unwrap();
+        assert_eq!(
+            file.tilesets
+                .values()
+                .filter(|s| s.image.ends_with("Cave Tiles.png"))
+                .count(),
+            1
+        );
+        assert_ne!(first.id, second.id);
+    }
+
+    #[test]
+    fn windows_separators_find_the_same_tileset() {
+        // 디렉터리를 훑으면 Windows 에서는 `\` 가 섞일 수 있다 — 같은 파일로 봐야 한다.
+        let added = find_or_add(
+            EMBEDDED,
+            &pick(
+                &OVERWORLD.replace('/', "\\"),
+                (80, 144, 16, 16),
+                ArtKind::Ground,
+            ),
+        )
+        .unwrap();
+        assert!(!added.created);
+    }
+
+    #[test]
+    fn a_missing_block_is_created() {
+        // `props` 는 생략할 수 있다 — 없는 파일에도 오브젝트를 추가할 수 있어야 한다.
+        let start = EMBEDDED.find("    props: {").unwrap();
+        let end = start + EMBEDDED[start..].find("    },\n").unwrap() + "    },\n".len();
+        let without = format!("{}{}", &EMBEDDED[..start], &EMBEDDED[end..]);
+        let added =
+            find_or_add(&without, &pick(OVERWORLD, (96, 0, 80, 64), ArtKind::Prop)).unwrap();
+        let file: TerrainFile = ron::from_str(&added.text).unwrap();
+        assert_eq!(file.props.len(), 1);
+    }
+
+    #[test]
+    fn an_unrecognised_layout_is_an_error_not_a_guess() {
+        // 블록 닫는 줄의 들여쓰기가 달라지면 끝을 알아볼 수 없다 — 추측해서 고치지 않는다.
+        let reindented = EMBEDDED.replace("    },\n", "},\n");
+        assert!(
+            ron::from_str::<TerrainFile>(&reindented).is_ok(),
+            "시험 전제: 파일 자체는 여전히 읽혀야 한다"
+        );
+        assert!(
+            find_or_add(
+                &reindented,
+                &pick(OVERWORLD, (0, 0, 16, 16), ArtKind::Ground)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn zero_sized_picks_are_refused() {
+        assert!(find_or_add(EMBEDDED, &pick(OVERWORLD, (0, 0, 0, 16), ArtKind::Ground)).is_err());
+    }
+
     #[test]
     fn uv_maps_pixels_to_the_unit_square() {
         let uv = uv_of((16, 32, 16, 16), 64, 64);
@@ -524,6 +934,7 @@ mod tests {
                     },
                 ),
             ]),
+            uploaded: BTreeMap::new(),
         };
         let layer = ArtLayer::from([
             (TileCoord::new(32, 32), ArtId::new(1)),
@@ -558,6 +969,7 @@ mod tests {
                     size: Vec2::ONE,
                 },
             )]),
+            uploaded: BTreeMap::new(),
         };
         let layer = ArtLayer::from([(TileCoord::new(0, 0), ArtId::new(1))]);
         let mut out = Vec::new();

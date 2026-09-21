@@ -135,14 +135,6 @@ impl MarkerKindFile {
             ItemKind::Monster => Self::Monster,
         }
     }
-
-    fn to_marker(self) -> ItemKind {
-        match self {
-            Self::Player => ItemKind::PlayerSpawn,
-            Self::Npc => ItemKind::Npc,
-            Self::Monster => ItemKind::Monster,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -301,15 +293,12 @@ pub(crate) struct ActorLook {
 }
 
 impl ActorLook {
-    /// 이 타입을 그릴 때 쓸 색. 타입이 색을 정하지 않았으면 `fallback`(마커 종류 색).
+    /// 이 타입이 **명시한** 색. 정하지 않았으면 `NO_TINT`(흰색).
     ///
-    /// 내장 플레이스홀더는 무채색이라 색이 없으면 형체만 남는다 — 그래서 기본값이 필요하다.
-    pub(crate) fn tint_or(&self, fallback: [f32; 4]) -> [f32; 4] {
-        if self.tint == crate::sprites::NO_TINT {
-            fallback
-        } else {
-            self.tint
-        }
+    /// 여기서 마커 종류 색으로 채우지 않는다 — 그 판단은 시트가 무채색인지 아는 쪽
+    /// (`sprites::tint_of`)이 한다.
+    pub(crate) fn tint(&self) -> [f32; 4] {
+        self.tint
     }
 }
 

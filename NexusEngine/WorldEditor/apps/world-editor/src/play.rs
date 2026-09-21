@@ -23,9 +23,9 @@ use nexus_sim::{
     Authority, BagKind, EquipSlot, Event, Intent, LocalAuthority, Rejection, Relation, SimWorld,
 };
 
-use crate::game_data::GameData;
+use crate::game_data::{ActorLook, GameData};
 use crate::scene::{ActorId, ItemKind, Scene};
-use crate::sprites::{Look, SpriteLibrary};
+use crate::sprites::{Look, NO_TINT, SpriteLibrary};
 
 /// 쫓는 대상이 마지막 경로 지점에서 이만큼(m) 벗어나야 다시 경로를 잡는다 (AI 와 같은 값).
 const REPATH_DISTANCE: f32 = 0.5;
@@ -61,11 +61,12 @@ enum Order {
 #[derive(Clone, Debug)]
 struct Label {
     name: String,
-    /// 어느 마커에서 나온 유닛인가 — 목록 정렬·표시에 쓴다.
-    kind: ItemKind,
     /// 이 유닛의 **액터 타입** — 스프라이트 시트를 고르는 기준이다.
     actor: ActorId,
+    /// 액터 타입이 명시한 색 (없으면 `NO_TINT`).
     tint: [f32; 4],
+    /// 무채색 시트에 쓸 마커 종류 색.
+    fallback: [f32; 4],
 }
 
 /// 인벤토리 패널에서 누른 것.
@@ -127,12 +128,10 @@ impl PlaySession {
                 unit,
                 Label {
                     name,
-                    kind: item.kind,
                     actor,
-                    // 타입이 색을 정했으면 그것을, 아니면 마커 종류 색을.
-                    tint: data
-                        .actor_look(actor)
-                        .map_or_else(|| item.kind.color(), |l| l.tint_or(item.kind.color())),
+                    // 두 색을 따로 들고 간다 — 어느 쪽을 쓸지는 시트가 무채색인지로 정해진다.
+                    tint: data.actor_look(actor).map_or(NO_TINT, ActorLook::tint),
+                    fallback: item.kind.color(),
                 },
             );
             if is_player {
@@ -528,19 +527,21 @@ impl PlaySession {
         sprites: &SpriteLibrary,
         out: &mut Vec<RenderCommand>,
     ) {
-        let fallback = SpriteAnimator::default();
+        let idle_animator = SpriteAnimator::default();
         for (unit, u) in self.world().units() {
             let actor = self.actor_of(unit);
-            let tint = if u.is_alive() {
-                self.labels.get(&unit).map_or([1.0; 4], |l| l.tint)
-            } else {
-                CORPSE_TINT
+            // 시체는 어떤 시트든 회색 — 명시한 색으로 넘겨 컬러 아트에도 곱해지게 한다.
+            let (tint, fallback) = match self.labels.get(&unit) {
+                _ if !u.is_alive() => (CORPSE_TINT, CORPSE_TINT),
+                Some(l) => (l.tint, l.fallback),
+                None => (NO_TINT, NO_TINT),
             };
             let look = Look {
                 heading: u.heading(),
                 tint,
+                fallback,
             };
-            let animator = self.animators.get(&unit).unwrap_or(&fallback);
+            let animator = self.animators.get(&unit).unwrap_or(&idle_animator);
             sprites
                 .sheet(actor)
                 .push(u.render_pos(alpha), look, animator, px, BIAS_SPRITE, out);

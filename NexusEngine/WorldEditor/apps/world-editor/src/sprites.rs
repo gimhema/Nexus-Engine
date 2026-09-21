@@ -318,14 +318,18 @@ impl Sheet {
 
 /// 이 시트에 실제로 곱할 색.
 ///
-/// - **무채색 시트**(`tinted: true`)는 색이 있어야 보이므로 항상 곱한다.
-/// - **컬러 시트**는 그림 그대로 두는 것이 기본이다. 다만 액터 타입이 색을 **명시했으면**
-///   (흰색이 아니면) 그것을 곱한다 — 같은 그림으로 색만 다른 변종(붉은 슬라임)을 만드는 방법이다.
+/// | | 액터가 색을 명시함 | 명시 안 함 ([`NO_TINT`]) |
+/// |---|---|---|
+/// | **무채색 시트** (`tinted: true`) | 그 색 | `fallback`(마커 종류 색) — 색이 없으면 형체만 남는다 |
+/// | **컬러 시트** | 그 색 — 같은 그림의 색 변종(붉은 슬라임) | 그림 그대로 |
+///
+/// **종류 색은 무채색 시트에만 간다.** 컬러 아트에 곱하면 플레이어가 초록색으로 물든다
+/// (실제로 겪은 버그 — 기본 색과 명시한 색을 한 값으로 합쳐 넘겼더니 구분이 사라졌다).
 fn tint_of(tinted: bool, look: Look) -> [f32; 4] {
-    if tinted || look.tint != NO_TINT {
-        look.tint
-    } else {
-        NO_TINT
+    match (look.tint != NO_TINT, tinted) {
+        (true, _) => look.tint,
+        (false, true) => look.fallback,
+        (false, false) => NO_TINT,
     }
 }
 
@@ -337,8 +341,10 @@ pub(crate) const NO_TINT: [f32; 4] = [1.0; 4];
 pub(crate) struct Look {
     /// 바라보는 방향 (라디안) — 시트의 방향 행을 고른다.
     pub(crate) heading: f32,
-    /// 무채색 시트에 곱할 색 (sRGB). 컬러 시트에서는 무시된다.
+    /// 액터가 **명시한** 색 (sRGB). 정하지 않았으면 [`NO_TINT`]. 어느 시트에나 곱해진다.
     pub(crate) tint: [f32; 4],
+    /// 무채색 시트에만 쓰는 기본 색 — 마커 종류 색.
+    pub(crate) fallback: [f32; 4],
 }
 
 /// 마커 종류별 시트 모음.
@@ -418,7 +424,7 @@ impl SpriteLibrary {
     /// 마커 하나를 세운다 (에디터 — 공용 재생기).
     ///
     /// `actor` 는 마커가 실제로 쓸 액터 타입이다 (`GameData::resolve_actor` 가 푼 값).
-    /// `tint` 는 그 타입의 표시 색 — 무채색 시트에만 곱해진다.
+    /// `tint` 는 그 타입이 **명시한** 색(없으면 [`NO_TINT`]) — 무채색 시트는 대신 마커 종류 색을 쓴다.
     /// `px` 는 화면 1픽셀에 해당하는 월드 길이 — 빌보드는 카메라 축을 쓰므로 가로·세로가 같은 배율이다.
     pub(crate) fn build(
         &self,
@@ -432,6 +438,7 @@ impl SpriteLibrary {
         let look = Look {
             heading: item.orientation,
             tint,
+            fallback: item.kind.color(),
         };
         self.sheet(actor)
             .push(item.pos, look, &self.animator, px, depth_bias, out);
@@ -510,22 +517,28 @@ mod tests {
         let plan = tweaked("tinted: true,", "tinted: false,").unwrap();
         assert!(!plan.tinted);
 
-        // 색을 정하지 않았으면(흰색) 컬러 아트는 그대로 둔다 — 곱하면 색이 뒤집힌다.
+        // 플레이어 마커의 종류 색(초록). 무채색 플레이스홀더에만 가야 한다.
+        let kind_green = [0.30, 0.85, 0.55, 1.0];
+
+        // 색을 정하지 않았으면 컬러 아트는 그대로 — **종류 색이 새어 들어가면 안 된다**
+        // (플레이어가 초록색으로 물들던 버그).
         let plain = Look {
             heading: 0.0,
             tint: NO_TINT,
+            fallback: kind_green,
         };
-        assert_eq!(tint_of(plan.tinted, plain), NO_TINT);
+        assert_eq!(tint_of(plan.tinted, plain), NO_TINT, "컬러 아트가 물들었다");
 
         // 액터 타입이 색을 명시했으면 컬러 아트에도 곱한다 — 같은 그림의 색 변종.
         let recoloured = Look {
             heading: 0.0,
             tint: [1.0, 0.45, 0.45, 1.0],
+            fallback: kind_green,
         };
         assert_eq!(tint_of(plan.tinted, recoloured), recoloured.tint);
 
-        // 무채색 시트는 색이 없으면 형체만 남으므로 언제나 곱한다.
-        assert_eq!(tint_of(true, plain), NO_TINT);
+        // 무채색 시트는 색이 없으면 형체만 남으므로 종류 색을 쓴다. 명시한 색이 있으면 그것이 이긴다.
+        assert_eq!(tint_of(true, plain), kind_green);
         assert_eq!(tint_of(true, recoloured), recoloured.tint);
     }
 
