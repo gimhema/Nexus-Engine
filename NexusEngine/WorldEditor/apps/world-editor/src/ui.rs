@@ -17,14 +17,15 @@ use std::sync::Arc;
 use nexus_core::{Camera2d, Vec2, units};
 use nexus_platform::{WindowEvent, WindowTarget};
 use nexus_render_wgpu::{UiFrame, egui};
-use nexus_sim::{BagKind, Tile};
+use nexus_sim::{AiKind, BagKind, Tile, UnitDef};
 
 use crate::edit::{BrushShape, InspectorEdit, MAX_BRUSH_RADIUS, PointerInput, Tool};
-use crate::game_data::ActorStats;
 use crate::grid;
 use crate::palette::Palette;
 use crate::play::{InventoryAction, PlaySession};
-use crate::scene::{ActorId, ArtId, ItemKind, Pick, Scene, Target, ZONE_LABEL};
+use crate::scene::{
+    ActorId, ArtId, Item, ItemKind, OverrideEdit, Overrides, Pick, Scene, Target, ZONE_LABEL,
+};
 use crate::terrain::ArtKind;
 use crate::zone_file;
 
@@ -74,7 +75,7 @@ pub(crate) struct UiModel<'a> {
     pub(crate) tool: Tool,
     pub(crate) brush: Tile,
     /// 고를 수 있는 액터 타입 `(번호, 이름, 수치)`. 데이터를 못 읽었으면 빈 목록.
-    pub(crate) actor_catalog: Vec<(ActorId, &'a str, ActorStats)>,
+    pub(crate) actor_catalog: Vec<(ActorId, &'a str, UnitDef)>,
     /// 마커 종류별 기본 액터 — [`ItemKind::ALL`] 순서.
     pub(crate) actor_defaults: [ActorId; 3],
     /// 지형 그림 붓 — 0 이면 지우개.
@@ -1016,14 +1017,14 @@ fn inspector_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActio
                         ui.weak("뷰포트: 화살표 끝 ◆ 를 끌어 회전 (Ctrl 15°)");
 
                         ui.add_space(10.0);
-                        actor_section(ui, model, item.kind, item.actor, actions);
+                        actor_section(ui, model, &[item], actions);
                     }
                 }
                 many => {
                     ui.label(format!("{}개 선택됨", many.len()));
                     ui.weak("뷰포트에서 끌면 함께 이동합니다.\nDelete: 모두 삭제");
 
-                    // 여러 마커의 타입을 한 번에 바꾼다. 값이 다르면 "—" 로 보여 준다
+                    // 여러 마커의 타입·덮어쓰기를 한 번에 바꾼다. 값이 다르면 "—" 로 보여 준다
                     // (CLAUDE.md 「UI 명세 전달 형식」의 다중 선택 규칙).
                     let actors: Vec<_> = many
                         .iter()
@@ -1032,31 +1033,35 @@ fn inspector_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActio
                             Target::Zone => None,
                         })
                         .collect();
-                    if let Some(first) = actors.first() {
-                        let same = actors.iter().all(|i| i.actor == first.actor);
-                        let shown = if same { first.actor } else { ActorId::DEFAULT };
+                    if !actors.is_empty() {
                         ui.add_space(10.0);
-                        actor_section(ui, model, first.kind, shown, actions);
-                        if !same {
-                            ui.weak("— (선택한 마커의 타입이 서로 다릅니다)");
-                        }
+                        actor_section(ui, model, &actors, actions);
                     }
                 }
             }
         });
 }
 
-/// 액터 타입 드롭다운 + 그 타입의 수치 (P1).
+/// 덮어쓴 줄의 글자색 — 수치가 `rules.ron` 이 아니라 존 파일에 있다는 표시.
+const OVERRIDE_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 190, 90);
+
+/// 액터 타입 드롭다운 (P1) + 수치 표와 마커별 덮어쓰기 (P1-4).
 ///
-/// 수치는 **읽기 전용**이다 — 값을 고치는 곳은 `data/rules.ron` 이고, 마커는 "어느 타입인가"
-/// 만 정한다. 마커별로 수치를 덮어쓰는 것은 P1-4.
-fn actor_section(
-    ui: &mut egui::Ui,
-    model: &UiModel<'_>,
-    kind: ItemKind,
-    actor: ActorId,
-    actions: &mut UiActions,
-) {
+/// 표의 각 줄은 **타입 값**을 보여 준다. 오른쪽 칸을 켜면 이 마커에만 다른 값을 줄 수 있고,
+/// 그 줄은 강조색이 된다 — 수치가 `rules.ron` 과 존 파일 두 곳에 있다는 것이 눈에 보이게.
+/// 여러 개를 골랐으면 전부에 적용하고, 서로 다른 값은 "—" 로 보여 준다.
+fn actor_section(ui: &mut egui::Ui, model: &UiModel<'_>, items: &[&Item], actions: &mut UiActions) {
+    let Some(first) = items.first() else {
+        return;
+    };
+    let kind = first.kind;
+    let same_actor = items.iter().all(|i| i.actor == first.actor);
+    let actor = if same_actor {
+        first.actor
+    } else {
+        ActorId::DEFAULT
+    };
+
     ui.strong("액터 타입");
     if model.actor_catalog.is_empty() {
         ui.weak("게임 데이터를 읽지 못했습니다 — data/rules.ron 을 확인하세요.");
@@ -1103,25 +1108,278 @@ fn actor_section(
                 }
             }
         });
+    if !same_actor {
+        ui.weak("— (선택한 마커의 타입이 서로 다릅니다)");
+    }
 
-    // 실제로 쓰일 타입의 수치 — 기본값이면 종류 기본 타입의 것.
-    let effective = if actor.is_default() {
-        model.default_actor(kind)
-    } else {
-        actor
+    // 마커마다 실제로 쓰일 타입의 수치 — 기본값이면 종류 기본 타입의 것.
+    let base_of = |i: &Item| {
+        let effective = if i.actor.is_default() {
+            model.default_actor(i.kind)
+        } else {
+            i.actor
+        };
+        model
+            .actor_catalog
+            .iter()
+            .find(|(a, _, _)| *a == effective)
+            .map(|(_, _, def)| *def)
     };
-    if let Some((_, _, stats)) = model.actor_catalog.iter().find(|(a, _, _)| *a == effective) {
-        ui.add_space(4.0);
-        egui::Grid::new("actor_stats")
-            .num_columns(2)
-            .show(ui, |ui| {
-                for (label, value) in stats.rows() {
-                    ui.weak(label);
-                    ui.label(value);
-                    ui.end_row();
+    let bases: Vec<_> = items.iter().map(|i| base_of(i)).collect();
+    let Some(Some(base)) = bases.first().copied() else {
+        return;
+    };
+    let same_base = bases.iter().all(|b| *b == Some(base));
+    // 타입 값이 마커마다 다르면 "—" 로 보여 준다.
+    let shown = |v: String| if same_base { v } else { String::from("—") };
+
+    ui.add_space(4.0);
+    egui::Grid::new("actor_stats")
+        .num_columns(3)
+        .show(ui, |ui| {
+            let mut row = OverrideRow { items, actions };
+            row.number(
+                ui,
+                "HP",
+                shown(base.max_hp.to_string()),
+                base.max_hp,
+                |o| o.max_hp,
+                OverrideEdit::MaxHp,
+                1,
+            );
+            row.number(
+                ui,
+                "공격",
+                shown(base.attack.to_string()),
+                base.attack,
+                |o| o.attack,
+                OverrideEdit::Attack,
+                0,
+            );
+            row.number(
+                ui,
+                "방어",
+                shown(base.defense.to_string()),
+                base.defense,
+                |o| o.defense,
+                OverrideEdit::Defense,
+                0,
+            );
+
+            // 이동 속도는 덮어쓰지 않는다 — 걷는 애니메이션·경로와 묶인 타입의 성질이다.
+            ui.weak("이동");
+            ui.label(shown(format!("{:.1} m/s", base.move_speed)));
+            ui.end_row();
+
+            row.number(
+                ui,
+                "진영",
+                shown(base.faction.0.to_string()),
+                base.faction.0,
+                |o| o.faction,
+                OverrideEdit::Faction,
+                0,
+            );
+            row.ai(ui, shown(ai_label(base.ai).to_string()), base.ai);
+            row.range(
+                ui,
+                "어그로",
+                shown(format!("{:.1} m", base.aggro_range)),
+                base.aggro_range,
+                |o| o.aggro_range,
+                OverrideEdit::AggroRange,
+            );
+            row.range(
+                ui,
+                "귀환 거리",
+                shown(format!("{:.1} m", base.leash_range)),
+                base.leash_range,
+                |o| o.leash_range,
+                OverrideEdit::LeashRange,
+            );
+            row.immortal(ui, shown(yes_no(base.immortal).to_string()), base.immortal);
+        });
+
+    let overridden = items.iter().filter(|i| !i.overrides.is_empty()).count();
+    if overridden > 0 {
+        ui.horizontal(|ui| {
+            ui.colored_label(
+                OVERRIDE_COLOR,
+                format!(
+                    "덮어쓴 항목 {}개",
+                    items.iter().map(|i| i.overrides.count()).sum::<usize>()
+                ),
+            );
+            if ui.small_button("타입 값으로 되돌리기").clicked() {
+                actions.inspector = Some(InspectorEdit::ItemOverride {
+                    edit: OverrideEdit::Reset,
+                    finished: true,
+                });
+            }
+        });
+    }
+    ui.weak("타입 값은 data/rules.ron 에서 고칩니다 (F5 로 적용).\n오른쪽 칸을 켜면 이 마커에만 다른 값을 줍니다.");
+}
+
+fn ai_label(ai: AiKind) -> &'static str {
+    match ai {
+        AiKind::Passive => "수동",
+        AiKind::Defensive => "방어",
+        AiKind::Aggressive => "공격",
+    }
+}
+
+fn yes_no(b: bool) -> &'static str {
+    if b { "예" } else { "아니오" }
+}
+
+/// 덮어쓰기 표의 한 줄 — `항목 | 값 | 덮어쓰기 칸`.
+///
+/// 고른 마커들의 덮어쓰기 상태는 셋 중 하나다: 모두 없음(타입 값 표시) · 모두 같은 값(편집 가능) ·
+/// 섞임("—", 칸은 반쯤 체크). 칸을 켜면 **이미 덮어쓴 값이 있으면 그 값, 없으면 타입 값**에서 시작한다.
+struct OverrideRow<'a, 'b> {
+    items: &'a [&'a Item],
+    actions: &'b mut UiActions,
+}
+
+impl OverrideRow<'_, '_> {
+    /// 공통 뼈대. `editor` 는 값 칸의 위젯이고 `(changed, finished)` 를 돌려준다.
+    #[allow(clippy::too_many_arguments)]
+    fn show<T: Copy + PartialEq>(
+        &mut self,
+        ui: &mut egui::Ui,
+        label: &str,
+        base_text: String,
+        base: T,
+        get: impl Fn(&Overrides) -> Option<T>,
+        make: impl Fn(Option<T>) -> OverrideEdit,
+        editor: impl FnOnce(&mut egui::Ui, &mut T) -> (bool, bool),
+    ) {
+        let values: Vec<Option<T>> = self.items.iter().map(|i| get(&i.overrides)).collect();
+        let first = values.first().copied().flatten();
+        let all_on = values.iter().all(Option::is_some);
+        let any_on = values.iter().any(Option::is_some);
+        let uniform = all_on && values.iter().all(|v| *v == first);
+
+        if any_on {
+            ui.colored_label(OVERRIDE_COLOR, label);
+        } else {
+            ui.weak(label);
+        }
+
+        match first {
+            Some(mut v) if uniform => {
+                let (changed, finished) = editor(ui, &mut v);
+                if changed || finished {
+                    self.actions.inspector = Some(InspectorEdit::ItemOverride {
+                        edit: make(Some(v)),
+                        finished,
+                    });
                 }
+            }
+            _ if any_on => {
+                ui.colored_label(OVERRIDE_COLOR, "—");
+            }
+            _ => {
+                ui.label(base_text);
+            }
+        }
+
+        let mut on = all_on;
+        let r = ui
+            .add(egui::Checkbox::new(&mut on, "").indeterminate(any_on && !all_on))
+            .on_hover_text("이 마커에만 다른 값을 줍니다");
+        if r.changed() {
+            let edit = if on {
+                make(Some(values.iter().find_map(|v| *v).unwrap_or(base)))
+            } else {
+                make(None)
+            };
+            self.actions.inspector = Some(InspectorEdit::ItemOverride {
+                edit,
+                finished: true,
             });
-        ui.weak("수치는 data/rules.ron 에서 고칩니다 (F5 로 적용).");
+        }
+        ui.end_row();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn number(
+        &mut self,
+        ui: &mut egui::Ui,
+        label: &str,
+        base_text: String,
+        base: u32,
+        get: impl Fn(&Overrides) -> Option<u32>,
+        make: impl Fn(Option<u32>) -> OverrideEdit,
+        min: u32,
+    ) {
+        self.show(ui, label, base_text, base, get, make, |ui, v| {
+            let r = ui.add(egui::DragValue::new(v).speed(1.0).range(min..=1_000_000));
+            (r.changed(), r.drag_stopped() || r.lost_focus())
+        });
+    }
+
+    fn range(
+        &mut self,
+        ui: &mut egui::Ui,
+        label: &str,
+        base_text: String,
+        base: f32,
+        get: impl Fn(&Overrides) -> Option<f32>,
+        make: impl Fn(Option<f32>) -> OverrideEdit,
+    ) {
+        self.show(ui, label, base_text, base, get, make, |ui, v| {
+            let r = ui.add(
+                egui::DragValue::new(v)
+                    .speed(0.1)
+                    .range(0.0..=1000.0)
+                    .fixed_decimals(1)
+                    .suffix(" m"),
+            );
+            (r.changed(), r.drag_stopped() || r.lost_focus())
+        });
+    }
+
+    fn ai(&mut self, ui: &mut egui::Ui, base_text: String, base: AiKind) {
+        self.show(
+            ui,
+            "AI",
+            base_text,
+            base,
+            |o| o.ai,
+            OverrideEdit::Ai,
+            |ui, v| {
+                let mut picked = false;
+                egui::ComboBox::from_id_salt("override_ai")
+                    .selected_text(ai_label(*v))
+                    .show_ui(ui, |ui| {
+                        for kind in [AiKind::Passive, AiKind::Defensive, AiKind::Aggressive] {
+                            if ui.selectable_label(*v == kind, ai_label(kind)).clicked() {
+                                *v = kind;
+                                picked = true;
+                            }
+                        }
+                    });
+                // 드롭다운은 고르는 순간 끝난다 — 한 번에 한 스텝.
+                (picked, picked)
+            },
+        );
+    }
+
+    fn immortal(&mut self, ui: &mut egui::Ui, base_text: String, base: bool) {
+        self.show(
+            ui,
+            "불사",
+            base_text,
+            base,
+            |o| o.immortal,
+            OverrideEdit::Immortal,
+            |ui, v| {
+                let r = ui.checkbox(v, yes_no(*v));
+                (r.changed(), r.changed())
+            },
+        );
     }
 }
 

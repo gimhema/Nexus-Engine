@@ -6,7 +6,7 @@
 //! 이 모듈은 GPU·UI 를 모른다. 좌표는 모두 월드 공간(미터, XY 평면)이다 — `nexus_core::units`.
 
 use nexus_core::{Entity, Vec2, World, units};
-use nexus_sim::{Tile, TileCoord, TileMap};
+use nexus_sim::{AiKind, FactionId, Tile, TileCoord, TileMap, UnitDef};
 
 /// 존 경계의 최소 한 변 길이 (m). 핸들을 끌어 뒤집히거나 0 이 되는 것을 막는다.
 pub(crate) const MIN_ZONE_SIZE: f32 = 1.0;
@@ -80,6 +80,93 @@ pub(crate) struct Item {
     ///
     /// 수치·스프라이트는 전부 여기서 나온다 — 마커는 "어디에 무엇을" 만 정한다.
     pub(crate) actor: ActorId,
+    /// 이 마커에만 적용하는 수치 (P1-4). 비어 있으면 액터 타입 값을 그대로 쓴다.
+    pub(crate) overrides: Overrides,
+}
+
+/// 마커별 수치 덮어쓰기 (P1-4). `None` 인 항목은 액터 타입의 값을 따른다.
+///
+/// **배치에 따라 달라지는 값만** 연다 — HP·공격·방어·진영·AI·어그로/leash 범위·불사.
+/// 스킬·드롭·시트·이동 속도는 열지 않는다: 그 정도로 다르면 액터 타입을 따로 만드는 것이 맞다
+/// (수치가 존 파일과 `rules.ron` 두 곳에 흩어지는 범위를 좁게 유지한다).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Overrides {
+    pub(crate) max_hp: Option<u32>,
+    pub(crate) attack: Option<u32>,
+    pub(crate) defense: Option<u32>,
+    pub(crate) faction: Option<u32>,
+    pub(crate) ai: Option<AiKind>,
+    pub(crate) aggro_range: Option<f32>,
+    pub(crate) leash_range: Option<f32>,
+    pub(crate) immortal: Option<bool>,
+}
+
+/// 덮어쓰기 한 항목 바꾸기 — `None` 이면 타입 값으로 되돌린다.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum OverrideEdit {
+    MaxHp(Option<u32>),
+    Attack(Option<u32>),
+    Defense(Option<u32>),
+    Faction(Option<u32>),
+    Ai(Option<AiKind>),
+    AggroRange(Option<f32>),
+    LeashRange(Option<f32>),
+    Immortal(Option<bool>),
+    /// 전부 타입 값으로 되돌리기.
+    Reset,
+}
+
+impl Overrides {
+    pub(crate) fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// 덮어쓴 항목 수 — 인스펙터·목록 표시용.
+    pub(crate) fn count(&self) -> usize {
+        [
+            self.max_hp.is_some(),
+            self.attack.is_some(),
+            self.defense.is_some(),
+            self.faction.is_some(),
+            self.ai.is_some(),
+            self.aggro_range.is_some(),
+            self.leash_range.is_some(),
+            self.immortal.is_some(),
+        ]
+        .into_iter()
+        .filter(|&b| b)
+        .count()
+    }
+
+    /// 액터 타입의 수치에 덮어쓰기를 얹는다. 보정(음수 범위 등)은 스폰할 때 sim 이 한다.
+    #[must_use]
+    pub(crate) fn apply(&self, def: UnitDef) -> UnitDef {
+        UnitDef {
+            max_hp: self.max_hp.unwrap_or(def.max_hp),
+            attack: self.attack.unwrap_or(def.attack),
+            defense: self.defense.unwrap_or(def.defense),
+            faction: self.faction.map_or(def.faction, FactionId),
+            ai: self.ai.unwrap_or(def.ai),
+            aggro_range: self.aggro_range.unwrap_or(def.aggro_range),
+            leash_range: self.leash_range.unwrap_or(def.leash_range),
+            immortal: self.immortal.unwrap_or(def.immortal),
+            ..def
+        }
+    }
+
+    pub(crate) fn set(&mut self, edit: OverrideEdit) {
+        match edit {
+            OverrideEdit::MaxHp(v) => self.max_hp = v,
+            OverrideEdit::Attack(v) => self.attack = v,
+            OverrideEdit::Defense(v) => self.defense = v,
+            OverrideEdit::Faction(v) => self.faction = v,
+            OverrideEdit::Ai(v) => self.ai = v,
+            OverrideEdit::AggroRange(v) => self.aggro_range = v,
+            OverrideEdit::LeashRange(v) => self.leash_range = v,
+            OverrideEdit::Immortal(v) => self.immortal = v,
+            OverrideEdit::Reset => *self = Self::default(),
+        }
+    }
 }
 
 /// 존 경계 핸들. 모서리는 두 축을, 변은 한 축을 움직인다.
@@ -360,6 +447,7 @@ impl Scene {
             orientation: 0.0,
             // 종류의 기본 액터를 쓴다. 인스펙터에서 바꾼다.
             actor: ActorId::DEFAULT,
+            overrides: Overrides::default(),
         });
         entity
     }
@@ -380,6 +468,7 @@ impl Scene {
             size: kind.default_size(),
             orientation: 0.0,
             actor: ActorId::DEFAULT,
+            overrides: Overrides::default(),
         }
     }
 

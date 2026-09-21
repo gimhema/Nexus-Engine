@@ -25,10 +25,10 @@
 use std::path::{Path, PathBuf};
 
 use nexus_core::{Vec2, World, units};
-use nexus_sim::{Tile, TileCoord, TileMap};
+use nexus_sim::{AiKind, Tile, TileCoord, TileMap};
 use serde::{Deserialize, Serialize};
 
-use crate::scene::{ItemKind, MIN_ZONE_SIZE, Scene, ZoneBounds};
+use crate::scene::{ItemKind, MIN_ZONE_SIZE, Overrides, Scene, ZoneBounds};
 
 /// 지금 쓰는 형식 번호. 형식이 바뀌면 올리고, 옛 번호를 읽는 길을 남긴다.
 pub(crate) const FORMAT_VERSION: u32 = 1;
@@ -114,12 +114,99 @@ struct MarkerFile {
     /// 생략 가능하게 둔다 — 이 필드가 없는 예전 파일도 읽힌다.
     #[serde(default)]
     actor: u32,
+    /// 이 마커에만 적용하는 수치 (P1-4). 덮어쓴 것이 없으면 **쓰지 않는다** — 대부분의 마커는
+    /// 타입 값을 그대로 쓰므로 파일이 부풀지 않고, 이 필드가 없는 예전 파일도 그대로 읽힌다.
+    #[serde(default, skip_serializing_if = "OverridesFile::is_empty")]
+    overrides: OverridesFile,
     /// 위치 (m, XY).
     pos: [f32; 2],
     /// 점유 크기, 한 변 (m).
     size: f32,
     /// 방향 (라디안, 0 = +X, 반시계 +).
     orientation: f32,
+}
+
+/// 마커별 수치 덮어쓰기 — 적힌 항목만 액터 타입 값을 대신한다.
+///
+/// 필드 이름 오타가 "덮어쓰기 없음" 으로 조용히 넘어가지 않게 모르는 필드는 거부한다.
+#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OverridesFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_hp: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attack: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    defense: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    faction: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ai: Option<AiFile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    aggro_range: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    leash_range: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    immortal: Option<bool>,
+}
+
+/// AI 종류 — `data/rules.ron` 과 같은 이름을 쓴다.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+enum AiFile {
+    Passive,
+    Defensive,
+    Aggressive,
+}
+
+impl OverridesFile {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn of(o: &Overrides) -> Self {
+        Self {
+            max_hp: o.max_hp,
+            attack: o.attack,
+            defense: o.defense,
+            faction: o.faction,
+            ai: o.ai.map(|ai| match ai {
+                AiKind::Passive => AiFile::Passive,
+                AiKind::Defensive => AiFile::Defensive,
+                AiKind::Aggressive => AiFile::Aggressive,
+            }),
+            aggro_range: o.aggro_range,
+            leash_range: o.leash_range,
+            immortal: o.immortal,
+        }
+    }
+
+    /// 범위는 0 이상의 유한한 수여야 한다 — 음수·NaN 을 조용히 0 으로 바꾸면 저작자가 모른다.
+    fn into_overrides(self, what: &str) -> Result<Overrides, String> {
+        for (name, v) in [
+            ("aggro_range", self.aggro_range),
+            ("leash_range", self.leash_range),
+        ] {
+            if let Some(v) = v
+                && !(v.is_finite() && v >= 0.0)
+            {
+                return Err(format!("{what}.overrides.{name} 는 0 이상의 수여야 함"));
+            }
+        }
+        Ok(Overrides {
+            max_hp: self.max_hp,
+            attack: self.attack,
+            defense: self.defense,
+            faction: self.faction,
+            ai: self.ai.map(|ai| match ai {
+                AiFile::Passive => AiKind::Passive,
+                AiFile::Defensive => AiKind::Defensive,
+                AiFile::Aggressive => AiKind::Aggressive,
+            }),
+            aggro_range: self.aggro_range,
+            leash_range: self.leash_range,
+            immortal: self.immortal,
+        })
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -269,6 +356,7 @@ impl ZoneFile {
                         ItemKind::Monster => MarkerKindFile::Monster,
                     },
                     actor: item.actor.raw(),
+                    overrides: OverridesFile::of(&item.overrides),
                     pos: item.pos.to_array(),
                     size: item.size,
                     orientation: item.orientation,
@@ -351,12 +439,14 @@ impl ZoneFile {
                 MarkerKindFile::Npc => ItemKind::Npc,
                 MarkerKindFile::Monster => ItemKind::Monster,
             };
+            let overrides = m.overrides.into_overrides(&format!("markers[{i}]"))?;
             let entity = scene.add(&m.name, kind, pos, m.size);
             if let Some(item) = scene.item_mut(entity) {
                 item.orientation = units::normalize_heading(m.orientation);
                 // 없는 번호여도 여기서 거부하지 않는다 — 데이터를 고치는 동안 존 파일이
                 // 안 열리면 곤란하다. 실제로 쓸 때 `GameData::resolve_actor` 가 기본값으로 푼다.
                 item.actor = crate::scene::ActorId::new(m.actor);
+                item.overrides = overrides;
             }
         }
         Ok(scene)
@@ -501,6 +591,41 @@ mod tests {
         let loaded = from_ron(&to_ron(&original)).unwrap();
         let actors = |s: &Scene| s.items.iter().map(|i| i.actor).collect::<Vec<_>>();
         assert_eq!(actors(&loaded), actors(&original));
+    }
+
+    #[test]
+    fn overrides_survive_a_round_trip_and_only_appear_when_set() {
+        let mut original = Scene::server_default();
+        original.items[1].overrides = Overrides {
+            max_hp: Some(200),
+            ai: Some(AiKind::Defensive),
+            aggro_range: Some(12.5),
+            immortal: Some(false),
+            ..Overrides::default()
+        };
+        let text = to_ron(&original);
+        // 덮어쓴 마커 하나에만 `overrides` 가 붙고, 적지 않은 항목은 쓰지 않는다.
+        assert_eq!(text.matches("overrides:").count(), 1, "{text}");
+        assert!(!text.contains("attack: Some"), "{text}");
+
+        let loaded = from_ron(&text).unwrap();
+        let overrides = |s: &Scene| s.items.iter().map(|i| i.overrides).collect::<Vec<_>>();
+        assert_eq!(overrides(&loaded), overrides(&original));
+    }
+
+    #[test]
+    fn bad_overrides_are_rejected_with_the_marker_named() {
+        let mut scene = Scene::server_default();
+        scene.items[0].overrides.aggro_range = Some(3.0);
+        let text = to_ron(&scene);
+
+        let negative = text.replace("aggro_range: Some(3.0)", "aggro_range: Some(-1.0)");
+        let err = from_ron(&negative).unwrap_err();
+        assert!(err.contains("markers[0].overrides.aggro_range"), "{err}");
+
+        // 오타가 "덮어쓰기 없음" 으로 조용히 넘어가면 안 된다.
+        let typo = text.replace("aggro_range: Some(3.0)", "agro_range: Some(3.0)");
+        assert!(from_ron(&typo).is_err());
     }
 
     #[test]

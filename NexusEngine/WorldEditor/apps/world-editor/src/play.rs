@@ -116,9 +116,13 @@ impl PlaySession {
             if is_player && player.is_some() {
                 continue;
             }
-            // 마커가 가리키는 액터 타입에서 수치·그림이 모두 나온다 (P1).
+            // 마커가 가리키는 액터 타입에서 수치·그림이 나오고, 마커별 덮어쓰기가 그 위에 얹힌다 (P1, P1-4).
             let actor = data.resolve_actor(item.actor, item.kind);
-            let unit = world.spawn_unit(item.pos, item.orientation, data.unit_def(actor));
+            let unit = world.spawn_unit(
+                item.pos,
+                item.orientation,
+                item.overrides.apply(data.unit_def(actor)),
+            );
             let name = if is_player {
                 String::from("플레이어")
             } else {
@@ -718,6 +722,27 @@ mod tests {
             s.tick(DT, None);
         }
         assert_eq!(scene.items, before);
+    }
+
+    #[test]
+    fn marker_overrides_reach_the_spawned_unit() {
+        // P1-4: 같은 타입이라도 이 마커의 슬라임만 HP 가 다르다. 나머지 수치는 타입 그대로.
+        let mut scene = Scene::server_default();
+        let slime = scene.items.iter_mut().find(|i| i.name == "슬라임").unwrap();
+        slime.overrides.max_hp = Some(333);
+        let s = PlaySession::start(&scene, Camera2d::default(), GameData::embedded()).unwrap();
+        let plain = PlaySession::start(
+            &Scene::server_default(),
+            Camera2d::default(),
+            GameData::embedded(),
+        )
+        .unwrap();
+
+        let unit = s.world().unit(find(&s, "슬라임")).unwrap();
+        let base = plain.world().unit(find(&plain, "슬라임")).unwrap();
+        assert_eq!((unit.hp(), unit.def().max_hp), (333, 333));
+        assert_eq!(unit.def().attack, base.def().attack);
+        assert_ne!(base.def().max_hp, 333);
     }
 
     #[test]

@@ -17,7 +17,10 @@ use std::collections::BTreeMap;
 use nexus_core::{Entity, Vec2, units};
 use nexus_sim::{Tile, TileCoord};
 
-use crate::scene::{ActorId, ArtId, Handle, Item, ItemKind, Pick, Scene, Target, ZoneBounds};
+use crate::scene::{
+    ActorId, ArtId, Handle, Item, ItemKind, OverrideEdit, Overrides, Pick, Scene, Target,
+    ZoneBounds,
+};
 use crate::terrain::ArtKind;
 
 /// 뷰포트에서 포인터가 무슨 일을 하는가.
@@ -60,6 +63,8 @@ pub(crate) enum Command {
     PaintTiles(Vec<(TileCoord, Tile, Tile)>),
     /// 액터 타입 바꾸기. `(마커, 원래, 새것)`.
     SetActors(Vec<(Entity, ActorId, ActorId)>),
+    /// 마커별 수치 덮어쓰기 (P1-4). `(마커, 원래, 새것)`.
+    SetOverrides(Vec<(Entity, Overrides, Overrides)>),
     /// 그림 칠하기 한 번(누름→뗌). `(좌표, 원래, 새것)`. `kind` 가 어느 층인지 정한다.
     PaintArt {
         kind: ArtKind,
@@ -89,6 +94,9 @@ impl Command {
                 }
             }
             Self::SetActors(edits) => set_actors(scene, edits.iter().map(|&(e, _, to)| (e, to))),
+            Self::SetOverrides(edits) => {
+                set_overrides(scene, edits.iter().map(|&(e, _, to)| (e, to)))
+            }
             Self::PaintArt { kind, edits } => {
                 for &(at, _, to) in edits {
                     set_art(scene, *kind, at, to);
@@ -120,6 +128,9 @@ impl Command {
             Self::SetActors(edits) => {
                 set_actors(scene, edits.iter().map(|&(e, from, _)| (e, from)))
             }
+            Self::SetOverrides(edits) => {
+                set_overrides(scene, edits.iter().map(|&(e, from, _)| (e, from)))
+            }
             Self::PaintArt { kind, edits } => {
                 for &(at, from, _) in edits {
                     set_art(scene, *kind, at, from);
@@ -136,6 +147,7 @@ impl Command {
             Self::SetZone { from, to } => from == to,
             Self::PaintTiles(edits) => edits.is_empty(),
             Self::SetActors(edits) => edits.iter().all(|&(_, from, to)| from == to),
+            Self::SetOverrides(edits) => edits.iter().all(|(_, from, to)| from == to),
             Self::PaintArt { edits, .. } => edits.is_empty(),
         }
     }
@@ -163,6 +175,7 @@ impl Command {
             Self::SetZone { .. } => String::from("존 경계 변경"),
             Self::PaintTiles(edits) => count(edits.len(), "타일 칠하기"),
             Self::SetActors(edits) => count(edits.len(), "액터 타입 변경"),
+            Self::SetOverrides(edits) => count(edits.len(), "수치 덮어쓰기"),
             Self::PaintArt { kind, edits } => count(
                 edits.len(),
                 match kind {
@@ -214,6 +227,14 @@ fn set_actors(scene: &mut Scene, actors: impl Iterator<Item = (Entity, ActorId)>
     for (e, actor) in actors {
         if let Some(item) = scene.item_mut(e) {
             item.actor = actor;
+        }
+    }
+}
+
+fn set_overrides(scene: &mut Scene, values: impl Iterator<Item = (Entity, Overrides)>) {
+    for (e, overrides) in values {
+        if let Some(item) = scene.item_mut(e) {
+            item.overrides = overrides;
         }
     }
 }
@@ -330,6 +351,12 @@ pub(crate) enum InspectorEdit {
     ItemActor {
         actor: ActorId,
     },
+    /// 수치 덮어쓰기 한 항목 (P1-4). 선택한 마커 **전부**에 적용한다 — 액터 타입과 같은 규칙.
+    /// 숫자는 끌면서 바뀌므로 `finished` 때 한 스텝으로 기록한다.
+    ItemOverride {
+        edit: OverrideEdit,
+        finished: bool,
+    },
 }
 
 /// 진행 중인 뷰포트 드래그.
@@ -357,9 +384,11 @@ enum Drag {
 }
 
 /// 진행 중인 인스펙터 편집의 원래 값.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum LiveEdit {
     ItemPos(Entity, Vec2),
+    /// 덮어쓴 값을 끌어 바꾸는 동안 — 고른 마커별 원래 값.
+    Overrides(Vec<(Entity, Overrides)>),
     ItemHeading(Entity, f32),
     Zone(ZoneBounds),
 }
@@ -767,6 +796,7 @@ impl Editing {
                 set_headings(scene, std::iter::once((e, heading)));
             }
             Some(LiveEdit::Zone(z)) => scene.zone = z,
+            Some(LiveEdit::Overrides(originals)) => set_overrides(scene, originals.into_iter()),
             None => {}
         }
     }
@@ -1011,6 +1041,9 @@ impl Editing {
                     .collect();
                 self.history.record(Command::SetActors(edits));
             }
+            InspectorEdit::ItemOverride { edit, finished } => {
+                self.apply_override(scene, edit, finished);
+            }
             InspectorEdit::Zone { bounds, finished } => {
                 let original = match self.live {
                     Some(LiveEdit::Zone(orig)) => orig,
@@ -1027,6 +1060,38 @@ impl Editing {
                     self.live = Some(LiveEdit::Zone(original));
                 }
             }
+        }
+    }
+
+    /// 선택한 마커 전부의 덮어쓰기 한 항목을 바꾼다.
+    ///
+    /// 끄는 도중(`finished == false`)에는 원래 값을 기억만 하고, 끝날 때 원래 → 지금을 한 스텝으로 남긴다.
+    fn apply_override(&mut self, scene: &mut Scene, edit: OverrideEdit, finished: bool) {
+        let originals = match self.live.take() {
+            Some(LiveEdit::Overrides(orig)) => orig,
+            _ => self
+                .selection
+                .iter()
+                .filter_map(|t| match t {
+                    Target::Item(e) => scene.item(*e).map(|i| (*e, i.overrides)),
+                    Target::Zone => None,
+                })
+                .collect(),
+        };
+        for &(e, _) in &originals {
+            if let Some(item) = scene.item_mut(e) {
+                item.overrides.set(edit);
+            }
+        }
+        if finished {
+            let edits = originals
+                .into_iter()
+                .filter_map(|(e, from)| scene.item(e).map(|i| (e, from, i.overrides)))
+                .filter(|(_, from, to)| from != to)
+                .collect();
+            self.history.record(Command::SetOverrides(edits));
+        } else {
+            self.live = Some(LiveEdit::Overrides(originals));
         }
     }
 }
@@ -1289,6 +1354,133 @@ mod tests {
             },
         );
         assert_eq!(s.item(a).unwrap().actor, ActorId::new(10));
+    }
+
+    // ── 마커별 수치 덮어쓰기 (P1-4) ─────────────────────────────────────────
+
+    fn hp(edit: Option<u32>, finished: bool) -> InspectorEdit {
+        InspectorEdit::ItemOverride {
+            edit: OverrideEdit::MaxHp(edit),
+            finished,
+        }
+    }
+
+    #[test]
+    fn dragging_an_override_value_is_one_undo_step() {
+        // 숫자를 끌면 프레임마다 값이 바뀐다 — 언두는 끌기 전 → 끝난 값 한 번이어야 한다.
+        let (mut s, a, _) = scene();
+        let mut ed = Editing::default();
+        ed.select(Target::Item(a), false);
+        ed.apply_inspector(&mut s, hp(Some(100), false));
+        ed.apply_inspector(&mut s, hp(Some(150), false));
+        assert_eq!(
+            s.item(a).unwrap().overrides.max_hp,
+            Some(150),
+            "끄는 중에도 보인다"
+        );
+        ed.apply_inspector(&mut s, hp(Some(200), true));
+        assert_eq!(s.item(a).unwrap().overrides.max_hp, Some(200));
+
+        assert!(ed.undo(&mut s));
+        assert!(
+            s.item(a).unwrap().overrides.is_empty(),
+            "끌기 전으로 돌아가야 한다"
+        );
+        assert!(!ed.undo(&mut s), "스텝이 하나여야 한다");
+        assert!(ed.redo(&mut s));
+        assert_eq!(s.item(a).unwrap().overrides.max_hp, Some(200));
+    }
+
+    #[test]
+    fn an_override_applies_to_every_selected_marker_and_resets_together() {
+        let (mut s, a, b) = scene();
+        let mut ed = Editing::default();
+        ed.select(Target::Item(a), false);
+        ed.select(Target::Item(b), true);
+        ed.apply_inspector(
+            &mut s,
+            InspectorEdit::ItemOverride {
+                edit: OverrideEdit::AggroRange(Some(12.0)),
+                finished: true,
+            },
+        );
+        ed.apply_inspector(&mut s, hp(Some(300), true));
+        for e in [a, b] {
+            let o = s.item(e).unwrap().overrides;
+            assert_eq!(
+                (o.aggro_range, o.max_hp, o.count()),
+                (Some(12.0), Some(300), 2)
+            );
+        }
+
+        ed.apply_inspector(
+            &mut s,
+            InspectorEdit::ItemOverride {
+                edit: OverrideEdit::Reset,
+                finished: true,
+            },
+        );
+        assert!(s.item(a).unwrap().overrides.is_empty());
+        assert!(s.item(b).unwrap().overrides.is_empty());
+        // 되돌리기도 한 스텝 — 두 마커의 덮어쓰기가 함께 돌아온다.
+        assert!(ed.undo(&mut s));
+        assert_eq!(s.item(b).unwrap().overrides.count(), 2);
+    }
+
+    #[test]
+    fn turning_an_override_off_restores_the_type_value_and_is_undoable() {
+        let (mut s, a, _) = scene();
+        let mut ed = Editing::default();
+        ed.select(Target::Item(a), false);
+        ed.apply_inspector(&mut s, hp(Some(50), true));
+        ed.apply_inspector(&mut s, hp(None, true));
+        assert_eq!(s.item(a).unwrap().overrides.max_hp, None);
+        assert!(ed.undo(&mut s));
+        assert_eq!(s.item(a).unwrap().overrides.max_hp, Some(50));
+        // 같은 값 다시 넣기는 기록하지 않는다.
+        ed.apply_inspector(&mut s, hp(Some(50), true));
+        assert_eq!(ed.history().undo_label().as_deref(), Some("수치 덮어쓰기"));
+        assert!(ed.undo(&mut s) && ed.history().undo_label().is_none());
+    }
+
+    #[test]
+    fn cancelling_a_live_override_drag_restores_the_original() {
+        let (mut s, a, _) = scene();
+        let mut ed = Editing::default();
+        ed.select(Target::Item(a), false);
+        ed.apply_inspector(&mut s, hp(Some(999), false));
+        ed.cancel_pending(&mut s);
+        assert!(s.item(a).unwrap().overrides.is_empty());
+    }
+
+    #[test]
+    fn overrides_only_replace_the_fields_they_name() {
+        use nexus_sim::{AiKind, FactionId, UnitDef};
+        let base = UnitDef {
+            max_hp: 80,
+            attack: 12,
+            defense: 3,
+            move_speed: 2.0,
+            ai: AiKind::Aggressive,
+            aggro_range: 6.0,
+            ..UnitDef::default()
+        };
+        let o = crate::scene::Overrides {
+            max_hp: Some(200),
+            faction: Some(7),
+            ai: Some(AiKind::Passive),
+            ..Default::default()
+        };
+        let def = o.apply(base);
+        assert_eq!(
+            (def.max_hp, def.faction, def.ai),
+            (200, FactionId(7), AiKind::Passive)
+        );
+        // 적지 않은 것은 타입 값 그대로 — 이동 속도는 덮어쓸 수도 없다.
+        assert_eq!(
+            (def.attack, def.defense, def.aggro_range, def.move_speed),
+            (12, 3, 6.0, 2.0)
+        );
     }
 
     // ── 지형 그림 칠하기 ────────────────────────────────────────────────────

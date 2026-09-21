@@ -225,63 +225,6 @@ struct ItemLook {
     color: [f32; 4],
 }
 
-/// 인스펙터에 보여 줄 액터 수치 — **읽기 전용 요약**이다.
-///
-/// 값을 고치는 곳은 `data/rules.ron` 이다. 여기서 편집하게 만들면 수치가 두 곳에 생긴다.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct ActorStats {
-    move_speed: f32,
-    max_hp: u32,
-    attack: u32,
-    defense: u32,
-    faction: u32,
-    ai: AiKind,
-    aggro_range: f32,
-    immortal: bool,
-}
-
-impl ActorStats {
-    fn of(def: &UnitDef) -> Self {
-        Self {
-            move_speed: def.move_speed,
-            max_hp: def.max_hp,
-            attack: def.attack,
-            defense: def.defense,
-            faction: def.faction.0,
-            ai: def.ai,
-            aggro_range: def.aggro_range,
-            immortal: def.immortal,
-        }
-    }
-
-    /// 패널에 뿌릴 `(항목, 값)` 줄.
-    pub(crate) fn rows(&self) -> Vec<(&'static str, String)> {
-        let mut rows = vec![
-            ("HP", self.max_hp.to_string()),
-            ("공격", self.attack.to_string()),
-            ("방어", self.defense.to_string()),
-            ("이동", format!("{:.1} m/s", self.move_speed)),
-            ("진영", self.faction.to_string()),
-            (
-                "AI",
-                match self.ai {
-                    AiKind::Passive => "수동",
-                    AiKind::Defensive => "방어",
-                    AiKind::Aggressive => "공격",
-                }
-                .to_string(),
-            ),
-        ];
-        if self.ai == AiKind::Aggressive {
-            rows.push(("어그로", format!("{:.1} m", self.aggro_range)));
-        }
-        if self.immortal {
-            rows.push(("불사", String::from("예")));
-        }
-        rows
-    }
-}
-
 /// 액터 타입 하나의 표시 정보.
 #[derive(Clone, Debug)]
 pub(crate) struct ActorLook {
@@ -583,7 +526,9 @@ impl GameData {
     }
 
     /// 인스펙터 드롭다운에 쓸 목록 — `(번호, 이름, 수치)`, 번호 오름차순.
-    pub(crate) fn actor_catalog(&self) -> Vec<(ActorId, &str, ActorStats)> {
+    ///
+    /// 수치는 인스펙터가 **타입 값**으로 보여 주고, 덮어쓰기(P1-4)의 시작값으로도 쓴다.
+    pub(crate) fn actor_catalog(&self) -> Vec<(ActorId, &str, UnitDef)> {
         self.actors
             .iter()
             .map(|(&id, def)| {
@@ -591,7 +536,7 @@ impl GameData {
                     .actor_looks
                     .get(&id)
                     .map_or("이름 없음", |l| l.name.as_str());
-                (id, name, ActorStats::of(def))
+                (id, name, *def)
             })
             .collect()
     }
