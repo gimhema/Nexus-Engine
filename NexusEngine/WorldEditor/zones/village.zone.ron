@@ -610,5 +610,13 @@
             size: 0.8,
             orientation: 0.0,
         ),
+        (
+            name: "고블린",
+            kind: Monster,
+            actor: 102,
+            pos: (-7.0, -2.0),
+            size: 0.8,
+            orientation: 0.0,
+        ),
     ],
 )
