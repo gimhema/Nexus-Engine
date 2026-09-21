@@ -17,6 +17,7 @@ mod combat;
 mod faction;
 mod item;
 mod loot;
+mod script;
 mod tilemap;
 mod unit;
 mod world;
@@ -28,6 +29,7 @@ pub use item::{
     BAG_SLOTS, Bag, BagKind, EquipSlot, GroundItem, Inventory, ItemDef, ItemId, ItemKind, ItemStack,
 };
 pub use loot::{LootEntry, LootTableId};
+pub use script::{ScriptHost, ScriptLog};
 pub use tilemap::{Tile, TileCoord, TileMap};
 pub use unit::{AiKind, Unit, UnitDef};
 pub use world::{DEFAULT_PICKUP_RANGE, SimWorld};

@@ -91,6 +91,18 @@
             basic_attack: Some(2),
             loot: Some(1),
         ),
+        // 스크립트로 움직이는 액터 (P2). AI 는 Passive — 누구를 언제 칠지는 스크립트가 정한다.
+        // script 는 data/ 기준 경로. 스크립트를 고치고 F5 만 다시 누르면 적용된다.
+        102: (
+            move_speed: 3.2,
+            max_hp: 90,
+            attack: 16,
+            defense: 3,
+            faction: 201,
+            basic_attack: Some(2),
+            loot: Some(1),
+            script: Some("scripts/goblin.rhai"),
+        ),
     },
 
     // 마커 종류별 기본 액터 — 마커가 타입을 정하지 않았을 때(예전 존 파일 포함) 쓴다.

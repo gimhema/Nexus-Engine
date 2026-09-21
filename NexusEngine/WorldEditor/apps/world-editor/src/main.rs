@@ -1262,6 +1262,10 @@ impl App for Editor {
         // 에디터 조작(카메라·선택·편집)은 뷰·저작 작업이므로 UI 프레임에서 처리한다.
         if let Some(play) = self.play.as_mut() {
             play.tick(dt, self.sprites.as_ref());
+            // 스크립트 오류는 콘솔만이 아니라 상태 바에도 — 창만 보는 사람도 알 수 있게.
+            for alert in play.take_alerts() {
+                self.notify(alert, true);
+            }
         }
     }
 

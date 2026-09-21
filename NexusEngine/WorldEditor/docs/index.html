@@ -105,7 +105,7 @@
 <div class="wrap">
 <nav>
   <h2>Nexus WorldEditor</h2>
-  <div class="ver">사용 설명서 · 2026-09-20 기준<br>(S7-3까지 구현된 상태)</div>
+  <div class="ver">사용 설명서 · 2026-09-21 기준<br>(단계 2 — P1·P2·P4까지)</div>
   <ol>
     <li><a href="#what">1. 지금 할 수 있는 것</a></li>
     <li><a href="#start">2. 설치와 실행</a></li>
@@ -114,7 +114,7 @@
     <li><a href="#t2">5. 지형(타일) 칠하기</a></li>
     <li><a href="#t3">6. 플레이해 보기</a></li>
     <li><a href="#t4">7. 존 저장하고 열기</a></li>
-    <li><a href="#t5">8. 게임 수치와 그림 바꾸기</a></li>
+    <li><a href="#t5">8. 게임 수치와 그림 바꾸기</a> · <a href="#script">스크립트</a></li>
     <li><a href="#keys">9. 조작 요약</a></li>
     <li><a href="#headless">10. 창 없이 검증하기</a></li>
     <li><a href="#rules">11. 지금 동작하는 게임 규칙</a></li>
@@ -789,6 +789,74 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
     이 엔진이 그 장르를 지향하는 것과 별개로 저작권 침해입니다.
   </p>
 </div>
+
+<h3 id="script">8.7 액터 스크립트 (Rhai)</h3>
+<p>
+  액터 타입에 스크립트를 붙이면 "3초마다 둘러보고 돌진", "맞으면 반격" 같은 행동을 코드 빌드 없이 넣을 수 있습니다.
+  언어는 <strong>Rhai</strong>(Rust용 스크립트 언어, 문법은 JavaScript·Rust와 비슷)입니다.
+  예시는 <code>data/scripts/goblin.rhai</code>이고, 마을 존(<code>zones/village.zone.ron</code>)의 <em>고블린</em>이 이 스크립트로 움직입니다.
+</p>
+
+<h4>붙이는 방법</h4>
+<pre><code>// data/rules.ron — 액터 타입에 script 한 줄 (data/ 기준 경로)
+102: (
+    move_speed: 3.2, max_hp: 90, attack: 16, defense: 3,
+    faction: 201, basic_attack: Some(2), loot: Some(1),
+    script: Some("scripts/goblin.rhai"),
+),</code></pre>
+<ul>
+  <li>스크립트로 움직일 액터는 보통 <code>ai: Passive</code>(기본값)로 둡니다. AI가 켜져 있으면 둘 다 명령을 내고, <strong>스크립트가 나중</strong>이라 이깁니다.</li>
+  <li>경로는 <strong>소문자, <code>/</code> 구분, <code>.rhai</code></strong>여야 합니다. 리눅스에서 파일을 못 찾는 일을 막기 위해서입니다.</li>
+  <li>스크립트를 고친 뒤 <kbd>F5</kbd>로 플레이를 다시 시작하면 적용됩니다. 빌드할 필요가 없습니다.</li>
+</ul>
+
+<h4>훅 — 엔진이 불러 주는 함수</h4>
+<table>
+  <tr><th style="width:38%">함수</th><th>언제</th></tr>
+  <tr><td><code>fn on_spawn(me)</code></td><td>처음 한 번. 상태를 여기서 초기화합니다</td></tr>
+  <tr><td><code>fn on_tick(me, dt)</code></td><td>매 tick (초당 20번, <code>dt</code> = 0.05초)</td></tr>
+  <tr><td><code>fn on_attack(me, target, amount)</code></td><td>내 공격이 맞았을 때</td></tr>
+  <tr><td><code>fn on_damaged(me, attacker, amount)</code></td><td>내가 맞았을 때</td></tr>
+  <tr><td><code>fn on_death(me, killer)</code></td><td>내가 죽었을 때</td></tr>
+</table>
+<p>
+  필요한 훅만 쓰면 됩니다. 스크립트에는 <strong>함수만</strong> 적습니다 — 파일 맨 위에 쓴 문장은 실행되지 않습니다.
+  값을 기억하려면 <code>this</code>에 넣습니다 (<code>this.timer = 0.0;</code>). <code>this</code>는 액터마다 따로입니다.
+</p>
+
+<h4>쓸 수 있는 것</h4>
+<table>
+  <tr><th style="width:38%">읽기</th><th>뜻</th></tr>
+  <tr><td><code>u.x</code> <code>u.y</code> <code>u.hp</code> <code>u.max_hp</code> <code>u.alive</code> <code>u.moving</code></td><td>유닛 속성</td></tr>
+  <tr><td><code>distance(a, b)</code></td><td>두 유닛 사이 거리 (m)</td></tr>
+  <tr><td><code>nearest_enemy(me, 거리)</code></td><td>가장 가까운, 보이는 적. 없으면 <code>()</code></td></tr>
+  <tr><td><code>enemies(me, 거리)</code></td><td>그 목록 (가까운 순)</td></tr>
+  <tr><td><code>attack_range(me)</code></td><td>내 기본 공격 사거리</td></tr>
+  <tr><td><code>time()</code> · <code>rand(n)</code> · <code>rand_float()</code></td><td>게임 시각(초) · 0~n-1 정수 · 0~1 실수</td></tr>
+  <tr><th>행동</th><th></th></tr>
+  <tr><td><code>move_to(me, x, y)</code> · <code>move_to(me, u)</code></td><td>걸어가기</td></tr>
+  <tr><td><code>stop(me)</code></td><td>멈추기</td></tr>
+  <tr><td><code>attack(me, u)</code></td><td>기본 공격. 사거리 밖·쿨타임이면 조용히 무시됩니다</td></tr>
+  <tr><td><code>print("…")</code></td><td>플레이 패널의 <em>기록</em>에 뜹니다</td></tr>
+</table>
+<ul>
+  <li>행동은 <strong>요청</strong>입니다 — 플레이어·몬스터 AI와 똑같이 사거리·쿨타임·진영 규칙으로 판정받습니다.</li>
+  <li><strong>자기 유닛(<code>me</code>)만</strong> 움직일 수 있습니다.</li>
+  <li>한글 변수 이름도 됩니다 (<code>let 목표 = 3;</code>).</li>
+  <li>정수와 실수는 섞이지 않습니다 — <code>move_to(me, 1, 2)</code>는 오류이고 <code>move_to(me, 1.0, 2.0)</code>이 맞습니다. 정수는 <code>.to_float()</code>로 바꿉니다.</li>
+</ul>
+
+<h4>틀렸을 때</h4>
+<table>
+  <tr><th style="width:30%">경우</th><th>결과</th></tr>
+  <tr><td>문법 오류</td><td><strong>플레이가 시작되지 않고</strong> 상태 바에 파일·줄 번호가 뜹니다</td></tr>
+  <tr><td>실행 중 오류</td><td>그 스크립트만 꺼지고 게임은 계속됩니다. 상태 바에 빨간 알림이 <strong>한 번</strong> 뜹니다</td></tr>
+  <tr><td>무한 루프</td><td>훅 한 번에 5만 스텝을 넘으면 끊기고, 위와 같이 그 스크립트만 꺼집니다</td></tr>
+  <tr><td>파일이 없음</td><td>플레이가 시작되지 않습니다 (<code>data/scripts/…</code> 가 없음)</td></tr>
+</table>
+<p>
+  같은 시드(<code>rules.ron</code>의 <code>seed</code>)면 <code>rand</code>도 같은 값이 나옵니다 — 같은 조작이면 같은 결과가 재현됩니다.
+</p>
 
 <h2 id="keys">9. 조작 요약</h2>
 

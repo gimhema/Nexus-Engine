@@ -32,6 +32,12 @@
             // 그림이 따로 있어야 한다 (이 팩에는 주황·보라 변종이 있다 — SOURCE.md 참고).
             tint: (1.0, 0.45, 0.45),
         ),
+        102: (
+            name: "고블린",
+            // 고블린 그림이 아직 없어 사람 시트를 초록으로 물들인 임시 모습이다.
+            sheet: "assets/third_party/zelda-like-armm1998/player.sheet.ron",
+            tint: (0.55, 0.9, 0.45),
+        ),
     },
 
     items: {

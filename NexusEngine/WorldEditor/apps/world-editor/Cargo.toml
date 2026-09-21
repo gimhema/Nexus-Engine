@@ -10,6 +10,7 @@ nexus-core.workspace     = true
 nexus-platform.workspace = true
 nexus-render.workspace   = true
 nexus-sim.workspace      = true
+nexus-script.workspace   = true
 nexus-render-wgpu        = { workspace = true, features = ["ui"] }
 
 egui.workspace       = true

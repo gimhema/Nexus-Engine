@@ -19,6 +19,7 @@ use std::time::Duration;
 use nexus_assets::{AnimState, SpriteAnimator};
 use nexus_core::{Camera2d, Entity, Vec2, Vec3};
 use nexus_render::{DEPTH_LAYER, RenderCommand, SpriteAnchor, TextureId, UvRect};
+use nexus_script::RhaiHost;
 use nexus_sim::{
     Authority, BagKind, EquipSlot, Event, Intent, LocalAuthority, Rejection, Relation, SimWorld,
 };
@@ -89,6 +90,8 @@ pub(crate) struct PlaySession {
     /// 주문을 위해 마지막으로 경로를 잡은 지점.
     chase_goal: Option<Vec2>,
     log: VecDeque<String>,
+    /// 상태 바에 띄울 경고 (스크립트 오류) — 편집기가 꺼내 간다.
+    alerts: Vec<String>,
     /// 시작 전 에디터 카메라 — 정지하면 되돌린다.
     editor_camera: Camera2d,
     /// 이번 판의 게임 데이터 (규칙 수치 + 이름·색). 시작할 때 파일에서 읽는다.
@@ -100,7 +103,7 @@ impl PlaySession {
     /// 스폰은 스폰 지점일 뿐이라 유닛을 만들지 않는다.
     ///
     /// # Errors
-    /// 플레이어 스폰이 없으면 플레이할 수 없다.
+    /// 플레이어 스폰이 없거나, 액터 스크립트에 문법 오류가 있으면 플레이할 수 없다.
     pub(crate) fn start(
         scene: &Scene,
         editor_camera: Camera2d,
@@ -108,6 +111,15 @@ impl PlaySession {
     ) -> Result<Self, String> {
         let mut world = SimWorld::new(scene.tiles.clone());
         data.install(&mut world);
+
+        // 액터 스크립트 (P2) — 플레이 시작마다 새로 컴파일한다. 문법 오류면 플레이를 막는다
+        // (고친 것이 적용되지 않은 채 모르고 지나가지 않게 — 데이터 파일과 같은 규칙).
+        let mut scripts = RhaiHost::new(data.seed());
+        let mut compiled = HashMap::new();
+        for (path, source) in data.script_sources() {
+            let id = scripts.add_script(path, source)?;
+            compiled.insert(path.to_owned(), id);
+        }
 
         let mut labels = HashMap::new();
         let mut player = None;
@@ -138,6 +150,9 @@ impl PlaySession {
                     fallback: item.kind.color(),
                 },
             );
+            if let Some(id) = data.actor_script(actor).and_then(|p| compiled.get(p)) {
+                scripts.attach(unit, *id);
+            }
             if is_player {
                 data.give_starting_kit(&mut world, unit);
                 player = Some(unit);
@@ -145,14 +160,18 @@ impl PlaySession {
         }
         let player = player.ok_or("플레이어 스폰이 없어 플레이할 수 없습니다")?;
 
+        let mut auth = LocalAuthority::new(world);
+        auth.set_script_host(Box::new(scripts));
+
         let mut session = Self {
-            auth: LocalAuthority::new(world),
+            auth,
             player,
             labels,
             animators: HashMap::new(),
             order: Order::Idle,
             chase_goal: None,
             log: VecDeque::new(),
+            alerts: Vec::new(),
             editor_camera,
             data,
         };
@@ -182,6 +201,11 @@ impl PlaySession {
     /// 유닛 이름. 모르면 `"?"`.
     pub(crate) fn name(&self, unit: Entity) -> &str {
         self.labels.get(&unit).map_or("?", |l| l.name.as_str())
+    }
+
+    /// 상태 바에 띄울 경고를 꺼낸다.
+    pub(crate) fn take_alerts(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.alerts)
     }
 
     /// 최근 이벤트 (오래된 것부터).
@@ -255,6 +279,19 @@ impl PlaySession {
         }
         for event in self.auth.tick(dt) {
             self.on_event(event);
+        }
+        // 스크립트의 print 는 이벤트 기록으로, 오류는 상태 바로도 (그 스크립트는 꺼졌다).
+        let lines = self
+            .auth
+            .script_host_mut()
+            .map(|host| host.drain_log())
+            .unwrap_or_default();
+        for line in lines {
+            if line.error {
+                self.alerts
+                    .push(format!("스크립트 오류 — {}", line.message));
+            }
+            self.note(line.message);
         }
 
         // 유닛마다 자기 액터 타입의 시트로 진행한다 — 시트마다 클립 길이가 다르다.
@@ -722,6 +759,31 @@ mod tests {
             s.tick(DT, None);
         }
         assert_eq!(scene.items, before);
+    }
+
+    #[test]
+    fn a_scripted_goblin_spots_the_player_and_charges() {
+        // P2: 행동은 전부 data/scripts/goblin.rhai 가 정한다 (AI 는 Passive).
+        let mut scene = Scene::server_default();
+        let slime = scene.items.iter_mut().find(|i| i.name == "슬라임").unwrap();
+        slime.actor = ActorId::new(102);
+        slime.pos = Vec2::new(6.0, 0.0);
+        let mut s = PlaySession::start(&scene, Camera2d::default(), GameData::embedded()).unwrap();
+        let goblin = find(&s, "슬라임");
+        let full = s.world().unit(s.player()).unwrap().hp();
+
+        for _ in 0..80 {
+            s.tick(DT, None);
+        }
+        assert!(
+            s.log().any(|l| l == "scripts/goblin.rhai: 적 발견 — 돌진!"),
+            "{:?}",
+            s.log
+        );
+        let me = s.world().unit(s.player()).unwrap();
+        assert!(me.hp() < full, "고블린이 물었어야 한다");
+        assert!(s.world().unit(goblin).unwrap().pos().distance(me.pos()) <= 1.5);
+        assert!(s.take_alerts().is_empty());
     }
 
     #[test]

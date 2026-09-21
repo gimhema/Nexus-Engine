@@ -21,7 +21,7 @@
 //!
 //! `nexus-sim` 은 이 파일들을 모른다 — 여기서 `nexus-sim` 타입으로 바꿔 넘긴다.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use nexus_core::Entity;
@@ -41,6 +41,16 @@ pub(crate) const DISPLAY_PATH: &str = "data/display.ron";
 
 const EMBEDDED_RULES: &str = include_str!("../../../data/rules.ron");
 const EMBEDDED_DISPLAY: &str = include_str!("../../../data/display.ron");
+
+/// 스크립트 경로의 기준 폴더.
+pub(crate) const DATA_DIR: &str = "data";
+
+/// 내장 스크립트 — 작업 디렉터리 밖에서 실행해도 기본 데이터가 돌게. 경로는 `data/` 기준.
+/// 디스크에 같은 경로의 파일이 있으면 그것이 우선한다 (다른 데이터 파일과 같은 규칙).
+const EMBEDDED_SCRIPTS: &[(&str, &str)] = &[(
+    "scripts/goblin.rhai",
+    include_str!("../../../data/scripts/goblin.rhai"),
+)];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 파일 형식
@@ -137,7 +147,7 @@ impl MarkerKindFile {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UnitFile {
     move_speed: f32,
@@ -158,6 +168,9 @@ struct UnitFile {
     basic_attack: Option<u32>,
     #[serde(default)]
     loot: Option<u32>,
+    /// 액터 스크립트 (P2) — `data/` 기준 경로. 예: `scripts/goblin.rhai`.
+    #[serde(default)]
+    script: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
@@ -264,6 +277,10 @@ pub(crate) struct GameData {
     starting_kit: Vec<(ItemId, u32)>,
     looks: BTreeMap<u32, ItemLook>,
     actor_looks: BTreeMap<ActorId, ActorLook>,
+    /// 액터 타입별 스크립트 경로 (`data/` 기준).
+    actor_scripts: BTreeMap<ActorId, String>,
+    /// 경로 → 스크립트 본문. 컴파일은 플레이를 시작할 때 한다.
+    script_sources: BTreeMap<String, String>,
 }
 
 impl GameData {
@@ -271,13 +288,23 @@ impl GameData {
     pub(crate) fn load() -> Result<Self, String> {
         let rules = read_or_embedded(Path::new(RULES_PATH), EMBEDDED_RULES)?;
         let display = read_or_embedded(Path::new(DISPLAY_PATH), EMBEDDED_DISPLAY)?;
-        Self::parse(&rules, &display)
+        Self::parse(&rules, &display)?.with_scripts(|path| {
+            match std::fs::read_to_string(Path::new(DATA_DIR).join(path)) {
+                Ok(text) => Ok(Some(text)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    Ok(embedded_script(path).map(str::to_owned))
+                }
+                Err(e) => Err(format!("{DATA_DIR}/{path}: {e}")),
+            }
+        })
     }
 
     /// 실행 파일에 든 데이터 — 테스트와 비교 기준.
     #[cfg(test)]
     pub(crate) fn embedded() -> Self {
-        Self::parse(EMBEDDED_RULES, EMBEDDED_DISPLAY).expect("내장 게임 데이터가 잘못됐다")
+        Self::parse(EMBEDDED_RULES, EMBEDDED_DISPLAY)
+            .and_then(|d| d.with_scripts(|path| Ok(embedded_script(path).map(str::to_owned))))
+            .expect("내장 게임 데이터가 잘못됐다")
     }
 
     /// 두 파일을 읽고 **서로 가리키는 번호가 다 있는지**까지 확인한다.
@@ -328,6 +355,14 @@ impl GameData {
                 check(
                     r.loot.contains_key(&table),
                     format!("액터 {id}: 없는 드롭 테이블 {table}"),
+                );
+            }
+            if let Some(path) = &u.script {
+                check(
+                    script_path_ok(path),
+                    format!(
+                        "액터 {id}: 스크립트 경로 '{path}' — data/ 기준 상대 경로, 소문자, '/' 구분, .rhai"
+                    ),
                 );
             }
             // 이름이 없으면 인스펙터 드롭다운에 번호만 나온다 — 저작에 쓸 수 없다.
@@ -437,7 +472,7 @@ impl GameData {
             actors: r
                 .actors
                 .iter()
-                .map(|(id, u)| (ActorId::new(*id), (*u).into()))
+                .map(|(id, u)| (ActorId::new(*id), u.into()))
                 .collect(),
             default_actors: r
                 .default_actors
@@ -479,7 +514,50 @@ impl GameData {
                     )
                 })
                 .collect(),
+            actor_scripts: r
+                .actors
+                .iter()
+                .filter_map(|(id, u)| Some((ActorId::new(*id), u.script.clone()?)))
+                .collect(),
+            script_sources: BTreeMap::new(),
         })
+    }
+
+    /// 액터들이 가리키는 스크립트 본문을 읽어 둔다. `read` 는 경로(`data/` 기준)를 받아
+    /// 본문을, 없으면 `None` 을 돌려준다 — 파일을 읽는 방법은 호출한 쪽이 정한다.
+    fn with_scripts(
+        mut self,
+        read: impl Fn(&str) -> Result<Option<String>, String>,
+    ) -> Result<Self, String> {
+        let paths: BTreeSet<&String> = self.actor_scripts.values().collect();
+        let mut errors = Vec::new();
+        let mut sources = BTreeMap::new();
+        for path in paths {
+            match read(path) {
+                Ok(Some(text)) => {
+                    sources.insert(path.clone(), text);
+                }
+                Ok(None) => errors.push(format!("스크립트 {DATA_DIR}/{path} 가 없음")),
+                Err(e) => errors.push(e),
+            }
+        }
+        if !errors.is_empty() {
+            return Err(format!("게임 데이터 오류 — {}", errors.join(" / ")));
+        }
+        self.script_sources = sources;
+        Ok(self)
+    }
+
+    /// 액터 타입의 스크립트 경로 (`data/` 기준). 없으면 스크립트 없는 액터.
+    pub(crate) fn actor_script(&self, actor: ActorId) -> Option<&str> {
+        self.actor_scripts.get(&actor).map(String::as_str)
+    }
+
+    /// 읽어 둔 스크립트 `(경로, 본문)` — 경로 순.
+    pub(crate) fn script_sources(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.script_sources
+            .iter()
+            .map(|(p, s)| (p.as_str(), s.as_str()))
     }
 
     /// 규칙을 시뮬레이션 월드에 등록한다 (설정 작업).
@@ -559,6 +637,11 @@ impl GameData {
         self.player_attack
     }
 
+    /// 난수 시드 — 드롭과 스크립트 난수가 같은 값에서 출발한다 (흐름은 따로).
+    pub(crate) fn seed(&self) -> u64 {
+        self.seed
+    }
+
     /// 아이템 이름. 표시 파일에 없으면 번호로.
     pub(crate) fn item_name(&self, id: ItemId) -> String {
         self.looks
@@ -580,6 +663,27 @@ impl GameData {
             .filter_map(|(id, look)| look.sheet.clone().map(|path| (*id, path)))
             .collect()
     }
+}
+
+/// 내장 스크립트 본문.
+fn embedded_script(path: &str) -> Option<&'static str> {
+    EMBEDDED_SCRIPTS
+        .iter()
+        .find(|(p, _)| *p == path)
+        .map(|(_, s)| *s)
+}
+
+/// 스크립트 경로 규칙 — `data/` 기준 상대 경로, 소문자, `/` 구분, `.rhai`.
+///
+/// 대소문자·구분자를 강제하는 이유는 에셋 이름과 같다: Windows 에서 통하던 `Goblin.rhai` 나
+/// `scripts\goblin.rhai` 가 리눅스에서는 "파일 없음" 이 된다.
+fn script_path_ok(path: &str) -> bool {
+    path.ends_with(".rhai")
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && !path.contains(':')
+        && !path.split('/').any(|part| part.is_empty() || part == "..")
+        && !path.chars().any(char::is_uppercase)
 }
 
 /// 디스크에 있으면 그것을, 없으면 내장본을. 있는데 못 읽으면 오류 — 조용히 넘어가지 않는다.
@@ -636,8 +740,8 @@ impl From<ItemFile> for ItemDef {
     }
 }
 
-impl From<UnitFile> for UnitDef {
-    fn from(u: UnitFile) -> Self {
+impl From<&UnitFile> for UnitDef {
+    fn from(u: &UnitFile) -> Self {
         Self {
             move_speed: u.move_speed,
             max_hp: u.max_hp,
@@ -661,6 +765,50 @@ impl From<UnitFile> for UnitDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_goblin_carries_its_script() {
+        let data = GameData::embedded();
+        assert_eq!(
+            data.actor_script(ActorId::new(102)),
+            Some("scripts/goblin.rhai")
+        );
+        assert_eq!(data.actor_script(ActorId::new(100)), None);
+        let (path, source) = data.script_sources().next().unwrap();
+        assert_eq!(path, "scripts/goblin.rhai");
+        assert!(source.contains("fn on_tick(me, dt)"));
+    }
+
+    #[test]
+    fn script_paths_must_work_on_both_operating_systems() {
+        assert!(script_path_ok("scripts/goblin.rhai"));
+        assert!(script_path_ok("boss.rhai"));
+        for bad in [
+            "scripts/Goblin.rhai",  // 리눅스에서는 다른 파일
+            "scripts\\goblin.rhai", // 리눅스에서는 이름의 일부
+            "/scripts/goblin.rhai", // 절대 경로
+            "C:/goblin.rhai",
+            "../goblin.rhai", // data/ 밖
+            "scripts//goblin.rhai",
+            "scripts/goblin.lua",
+        ] {
+            assert!(!script_path_ok(bad), "{bad} 를 받아들였다");
+        }
+    }
+
+    #[test]
+    fn a_script_that_is_nowhere_stops_play_with_its_path() {
+        let rules = EMBEDDED_RULES.replace("scripts/goblin.rhai", "scripts/none.rhai");
+        let err = GameData::parse(&rules, EMBEDDED_DISPLAY)
+            .unwrap()
+            .with_scripts(|_| Ok(None))
+            .unwrap_err();
+        assert!(err.contains("data/scripts/none.rhai 가 없음"), "{err}");
+
+        let rules = EMBEDDED_RULES.replace("scripts/goblin.rhai", "Scripts/Goblin.rhai");
+        let err = GameData::parse(&rules, EMBEDDED_DISPLAY).unwrap_err();
+        assert!(err.contains("액터 102: 스크립트 경로"), "{err}");
+    }
 
     #[test]
     fn embedded_data_is_valid() {

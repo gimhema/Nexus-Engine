@@ -19,6 +19,7 @@ use nexus_core::{Entity, Vec2};
 use crate::ai;
 use crate::combat::SkillId;
 use crate::item::{BagKind, EquipSlot, ItemStack};
+use crate::script::ScriptHost;
 use crate::world::SimWorld;
 
 /// 플레이어(또는 AI)가 하려는 일. **요청일 뿐** — 받아들일지는 Authority 가 정한다.
@@ -166,6 +167,10 @@ pub struct LocalAuthority {
     world: SimWorld,
     pending: Vec<Intent>,
     ticks: u64,
+    /// 액터 스크립트 (P2). 없으면 스크립트 단계를 건너뛴다.
+    scripts: Option<Box<dyn ScriptHost>>,
+    /// 이전 tick 의 이벤트 — 스크립트 훅(피격·사망 등)의 재료.
+    last_events: Vec<Event>,
 }
 
 impl LocalAuthority {
@@ -175,6 +180,8 @@ impl LocalAuthority {
             world,
             pending: Vec::new(),
             ticks: 0,
+            scripts: None,
+            last_events: Vec::new(),
         }
     }
 
@@ -182,6 +189,16 @@ impl LocalAuthority {
     /// 게임플레이 중 상태 변경에는 쓰지 말고 [`submit`](Authority::submit) 을 쓸 것.
     pub fn world_mut(&mut self) -> &mut SimWorld {
         &mut self.world
+    }
+
+    /// 액터 스크립트 호스트를 붙인다 — 설정 작업이다 (스폰과 같은 때).
+    pub fn set_script_host(&mut self, host: Box<dyn ScriptHost>) {
+        self.scripts = Some(host);
+    }
+
+    /// 붙인 스크립트 호스트 — 호출한 쪽이 로그·오류를 꺼내 갈 때.
+    pub fn script_host_mut(&mut self) -> Option<&mut (dyn ScriptHost + 'static)> {
+        self.scripts.as_deref_mut()
     }
 
     /// 지금까지 진행한 tick 수.
@@ -211,8 +228,20 @@ impl Authority for LocalAuthority {
                 ai::on_rejected(&mut self.world, intent, reason);
             }
         }
+        // 스크립트는 AI 뒤에 돈다 — 같은 유닛이면 나중 Intent 가 이기므로 AI 의 결정을 덮을 수 있다.
+        // 거절은 AI 처럼 알리지 않는다.
+        if let Some(host) = self.scripts.as_mut() {
+            let mut intents = Vec::new();
+            host.run(&self.world, dt, &self.last_events, &mut intents);
+            for intent in intents {
+                let _ = apply(&mut self.world, intent, &mut events);
+            }
+        }
         self.world.step(dt, &mut events);
         self.ticks += 1;
+        if self.scripts.is_some() {
+            self.last_events.clone_from(&events);
+        }
         events
     }
 

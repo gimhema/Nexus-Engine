@@ -1,0 +1,16 @@
+[package]
+name = "nexus-script"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+nexus-core.workspace = true
+nexus-sim.workspace = true
+rhai.workspace = true
+
+[lints]
+workspace = true
