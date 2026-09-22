@@ -846,10 +846,24 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
   <li>정수와 실수는 섞이지 않습니다 — <code>move_to(me, 1, 2)</code>는 오류이고 <code>move_to(me, 1.0, 2.0)</code>이 맞습니다. 정수는 <code>.to_float()</code>로 바꿉니다.</li>
 </ul>
 
+<h4>에디터에서 쓰고 컴파일하기</h4>
+<p>메뉴 <strong>스크립트 → 스크립트 편집기…</strong>를 열면 에디터 안에서 바로 쓰고 고칠 수 있습니다.</p>
+<ol>
+  <li>위쪽 목록에서 스크립트를 고르거나, 이름(영문 소문자·숫자·<code>_</code>·<code>-</code>)을 적고 <strong>만들기</strong>를 누릅니다. 새 스크립트는 훅 다섯 개가 든 틀로 시작합니다</li>
+  <li>코드를 고친 뒤 <strong>컴파일</strong>을 누르면 실행하지 않고 검사만 합니다. 성공하면 초록색으로 정의된 훅이, 실패하면 빨간색으로 <em>몇 행 몇 칸</em>이 뜨고 그 줄이 빨갛게 칠해집니다</li>
+  <li><strong>저장</strong>(편집 중 <kbd>Ctrl</kbd>+<kbd>S</kbd>)을 누르면 <code>data/scripts/</code>에 저장됩니다. 저장할 때 컴파일도 함께 합니다</li>
+  <li><kbd>F5</kbd>로 플레이합니다. 저장하지 않은 변경이 있으면 <strong>먼저 저장하고</strong> 플레이합니다</li>
+</ol>
+<ul>
+  <li>결과 줄에 <strong>이 스크립트를 쓰는 액터</strong>가 나옵니다. 액터에 스크립트를 붙이는 것은 아직 <code>data/rules.ron</code>의 <code>script:</code>를 직접 고칩니다</li>
+  <li>컴파일은 문법, <strong>선언하지 않은 변수</strong>(오타), 훅의 인자 수를 잡습니다. 없는 <strong>함수</strong> 이름은 플레이 중에 오류로 알려 줍니다</li>
+  <li>오류 문장은 스크립트 엔진(Rhai)의 영어 그대로입니다 — 위치(행·칸)를 먼저 보세요</li>
+</ul>
+
 <h4>틀렸을 때</h4>
 <table>
   <tr><th style="width:30%">경우</th><th>결과</th></tr>
-  <tr><td>문법 오류</td><td><strong>플레이가 시작되지 않고</strong> 상태 바에 파일·줄 번호가 뜹니다</td></tr>
+  <tr><td>문법 오류</td><td>편집기의 <em>컴파일</em>에서 미리 잡힙니다. 그대로 저장했다면 <strong>플레이가 시작되지 않고</strong> 상태 바에 파일·줄 번호가 뜹니다</td></tr>
   <tr><td>실행 중 오류</td><td>그 스크립트만 꺼지고 게임은 계속됩니다. 상태 바에 빨간 알림이 <strong>한 번</strong> 뜹니다</td></tr>
   <tr><td>무한 루프</td><td>훅 한 번에 5만 스텝을 넘으면 끊기고, 위와 같이 그 스크립트만 꺼집니다</td></tr>
   <tr><td>파일이 없음</td><td>플레이가 시작되지 않습니다 (<code>data/scripts/…</code> 가 없음)</td></tr>
@@ -923,6 +937,8 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
   <tr><td><code>eyedropper</code></td><td>스포이드 켜기 — 다음 클릭한 칸을 붓으로 집습니다</td></tr>
   <tr><td><code>palette [그림경로]</code></td><td>지형 팔레트 창 열기</td></tr>
   <tr><td><code>pick ground|prop 경로 x y w h [칸]</code></td><td>팔레트에서 조각 고르기 (<code>terrain.ron</code> 자동 추가 포함)</td></tr>
+  <tr><td><code>scripts [경로]</code></td><td>스크립트 편집기 열기 (경로는 <code>data/</code> 기준, 예: <code>scripts/goblin.rhai</code>)</td></tr>
+  <tr><td><code>compile</code></td><td>편집기의 <em>컴파일</em> 버튼</td></tr>
   <tr><td><code>play</code></td><td>플레이 시작/정지 (<kbd>F5</kbd>와 같음). 플레이 중 <code>press</code>는 클릭 명령이 됩니다</td></tr>
   <tr><td><code>save 경로</code> / <code>open 경로</code></td><td>존 저장 / 열기 (경로에 공백 불가)</td></tr>
   <tr><td><code>dialog open|saveas</code></td><td>열기 / 다른 이름으로 저장 창 띄우기</td></tr>

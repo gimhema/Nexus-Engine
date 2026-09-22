@@ -26,6 +26,7 @@ use crate::play::{InventoryAction, PlaySession};
 use crate::scene::{
     ActorId, ArtId, Item, ItemKind, OverrideEdit, Overrides, Pick, Scene, Target, ZONE_LABEL,
 };
+use crate::script_editor::ScriptEditor;
 use crate::terrain::ArtKind;
 use crate::zone_file;
 
@@ -78,6 +79,8 @@ pub(crate) struct UiModel<'a> {
     pub(crate) actor_catalog: Vec<(ActorId, &'a str, UnitDef)>,
     /// 마커 종류별 기본 액터 — [`ItemKind::ALL`] 순서.
     pub(crate) actor_defaults: [ActorId; 3],
+    /// `(스크립트 경로, "액터 이름 (#번호)")` — 스크립트 편집기가 "쓰는 액터" 를 보여 준다.
+    pub(crate) actor_scripts: Vec<(String, String)>,
     /// 지형 그림 붓 — 0 이면 지우개.
     pub(crate) art_brush: ArtId,
     /// 붓이 칠하는 층.
@@ -142,6 +145,8 @@ pub(crate) struct UiActions {
     pub(crate) set_art_brush: Option<(ArtId, ArtKind)>,
     /// 팔레트 창 열기. 안쪽 값이 있으면 그 그림을 골라 둔 채로 연다 (UI 내부에서 소비).
     open_palette: Option<Option<String>>,
+    /// 스크립트 편집기 열기. 안쪽 값이 있으면 그 파일을 연다 (UI 내부에서 소비).
+    open_scripts: Option<Option<String>>,
     /// 팔레트 창에서 고른 그림 조각 — 편집기가 `terrain.ron` 에 추가하고 붓으로 삼는다.
     pub(crate) pick_art: Option<crate::terrain::Pick>,
     /// 붓 모양·반지름 바꾸기.
@@ -165,6 +170,8 @@ pub(crate) struct EditorUi {
     file_dialog: Option<FileDialog>,
     /// 지형 그림 팔레트 창 (P4). 닫혀 있어도 상태(고른 그림·확대율)는 남긴다.
     palette: Palette,
+    /// 스크립트 편집기 창 (P2). 닫혀 있어도 고치던 내용은 남긴다.
+    scripts: ScriptEditor,
 }
 
 /// 존 열기 / 다른 이름으로 저장 창.
@@ -227,12 +234,29 @@ impl EditorUi {
             font_note,
             file_dialog: None,
             palette: Palette::default(),
+            scripts: ScriptEditor::default(),
         }
     }
 
     /// 팔레트 창을 연다 — 자동 검증(`NEXUS_SCRIPT`)용. `image` 가 있으면 그 그림을 골라 둔다.
     pub(crate) fn show_palette(&mut self, image: Option<String>) {
         self.palette.open(image);
+    }
+
+    /// 스크립트 편집기를 연다 — 메뉴와 자동 검증(`NEXUS_SCRIPT`)이 쓴다.
+    pub(crate) fn show_scripts(&mut self, path: Option<&str>) {
+        self.scripts.open(path);
+    }
+
+    /// 스크립트 편집기 — 자동 검증의 `compile` 단계가 쓴다.
+    pub(crate) fn scripts_mut(&mut self) -> &mut ScriptEditor {
+        &mut self.scripts
+    }
+
+    /// 저장하지 않은 스크립트가 있으면 저장한다 — 플레이는 디스크의 파일로 돌기 때문이다.
+    /// 저장할 것이 없으면 `None`.
+    pub(crate) fn save_dirty_script(&mut self) -> Option<Result<String, String>> {
+        self.scripts.is_dirty().then(|| self.scripts.save())
     }
 
     /// 열기(`save = false`) / 다른 이름으로 저장 창을 띄운다 — 자동 검증(`NEXUS_SCRIPT`)용.
@@ -266,6 +290,7 @@ impl EditorUi {
         let cursor_world = &mut self.cursor_world;
         let dialog = &mut self.file_dialog;
         let palette = &mut self.palette;
+        let scripts = &mut self.scripts;
 
         let output = self.ctx.run_ui(raw, |ui| {
             menu_bar(ui, model, &mut actions);
@@ -275,6 +300,15 @@ impl EditorUi {
             }
             file_dialog(ui, dialog, model.dirty, &mut actions);
             palette.show(ui, &mut actions);
+            let users = |path: &str| {
+                model
+                    .actor_scripts
+                    .iter()
+                    .filter(|(p, _)| p == path)
+                    .map(|(_, who)| who.clone())
+                    .collect()
+            };
+            actions.toggle_play |= scripts.show(ui, &users).toggle_play;
             status_bar(ui, model, *cursor_world);
             outline_panel(ui, model, &mut actions);
             inspector_panel(ui, model, &mut actions);
@@ -282,6 +316,9 @@ impl EditorUi {
             // 인스펙터의 "팔레트 열기" 는 창을 그린 뒤에 눌린다 — 다음 프레임부터 뜬다.
             if let Some(image) = actions.open_palette.take() {
                 palette.open(image);
+            }
+            if let Some(path) = actions.open_scripts.take() {
+                scripts.open(path.as_deref());
             }
         });
 
@@ -389,6 +426,12 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
                 {
                     actions.delete = true;
                 }
+            });
+            ui.menu_button("스크립트", |ui| {
+                if ui.button("스크립트 편집기…").clicked() {
+                    actions.open_scripts = Some(None);
+                }
+                ui.weak("data/scripts/*.rhai — 액터 행동. 고치고 컴파일·저장한 뒤 F5.");
             });
             ui.menu_button("플레이", |ui| {
                 let text = if model.play.is_some() {

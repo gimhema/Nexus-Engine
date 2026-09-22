@@ -22,6 +22,8 @@
 //! pick ground|prop 경로 x y w h [칸]  팔레트에서 그림 조각 고르기 (terrain.ron 자동 추가)
 //! brush stroke|rect [반지름]   붓 모양 (반지름 0~3 → 1×1 ~ 7×7)
 //! eyedropper                   스포이드 — 다음 클릭한 칸의 그림·타일을 붓으로 집는다
+//! scripts [경로]               스크립트 편집기 열기 (경로는 data/ 기준, 예: scripts/goblin.rhai)
+//! compile                      스크립트 편집기의 "컴파일" 버튼
 //! ```
 //!
 //! 예: `NEXUS_SELECT="상인 NPC" NEXUS_SCRIPT="wait; press rotate; move -8 20 ctrl"`
@@ -80,6 +82,10 @@ pub(crate) enum Step {
     Palette(Option<String>),
     /// 팔레트에서 그림 조각 고르기 — 창의 마우스 조작 없이 같은 경로(`terrain.ron` 자동 추가)를 탄다.
     Pick(Pick),
+    /// 스크립트 편집기 열기 — 경로(`data/` 기준)를 주면 그 파일을 연다.
+    Scripts(Option<String>),
+    /// 스크립트 편집기의 "컴파일" 버튼.
+    Compile,
     /// 붓 모양과 반지름.
     Brush(BrushShape, u8),
     /// 스포이드 켜기.
@@ -161,6 +167,8 @@ fn parse_step(text: &str) -> Result<Step, String> {
             };
             return Ok(Step::Brush(shape, radius));
         }
+        "scripts" => return Ok(Step::Scripts(words.get(1).map(|w| (*w).to_string()))),
+        "compile" => return Ok(Step::Compile),
         "palette" => return Ok(Step::Palette(words.get(1).map(|w| (*w).to_string()))),
         "pick" => {
             // pick ground|prop 그림경로 x y 폭 높이 [칸크기]

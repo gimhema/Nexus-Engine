@@ -214,26 +214,9 @@ impl RhaiHost {
         }
     }
 
-    /// 스크립트를 컴파일해 등록한다. 문법 오류·훅 인자 수 오류는 `이름: 이유` 로 돌려준다.
+    /// 스크립트를 컴파일해 등록한다. 문법 오류·훅 인자 수 오류는 `이름: 위치 — 이유` 로 돌려준다.
     pub fn add_script(&mut self, name: &str, source: &str) -> Result<ScriptId, String> {
-        let ast = self
-            .engine
-            .compile(source)
-            .map_err(|e| format!("{name}: {e}"))?;
-        let mut has = [false; 5];
-        for f in ast.iter_functions() {
-            if let Some(i) = HOOKS.iter().position(|(hook, _)| *hook == f.name) {
-                let want = HOOKS[i].1;
-                if f.params.len() != want {
-                    return Err(format!(
-                        "{name}: {}({}) — 인자는 {want}개여야 함",
-                        f.name,
-                        f.params.join(", ")
-                    ));
-                }
-                has[i] = true;
-            }
-        }
+        let (ast, has) = compile(&self.engine, source).map_err(|d| format!("{name}: {d}"))?;
         self.scripts.push(Script {
             name: name.to_owned(),
             ast,
@@ -390,16 +373,114 @@ impl ScriptHost for RhaiHost {
     }
 }
 
-/// 스크립트가 쓸 함수를 등록한 엔진.
-fn build_engine(ctx: &Rc<RefCell<Ctx>>) -> Engine {
+/// 컴파일 오류 하나 — 편집기가 해당 줄을 짚어 보여 줄 수 있게 위치를 따로 든다.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Diagnostic {
+    /// 1 부터. 위치를 모르는 오류(훅 인자 수 등)는 `None`.
+    pub line: Option<usize>,
+    /// 1 부터.
+    pub column: Option<usize>,
+    pub message: String,
+}
+
+impl std::fmt::Display for Diagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (self.line, self.column) {
+            (Some(l), Some(c)) => write!(f, "{l}행 {c}칸 — {}", self.message),
+            (Some(l), None) => write!(f, "{l}행 — {}", self.message),
+            _ => f.write_str(&self.message),
+        }
+    }
+}
+
+/// 컴파일에 성공한 스크립트의 요약.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Compiled {
+    /// 정의된 훅 이름 — 엔진이 부르는 순서(스폰·tick·공격·피격·사망).
+    pub hooks: Vec<&'static str>,
+}
+
+/// 실행하지 않고 **컴파일만** 한다 — 에디터의 "컴파일" 버튼.
+///
+/// 실행 때와 같은 규칙으로 검사한다: 문법 · 선언하지 않은 변수(strict) · 식 깊이 · 훅 인자 수.
+/// 없는 함수 이름(오타)은 실행할 때에야 알 수 있다 — Rhai 는 호출을 실행 시점에 찾는다.
+pub fn check(source: &str) -> Result<Compiled, Diagnostic> {
+    let (_, has) = compile(&base_engine(), source)?;
+    Ok(Compiled {
+        hooks: HOOKS
+            .iter()
+            .zip(has)
+            .filter(|(_, on)| *on)
+            .map(|((name, _), _)| *name)
+            .collect(),
+    })
+}
+
+/// 훅 이름과 인자 목록 — 편집기의 도움말·새 스크립트 틀에 쓴다.
+#[must_use]
+pub fn hook_signatures() -> Vec<String> {
+    const PARAMS: [&str; 5] = [
+        "me",
+        "me, dt",
+        "me, target, amount",
+        "me, attacker, amount",
+        "me, killer",
+    ];
+    HOOKS
+        .iter()
+        .zip(PARAMS)
+        .map(|((name, _), params)| format!("fn {name}({params})"))
+        .collect()
+}
+
+/// 컴파일과 훅 검사. 실행 엔진과 검사 엔진이 **같은 함수**를 거친다 — 둘이 다르게 판정하지 않게.
+fn compile(engine: &Engine, source: &str) -> Result<(AST, [bool; 5]), Diagnostic> {
+    let ast = engine.compile(source).map_err(|e| {
+        let pos = e.position();
+        Diagnostic {
+            line: pos.line(),
+            column: pos.position(),
+            message: e.err_type().to_string(),
+        }
+    })?;
+    let mut has = [false; 5];
+    for f in ast.iter_functions() {
+        if let Some(i) = HOOKS.iter().position(|(hook, _)| *hook == f.name) {
+            let want = HOOKS[i].1;
+            if f.params.len() != want {
+                return Err(Diagnostic {
+                    line: None,
+                    column: None,
+                    message: format!(
+                        "{}({}) — 인자는 {want}개여야 함",
+                        f.name,
+                        f.params.join(", ")
+                    ),
+                });
+            }
+            has[i] = true;
+        }
+    }
+    Ok((ast, has))
+}
+
+/// 제한·언어 옵션만 설정한 엔진 — 컴파일 판정에 영향을 주는 것은 전부 여기.
+fn base_engine() -> Engine {
     let mut engine = Engine::new();
     engine
+        .set_strict_variables(true)
         .set_max_operations(MAX_OPERATIONS)
         .set_max_call_levels(32)
         .set_max_expr_depths(64, 32)
         .set_max_string_size(4096)
         .set_max_array_size(1024)
         .set_max_map_size(256);
+    engine
+}
+
+/// 스크립트가 쓸 함수를 등록한 엔진.
+fn build_engine(ctx: &Rc<RefCell<Ctx>>) -> Engine {
+    let mut engine = base_engine();
 
     {
         let ctx = ctx.clone();

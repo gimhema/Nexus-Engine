@@ -677,7 +677,7 @@ fn embedded_script(path: &str) -> Option<&'static str> {
 ///
 /// 대소문자·구분자를 강제하는 이유는 에셋 이름과 같다: Windows 에서 통하던 `Goblin.rhai` 나
 /// `scripts\goblin.rhai` 가 리눅스에서는 "파일 없음" 이 된다.
-fn script_path_ok(path: &str) -> bool {
+pub(crate) fn script_path_ok(path: &str) -> bool {
     path.ends_with(".rhai")
         && !path.starts_with('/')
         && !path.contains('\\')

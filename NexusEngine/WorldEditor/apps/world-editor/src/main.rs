@@ -22,6 +22,7 @@ mod play;
 mod scene;
 mod screenshot;
 mod script;
+mod script_editor;
 mod sprites;
 mod terrain;
 mod tiles;
@@ -362,6 +363,15 @@ impl Editor {
                     .as_ref()
                     .map_or(scene::ActorId::DEFAULT, |d| d.default_actor(kind))
             }),
+            actor_scripts: self.data.as_ref().map_or_else(Vec::new, |d| {
+                d.actor_catalog()
+                    .into_iter()
+                    .filter_map(|(id, name, _)| {
+                        let path = d.actor_script(id)?;
+                        Some((path.to_owned(), format!("{name} (#{})", id.raw())))
+                    })
+                    .collect()
+            }),
             art_brush: self.editing.art_brush(),
             art_layer: self.editing.art_layer(),
             brush_shape: self.editing.brush_shape(),
@@ -466,6 +476,20 @@ impl Editor {
             self.camera = *session.editor_camera();
             println!("플레이 정지 — {} tick 진행", session.ticks());
             return;
+        }
+        // 스크립트 편집기에 저장하지 않은 변경이 있으면 먼저 저장한다 — 플레이는 디스크의 파일로 돈다.
+        // 고친 것이 적용되지 않은 채 옛 스크립트로 플레이하면 무엇이 문제인지 알기 어렵다.
+        if let Some(saved) = self.ui.as_mut().and_then(EditorUi::save_dirty_script) {
+            match saved {
+                Ok(path) => self.notify(format!("플레이 전에 {path} 저장"), false),
+                Err(e) => {
+                    self.notify(
+                        format!("스크립트를 저장하지 못해 플레이하지 않음 — {e}"),
+                        true,
+                    );
+                    return;
+                }
+            }
         }
         // 데이터는 시작할 때마다 새로 읽는다 — `data/*.ron` 을 고치고 F5 만 다시 누르면 된다.
         let data = match GameData::load() {
@@ -769,6 +793,16 @@ impl Editor {
             }
             // 팔레트 창에서 고른 것과 같은 경로를 탄다 — 창의 마우스 조작만 빠진다.
             Step::Pick(pick) => self.apply_pick(&pick),
+            Step::Scripts(path) => {
+                if let Some(ui) = self.ui.as_mut() {
+                    ui.show_scripts(path.as_deref());
+                }
+            }
+            Step::Compile => {
+                if let Some(ui) = self.ui.as_mut() {
+                    ui.scripts_mut().compile();
+                }
+            }
             Step::Brush(shape, radius) => self.editing.set_brush_shape(shape, radius),
             Step::Eyedropper => self.editing.set_eyedropper(true),
             Step::Wait => {}

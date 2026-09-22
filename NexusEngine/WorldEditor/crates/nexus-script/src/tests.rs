@@ -258,7 +258,7 @@ fn compile_errors_name_the_script_and_the_problem() {
         .add_script("bad.rhai", "fn on_tick(me, dt) { let = 1; }")
         .unwrap_err();
     assert!(err.starts_with("bad.rhai:"), "{err}");
-    assert!(err.contains("line 1"), "줄 번호가 있어야 한다: {err}");
+    assert!(err.contains("1행 26칸"), "줄·칸이 있어야 한다: {err}");
 
     let err = host
         .add_script("arity.rhai", "fn on_tick(me) { }")
@@ -288,4 +288,39 @@ fn no_wall_clock_is_available() {
         lines[0].error && lines[0].message.contains("timestamp"),
         "{lines:?}"
     );
+}
+
+#[test]
+fn check_reports_the_hooks_it_found() {
+    let src = "fn on_tick(me, dt) { }\nfn helper() { 1 }\nfn on_spawn(me) { }";
+    let compiled = super::check(src).unwrap();
+    assert_eq!(
+        compiled.hooks,
+        ["on_spawn", "on_tick"],
+        "엔진이 부르는 순서"
+    );
+}
+
+#[test]
+fn check_points_at_the_line_and_column() {
+    let src = "fn on_tick(me, dt) {\n    let x = 1;\n    x +;\n}";
+    let d = super::check(src).unwrap_err();
+    assert_eq!((d.line, d.column.is_some()), (Some(3), true), "{d}");
+}
+
+#[test]
+fn undeclared_variables_are_caught_before_play() {
+    // strict 모드 — 오타 난 변수 이름이 실행 중 () 로 조용히 넘어가지 않는다.
+    let d = super::check("fn on_tick(me, dt) { let timer = 0; timr += dt; }").unwrap_err();
+    assert_eq!(d.line, Some(1), "{d}");
+    assert!(d.message.contains("timr"), "{d}");
+}
+
+#[test]
+fn hook_signatures_match_what_the_engine_calls() {
+    let sigs = super::hook_signatures();
+    assert_eq!(sigs.len(), 5);
+    // 목록의 시그니처를 그대로 쓴 스크립트는 인자 수 검사를 통과해야 한다.
+    let src: String = sigs.iter().map(|s| format!("{s} {{ }}\n")).collect();
+    assert_eq!(super::check(&src).unwrap().hooks.len(), 5);
 }
