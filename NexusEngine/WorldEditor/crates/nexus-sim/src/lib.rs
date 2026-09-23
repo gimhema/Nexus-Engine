@@ -17,6 +17,7 @@ mod combat;
 mod faction;
 mod item;
 mod loot;
+mod progress;
 mod script;
 mod tilemap;
 mod unit;
@@ -29,6 +30,7 @@ pub use item::{
     BAG_SLOTS, Bag, BagKind, EquipSlot, GroundItem, Inventory, ItemDef, ItemId, ItemKind, ItemStack,
 };
 pub use loot::{LootEntry, LootTableId};
+pub use progress::{Growth, Progress, exp_to_next};
 pub use script::{ScriptHost, ScriptLog};
 pub use tilemap::{Tile, TileCoord, TileMap};
 pub use unit::{AiKind, Unit, UnitDef};

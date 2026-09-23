@@ -378,4 +378,105 @@ mod flow_tests {
             Some(Rejection::UnknownEntity)
         );
     }
+
+    // ── 경험치·레벨 (P3) ────────────────────────────────────────────────────
+
+    /// 죽으면 경험치를 주는 대상으로 바꾼 무대 — 성장치는 레벨마다 HP +50 · 공격 +5.
+    fn exp_arena() -> (LocalAuthority, Entity, Entity) {
+        let (mut auth, _, _) = arena();
+        let world = auth.world_mut();
+        let killer = world.spawn_unit(
+            Vec2::new(1.5, 1.5),
+            0.0,
+            UnitDef {
+                growth: crate::Growth {
+                    max_hp: 50,
+                    attack: 5,
+                    defense: 0,
+                },
+                ..fighter()
+            },
+        );
+        let prey = world.spawn_unit(
+            Vec2::new(3.5, 1.5),
+            0.0,
+            UnitDef {
+                max_hp: 30,
+                exp_reward: 120,
+                ..fighter()
+            },
+        );
+        (auth, killer, prey)
+    }
+
+    #[test]
+    fn killing_grants_experience_and_levels_up_the_killer() {
+        let (mut auth, a, t) = exp_arena();
+        // 30HP 짜리 대상은 한 방(30 - 10 = 20 피해)에 죽지 않는다 — 두 번 친다.
+        let mut events = attack(&mut auth, a, t, MELEE);
+        for _ in 0..20 {
+            events = auth.tick(DT);
+        }
+        events.extend(attack(&mut auth, a, t, MELEE));
+
+        assert!(events.iter().any(|e| matches!(e, Event::Died { .. })));
+        let gained = events.iter().find_map(|e| match e {
+            Event::ExperienceGained {
+                amount, progress, ..
+            } => Some((*amount, *progress)),
+            _ => None,
+        });
+        let (amount, progress) = gained.expect("경험치 이벤트가 없다");
+        assert_eq!((amount, progress.level(), progress.exp()), (120, 2, 20));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::LeveledUp { level: 2, .. }))
+        );
+
+        // 레벨 2 → 성장치가 붙고 HP 가 가득 찬다.
+        let u = auth.world().unit(a).unwrap();
+        assert_eq!((u.max_hp(), u.attack(), u.hp()), (150, 35, 150));
+    }
+
+    #[test]
+    fn a_kill_without_a_reward_changes_nothing() {
+        let (mut auth, a, t) = arena(); // exp_reward 0
+        attack(&mut auth, a, t, MELEE);
+        for _ in 0..200 {
+            let events = auth.tick(DT);
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, Event::ExperienceGained { .. })),
+                "보상이 0 이면 이벤트도 없다"
+            );
+            auth.submit(Intent::Attack {
+                unit: a,
+                target: t,
+                skill: MELEE,
+            });
+        }
+        let u = auth.world().unit(a).unwrap();
+        assert_eq!((u.progress().level(), u.max_hp()), (1, 100), "성장치 없음");
+    }
+
+    #[test]
+    fn a_restored_level_survives_into_combat() {
+        // 저장 파일에서 되살리는 경로 — 레벨을 심으면 수치와 HP 상한이 함께 오른다.
+        let (mut auth, a, t) = exp_arena();
+        auth.world_mut()
+            .set_progress(a, crate::Progress::new(3, 10));
+        auth.world_mut().set_hp(a, 999);
+        let u = auth.world().unit(a).unwrap();
+        assert_eq!((u.max_hp(), u.attack(), u.hp()), (200, 40, 200));
+
+        // 공격력 40 - 방어 10 = 30 피해.
+        let events = attack(&mut auth, a, t, MELEE);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Damaged { amount, .. } if *amount == 30))
+        );
+    }
 }

@@ -24,6 +24,7 @@
 //! eyedropper                   스포이드 — 다음 클릭한 칸의 그림·타일을 붓으로 집는다
 //! scripts [경로]               스크립트 편집기 열기 (경로는 data/ 기준, 예: scripts/goblin.rhai)
 //! compile                      스크립트 편집기의 "컴파일" 버튼
+//! savegame | deletesave       진행 상황 저장 / 저장 데이터 삭제 (P3)
 //! ```
 //!
 //! 예: `NEXUS_SELECT="상인 NPC" NEXUS_SCRIPT="wait; press rotate; move -8 20 ctrl"`
@@ -86,6 +87,10 @@ pub(crate) enum Step {
     Scripts(Option<String>),
     /// 스크립트 편집기의 "컴파일" 버튼.
     Compile,
+    /// 진행 상황 저장 (플레이 메뉴의 "게임 저장").
+    SaveGame,
+    /// 저장 데이터 삭제.
+    DeleteSave,
     /// 붓 모양과 반지름.
     Brush(BrushShape, u8),
     /// 스포이드 켜기.
@@ -169,6 +174,8 @@ fn parse_step(text: &str) -> Result<Step, String> {
         }
         "scripts" => return Ok(Step::Scripts(words.get(1).map(|w| (*w).to_string()))),
         "compile" => return Ok(Step::Compile),
+        "savegame" => return Ok(Step::SaveGame),
+        "deletesave" => return Ok(Step::DeleteSave),
         "palette" => return Ok(Step::Palette(words.get(1).map(|w| (*w).to_string()))),
         "pick" => {
             // pick ground|prop 그림경로 x y 폭 높이 [칸크기]

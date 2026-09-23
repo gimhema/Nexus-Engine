@@ -19,6 +19,7 @@ mod game_data;
 mod grid;
 mod palette;
 mod play;
+mod save_file;
 mod scene;
 mod screenshot;
 mod script;
@@ -32,7 +33,7 @@ mod zone_file;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use nexus_core::{Camera2d, Vec2, units};
+use nexus_core::{Camera2d, Entity, Vec2, units};
 use nexus_platform::{App, Input, WindowConfig, WindowEvent, WindowTarget};
 use nexus_render::{
     DEPTH_LAYER, DrawLayer, FrameStatus, RenderCommand, RenderError, Renderer, TextureId, UvRect,
@@ -41,7 +42,7 @@ use nexus_render_wgpu::{TextureCarry, UiFrame, WgpuRenderer};
 
 use edit::{Editing, PointerInput, Tool};
 use game_data::GameData;
-use play::PlaySession;
+use play::{PlayOptions, PlaySession};
 use scene::{Handle, Pick, Scene, Target};
 use script::{Anchor, Button, Script, Step};
 use sprites::SpriteLibrary;
@@ -469,12 +470,46 @@ impl Editor {
         (actor, tint)
     }
 
+    /// 열어 둔 존 파일 이름 (`zones/village.zone.ron`). 새 씬이면 빈 문자열.
+    fn zone_name(&self) -> String {
+        self.zone_path
+            .as_ref()
+            .map(|p| p.display().to_string().replace('\\', "/"))
+            .unwrap_or_default()
+    }
+
+    /// 고른 플레이어 스폰 마커 — 여기서 시작한다 (P3-1). 하나만 골랐을 때만.
+    fn selected_player_spawn(&self) -> Option<Entity> {
+        match self.editing.selection() {
+            [Target::Item(e)] => self
+                .scene
+                .item(*e)
+                .filter(|i| i.kind == scene::ItemKind::PlayerSpawn)
+                .map(|i| i.entity),
+            _ => None,
+        }
+    }
+
+    /// 진행 상황을 저장한다 (P3-4 — 수동 저장과 정상 종료).
+    fn save_game(&mut self, session: &PlaySession) {
+        let data = session.save_data(self.zone_name());
+        match save_file::save(&save_file::default_path(), &data) {
+            Ok(()) => self.notify(
+                format!("저장 — 레벨 {} ({})", data.level, save_file::DEFAULT_SAVE),
+                false,
+            ),
+            Err(e) => self.notify(format!("저장하지 못했습니다 — {e}"), true),
+        }
+    }
+
     /// 플레이 시작 / 정지. 시작하면 씬을 복사해 시뮬레이션을 만들고, 정지하면 버린다 —
     /// 씬과 언두 기록은 건드리지 않는다.
     fn toggle_play(&mut self) {
         if let Some(session) = self.play.take() {
             self.camera = *session.editor_camera();
             println!("플레이 정지 — {} tick 진행", session.ticks());
+            // 정상 종료 경로 — 진행 상황을 저장한다 (P3-4).
+            self.save_game(&session);
             return;
         }
         // 스크립트 편집기에 저장하지 않은 변경이 있으면 먼저 저장한다 — 플레이는 디스크의 파일로 돈다.
@@ -505,7 +540,32 @@ impl Editor {
             Ok(fresh) => self.data = Some(fresh),
             Err(e) => self.notify(format!("액터 목록을 갱신하지 못했습니다 — {e}"), true),
         }
-        match PlaySession::start(&self.scene, self.camera, data) {
+        // 저장 데이터가 있으면 이어서 한다. 다른 존이면 위치만 버리고 캐릭터는 이어진다.
+        let save = match save_file::load(&save_file::default_path()) {
+            Ok(save) => save,
+            Err(e) => {
+                self.notify(format!("저장 파일을 읽지 못해 새로 시작합니다 — {e}"), true);
+                None
+            }
+        };
+        let save = save.map(|mut save| {
+            let here = self.zone_name();
+            if save.zone != here {
+                save.pos = None;
+            }
+            save
+        });
+        if let Some(save) = &save {
+            self.notify(
+                format!("이어 하기 — 레벨 {} (저장: {})", save.level, save.zone),
+                false,
+            );
+        }
+        let options = PlayOptions {
+            spawn: self.selected_player_spawn(),
+            save,
+        };
+        match PlaySession::start(&self.scene, self.camera, data, options) {
             Ok(session) => {
                 println!("플레이 시작 — 유닛 {}명", session.world().unit_count());
                 self.hover = None;
@@ -598,6 +658,21 @@ impl Editor {
         }
         if actions.toggle_play {
             self.toggle_play();
+        }
+        if actions.save_game
+            && let Some(session) = self.play.take()
+        {
+            self.save_game(&session);
+            self.play = Some(session);
+        }
+        if actions.delete_save {
+            match save_file::delete(&save_file::default_path()) {
+                Ok(()) => self.notify(
+                    String::from("저장 데이터를 지웠습니다 — 다음 플레이는 새로 시작합니다"),
+                    false,
+                ),
+                Err(e) => self.notify(format!("저장 데이터를 지우지 못했습니다 — {e}"), true),
+            }
         }
         self.manual_shot_requested |= actions.screenshot;
         if self.play.is_some() {
@@ -801,6 +876,17 @@ impl Editor {
             Step::Compile => {
                 if let Some(ui) = self.ui.as_mut() {
                     ui.scripts_mut().compile();
+                }
+            }
+            Step::SaveGame => {
+                if let Some(session) = self.play.take() {
+                    self.save_game(&session);
+                    self.play = Some(session);
+                }
+            }
+            Step::DeleteSave => {
+                if let Err(e) = save_file::delete(&save_file::default_path()) {
+                    self.notify(format!("저장 데이터를 지우지 못했습니다 — {e}"), true);
                 }
             }
             Step::Brush(shape, radius) => self.editing.set_brush_shape(shape, radius),
@@ -1348,6 +1434,10 @@ impl App for Editor {
     }
 
     fn shutdown(&mut self) {
+        // 창을 닫는 것도 정상 종료다 — 플레이 중이면 진행 상황을 저장한다 (P3-4).
+        if let Some(session) = self.play.take() {
+            self.save_game(&session);
+        }
         println!(
             "종료 — 총 {} tick, 마커 {}, 선택 {}, 마지막 프레임 쿼드 {}",
             self.ticks,

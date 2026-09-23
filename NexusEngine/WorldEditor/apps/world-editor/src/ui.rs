@@ -119,6 +119,10 @@ pub(crate) struct UiActions {
     file_dialog: Option<FileDialogMode>,
     /// 플레이 시작 / 정지 (F5).
     pub(crate) toggle_play: bool,
+    /// 진행 상황 저장 (플레이 메뉴).
+    pub(crate) save_game: bool,
+    /// 저장 데이터 삭제 — 다음 플레이는 새로 시작한다.
+    pub(crate) delete_save: bool,
     /// 플레이 중 인벤토리 패널 조작.
     pub(crate) inventory: Option<InventoryAction>,
     pub(crate) reset_view: bool,
@@ -445,6 +449,18 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
                 {
                     actions.toggle_play = true;
                 }
+                ui.separator();
+                // 저장은 진행 상황(레벨·소지품)이다 — 씬(존)은 파일 메뉴에서 저장한다.
+                if ui
+                    .add_enabled(model.play.is_some(), egui::Button::new("게임 저장"))
+                    .clicked()
+                {
+                    actions.save_game = true;
+                }
+                if ui.button("저장 데이터 삭제").clicked() {
+                    actions.delete_save = true;
+                }
+                ui.weak("정지하거나 창을 닫을 때도 저장된다 (수동 저장 + 정상 종료).");
                 ui.weak("씬은 바뀌지 않는다 — 정지하면 플레이 결과는 버려진다.");
             });
             ui.menu_button("보기", |ui| {
@@ -913,10 +929,10 @@ fn play_units(ui: &mut egui::Ui, play: &PlaySession) {
                 ui.weak(format!("{name} (쓰러짐)"));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.monospace(format!("{}/{}", u.hp(), u.def().max_hp));
+                ui.monospace(format!("{}/{}", u.hp(), u.max_hp()));
             });
         });
-        let ratio = u.hp() as f32 / u.def().max_hp as f32;
+        let ratio = u.hp() as f32 / u.max_hp() as f32;
         ui.add(egui::ProgressBar::new(ratio).desired_height(4.0));
     }
     let items = world.ground_items().count();
@@ -936,9 +952,16 @@ fn play_inspector(ui: &mut egui::Ui, play: &PlaySession, actions: &mut UiActions
     ui.monospace(format!(
         "HP {}/{}  공격 {}  방어 {}",
         me.hp(),
-        me.def().max_hp,
+        me.max_hp(),
         me.attack(),
         me.defense()
+    ));
+    let p = me.progress();
+    ui.monospace(format!(
+        "레벨 {}  경험치 {}/{}",
+        p.level(),
+        p.exp(),
+        p.exp_to_next()
     ));
 
     ui.add_space(6.0);

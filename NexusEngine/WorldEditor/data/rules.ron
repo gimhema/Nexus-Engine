@@ -51,6 +51,8 @@
             defense: 5,
             faction: 1,
             basic_attack: Some(1),
+            // 레벨이 오를 때마다 더해지는 수치 (P3). 필요 경험치는 level² × 100.
+            growth: (max_hp: 40, attack: 4, defense: 2),
         ),
         // 서버 NpcEntityData 기본값처럼 불사·방어형.
         10: (
@@ -77,6 +79,7 @@
             leash_range: 14.0,
             basic_attack: Some(2),
             loot: Some(1),
+            exp_reward: 60,
         ),
         // 같은 몬스터 마커라도 타입이 다르면 수치가 다르다 — 액터 타입의 요점.
         101: (
@@ -90,6 +93,7 @@
             leash_range: 18.0,
             basic_attack: Some(2),
             loot: Some(1),
+            exp_reward: 140,
         ),
         // 스크립트로 움직이는 액터 (P2). AI 는 Passive — 누구를 언제 칠지는 스크립트가 정한다.
         // script 는 data/ 기준 경로. 스크립트를 고치고 F5 만 다시 누르면 적용된다.
@@ -101,6 +105,7 @@
             faction: 201,
             basic_attack: Some(2),
             loot: Some(1),
+            exp_reward: 90,
             script: Some("scripts/goblin.rhai"),
         ),
     },

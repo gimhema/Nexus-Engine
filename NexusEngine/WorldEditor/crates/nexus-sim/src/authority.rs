@@ -19,6 +19,7 @@ use nexus_core::{Entity, Vec2};
 use crate::ai;
 use crate::combat::SkillId;
 use crate::item::{BagKind, EquipSlot, ItemStack};
+use crate::progress::Progress;
 use crate::script::ScriptHost;
 use crate::world::SimWorld;
 
@@ -147,6 +148,14 @@ pub enum Event {
     },
     /// 장착 상태가 바뀌었다. 공격력·방어력이 달라졌을 수 있다.
     EquipmentChanged { unit: Entity, slot: EquipSlot },
+    /// 경험치를 얻었다 (P3). `progress` 는 더한 뒤의 상태다.
+    ExperienceGained {
+        unit: Entity,
+        amount: u32,
+        progress: Progress,
+    },
+    /// 레벨이 올랐다 — HP 가 가득 찬다.
+    LeveledUp { unit: Entity, level: u32 },
 }
 
 /// 게임플레이 상태의 권한자.

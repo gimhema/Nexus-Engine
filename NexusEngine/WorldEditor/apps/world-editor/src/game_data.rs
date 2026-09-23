@@ -26,8 +26,8 @@ use std::path::Path;
 
 use nexus_core::Entity;
 use nexus_sim::{
-    AiKind, EquipSlot, FactionId, ItemDef, ItemId, ItemKind as SimItemKind, LootEntry, LootTableId,
-    Relation, SimWorld, SkillDef, SkillId, UnitDef,
+    AiKind, EquipSlot, FactionId, Growth, ItemDef, ItemId, ItemKind as SimItemKind, LootEntry,
+    LootTableId, Relation, SimWorld, SkillDef, SkillId, UnitDef,
 };
 use serde::Deserialize;
 
@@ -171,6 +171,23 @@ struct UnitFile {
     /// 액터 스크립트 (P2) — `data/` 기준 경로. 예: `scripts/goblin.rhai`.
     #[serde(default)]
     script: Option<String>,
+    /// 이 액터를 죽인 쪽이 받는 경험치 (P3).
+    #[serde(default)]
+    exp_reward: u32,
+    /// 레벨이 오를 때마다 더해지는 수치 (P3). 적지 않으면 성장하지 않는다.
+    #[serde(default)]
+    growth: GrowthFile,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GrowthFile {
+    #[serde(default)]
+    max_hp: u32,
+    #[serde(default)]
+    attack: u32,
+    #[serde(default)]
+    defense: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
@@ -758,6 +775,12 @@ impl From<&UnitFile> for UnitDef {
             leash_range: u.leash_range,
             basic_attack: u.basic_attack.map(SkillId),
             loot: u.loot.map(LootTableId),
+            exp_reward: u.exp_reward,
+            growth: Growth {
+                max_hp: u.growth.max_hp,
+                attack: u.growth.attack,
+                defense: u.growth.defense,
+            },
         }
     }
 }

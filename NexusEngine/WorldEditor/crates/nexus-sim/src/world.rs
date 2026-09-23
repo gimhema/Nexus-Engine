@@ -22,8 +22,11 @@ use nexus_core::{Entity, Vec2, World};
 use crate::authority::{Event, Rejection};
 use crate::combat::{self, SkillDef, SkillId};
 use crate::faction::{FactionId, FactionTable, Relation};
-use crate::item::{BagKind, EquipSlot, GroundItem, ItemDef, ItemId, ItemKind, ItemStack};
+use crate::item::{
+    BAG_SLOTS, BagKind, EquipSlot, GroundItem, ItemDef, ItemId, ItemKind, ItemStack,
+};
 use crate::loot::{self, LootEntry, LootTableId, Rng};
+use crate::progress::Progress;
 use crate::tilemap::TileMap;
 use crate::unit::{AiKind, AiState, Unit, UnitDef};
 
@@ -92,6 +95,68 @@ impl SimWorld {
     /// 드롭 테이블을 등록한다 (설정 작업). `UnitDef::loot` 가 이 번호를 가리킨다.
     pub fn define_loot(&mut self, id: LootTableId, entries: Vec<LootEntry>) {
         self.loot_tables.insert(id, entries);
+    }
+
+    /// 레벨·경험치를 그대로 심는다 (설정 작업 — 저장 파일에서 되살릴 때).
+    /// 성장치만큼 최대 HP 가 달라지므로 현재 HP 도 상한으로 자른다.
+    pub fn set_progress(&mut self, unit: Entity, progress: Progress) {
+        if let Some(u) = self.unit_mut(unit) {
+            u.progress = progress;
+            let cap = u.max_hp();
+            u.hp = u.hp.min(cap);
+        }
+    }
+
+    /// 위치를 그대로 심는다 (설정 작업 — 저장한 자리에서 이어 하기).
+    /// 보간이 튀지 않게 직전 위치도 맞추고, AI 의 귀환 기준(집)도 여기로 옮긴다.
+    pub fn set_position(&mut self, unit: Entity, pos: Vec2) {
+        if let Some(u) = self.unit_mut(unit) {
+            u.pos = pos;
+            u.prev_pos = pos;
+            u.home = pos;
+            u.waypoints.clear();
+        }
+    }
+
+    /// 현재 HP 를 그대로 심는다 (설정 작업). 0 은 시체를 만드므로 최소 1.
+    pub fn set_hp(&mut self, unit: Entity, hp: u32) {
+        if let Some(u) = self.unit_mut(unit) {
+            let cap = u.max_hp();
+            u.hp = hp.clamp(1, cap);
+        }
+    }
+
+    /// 가방의 **그 칸에** 아이템을 놓는다 (설정 작업 — 저장한 칸 번호를 그대로 되살린다).
+    /// 정의되지 않은 아이템이나 범위 밖 칸은 무시한다.
+    pub fn place_item(&mut self, unit: Entity, slot: u16, stack: ItemStack) -> bool {
+        let Some(def) = self.items.get(&stack.item).copied() else {
+            return false;
+        };
+        let slot = usize::from(slot);
+        if slot >= BAG_SLOTS || stack.count == 0 || stack.count > def.stack_limit() {
+            return false;
+        }
+        let Some(u) = self.unit_mut(unit) else {
+            return false;
+        };
+        u.inventory.bag_mut(def.bag()).put(slot, Some(stack));
+        true
+    }
+
+    /// 장비를 가방을 거치지 않고 바로 장착한다 (설정 작업). 장비가 아니면 무시한다.
+    pub fn force_equip(&mut self, unit: Entity, item: ItemId) -> bool {
+        let Some(def) = self.items.get(&item).copied() else {
+            return false;
+        };
+        let ItemKind::Equipment { slot, .. } = def.kind else {
+            return false;
+        };
+        let Some(u) = self.unit_mut(unit) else {
+            return false;
+        };
+        u.inventory.set_equipped(slot, Some(item));
+        self.refresh_equipment_bonus(unit);
+        true
     }
 
     pub fn set_pickup_range(&mut self, meters: f32) {
@@ -345,12 +410,13 @@ impl SimWorld {
         if remaining_hp == 0 {
             t.waypoints.clear();
             t.ai = AiState::default();
-            let (corpse, table) = (t.pos, t.def.loot);
+            let (corpse, table, reward) = (t.pos, t.def.loot, t.def.exp_reward);
             events.push(Event::Died {
                 unit: target,
                 killer: attacker,
             });
             self.drop_loot(table, corpse, events);
+            self.grant_exp(attacker, reward, events);
         } else if t.def.ai != AiKind::Passive && t.ai.target.is_none() && !t.ai.returning {
             // 반격 — 싸우는 상대가 없을 때만 갈아탄다. 귀환 중에는 받지 않는다.
             t.ai.target = Some(attacker);
@@ -360,6 +426,31 @@ impl SimWorld {
             });
         }
         Ok(())
+    }
+
+    /// 죽인 쪽에 경험치를 준다 (P3). 레벨이 오르면 **HP 가 가득 찬다** — 상한이 올라가므로.
+    fn grant_exp(&mut self, unit: Entity, amount: u32, events: &mut Vec<Event>) {
+        if amount == 0 {
+            return;
+        }
+        let Some(u) = self.unit_mut(unit).filter(|u| u.is_alive()) else {
+            return;
+        };
+        let levels = u.progress.add(amount);
+        let progress = u.progress;
+        events.push(Event::ExperienceGained {
+            unit,
+            amount,
+            progress,
+        });
+        if levels > 0 {
+            let full = u.max_hp();
+            u.hp = full;
+            events.push(Event::LeveledUp {
+                unit,
+                level: progress.level(),
+            });
+        }
     }
 
     /// 드롭 테이블을 굴려 시체 자리에 떨어뜨린다.
@@ -472,7 +563,8 @@ impl SimWorld {
         let u = self.unit_mut(unit).ok_or(Rejection::UnknownEntity)?;
         u.inventory.consumables.take_one(slot);
         let before = u.hp;
-        u.hp = u.hp.saturating_add(heal).min(u.def.max_hp);
+        let cap = u.max_hp();
+        u.hp = u.hp.saturating_add(heal).min(cap);
         events.push(Event::Healed {
             unit,
             amount: u.hp - before,

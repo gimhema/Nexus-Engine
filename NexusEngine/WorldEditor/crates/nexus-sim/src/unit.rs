@@ -11,6 +11,7 @@ use crate::combat::SkillId;
 use crate::faction::FactionId;
 use crate::item::Inventory;
 use crate::loot::LootTableId;
+use crate::progress::{Growth, Progress};
 
 /// 전투 AI 행동 유형. 서버 `EAIType` 과 같은 의미다.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -49,6 +50,10 @@ pub struct UnitDef {
     pub basic_attack: Option<SkillId>,
     /// 죽을 때 굴릴 드롭 테이블.
     pub loot: Option<LootTableId>,
+    /// 이 유닛을 죽인 쪽이 받는 경험치 (P3).
+    pub exp_reward: u32,
+    /// 레벨이 오를 때마다 더해지는 수치. 기본은 0 — 성장하지 않는다.
+    pub growth: Growth,
 }
 
 impl Default for UnitDef {
@@ -66,6 +71,8 @@ impl Default for UnitDef {
             leash_range: 0.0,
             basic_attack: None,
             loot: None,
+            exp_reward: 0,
+            growth: Growth::default(),
         }
     }
 }
@@ -127,6 +134,8 @@ pub struct Unit {
     /// 장착 장비의 수치 합. 장착·해제 때 다시 계산한다.
     pub(crate) bonus_attack: u32,
     pub(crate) bonus_defense: u32,
+    /// 레벨·경험치 (P3). 몬스터도 갖지만 보통 1레벨 그대로다.
+    pub(crate) progress: Progress,
 }
 
 impl Unit {
@@ -145,6 +154,7 @@ impl Unit {
             inventory: Inventory::default(),
             bonus_attack: 0,
             bonus_defense: 0,
+            progress: Progress::default(),
         }
     }
 
@@ -164,16 +174,42 @@ impl Unit {
         self.home
     }
 
-    /// 장비가 더해진 공격력 — 전투는 이 값을 쓴다.
+    /// 레벨 성장 + 장비가 더해진 공격력 — 전투는 이 값을 쓴다.
     #[must_use]
     pub fn attack(&self) -> u32 {
-        self.def.attack.saturating_add(self.bonus_attack)
+        self.def
+            .attack
+            .saturating_add(self.grown(self.def.growth.attack))
+            .saturating_add(self.bonus_attack)
     }
 
-    /// 장비가 더해진 방어력.
+    /// 레벨 성장이 반영된 최대 HP. **`def().max_hp` 대신 이것을 쓴다.**
+    #[must_use]
+    pub fn max_hp(&self) -> u32 {
+        self.def
+            .max_hp
+            .saturating_add(self.grown(self.def.growth.max_hp))
+            .max(1)
+    }
+
+    /// 레벨·경험치.
+    #[must_use]
+    pub fn progress(&self) -> Progress {
+        self.progress
+    }
+
+    /// 성장치 × (레벨 - 1).
+    fn grown(&self, per_level: u32) -> u32 {
+        per_level.saturating_mul(self.progress.level() - 1)
+    }
+
+    /// 레벨 성장 + 장비가 더해진 방어력.
     #[must_use]
     pub fn defense(&self) -> u32 {
-        self.def.defense.saturating_add(self.bonus_defense)
+        self.def
+            .defense
+            .saturating_add(self.grown(self.def.growth.defense))
+            .saturating_add(self.bonus_defense)
     }
 
     #[must_use]

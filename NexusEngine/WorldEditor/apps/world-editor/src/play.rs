@@ -21,10 +21,12 @@ use nexus_core::{Camera2d, Entity, Vec2, Vec3};
 use nexus_render::{DEPTH_LAYER, RenderCommand, SpriteAnchor, TextureId, UvRect};
 use nexus_script::RhaiHost;
 use nexus_sim::{
-    Authority, BagKind, EquipSlot, Event, Intent, LocalAuthority, Rejection, Relation, SimWorld,
+    Authority, BagKind, EquipSlot, Event, Intent, ItemStack, LocalAuthority, Progress, Rejection,
+    Relation, SimWorld, Unit,
 };
 
 use crate::game_data::{ActorLook, GameData};
+use crate::save_file::SaveData;
 use crate::scene::{ActorId, ItemKind, Scene};
 use crate::sprites::{Look, NO_TINT, SpriteLibrary};
 
@@ -78,6 +80,15 @@ pub(crate) enum InventoryAction {
     Unequip(EquipSlot),
 }
 
+/// 플레이를 시작할 때 주는 설정.
+#[derive(Debug, Default)]
+pub(crate) struct PlayOptions {
+    /// 여기(씬 마커)에서 시작한다 — 없으면 첫 플레이어 스폰 (P3-1).
+    pub(crate) spawn: Option<Entity>,
+    /// 이어서 할 저장 데이터 (P3). 없으면 새로 시작한다.
+    pub(crate) save: Option<SaveData>,
+}
+
 /// 진행 중인 플레이 한 판.
 #[derive(Debug)]
 pub(crate) struct PlaySession {
@@ -108,6 +119,7 @@ impl PlaySession {
         scene: &Scene,
         editor_camera: Camera2d,
         data: GameData,
+        options: PlayOptions,
     ) -> Result<Self, String> {
         let mut world = SimWorld::new(scene.tiles.clone());
         data.install(&mut world);
@@ -123,10 +135,21 @@ impl PlaySession {
 
         let mut labels = HashMap::new();
         let mut player = None;
+        // 조작할 스폰 — 고른 마커가 있으면 그것, 없으면 첫 플레이어 스폰 (P3-1).
+        let chosen = options.spawn.filter(|e| {
+            scene
+                .items
+                .iter()
+                .any(|i| i.entity == *e && i.kind == ItemKind::PlayerSpawn)
+        });
         for item in &scene.items {
-            let is_player = item.kind == ItemKind::PlayerSpawn;
+            let is_player =
+                item.kind == ItemKind::PlayerSpawn && chosen.is_none_or(|e| e == item.entity);
             if is_player && player.is_some() {
                 continue;
+            }
+            if item.kind == ItemKind::PlayerSpawn && !is_player {
+                continue; // 나머지 플레이어 스폰은 지점일 뿐이다
             }
             // 마커가 가리키는 액터 타입에서 수치·그림이 나오고, 마커별 덮어쓰기가 그 위에 얹힌다 (P1, P1-4).
             let actor = data.resolve_actor(item.actor, item.kind);
@@ -154,7 +177,11 @@ impl PlaySession {
                 scripts.attach(unit, *id);
             }
             if is_player {
-                data.give_starting_kit(&mut world, unit);
+                // 이어 하기면 저장한 소지품이 들어오므로 시작 소지품은 주지 않는다.
+                match options.save.as_ref() {
+                    Some(save) => restore(&mut world, unit, save),
+                    None => data.give_starting_kit(&mut world, unit),
+                }
                 player = Some(unit);
             }
         }
@@ -201,6 +228,39 @@ impl PlaySession {
     /// 유닛 이름. 모르면 `"?"`.
     pub(crate) fn name(&self, unit: Entity) -> &str {
         self.labels.get(&unit).map_or("?", |l| l.name.as_str())
+    }
+
+    /// 지금 상태를 저장 데이터로 (P3). `zone` 은 편집기가 열어 둔 존 파일이다.
+    pub(crate) fn save_data(&self, zone: String) -> SaveData {
+        let u = self.world().unit(self.player);
+        let progress = u.map(|u| u.progress()).unwrap_or_default();
+        let inventory = u.map(Unit::inventory);
+        let bags = [BagKind::Consumable, BagKind::Equipment]
+            .into_iter()
+            .filter_map(|kind| inventory.map(|i| i.bag(kind)))
+            .flat_map(|bag| {
+                bag.iter()
+                    .map(|(slot, s)| (slot as u16, s.item, s.count))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        SaveData {
+            actor: self
+                .labels
+                .get(&self.player)
+                .map_or(ActorId::DEFAULT, |l| l.actor),
+            level: progress.level(),
+            exp: progress.exp(),
+            // 쓰러진 채로 저장하면 이어 할 수 없다 — 최소 1 로 둔다.
+            hp: u.map_or(1, |u| u.hp().max(1)),
+            zone,
+            pos: u.map(Unit::pos),
+            bags,
+            equipped: EquipSlot::ALL
+                .into_iter()
+                .filter_map(|slot| inventory?.equipped(slot))
+                .collect(),
+        }
     }
 
     /// 상태 바에 띄울 경고를 꺼낸다.
@@ -416,6 +476,19 @@ impl PlaySession {
             Event::PickedUp { stack, .. } => {
                 format!("{} ×{} 획득", self.data.item_name(stack.item), stack.count)
             }
+            Event::ExperienceGained {
+                unit,
+                amount,
+                progress,
+            } if unit == self.player => format!(
+                "경험치 +{amount} (레벨 {} · {}/{})",
+                progress.level(),
+                progress.exp(),
+                progress.exp_to_next()
+            ),
+            Event::LeveledUp { unit, level } if unit == self.player => {
+                format!("레벨 {level} 달성 — HP 가 가득 찼다")
+            }
             Event::Healed {
                 amount,
                 remaining_hp,
@@ -616,7 +689,7 @@ impl PlaySession {
                 sprites.map_or(NO_SHEET_HEIGHT, |s| s.sheet(self.actor_of(unit)).height(px));
             let above = height + GAP_PX * px;
             let at = u.render_pos(alpha);
-            let ratio = u.hp() as f32 / u.def().max_hp as f32;
+            let ratio = u.hp() as f32 / u.max_hp() as f32;
             let full = WIDTH_PX * px;
             let color = if ratio <= 0.3 { BAR_HP_LOW } else { BAR_HP };
 
@@ -708,6 +781,24 @@ mod text {
     }
 }
 
+/// 저장 데이터를 스폰한 플레이어에 얹는다 (P3).
+///
+/// **수치는 되살리지 않는다** — HP 상한·공격력은 `rules.ron` 의 지금 값에서 다시 계산된다.
+/// 데이터에서 사라진 아이템은 조용히 버린다 (규칙이 바뀌었다고 이어 하기가 막히면 곤란하다).
+fn restore(world: &mut SimWorld, player: Entity, save: &SaveData) {
+    world.set_progress(player, Progress::new(save.level, save.exp));
+    for &(slot, item, count) in &save.bags {
+        world.place_item(player, slot, ItemStack { item, count });
+    }
+    for &item in &save.equipped {
+        world.force_equip(player, item);
+    }
+    // 위치는 같은 존일 때만 남아 있다 — 다른 존이면 스폰 지점 그대로다.
+    if let Some(pos) = save.pos {
+        world.set_position(player, pos);
+    }
+    world.set_hp(player, save.hp);
+}
 #[cfg(test)]
 mod tests {
     use nexus_sim::ItemId;
@@ -721,6 +812,7 @@ mod tests {
             &Scene::server_default(),
             Camera2d::default(),
             GameData::embedded(),
+            PlayOptions::default(),
         )
         .unwrap()
     }
@@ -753,7 +845,13 @@ mod tests {
     fn starting_does_not_touch_the_scene() {
         let scene = Scene::server_default();
         let before = scene.items.clone();
-        let mut s = PlaySession::start(&scene, Camera2d::default(), GameData::embedded()).unwrap();
+        let mut s = PlaySession::start(
+            &scene,
+            Camera2d::default(),
+            GameData::embedded(),
+            PlayOptions::default(),
+        )
+        .unwrap();
         s.click(Vec2::new(5.0, 0.0), 0.01);
         for _ in 0..40 {
             s.tick(DT, None);
@@ -768,7 +866,13 @@ mod tests {
         let slime = scene.items.iter_mut().find(|i| i.name == "슬라임").unwrap();
         slime.actor = ActorId::new(102);
         slime.pos = Vec2::new(6.0, 0.0);
-        let mut s = PlaySession::start(&scene, Camera2d::default(), GameData::embedded()).unwrap();
+        let mut s = PlaySession::start(
+            &scene,
+            Camera2d::default(),
+            GameData::embedded(),
+            PlayOptions::default(),
+        )
+        .unwrap();
         let goblin = find(&s, "슬라임");
         let full = s.world().unit(s.player()).unwrap().hp();
 
@@ -786,17 +890,143 @@ mod tests {
         assert!(s.take_alerts().is_empty());
     }
 
+    // ── 이어 하기 (P3) ──────────────────────────────────────────────────────
+
+    #[test]
+    fn the_chosen_player_spawn_is_the_one_that_walks() {
+        // P3-1: 여러 플레이어 스폰 중 고른 마커에서 시작한다.
+        let scene = Scene::server_default();
+        let spawns: Vec<_> = scene
+            .items
+            .iter()
+            .filter(|i| i.kind == ItemKind::PlayerSpawn)
+            .collect();
+        assert!(spawns.len() >= 2, "시험 전제: 플레이어 스폰이 둘 이상");
+        let (second, at) = (spawns[1].entity, spawns[1].pos);
+
+        let s = PlaySession::start(
+            &scene,
+            Camera2d::default(),
+            GameData::embedded(),
+            PlayOptions {
+                spawn: Some(second),
+                save: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(s.world().unit(s.player()).unwrap().pos(), at);
+        // 스폰 지점은 여전히 하나만 유닛이 된다.
+        assert_eq!(s.world().unit_count(), 4);
+    }
+
+    #[test]
+    fn a_saved_character_comes_back_with_level_items_and_place() {
+        let mut s = session();
+        // 슬라임을 잡아 경험치를 얻고, 떨어진 것을 줍는다.
+        let slime = find(&s, "슬라임");
+        s.click(s.world().unit(slime).unwrap().pos(), 0.01);
+        for _ in 0..900 {
+            s.tick(DT, None);
+        }
+        assert!(!s.world().unit(slime).unwrap().is_alive(), "{:?}", s.log);
+        let before = s.world().unit(s.player()).unwrap().progress();
+        assert!(
+            before.level() >= 1 && before.exp() > 0,
+            "경험치를 받았어야 한다"
+        );
+
+        let save = s.save_data(String::from("zones/sample.zone.ron"));
+        assert_eq!((save.level, save.exp), (before.level(), before.exp()));
+        assert!(!save.bags.is_empty(), "시작 소지품이 저장에 담긴다");
+
+        // 같은 존에서 이어 하기 — 레벨·소지품·위치가 그대로다.
+        let again = PlaySession::start(
+            &Scene::server_default(),
+            Camera2d::default(),
+            GameData::embedded(),
+            PlayOptions {
+                spawn: None,
+                save: Some(save.clone()),
+            },
+        )
+        .unwrap();
+        let me = again.world().unit(again.player()).unwrap();
+        assert_eq!(me.progress(), before);
+        assert_eq!(me.pos(), save.pos.unwrap(), "저장한 자리에서 이어 한다");
+        assert_eq!(me.hp(), save.hp);
+        assert_eq!(
+            me.inventory()
+                .bag(BagKind::Consumable)
+                .count_of(ItemId(501)),
+            save.bags
+                .iter()
+                .filter(|(_, item, _)| *item == ItemId(501))
+                .map(|(_, _, n)| n)
+                .sum::<u32>()
+        );
+    }
+
+    #[test]
+    fn continuing_in_another_zone_keeps_the_character_but_not_the_place() {
+        let mut save = session().save_data(String::from("zones/other.zone.ron"));
+        save.level = 4;
+        save.hp = 7;
+        save.pos = None; // 편집기가 다른 존이라 지운 상태
+        let s = PlaySession::start(
+            &Scene::server_default(),
+            Camera2d::default(),
+            GameData::embedded(),
+            PlayOptions {
+                spawn: None,
+                save: Some(save),
+            },
+        )
+        .unwrap();
+        let me = s.world().unit(s.player()).unwrap();
+        assert_eq!(me.progress().level(), 4);
+        assert_eq!(me.hp(), 7);
+        assert_eq!(me.pos(), Vec2::ZERO, "스폰 지점에서 시작한다");
+        // 레벨 4 = 성장치 ×3 (rules.ron: HP +40/레벨).
+        assert_eq!(me.max_hp(), 200 + 40 * 3);
+    }
+
+    #[test]
+    fn items_that_no_longer_exist_are_dropped_instead_of_blocking_play() {
+        let mut save = session().save_data(String::new());
+        save.bags.push((5, ItemId(9_999), 1));
+        save.equipped.push(ItemId(9_998));
+        let s = PlaySession::start(
+            &Scene::server_default(),
+            Camera2d::default(),
+            GameData::embedded(),
+            PlayOptions {
+                spawn: None,
+                save: Some(save),
+            },
+        )
+        .expect("없는 아이템 때문에 플레이가 막히면 안 된다");
+        let inv = s.world().unit(s.player()).unwrap().inventory();
+        assert_eq!(inv.bag(BagKind::Equipment).get(5), None);
+    }
+
     #[test]
     fn marker_overrides_reach_the_spawned_unit() {
         // P1-4: 같은 타입이라도 이 마커의 슬라임만 HP 가 다르다. 나머지 수치는 타입 그대로.
         let mut scene = Scene::server_default();
         let slime = scene.items.iter_mut().find(|i| i.name == "슬라임").unwrap();
         slime.overrides.max_hp = Some(333);
-        let s = PlaySession::start(&scene, Camera2d::default(), GameData::embedded()).unwrap();
+        let s = PlaySession::start(
+            &scene,
+            Camera2d::default(),
+            GameData::embedded(),
+            PlayOptions::default(),
+        )
+        .unwrap();
         let plain = PlaySession::start(
             &Scene::server_default(),
             Camera2d::default(),
             GameData::embedded(),
+            PlayOptions::default(),
         )
         .unwrap();
 
@@ -811,7 +1041,15 @@ mod tests {
     fn no_player_spawn_means_no_play() {
         let mut scene = Scene::server_default();
         scene.items.retain(|i| i.kind != ItemKind::PlayerSpawn);
-        assert!(PlaySession::start(&scene, Camera2d::default(), GameData::embedded()).is_err());
+        assert!(
+            PlaySession::start(
+                &scene,
+                Camera2d::default(),
+                GameData::embedded(),
+                PlayOptions::default()
+            )
+            .is_err()
+        );
     }
 
     #[test]
