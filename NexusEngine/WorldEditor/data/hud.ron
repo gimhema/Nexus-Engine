@@ -1,0 +1,38 @@
+// 플레이 화면 HUD — 폰트와 창 그림. **클라이언트만 보는 데이터다** (display.ron·terrain.ron 과 같은 쪽).
+//
+// HUD 는 게임 런타임에서 도는 그림이라 egui 를 쓰지 않는다. 글자도 쿼드로 그리므로
+// "글자 → 그림의 어느 칸" 대응표가 필요하다.
+//
+// 받아온 폰트는 균일 격자가 아니다 — 알파벳은 8×16 칸, 숫자는 8×8 칸으로 오른쪽 구석에 있다.
+// 그래서 칸 크기를 구간(run)마다 따로 적는다. (x, y) 는 첫 글자의 왼쪽 위 픽셀이고,
+// 그다음 글자는 size.0 만큼 오른쪽으로 간다.
+//
+// ⚠ 이 폰트에는 **한글도 `/` 도 없다.** 그래서 HUD 문구는 영문 대문자·숫자만 쓴다
+//   (한글 표시는 에디터 패널 쪽에 남아 있다).
+(
+    version: 1,
+
+    font: (
+        image: "assets/third_party/zelda-like-armm1998/gfx/font.png",
+        // 글자 하나가 차지하는 가로 폭과 줄 높이 (픽셀).
+        advance: 8,
+        line_height: 16,
+        runs: [
+            (chars: "AaBbCcDdEeFfGgHhIiJjKkLlMm", x: 0, y: 0, size: (8, 16)),
+            (chars: "NnOoPpQqRrSsTtUuVvWwXxYyZz", x: 0, y: 16, size: (8, 16)),
+            (chars: ".,!¡?¿#_-▼:;'\"", x: 0, y: 32, size: (8, 16)),
+            // 숫자는 오른쪽 구석에 8×8 로 흩어져 있다.
+            (chars: "012", x: 216, y: 0, size: (8, 8)),
+            (chars: "345", x: 216, y: 8, size: (8, 8)),
+            (chars: "678", x: 216, y: 16, size: (8, 8)),
+            (chars: "9", x: 224, y: 24, size: (8, 8)),
+        ],
+    ),
+
+    // 인벤토리 창의 배경 — 같은 그림 아래쪽에 있는 말풍선 상자를 9-slice 로 쓴다.
+    // border 는 늘어나지 않는 가장자리 두께 (픽셀).
+    panel: (x: 0, y: 48, width: 232, height: 88, border: 12),
+
+    // HUD 확대 배율. **정수여야** 픽셀이 뭉개지지 않는다.
+    scale: 2,
+)

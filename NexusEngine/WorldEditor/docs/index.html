@@ -540,6 +540,39 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
   선택하지 않으면 첫 번째 스폰입니다.
 </p>
 
+<h3>6.7 게임 화면 안의 HUD</h3>
+<p>
+  플레이 중에는 화면 안에 <strong>HP 막대</strong>와 <strong>경험치 막대</strong>가 뜹니다.
+  에디터 패널(egui)과 달리 <strong>게임 쪽에서 직접 그리는 화면</strong>이라, 나중에 에디터 없이 게임만
+  실행해도 그대로 나옵니다.
+</p>
+<table>
+  <tr><th style="width:22%">키</th><th>동작</th></tr>
+  <tr><td><kbd>I</kbd></td><td>인벤토리 창 열고 닫기 — 가진 아이템을 <strong>색 네모와 개수</strong>로 보여 줍니다</td></tr>
+  <tr><td><kbd>F9</kbd></td><td>에디터 패널 숨기기 — 게임 화면과 HUD 만 남습니다 (메뉴 바는 남습니다)</td></tr>
+</table>
+<div class="box">
+  <p>
+    <strong>HUD 글자는 영문과 숫자뿐입니다.</strong> 받아온 CC0 비트맵 폰트에 한글이 없어서
+    <code>HP 200</code>, <code>LV 1  EXP 0</code> 처럼 씁니다. 같은 이유로 <code>/</code> 도 없어
+    <em>161/200</em> 대신 현재 값만 적고 남은 양은 막대로 보여 줍니다.
+    아이템 이름도 한글이라 HUD 에서는 색으로만 구분합니다 — 이름은 에디터 패널 쪽에 있습니다.
+  </p>
+  <p>
+    한글 HUD 를 만들려면 한글 비트맵 폰트를 그리거나, 글자를 그때그때 그려 주는 라이브러리를 붙여야 합니다.
+  </p>
+</div>
+<p>
+  폰트와 창 그림은 <code>data/hud.ron</code>에서 정합니다. 글자는 그림 속 위치를
+  <strong>구간</strong>으로 적습니다 — 받아온 폰트가 균일한 격자가 아니라(알파벳은 8×16, 숫자는 8×8)
+  한 줄씩 따로 적어야 하기 때문입니다.
+</p>
+<pre><code>runs: [
+    (chars: "AaBbCcDdEeFfGgHhIiJjKkLlMm", x: 0, y: 0, size: (8, 16)),
+    (chars: "012", x: 216, y: 0, size: (8, 8)),
+],
+scale: 2,   // HUD 확대 배율 (정수)</code></pre>
+
 <h2 id="t4">7. 존 저장하고 열기</h2>
 
 <table>
@@ -981,6 +1014,7 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
   <tr><td><code>scripts [경로]</code></td><td>스크립트 편집기 열기 (경로는 <code>data/</code> 기준, 예: <code>scripts/goblin.rhai</code>)</td></tr>
   <tr><td><code>compile</code></td><td>편집기의 <em>컴파일</em> 버튼</td></tr>
   <tr><td><code>savegame</code> / <code>deletesave</code></td><td>진행 상황 저장 / 저장 데이터 삭제</td></tr>
+  <tr><td><code>items</code> / <code>panels</code></td><td>HUD 인벤토리 창 / 에디터 패널 숨기기</td></tr>
   <tr><td><code>play</code></td><td>플레이 시작/정지 (<kbd>F5</kbd>와 같음). 플레이 중 <code>press</code>는 클릭 명령이 됩니다</td></tr>
   <tr><td><code>save 경로</code> / <code>open 경로</code></td><td>존 저장 / 열기 (경로에 공백 불가)</td></tr>
   <tr><td><code>dialog open|saveas</code></td><td>열기 / 다른 이름으로 저장 창 띄우기</td></tr>
@@ -1097,6 +1131,7 @@ NEXUS_SCREENSHOT=out.png NEXUS_SCREENSHOT_FRAME=40 cargo run -p world-editor</co
   <tr><td>타일맵 범위</td><td>원점 주변 <strong>64 × 64m</strong> 고정. 존 전체(2km)를 덮으려면 청크 분할이 필요합니다</td></tr>
   <tr><td>지형 저작 편의</td><td>절벽 경계 자동 타일, 건물 회전이 없습니다. 팔레트에서 자동으로 붙은 이름은 창에서 고칠 수 없습니다</td></tr>
   <tr><td>캐릭터 아트</td><td>플레이스홀더(무채색 시트 + 색 입히기). 공격·피격·사망 애니메이션 클립이 없습니다</td></tr>
+  <tr><td>HUD</td><td>HP·경험치 막대와 인벤토리 창까지입니다. <strong>한글 글자와 스킬 단축키 칸이 없고</strong>, 인벤토리 조작(사용·장착)은 아직 에디터 패널 쪽입니다</td></tr>
   <tr><td>사운드</td><td>없음</td></tr>
   <tr><td>스킬</td><td>기본 공격 하나만. 스킬 여러 개·단축키·범위 공격·MP가 없습니다</td></tr>
   <tr><td>저장</td><td>저장 칸은 <strong>하나</strong>입니다. 이어 할지 묻지 않고 늘 이어 합니다. 죽은 채로 저장하면 HP 1 로 이어집니다</td></tr>

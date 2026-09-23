@@ -16,7 +16,7 @@ pub mod units;
 /// 벡터 연산이 아니다. (CLAUDE.md 핵심 원칙 5)
 ///
 /// 월드 좌표계는 **미터(m), Z-up** 이다. 전체 규약은 [`units`] 모듈 참고.
-pub use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
+pub use glam::{self, Mat4, Quat, Vec2, Vec3, Vec4};
 
 pub use camera::Camera2d;
 

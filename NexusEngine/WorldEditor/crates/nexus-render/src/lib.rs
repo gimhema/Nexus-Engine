@@ -110,6 +110,12 @@ pub enum RenderCommand {
         height: u32,
     },
 
+    /// 이후 그리기 명령의 **좌표 공간**을 정한다. 프레임 시작값은 [`Space::World`] 다 (P5).
+    ///
+    /// HUD 는 카메라를 따라가면 안 되므로 화면 좌표로 그린다. 카메라 유니폼은 프레임당
+    /// 한 번만 쓰이므로 `SetCamera` 를 두 번 내는 방식으로는 안 된다 — 그래서 상태 명령을 둔다.
+    SetSpace(Space),
+
     /// 이후 그리기 명령이 속할 층을 정한다. 프레임 시작값은 [`DrawLayer::Object`] 다.
     ///
     /// **층으로 묶어서 제출하면 드로우 콜도 줄어든다** — 배치가 파이프라인·텍스처가
@@ -220,6 +226,36 @@ impl SpriteAnchor {
             Self::BottomCenter => 0.5,
             Self::Center => 0.0,
         }
+    }
+}
+
+/// 그리기 명령의 좌표 공간 (P5).
+///
+/// | | 좌표 | 쓰는 곳 |
+/// |---|---|---|
+/// | [`World`](Self::World) | 월드 미터, 카메라가 옮긴다 | 지형·유닛·에디터 표시 |
+/// | [`Screen`](Self::Screen) | **뷰포트 픽셀, 좌상단 원점, y 아래로 증가** | HUD |
+///
+/// 화면 공간의 투영은 위아래가 뒤집혀 있다(좌상단 원점). 렌더러가 **UV 의 위아래를 맞춰 주므로**
+/// 부르는 쪽은 월드와 똑같이 "위 = `min.y`" 로 주면 된다.
+///
+/// 화면 공간의 기준은 창 전체가 아니라 [`SetViewport`](RenderCommand::SetViewport) 로 정한
+/// 영역이다 — 에디터에서는 패널 사이의 게임 화면이 곧 HUD 의 화면이 된다.
+/// 화면 공간에서도 층·`depth_bias` 는 그대로 쓰인다 (HUD 안에서의 겹침 순서).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Space {
+    /// 월드 미터. **기본값.**
+    #[default]
+    World,
+    /// 뷰포트 픽셀, 좌상단 원점.
+    Screen,
+}
+
+impl Space {
+    /// 화면 공간인가.
+    #[must_use]
+    pub fn is_screen(self) -> bool {
+        matches!(self, Self::Screen)
     }
 }
 

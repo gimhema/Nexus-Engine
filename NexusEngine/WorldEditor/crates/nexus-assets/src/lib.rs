@@ -9,8 +9,10 @@
 #![forbid(unsafe_code)]
 
 mod anim;
+mod font;
 
 pub use anim::{AnimState, Clip, SpriteAnimator, SpriteSheet};
+pub use font::{BitmapFont, FontError, Glyph};
 
 use nexus_core::Vec2;
 use nexus_render::{TextureDesc, UvRect};

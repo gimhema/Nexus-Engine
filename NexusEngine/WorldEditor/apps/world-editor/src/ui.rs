@@ -94,6 +94,8 @@ pub(crate) struct UiModel<'a> {
     pub(crate) stats: FrameStats,
     /// 플레이 중이면 `Some` — 패널이 편집 대신 게임 상태를 보여 준다.
     pub(crate) play: Option<&'a PlaySession>,
+    /// 에디터 패널을 숨기고 있다 (F9) — HUD 만 남는다 (P5).
+    pub(crate) hide_panels: bool,
     /// 열어 둔 존 파일. 새 씬이면 `None`.
     pub(crate) zone_path: Option<&'a Path>,
     /// 마지막 저장 이후 바뀌었다.
@@ -123,6 +125,10 @@ pub(crate) struct UiActions {
     pub(crate) save_game: bool,
     /// 저장 데이터 삭제 — 다음 플레이는 새로 시작한다.
     pub(crate) delete_save: bool,
+    /// HUD 인벤토리 창 열고 닫기 (I).
+    pub(crate) toggle_items: bool,
+    /// 에디터 패널 숨기기 (F9) — HUD 만으로 플레이되는지 보는 용도.
+    pub(crate) toggle_panels: bool,
     /// 플레이 중 인벤토리 패널 조작.
     pub(crate) inventory: Option<InventoryAction>,
     pub(crate) reset_view: bool,
@@ -313,9 +319,12 @@ impl EditorUi {
                     .collect()
             };
             actions.toggle_play |= scripts.show(ui, &users).toggle_play;
-            status_bar(ui, model, *cursor_world);
-            outline_panel(ui, model, &mut actions);
-            inspector_panel(ui, model, &mut actions);
+            // F9 로 패널을 숨기면 뷰포트만 남는다 — HUD 만으로 플레이되는지 확인하는 모드 (P5).
+            if !model.hide_panels {
+                status_bar(ui, model, *cursor_world);
+                outline_panel(ui, model, &mut actions);
+                inspector_panel(ui, model, &mut actions);
+            }
             viewport(ui, model, cursor_world, &mut actions);
             // 인스펙터의 "팔레트 열기" 는 창을 그린 뒤에 눌린다 — 다음 프레임부터 뜬다.
             if let Some(image) = actions.open_palette.take() {
@@ -460,6 +469,19 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
                 if ui.button("저장 데이터 삭제").clicked() {
                     actions.delete_save = true;
                 }
+                ui.separator();
+                if ui
+                    .add(egui::Button::new("인벤토리 창").shortcut_text("I"))
+                    .clicked()
+                {
+                    actions.toggle_items = true;
+                }
+                if ui
+                    .add(egui::Button::new("에디터 패널 숨기기").shortcut_text("F9"))
+                    .clicked()
+                {
+                    actions.toggle_panels = true;
+                }
                 ui.weak("정지하거나 창을 닫을 때도 저장된다 (수동 저장 + 정상 종료).");
                 ui.weak("씬은 바뀌지 않는다 — 정지하면 플레이 결과는 버려진다.");
             });
@@ -602,6 +624,8 @@ fn shortcuts(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
         actions.undo |= i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Z));
 
         actions.toggle_play |= i.key_pressed(Key::F5);
+        actions.toggle_items |= i.key_pressed(Key::I);
+        actions.toggle_panels |= i.key_pressed(Key::F9);
         actions.reset_view |= i.key_pressed(Key::Home);
         actions.frame_selection |= i.key_pressed(Key::F);
         actions.screenshot |= i.key_pressed(Key::F12);

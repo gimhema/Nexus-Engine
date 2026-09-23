@@ -17,6 +17,7 @@
 mod edit;
 mod game_data;
 mod grid;
+mod hud;
 mod palette;
 mod play;
 mod save_file;
@@ -42,6 +43,7 @@ use nexus_render_wgpu::{TextureCarry, UiFrame, WgpuRenderer};
 
 use edit::{Editing, PointerInput, Tool};
 use game_data::GameData;
+use hud::Hud;
 use play::{PlayOptions, PlaySession};
 use scene::{Handle, Pick, Scene, Target};
 use script::{Anchor, Button, Script, Step};
@@ -153,6 +155,12 @@ struct Editor {
     sprites: Option<SpriteLibrary>,
     /// 지형 그림(타일 아트·건물). 렌더러 초기화 후에 올라간다. 실패하면 비어 있다.
     terrain: Terrain,
+    /// 플레이 화면 HUD (P5). 렌더러 초기화 후에 올라간다. 실패하면 HUD 없이 돈다.
+    hud: Hud,
+    /// HUD 인벤토리 창을 보여 준다 (I).
+    show_items: bool,
+    /// 에디터 패널을 숨긴다 (F9) — HUD 만으로 플레이되는지 확인하는 용도.
+    hide_panels: bool,
     /// 에디터가 보는 게임 데이터 — **액터 타입 목록**(인스펙터)과 마커 그림에 쓴다.
     ///
     /// 플레이는 시작할 때 자기 것을 새로 읽는다. 이쪽도 그때 함께 갱신해 에디터와 플레이가
@@ -208,6 +216,9 @@ impl Default for Editor {
             commands: Vec::new(),
             sprites: None,
             terrain: Terrain::default(),
+            hud: Hud::default(),
+            show_items: false,
+            hide_panels: false,
             data: None,
             fixed_zoom: None,
             play: None,
@@ -380,6 +391,7 @@ impl Editor {
             eyedropper: self.editing.eyedropper(),
             art_palette: self.terrain.list(),
             play: self.play.as_ref(),
+            hide_panels: self.hide_panels,
             zone_path: self.zone_path.as_deref(),
             dirty,
             notice: self.notice.as_ref(),
@@ -665,6 +677,20 @@ impl Editor {
             self.save_game(&session);
             self.play = Some(session);
         }
+        if actions.toggle_items {
+            self.show_items = !self.show_items;
+        }
+        if actions.toggle_panels {
+            self.hide_panels = !self.hide_panels;
+            self.notify(
+                if self.hide_panels {
+                    String::from("에디터 패널을 숨겼습니다 — F9 로 되돌립니다")
+                } else {
+                    String::from("에디터 패널을 다시 켰습니다")
+                },
+                false,
+            );
+        }
         if actions.delete_save {
             match save_file::delete(&save_file::default_path()) {
                 Ok(()) => self.notify(
@@ -889,6 +915,8 @@ impl Editor {
                     self.notify(format!("저장 데이터를 지우지 못했습니다 — {e}"), true);
                 }
             }
+            Step::ToggleItems => self.show_items = !self.show_items,
+            Step::TogglePanels => self.hide_panels = !self.hide_panels,
             Step::Brush(shape, radius) => self.editing.set_brush_shape(shape, radius),
             Step::Eyedropper => self.editing.set_eyedropper(true),
             Step::Wait => {}
@@ -920,7 +948,7 @@ impl Editor {
         let px = self.camera.view_height / self.camera.viewport.1.max(1) as f32;
 
         if self.play.is_some() {
-            self.build_play_commands(alpha, px);
+            self.build_play_commands(alpha, px, viewport);
             return;
         }
 
@@ -1034,7 +1062,7 @@ impl Editor {
 
     /// 플레이 화면 — 편집 표시(그리드·마커·핸들) 없이 게임에 보일 것만.
     /// 타일 레벨 색과 존 경계는 남긴다 — 아트가 생기기 전에는 지형을 알아볼 수단이 이것뿐이다.
-    fn build_play_commands(&mut self, alpha: f32, px: f32) {
+    fn build_play_commands(&mut self, alpha: f32, px: f32, viewport: Option<[u32; 4]>) {
         let Some(play) = self.play.as_ref() else {
             return;
         };
@@ -1086,6 +1114,15 @@ impl Editor {
             .push(RenderCommand::SetLayer(DrawLayer::Overlay));
         // 시트가 없으면(로드 실패) 기본 칸 높이 48px 를 기준으로 막대를 띄운다.
         play.build_overlay(alpha, px, self.sprites.as_ref(), &mut self.commands);
+
+        // HUD 는 맨 마지막 — 화면 좌표라 카메라를 따라가지 않는다 (P5).
+        // 기준은 **씬을 그리는 사각형**이다 (에디터에서는 패널 사이 영역).
+        let size = viewport.map_or(
+            (self.camera.viewport.0 as f32, self.camera.viewport.1 as f32),
+            |[_, _, w, h]| (w as f32, h as f32),
+        );
+        self.hud
+            .build_commands(play, size, self.show_items, &mut self.commands);
     }
 
     /// 단독 선택된 마커의 회전 핸들 — 화살표 끝에서 이어지는 가는 선 + 원 대신 마름모.
@@ -1338,6 +1375,12 @@ impl App for Editor {
         match Terrain::load(&mut renderer) {
             Ok(t) => self.terrain = t,
             Err(e) => warnings.push(format!("지형 그림을 읽지 못했습니다 — {e}")),
+        }
+        // HUD 폰트·창 그림. 실패하면 HUD 없이 돈다 (에디터 패널은 그대로 보인다).
+        let (hud, warning) = Hud::load(&mut renderer);
+        self.hud = hud;
+        if let Some(w) = warning {
+            warnings.push(format!("HUD 를 읽지 못했습니다 — {w}"));
         }
         for warning in warnings {
             self.notify(warning, true);

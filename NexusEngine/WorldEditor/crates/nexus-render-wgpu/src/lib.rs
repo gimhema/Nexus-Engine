@@ -40,10 +40,10 @@ mod ui;
 pub use ui::{TextureCarry, UiFrame, egui};
 
 use bytemuck::{Pod, Zeroable};
-use nexus_core::{Mat4, Vec3};
+use nexus_core::{Mat4, Vec2, Vec3};
 use nexus_render::{
     Capture, DrawLayer, FrameStatus, RenderBackend, RenderCommand, RenderDeviceInfo, RenderError,
-    Renderer, TextureDesc, TextureId,
+    Renderer, Space, TextureDesc, TextureId, UvRect,
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
@@ -160,6 +160,8 @@ enum PipelineKind {
 struct Batch {
     kind: PipelineKind,
     texture: TextureId,
+    /// 이 배치가 쓰는 좌표 공간 — 유니폼(카메라 / 화면)이 달라진다 (P5).
+    space: Space,
     /// `Frame::quads` 안의 시작 인덱스.
     start: u32,
     count: u32,
@@ -277,6 +279,19 @@ fn linear_rgba(srgb: [f32; 4]) -> [f32; 4] {
     ]
 }
 
+/// 화면 공간은 투영이 위아래로 뒤집혀 있다 (좌상단 원점을 만들기 위해) — 그대로 두면
+/// 텍스처도 함께 뒤집혀 글자가 거꾸로 나온다. 그래서 화면 공간 쿼드만 V 를 맞바꾼다.
+/// 부르는 쪽은 늘 "위 = min.y" 로 UV 를 주면 된다.
+fn flip_v_for(space: Space, uv: UvRect) -> UvRect {
+    match space {
+        Space::World => uv,
+        Space::Screen => UvRect {
+            min: Vec2::new(uv.min.x, uv.max.y),
+            max: Vec2::new(uv.max.x, uv.min.y),
+        },
+    }
+}
+
 /// 프레임 중간 상태 — `begin_frame` 과 `end_frame` 사이에만 존재한다.
 struct Frame {
     surface_texture: wgpu::SurfaceTexture,
@@ -289,6 +304,8 @@ struct Frame {
     up: Vec3,
     /// 현재 층. `SetLayer` 로 갱신된다.
     layer: DrawLayer,
+    /// 현재 좌표 공간. `SetSpace` 로 갱신된다 (P5).
+    space: Space,
     viewport: Option<ViewportRect>,
     quads: Vec<QuadInstance>,
     batches: Vec<Batch>,
@@ -304,11 +321,15 @@ impl Frame {
         let start = u32::try_from(self.quads.len()).unwrap_or(u32::MAX);
         self.quads.push(instance);
 
+        let space = self.space;
         match self.batches.last_mut() {
-            Some(last) if last.kind == kind && last.texture == texture => last.count += 1,
+            Some(last) if last.kind == kind && last.texture == texture && last.space == space => {
+                last.count += 1;
+            }
             _ => self.batches.push(Batch {
                 kind,
                 texture,
+                space,
                 start,
                 count: 1,
             }),
@@ -340,6 +361,9 @@ pub struct WgpuRenderer {
     pipeline_cutout: wgpu::RenderPipeline,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
+    /// 화면 좌표(HUD)용 유니폼 — 뷰포트 픽셀을 NDC 로 옮기는 정사영 (P5).
+    screen_buffer: wgpu::Buffer,
+    screen_bind_group: wgpu::BindGroup,
     /// 텍스처 + 샘플러 바인드 그룹 레이아웃. 올릴 때마다 이것으로 그룹을 만든다.
     texture_layout: wgpu::BindGroupLayout,
     /// 픽셀아트용 Nearest 샘플러. 모든 텍스처가 공유한다.
@@ -461,12 +485,28 @@ impl WgpuRenderer {
             }],
         });
 
+        let screen_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nexus-screen"),
+            size: core::mem::size_of::<CameraUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("nexus-camera-bind-group"),
             layout: &camera_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: camera_buffer.as_entire_binding(),
+            }],
+        });
+
+        let screen_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("nexus-screen-bind-group"),
+            layout: &camera_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: screen_buffer.as_entire_binding(),
             }],
         });
 
@@ -630,6 +670,8 @@ impl WgpuRenderer {
             pipeline_cutout,
             camera_buffer,
             camera_bind_group,
+            screen_buffer,
+            screen_bind_group,
             texture_layout,
             sampler,
             textures: vec![white],
@@ -786,6 +828,7 @@ impl Renderer for WgpuRenderer {
             right: Vec3::X,
             up: Vec3::Y,
             layer: DrawLayer::default(),
+            space: Space::default(),
             viewport: None,
             quads: Vec::new(),
             batches: Vec::new(),
@@ -845,6 +888,9 @@ impl Renderer for WgpuRenderer {
             RenderCommand::SetLayer(layer) => {
                 frame.layer = layer;
             }
+            RenderCommand::SetSpace(space) => {
+                frame.space = space;
+            }
             RenderCommand::SetCamera {
                 view_proj,
                 right,
@@ -872,6 +918,7 @@ impl Renderer for WgpuRenderer {
                 };
                 let (o, s) = frame.layer.depth_range();
                 let span = [o, s];
+                let uv = flip_v_for(frame.space, uv);
                 frame.push(
                     PipelineKind::Blend,
                     texture,
@@ -908,6 +955,7 @@ impl Renderer for WgpuRenderer {
                 };
                 let (o, s) = frame.layer.depth_range();
                 let span = [o, s];
+                let uv = flip_v_for(frame.space, uv);
                 frame.push(
                     PipelineKind::Cutout,
                     texture,
@@ -948,6 +996,30 @@ impl Renderer for WgpuRenderer {
         };
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera));
+
+        // HUD 용 정사영 — 기준은 창 전체가 아니라 **뷰포트**다 (에디터에서는 패널 사이 영역).
+        // y 는 아래로 증가하고(좌상단 원점), 빌보드 축도 화면 축으로 바꾼다.
+        let (vw, vh) = frame
+            .viewport
+            .map_or((self.config.width as f32, self.config.height as f32), |r| {
+                (r.width as f32, r.height as f32)
+            });
+        let screen = CameraUniform {
+            // 카메라와 같은 규약(NDC Y-up · 깊이 0..1)을 쓰되, 위아래를 뒤집어 좌상단 원점으로 만든다.
+            view_proj: nexus_core::glam::camera::rh::proj::directx::orthographic(
+                0.0,
+                vw.max(1.0),
+                vh.max(1.0),
+                0.0,
+                -1.0,
+                1.0,
+            )
+            .to_cols_array_2d(),
+            right: Vec3::X.extend(0.0).to_array(),
+            up: Vec3::NEG_Y.extend(0.0).to_array(),
+        };
+        self.queue
+            .write_buffer(&self.screen_buffer, 0, bytemuck::bytes_of(&screen));
 
         if !frame.quads.is_empty() {
             self.ensure_instance_capacity(frame.quads.len());
@@ -1007,13 +1079,24 @@ impl Renderer for WgpuRenderer {
                 pass.set_scissor_rect(rect.x, rect.y, rect.width, rect.height);
 
                 let used = (frame.quads.len() * core::mem::size_of::<QuadInstance>()) as u64;
-                pass.set_bind_group(0, &self.camera_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.instance_buffer.slice(..used));
 
                 // 배치마다 드로우 콜 하나. 같은 파이프라인·텍스처가 이어지는 동안은
                 // 인스턴싱으로 묶이므로, 단색만 그리던 때와 드로우 콜 수가 같다.
                 let mut bound: Option<(PipelineKind, TextureId)> = None;
+                let mut bound_space: Option<Space> = None;
                 for batch in &frame.batches {
+                    if bound_space != Some(batch.space) {
+                        pass.set_bind_group(
+                            0,
+                            match batch.space {
+                                Space::World => &self.camera_bind_group,
+                                Space::Screen => &self.screen_bind_group,
+                            },
+                            &[],
+                        );
+                        bound_space = Some(batch.space);
+                    }
                     if bound != Some((batch.kind, batch.texture)) {
                         pass.set_pipeline(match batch.kind {
                             PipelineKind::Blend => &self.pipeline_blend,

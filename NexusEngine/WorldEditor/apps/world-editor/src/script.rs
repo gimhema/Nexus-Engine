@@ -25,6 +25,7 @@
 //! scripts [경로]               스크립트 편집기 열기 (경로는 data/ 기준, 예: scripts/goblin.rhai)
 //! compile                      스크립트 편집기의 "컴파일" 버튼
 //! savegame | deletesave       진행 상황 저장 / 저장 데이터 삭제 (P3)
+//! items | panels              HUD 인벤토리 창 / 에디터 패널 숨기기 (P5)
 //! ```
 //!
 //! 예: `NEXUS_SELECT="상인 NPC" NEXUS_SCRIPT="wait; press rotate; move -8 20 ctrl"`
@@ -91,6 +92,10 @@ pub(crate) enum Step {
     SaveGame,
     /// 저장 데이터 삭제.
     DeleteSave,
+    /// HUD 인벤토리 창 열고 닫기 (I).
+    ToggleItems,
+    /// 에디터 패널 숨기기 (F9).
+    TogglePanels,
     /// 붓 모양과 반지름.
     Brush(BrushShape, u8),
     /// 스포이드 켜기.
@@ -176,6 +181,8 @@ fn parse_step(text: &str) -> Result<Step, String> {
         "compile" => return Ok(Step::Compile),
         "savegame" => return Ok(Step::SaveGame),
         "deletesave" => return Ok(Step::DeleteSave),
+        "items" => return Ok(Step::ToggleItems),
+        "panels" => return Ok(Step::TogglePanels),
         "palette" => return Ok(Step::Palette(words.get(1).map(|w| (*w).to_string()))),
         "pick" => {
             // pick ground|prop 그림경로 x y 폭 높이 [칸크기]

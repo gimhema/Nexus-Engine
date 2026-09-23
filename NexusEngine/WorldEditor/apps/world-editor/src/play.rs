@@ -557,6 +557,25 @@ impl PlaySession {
             .collect()
     }
 
+    /// HUD 인벤토리 칸 — `(아이템 색, 개수)`, 소모품 가방 다음 장비 가방 (P5).
+    ///
+    /// HUD 는 글자 대신 색으로 아이템을 보여 준다 — 폰트에 한글이 없기 때문이다.
+    pub(crate) fn hud_slots(&self) -> Vec<([f32; 4], u32)> {
+        let Some(me) = self.world().unit(self.player) else {
+            return Vec::new();
+        };
+        [BagKind::Consumable, BagKind::Equipment]
+            .into_iter()
+            .flat_map(|kind| {
+                me.inventory()
+                    .bag(kind)
+                    .iter()
+                    .map(|(_, s)| (self.data.item_color(s.item), s.count))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
     /// 장착 자리마다 (자리, 자리 이름, 장착한 아이템 이름).
     pub(crate) fn equipped_lines(&self) -> Vec<(EquipSlot, &'static str, Option<String>)> {
         let me = self.world().unit(self.player);
