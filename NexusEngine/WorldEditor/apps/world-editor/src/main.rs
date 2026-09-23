@@ -18,6 +18,7 @@ mod edit;
 mod game_data;
 mod grid;
 mod hud;
+mod hud_editor;
 mod palette;
 mod play;
 mod save_file;
@@ -44,6 +45,7 @@ use nexus_render_wgpu::{TextureCarry, UiFrame, WgpuRenderer};
 use edit::{Editing, PointerInput, Tool};
 use game_data::GameData;
 use hud::Hud;
+use hud_editor::HudEditor;
 use play::{PlayOptions, PlaySession};
 use scene::{Handle, Pick, Scene, Target};
 use script::{Anchor, Button, Script, Step};
@@ -161,6 +163,8 @@ struct Editor {
     show_items: bool,
     /// 에디터 패널을 숨긴다 (F9) — HUD 만으로 플레이되는지 확인하는 용도.
     hide_panels: bool,
+    /// HUD 편집기 (P6) — 위젯 배치를 고친다.
+    hud_editor: HudEditor,
     /// 에디터가 보는 게임 데이터 — **액터 타입 목록**(인스펙터)과 마커 그림에 쓴다.
     ///
     /// 플레이는 시작할 때 자기 것을 새로 읽는다. 이쪽도 그때 함께 갱신해 에디터와 플레이가
@@ -219,6 +223,7 @@ impl Default for Editor {
             hud: Hud::default(),
             show_items: false,
             hide_panels: false,
+            hud_editor: HudEditor::default(),
             data: None,
             fixed_zoom: None,
             play: None,
@@ -392,6 +397,8 @@ impl Editor {
             art_palette: self.terrain.list(),
             play: self.play.as_ref(),
             hide_panels: self.hide_panels,
+            hud: &self.hud,
+            hud_editor: &mut self.hud_editor,
             zone_path: self.zone_path.as_deref(),
             dirty,
             notice: self.notice.as_ref(),
@@ -592,13 +599,23 @@ impl Editor {
 
     /// 플레이 중의 UI 요청. 편집 요청(언두·추가·삭제·인스펙터)은 받지 않는다 — 플레이는 씬을 바꾸지 않는다.
     fn apply_play_actions(&mut self, actions: &UiActions, pointer: Option<PointerInput>) {
+        // HUD 편집기가 열려 있으면 뷰포트 클릭은 위젯을 고르고 끄는 데 쓴다 (P6) —
+        // 편집 중에 클릭이 게임 명령(이동·공격)으로 새면 위젯을 잡을 수 없다.
+        let hud_grabbed = match (pointer.as_ref(), self.play.as_ref()) {
+            (Some(p), Some(play)) if self.hud_editor.is_open() => {
+                let size = self.hud_viewport();
+                self.hud_editor.handle_pointer(&self.hud, play, size, p)
+            }
+            _ => false,
+        };
         let Some(session) = self.play.as_mut() else {
             return;
         };
         if let Some(action) = actions.inventory {
             session.inventory(action);
         }
-        if let Some(p) = pointer
+        if !hud_grabbed
+            && let Some(p) = pointer
             && p.pressed
             && p.over_viewport
             && let Some(at) = p.world
@@ -606,6 +623,11 @@ impl Editor {
             session.click(at, p.px);
         }
         self.hover = None;
+    }
+
+    /// HUD 가 기준으로 삼는 화면 크기 — 씬을 그리는 사각형(패널 사이 영역)이다.
+    fn hud_viewport(&self) -> (f32, f32) {
+        (self.camera.viewport.0 as f32, self.camera.viewport.1 as f32)
     }
 
     /// 플레이 중 카메라 — 게임과 같은 고정 줌으로 플레이어를 따라간다.
@@ -676,6 +698,9 @@ impl Editor {
         {
             self.save_game(&session);
             self.play = Some(session);
+        }
+        if actions.open_hud_editor {
+            self.hud_editor.open(&self.hud);
         }
         if actions.toggle_items {
             self.show_items = !self.show_items;
@@ -811,6 +836,8 @@ impl Editor {
     fn scripted_pointer(&mut self, real: PointerInput, actions: &UiActions) -> PointerInput {
         let mut p = PointerInput {
             world: self.script_cursor,
+            // 화면 좌표도 같이 채운다 — HUD(화면 공간) 피킹이 스크립트에서도 돌게 (P6).
+            screen: self.script_cursor.map(|w| self.camera.world_to_screen(w)),
             over_viewport: self.script_cursor.is_some(),
             pressed: false,
             released: false,
@@ -917,6 +944,14 @@ impl Editor {
             }
             Step::ToggleItems => self.show_items = !self.show_items,
             Step::TogglePanels => self.hide_panels = !self.hide_panels,
+            Step::HudEdit => self.hud_editor.open(&self.hud),
+            Step::HudPick(id) => {
+                self.hud_editor.select(&id);
+            }
+            Step::HudDrag(dx, dy) => self.hud_editor.nudge((dx, dy)),
+            Step::HudSave => {
+                self.hud_editor.save(&self.hud);
+            }
             Step::Brush(shape, radius) => self.editing.set_brush_shape(shape, radius),
             Step::Eyedropper => self.editing.set_eyedropper(true),
             Step::Wait => {}
@@ -1063,6 +1098,8 @@ impl Editor {
     /// 플레이 화면 — 편집 표시(그리드·마커·핸들) 없이 게임에 보일 것만.
     /// 타일 레벨 색과 존 경계는 남긴다 — 아트가 생기기 전에는 지형을 알아볼 수단이 이것뿐이다.
     fn build_play_commands(&mut self, alpha: f32, px: f32, viewport: Option<[u32; 4]>) {
+        // 편집 중인 위젯 배치를 먼저 반영한다 — 고치는 즉시 화면에 보이게 (P6).
+        self.hud_editor.apply(&mut self.hud);
         let Some(play) = self.play.as_ref() else {
             return;
         };
@@ -1121,8 +1158,13 @@ impl Editor {
             (self.camera.viewport.0 as f32, self.camera.viewport.1 as f32),
             |[_, _, w, h]| (w as f32, h as f32),
         );
-        self.hud
-            .build_commands(play, size, self.show_items, &mut self.commands);
+        self.hud.build_commands(
+            play,
+            size,
+            self.show_items,
+            self.hud_editor.selected(),
+            &mut self.commands,
+        );
     }
 
     /// 단독 선택된 마커의 회전 핸들 — 화살표 끝에서 이어지는 가는 선 + 원 대신 마름모.

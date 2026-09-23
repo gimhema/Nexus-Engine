@@ -310,6 +310,8 @@ impl History {
 pub(crate) struct PointerInput {
     /// 포인터 위치. 드래그 중에는 뷰포트 밖이어도 들어온다.
     pub(crate) world: Option<Vec2>,
+    /// 포인터 위치 — **뷰포트 픽셀, 좌상단 원점** (HUD 와 같은 좌표계, P6).
+    pub(crate) screen: Option<Vec2>,
     /// 뷰포트 위에서 왼쪽 버튼이 이번 프레임에 눌렸다.
     pub(crate) pressed: bool,
     /// 포인터가 뷰포트 위에 있다 (패널에 가려지지 않음). 아니면 호버를 계산하지 않는다.

@@ -21,6 +21,8 @@ use nexus_sim::{AiKind, BagKind, Tile, UnitDef};
 
 use crate::edit::{BrushShape, InspectorEdit, MAX_BRUSH_RADIUS, PointerInput, Tool};
 use crate::grid;
+use crate::hud::Hud;
+use crate::hud_editor::HudEditor;
 use crate::palette::Palette;
 use crate::play::{InventoryAction, PlaySession};
 use crate::scene::{
@@ -96,6 +98,10 @@ pub(crate) struct UiModel<'a> {
     pub(crate) play: Option<&'a PlaySession>,
     /// 에디터 패널을 숨기고 있다 (F9) — HUD 만 남는다 (P5).
     pub(crate) hide_panels: bool,
+    /// 플레이 화면 HUD 정의 — HUD 편집기가 읽는다 (P6).
+    pub(crate) hud: &'a Hud,
+    /// HUD 편집기 상태 — 창이 직접 고친다 (편집 규칙이 HUD 쪽에 모여 있다).
+    pub(crate) hud_editor: &'a mut HudEditor,
     /// 열어 둔 존 파일. 새 씬이면 `None`.
     pub(crate) zone_path: Option<&'a Path>,
     /// 마지막 저장 이후 바뀌었다.
@@ -129,6 +135,8 @@ pub(crate) struct UiActions {
     pub(crate) toggle_items: bool,
     /// 에디터 패널 숨기기 (F9) — HUD 만으로 플레이되는지 보는 용도.
     pub(crate) toggle_panels: bool,
+    /// HUD 편집기 창 열기 (P6).
+    pub(crate) open_hud_editor: bool,
     /// 플레이 중 인벤토리 패널 조작.
     pub(crate) inventory: Option<InventoryAction>,
     pub(crate) reset_view: bool,
@@ -310,6 +318,11 @@ impl EditorUi {
             }
             file_dialog(ui, dialog, model.dirty, &mut actions);
             palette.show(ui, &mut actions);
+            // HUD 편집기 — 창이 직접 model.hud_editor 를 고친다 (액션을 거치지 않는다).
+            {
+                let hud = model.hud;
+                model.hud_editor.show(ui, hud);
+            }
             let users = |path: &str| {
                 model
                     .actor_scripts
@@ -481,6 +494,9 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
                     .clicked()
                 {
                     actions.toggle_panels = true;
+                }
+                if ui.button("HUD 편집기…").clicked() {
+                    actions.open_hud_editor = true;
                 }
                 ui.weak("정지하거나 창을 닫을 때도 저장된다 (수동 저장 + 정상 종료).");
                 ui.weak("씬은 바뀌지 않는다 — 정지하면 플레이 결과는 버려진다.");
@@ -1621,6 +1637,8 @@ fn viewport(
         actions.pointer = Some(PointerInput {
             // 드래그 중에는 뷰포트 밖으로 나가도 계속 따라가야 하므로 latest_pos 를 쓴다
             world: latest.map(|p| to_world(camera, p)),
+            // HUD 편집기는 화면 좌표로 피킹한다 (P6) — 뷰포트 왼쪽 위가 원점.
+            screen: latest.map(|p| Vec2::new((p.x - rect.min.x) * ppp, (p.y - rect.min.y) * ppp)),
             pressed: pressed && response.hovered(),
             over_viewport: response.hovered(),
             released,

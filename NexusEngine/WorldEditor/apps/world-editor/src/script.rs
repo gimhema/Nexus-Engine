@@ -26,6 +26,8 @@
 //! compile                      스크립트 편집기의 "컴파일" 버튼
 //! savegame | deletesave       진행 상황 저장 / 저장 데이터 삭제 (P3)
 //! items | panels              HUD 인벤토리 창 / 에디터 패널 숨기기 (P5)
+//! hudedit | hudpick 이름      HUD 편집기 열기 / 위젯 고르기 (P6)
+//! huddrag dx dy | hudsave     고른 위젯 옮기기 / data/hud.ron 저장
 //! ```
 //!
 //! 예: `NEXUS_SELECT="상인 NPC" NEXUS_SCRIPT="wait; press rotate; move -8 20 ctrl"`
@@ -96,6 +98,14 @@ pub(crate) enum Step {
     ToggleItems,
     /// 에디터 패널 숨기기 (F9).
     TogglePanels,
+    /// HUD 편집기 열기 (P6).
+    HudEdit,
+    /// HUD 위젯 고르기 — 이름으로.
+    HudPick(String),
+    /// 고른 HUD 위젯을 (dx, dy) HUD 픽셀만큼 옮긴다 (끌기와 같은 경로).
+    HudDrag(i32, i32),
+    /// HUD 정의 저장 (data/hud.ron).
+    HudSave,
     /// 붓 모양과 반지름.
     Brush(BrushShape, u8),
     /// 스포이드 켜기.
@@ -183,6 +193,23 @@ fn parse_step(text: &str) -> Result<Step, String> {
         "deletesave" => return Ok(Step::DeleteSave),
         "items" => return Ok(Step::ToggleItems),
         "panels" => return Ok(Step::TogglePanels),
+        "hudedit" => return Ok(Step::HudEdit),
+        "hudsave" => return Ok(Step::HudSave),
+        "hudpick" => {
+            let id = words
+                .get(1)
+                .ok_or_else(|| format!("'{text}': hudpick 뒤에 위젯 이름"))?;
+            return Ok(Step::HudPick((*id).to_string()));
+        }
+        "huddrag" => {
+            let int = |i: usize| -> Result<i32, String> {
+                words
+                    .get(i)
+                    .and_then(|w| w.parse().ok())
+                    .ok_or_else(|| format!("'{text}': huddrag 뒤에 dx dy (정수)"))
+            };
+            return Ok(Step::HudDrag(int(1)?, int(2)?));
+        }
         "palette" => return Ok(Step::Palette(words.get(1).map(|w| (*w).to_string()))),
         "pick" => {
             // pick ground|prop 그림경로 x y 폭 높이 [칸크기]

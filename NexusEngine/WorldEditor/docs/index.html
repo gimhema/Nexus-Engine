@@ -573,6 +573,48 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
 ],
 scale: 2,   // HUD 확대 배율 (정수)</code></pre>
 
+<h3>6.8 HUD 편집기 — 화면에서 끌어 배치</h3>
+<p>
+  HUD 위젯의 자리는 코드가 아니라 <code>data/hud.ron</code>의 <code>widgets</code> 목록에 있습니다.
+  숫자를 직접 고쳐도 되지만, <strong>플레이 중 메뉴 <em>플레이 → HUD 편집기…</em></strong> 를 열면
+  게임 화면의 위젯을 마우스로 끌어 옮길 수 있습니다.
+</p>
+<table>
+  <tr><th style="width:26%">동작</th><th>방법</th></tr>
+  <tr><td>고르기 / 옮기기</td><td>화면의 위젯을 누르고 끕니다. 겹쳐 있으면 <strong>위에 그려진 것</strong>이 잡힙니다</td></tr>
+  <tr><td>격자에 맞추기</td><td><kbd>Ctrl</kbd>을 누른 채 끌면 8픽셀 격자에 맞습니다</td></tr>
+  <tr><td>숫자로 옮기기</td><td>편집기 창의 <em>위치</em> 칸에 직접 입력합니다</td></tr>
+  <tr><td>새 위젯</td><td>이름을 적고 <em>+ 막대</em> 또는 <em>+ 글자</em></td></tr>
+  <tr><td>되돌리기</td><td>편집기 창의 <em>되돌리기</em> — <em>원래대로</em> 는 저장한 상태로 돌립니다</td></tr>
+  <tr><td>저장</td><td>편집기 창의 <em>저장</em> — <code>data/hud.ron</code>에 씁니다</td></tr>
+</table>
+<p>
+  위젯은 <strong>네 모서리(앵커)</strong> 중 하나에 붙습니다. 창 크기가 바뀌어도 그 모서리를 기준으로
+  같은 자리에 남습니다. 위치는 앵커 모서리에서 <strong>오른쪽·아래가 +</strong> 이므로,
+  아래쪽 앵커에서는 y 가 음수일 때 위로 올라갑니다.
+</p>
+<p>
+  글자 문구에는 값을 끼울 수 있습니다 — <code>{hp}</code> <code>{max_hp}</code> <code>{level}</code>
+  <code>{exp}</code> <code>{exp_to_next}</code>. 다른 이름을 쓰면 데이터 오류로 알려 줍니다.
+</p>
+<div class="box">
+  <p>
+    <strong>저장은 파일을 통째로 다시 쓰지 않습니다.</strong> <code>widgets</code> 블록과 <code>scale</code> 줄만
+    갈아 끼우므로, 손으로 쓴 주석(폰트 구간 설명 등)이 그대로 남습니다.
+    다만 <code>widgets</code> 블록 <em>안</em>의 주석은 남지 않습니다 — 그 블록은 다시 쓰이기 때문입니다.
+  </p>
+  <p>
+    위젯 배치와 배율은 <strong>고치는 즉시</strong> 화면에 보입니다. 폰트 그림이나 창 그림을 바꿀 때만
+    엔진을 다시 실행해야 합니다.
+  </p>
+</div>
+<div class="box warn">
+  <p>
+    <strong>편집기를 열어 두면 게임 클릭이 막힙니다.</strong> 화면을 누르는 것이 위젯을 고르는 동작이 되기
+    때문입니다. 움직여 보려면 편집기 창을 닫으세요. HUD 는 플레이 중에만 그려지므로 편집도 플레이 중에 합니다.
+  </p>
+</div>
+
 <h2 id="t4">7. 존 저장하고 열기</h2>
 
 <table>
@@ -1015,6 +1057,10 @@ scale: 2,   // HUD 확대 배율 (정수)</code></pre>
   <tr><td><code>compile</code></td><td>편집기의 <em>컴파일</em> 버튼</td></tr>
   <tr><td><code>savegame</code> / <code>deletesave</code></td><td>진행 상황 저장 / 저장 데이터 삭제</td></tr>
   <tr><td><code>items</code> / <code>panels</code></td><td>HUD 인벤토리 창 / 에디터 패널 숨기기</td></tr>
+  <tr><td><code>hudedit</code></td><td>HUD 편집기 열고 닫기</td></tr>
+  <tr><td><code>hudpick 위젯이름</code></td><td>HUD 위젯 고르기 (예: <code>hudpick hp_bar</code>)</td></tr>
+  <tr><td><code>huddrag dx dy</code></td><td>고른 위젯을 HUD 픽셀만큼 옮기기</td></tr>
+  <tr><td><code>hudsave</code></td><td><code>data/hud.ron</code> 에 저장</td></tr>
   <tr><td><code>play</code></td><td>플레이 시작/정지 (<kbd>F5</kbd>와 같음). 플레이 중 <code>press</code>는 클릭 명령이 됩니다</td></tr>
   <tr><td><code>save 경로</code> / <code>open 경로</code></td><td>존 저장 / 열기 (경로에 공백 불가)</td></tr>
   <tr><td><code>dialog open|saveas</code></td><td>열기 / 다른 이름으로 저장 창 띄우기</td></tr>
@@ -1132,6 +1178,7 @@ NEXUS_SCREENSHOT=out.png NEXUS_SCREENSHOT_FRAME=40 cargo run -p world-editor</co
   <tr><td>지형 저작 편의</td><td>절벽 경계 자동 타일, 건물 회전이 없습니다. 팔레트에서 자동으로 붙은 이름은 창에서 고칠 수 없습니다</td></tr>
   <tr><td>캐릭터 아트</td><td>플레이스홀더(무채색 시트 + 색 입히기). 공격·피격·사망 애니메이션 클립이 없습니다</td></tr>
   <tr><td>HUD</td><td>HP·경험치 막대와 인벤토리 창까지입니다. <strong>한글 글자와 스킬 단축키 칸이 없고</strong>, 인벤토리 조작(사용·장착)은 아직 에디터 패널 쪽입니다</td></tr>
+  <tr><td>HUD 편집기</td><td>위젯을 끌어 옮기고 값을 고칠 수 있습니다(6.8). 그리는 <strong>순서 바꾸기</strong>와 폰트·창 그림 교체는 <code>data/hud.ron</code> 을 직접 고쳐야 합니다</td></tr>
   <tr><td>사운드</td><td>없음</td></tr>
   <tr><td>스킬</td><td>기본 공격 하나만. 스킬 여러 개·단축키·범위 공격·MP가 없습니다</td></tr>
   <tr><td>저장</td><td>저장 칸은 <strong>하나</strong>입니다. 이어 할지 묻지 않고 늘 이어 합니다. 죽은 채로 저장하면 HP 1 로 이어집니다</td></tr>
