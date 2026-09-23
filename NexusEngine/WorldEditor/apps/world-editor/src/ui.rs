@@ -21,13 +21,13 @@ use nexus_sim::{AiKind, BagKind, Tile, UnitDef};
 
 use crate::edit::{BrushShape, InspectorEdit, MAX_BRUSH_RADIUS, PointerInput, Tool};
 use crate::grid;
-use crate::hud::Hud;
-use crate::hud_editor::HudEditor;
 use crate::palette::Palette;
 use crate::play::{InventoryAction, PlaySession};
 use crate::scene::{
     ActorId, ArtId, Item, ItemKind, OverrideEdit, Overrides, Pick, Scene, Target, ZONE_LABEL,
 };
+use crate::screen::Screens;
+use crate::screen_editor::ScreenEditor;
 use crate::script_editor::ScriptEditor;
 use crate::terrain::ArtKind;
 use crate::zone_file;
@@ -39,7 +39,7 @@ const SIDE_PANEL_WIDTH: f32 = 220.0;
 ///
 /// `cfg(target_os)` 분기 없이 경로 목록만 시도한다. 없는 경로는 그냥 건너뛴다.
 /// `NEXUS_UI_FONT` 환경변수로 직접 지정할 수도 있다.
-const KOREAN_FONT_CANDIDATES: &[&str] = &[
+pub(crate) const KOREAN_FONT_CANDIDATES: &[&str] = &[
     "C:/Windows/Fonts/malgun.ttf",
     "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
@@ -98,10 +98,16 @@ pub(crate) struct UiModel<'a> {
     pub(crate) play: Option<&'a PlaySession>,
     /// 에디터 패널을 숨기고 있다 (F9) — HUD 만 남는다 (P5).
     pub(crate) hide_panels: bool,
-    /// 플레이 화면 HUD 정의 — HUD 편집기가 읽는다 (P6).
-    pub(crate) hud: &'a Hud,
-    /// HUD 편집기 상태 — 창이 직접 고친다 (편집 규칙이 HUD 쪽에 모여 있다).
-    pub(crate) hud_editor: &'a mut HudEditor,
+    /// 레벨 목록 `(번호, 이름)` — 레벨 메뉴 (P7).
+    pub(crate) levels: Vec<(String, String)>,
+    /// 시작 레벨 번호 (data/project.ron).
+    pub(crate) startup_level: String,
+    /// 지금 열린 레벨 번호 — 플레이 중이 아니면 `None`.
+    pub(crate) level: Option<String>,
+    /// 화면(UI) — 위젯 편집기가 화면 목록·테마를 읽는다 (P7).
+    pub(crate) screens: &'a Screens,
+    /// 위젯 편집기 상태 — 창이 직접 고친다 (편집 규칙이 그쪽에 모여 있다).
+    pub(crate) screen_editor: &'a mut ScreenEditor,
     /// 열어 둔 존 파일. 새 씬이면 `None`.
     pub(crate) zone_path: Option<&'a Path>,
     /// 마지막 저장 이후 바뀌었다.
@@ -135,8 +141,10 @@ pub(crate) struct UiActions {
     pub(crate) toggle_items: bool,
     /// 에디터 패널 숨기기 (F9) — HUD 만으로 플레이되는지 보는 용도.
     pub(crate) toggle_panels: bool,
-    /// HUD 편집기 창 열기 (P6).
-    pub(crate) open_hud_editor: bool,
+    /// 위젯 편집기 창 열고 닫기 (P7).
+    pub(crate) open_screen_editor: bool,
+    /// 이 레벨을 연다 (P7) — 언리얼의 Open Level.
+    pub(crate) open_level: Option<String>,
     /// 플레이 중 인벤토리 패널 조작.
     pub(crate) inventory: Option<InventoryAction>,
     pub(crate) reset_view: bool,
@@ -318,10 +326,10 @@ impl EditorUi {
             }
             file_dialog(ui, dialog, model.dirty, &mut actions);
             palette.show(ui, &mut actions);
-            // HUD 편집기 — 창이 직접 model.hud_editor 를 고친다 (액션을 거치지 않는다).
+            // 위젯 편집기 — 창이 직접 model.screen_editor 를 고친다 (액션을 거치지 않는다).
             {
-                let hud = model.hud;
-                model.hud_editor.show(ui, hud);
+                let screens = model.screens;
+                model.screen_editor.show(ui, screens);
             }
             let users = |path: &str| {
                 model
@@ -459,6 +467,45 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
                 }
                 ui.weak("data/scripts/*.rhai — 액터 행동. 고치고 컴파일·저장한 뒤 F5.");
             });
+            ui.menu_button("레벨", |ui| {
+                ui.weak("레벨을 열면 그 존 파일을 열고 플레이를 시작한다.");
+                for (id, name) in &model.levels {
+                    let here = model.level.as_deref() == Some(id.as_str());
+                    let start = if *id == model.startup_level {
+                        "  ★"
+                    } else {
+                        ""
+                    };
+                    if ui
+                        .selectable_label(here, format!("{name}  ({id}){start}"))
+                        .clicked()
+                    {
+                        actions.open_level = Some(id.clone());
+                    }
+                }
+                if model.levels.is_empty() {
+                    ui.weak("레벨 파일이 없습니다 (levels/*.level.ron).");
+                }
+                ui.separator();
+                if ui
+                    .add(egui::Button::new("시작 레벨부터").shortcut_text("Shift+F5"))
+                    .clicked()
+                    && !model.startup_level.is_empty()
+                {
+                    actions.open_level = Some(model.startup_level.clone());
+                }
+                ui.weak("★ = 시작 레벨 (data/project.ron).");
+            });
+            ui.menu_button("UI", |ui| {
+                if ui
+                    .add(egui::Button::new("위젯 편집기…").shortcut_text("F7"))
+                    .clicked()
+                {
+                    actions.open_screen_editor = true;
+                }
+                ui.weak("화면(ui/*.ui.ron)의 위젯을 화면에서 끌어 배치한다.");
+                ui.weak("플레이 중이 아니어도 편집한다 — 메인 화면·설정 화면도 여기서.");
+            });
             ui.menu_button("플레이", |ui| {
                 let text = if model.play.is_some() {
                     "정지 — 편집으로 돌아가기"
@@ -494,9 +541,6 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
                     .clicked()
                 {
                     actions.toggle_panels = true;
-                }
-                if ui.button("HUD 편집기…").clicked() {
-                    actions.open_hud_editor = true;
                 }
                 ui.weak("정지하거나 창을 닫을 때도 저장된다 (수동 저장 + 정상 종료).");
                 ui.weak("씬은 바뀌지 않는다 — 정지하면 플레이 결과는 버려진다.");
@@ -642,6 +686,12 @@ fn shortcuts(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
         actions.toggle_play |= i.key_pressed(Key::F5);
         actions.toggle_items |= i.key_pressed(Key::I);
         actions.toggle_panels |= i.key_pressed(Key::F9);
+        actions.open_screen_editor |= i.key_pressed(Key::F7);
+        // Shift+F5 = 시작 레벨부터 (F5 는 지금 씬으로 플레이).
+        if i.key_pressed(Key::F5) && i.modifiers.shift && !model.startup_level.is_empty() {
+            actions.toggle_play = false;
+            actions.open_level = Some(model.startup_level.clone());
+        }
         actions.reset_view |= i.key_pressed(Key::Home);
         actions.frame_selection |= i.key_pressed(Key::F);
         actions.screenshot |= i.key_pressed(Key::F12);

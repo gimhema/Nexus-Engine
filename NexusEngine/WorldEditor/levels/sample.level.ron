@@ -1,0 +1,8 @@
+// 레벨 — 기본 씬을 저장한 샘플 존으로 들어간다.
+(
+    version: 1,
+    name: "샘플 존",
+    zone: Some("zones/sample.zone.ron"),
+    hud: Some("hud"),
+    pause: Some("pause"),
+)

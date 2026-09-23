@@ -1,0 +1,58 @@
+// 화면(UI) 한 장 — 위젯 트리. **에디터의 위젯 편집기가 이 파일을 다시 써낸다.**
+// 메뉴 UI → 위젯 편집기. 저장하면 이 파일이 통째로 다시 쓰이므로 주석은 남지 않는다.
+//
+// pos·size 는 UI 픽셀(테마의 scale 을 곱하기 전)이고, anchor 기준점에서 오른쪽·아래가 +다.
+// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {level} {exp} {exp_to_next}
+// ⚠ 비트맵 폰트에 한글도 '/' 도 없다 — 화면 문구는 영문 대문자·숫자만.
+(
+    version: 1,
+    name: "일시정지",
+    widgets: [
+        (
+            id: "window",
+            anchor: Center,
+            pos: (0, 0),
+            size: Some((140, 132)),
+            kind: Panel(
+                frame: true,
+            ),
+            children: [
+                (
+                    id: "title",
+                    anchor: Top,
+                    pos: (0, 12),
+                    kind: Text(
+                        format: "일시정지",
+                    ),
+                ),
+                (
+                    id: "resume",
+                    anchor: Center,
+                    pos: (0, -12),
+                    kind: Button(
+                        label: "계속하기",
+                        action: Resume,
+                    ),
+                ),
+                (
+                    id: "options",
+                    anchor: Center,
+                    pos: (0, 14),
+                    kind: Button(
+                        label: "설정",
+                        action: OpenScreen("settings"),
+                    ),
+                ),
+                (
+                    id: "to_menu",
+                    anchor: Bottom,
+                    pos: (0, -10),
+                    kind: Button(
+                        label: "메인 화면",
+                        action: OpenStartLevel,
+                    ),
+                ),
+            ],
+        ),
+    ],
+)

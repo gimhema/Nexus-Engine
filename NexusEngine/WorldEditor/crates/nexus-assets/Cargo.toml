@@ -11,6 +11,8 @@ path = "src/lib.rs"
 nexus-core.workspace   = true
 nexus-render.workspace = true
 png.workspace          = true
+# 글자 래스터 (P7-E). egui 도 쓰는 크레이트라 의존성이 늘지 않는다.
+ab_glyph.workspace     = true
 
 [lints]
 workspace = true

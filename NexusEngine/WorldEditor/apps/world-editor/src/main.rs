@@ -17,12 +17,13 @@
 mod edit;
 mod game_data;
 mod grid;
-mod hud;
-mod hud_editor;
+mod level;
 mod palette;
 mod play;
 mod save_file;
 mod scene;
+mod screen;
+mod screen_editor;
 mod screenshot;
 mod script;
 mod script_editor;
@@ -44,10 +45,11 @@ use nexus_render_wgpu::{TextureCarry, UiFrame, WgpuRenderer};
 
 use edit::{Editing, PointerInput, Tool};
 use game_data::GameData;
-use hud::Hud;
-use hud_editor::HudEditor;
+use level::{Levels, Shell};
 use play::{PlayOptions, PlaySession};
 use scene::{Handle, Pick, Scene, Target};
+use screen::{Screens, Values};
+use screen_editor::ScreenEditor;
 use script::{Anchor, Button, Script, Step};
 use sprites::SpriteLibrary;
 use terrain::Terrain;
@@ -71,6 +73,9 @@ const BOX_FILL: [f32; 4] = [1.0, 0.82, 0.25, 0.012];
 // 이것들은 전부 지면에 깔리는 표시이므로 월드 Z 는 0 이다. 월드 Z 로 순서를 주면
 // 쿼터뷰에서 화면 세로 위치가 밀려 선택 테두리가 마커에서 떨어져 나간다.
 /// 지형 그림 — 지면 층 맨 아래. 규칙 색(`BIAS_TILE`)이 이 위에 얹힌다.
+/// 플레이 중 띄우는 HUD 화면 번호 — 레벨마다 고를 수 있게 되기 전의 기본값이다.
+const HUD_SCREEN: &str = "hud";
+
 const BIAS_ART: f32 = 0.25 * DEPTH_LAYER;
 /// 타일 — 지면 층에서 그리드 바로 위.
 const BIAS_TILE: f32 = 0.5 * DEPTH_LAYER;
@@ -157,14 +162,21 @@ struct Editor {
     sprites: Option<SpriteLibrary>,
     /// 지형 그림(타일 아트·건물). 렌더러 초기화 후에 올라간다. 실패하면 비어 있다.
     terrain: Terrain,
-    /// 플레이 화면 HUD (P5). 렌더러 초기화 후에 올라간다. 실패하면 HUD 없이 돈다.
-    hud: Hud,
+    /// 화면(UI) — 테마와 화면 파일들 (P5·P7). 렌더러 초기화 후에 올라간다.
+    screens: Screens,
     /// HUD 인벤토리 창을 보여 준다 (I).
     show_items: bool,
     /// 에디터 패널을 숨긴다 (F9) — HUD 만으로 플레이되는지 확인하는 용도.
     hide_panels: bool,
-    /// HUD 편집기 (P6) — 위젯 배치를 고친다.
-    hud_editor: HudEditor,
+    /// 위젯 편집기 (P7) — 화면의 위젯 트리를 고친다.
+    screen_editor: ScreenEditor,
+    /// 레벨 목록과 프로젝트 설정 (P7) — 언리얼의 레벨 관리에 대응한다.
+    levels: Levels,
+    /// 게임 셸 — 열린 레벨과 화면 스택. `None` 이면 에디터 편집 중이다.
+    shell: Option<Shell>,
+    /// 화면 버튼 상태 — 마우스가 올라간 것 / 누르고 있는 것.
+    ui_hover: Option<String>,
+    ui_press: Option<String>,
     /// 에디터가 보는 게임 데이터 — **액터 타입 목록**(인스펙터)과 마커 그림에 쓴다.
     ///
     /// 플레이는 시작할 때 자기 것을 새로 읽는다. 이쪽도 그때 함께 갱신해 에디터와 플레이가
@@ -220,10 +232,14 @@ impl Default for Editor {
             commands: Vec::new(),
             sprites: None,
             terrain: Terrain::default(),
-            hud: Hud::default(),
+            screens: Screens::default(),
             show_items: false,
             hide_panels: false,
-            hud_editor: HudEditor::default(),
+            screen_editor: ScreenEditor::default(),
+            levels: Levels::default(),
+            shell: None,
+            ui_hover: None,
+            ui_press: None,
             data: None,
             fixed_zoom: None,
             play: None,
@@ -397,8 +413,11 @@ impl Editor {
             art_palette: self.terrain.list(),
             play: self.play.as_ref(),
             hide_panels: self.hide_panels,
-            hud: &self.hud,
-            hud_editor: &mut self.hud_editor,
+            levels: self.levels.list(),
+            startup_level: self.levels.startup().to_owned(),
+            level: self.shell.as_ref().map(|s| s.level.clone()),
+            screens: &self.screens,
+            screen_editor: &mut self.screen_editor,
             zone_path: self.zone_path.as_deref(),
             dirty,
             notice: self.notice.as_ref(),
@@ -524,13 +543,27 @@ impl Editor {
     /// 플레이 시작 / 정지. 시작하면 씬을 복사해 시뮬레이션을 만들고, 정지하면 버린다 —
     /// 씬과 언두 기록은 건드리지 않는다.
     fn toggle_play(&mut self) {
+        if self.play.is_some() || self.shell.is_some() {
+            self.stop_play();
+        } else {
+            self.start_play();
+        }
+    }
+
+    /// 플레이를 멈추고 에디터로 돌아온다. 진행 상황은 저장한다 (P3-4 정상 종료 경로).
+    fn stop_play(&mut self) {
+        self.shell = None;
+        self.ui_hover = None;
+        self.ui_press = None;
         if let Some(session) = self.play.take() {
             self.camera = *session.editor_camera();
             println!("플레이 정지 — {} tick 진행", session.ticks());
-            // 정상 종료 경로 — 진행 상황을 저장한다 (P3-4).
             self.save_game(&session);
-            return;
         }
+    }
+
+    /// 지금 편집 중인 씬으로 플레이를 시작한다 (F5). 화면은 이 존이 속한 레벨이 정한다.
+    fn start_play(&mut self) {
         // 스크립트 편집기에 저장하지 않은 변경이 있으면 먼저 저장한다 — 플레이는 디스크의 파일로 돈다.
         // 고친 것이 적용되지 않은 채 옛 스크립트로 플레이하면 무엇이 문제인지 알기 어렵다.
         if let Some(saved) = self.ui.as_mut().and_then(EditorUi::save_dirty_script) {
@@ -592,29 +625,166 @@ impl Editor {
                 self.pending_view = None;
                 self.camera.pitch = Camera2d::PITCH_QUARTER;
                 self.play = Some(session);
+                self.shell = Some(self.shell_for_zone());
             }
             Err(e) => self.notify(format!("플레이할 수 없음: {e}"), true),
         }
     }
 
+    /// 지금 열린 존 파일이 속한 레벨로 셸을 만든다. 레벨을 못 찾으면 기본 HUD 만 띄운다 —
+    /// 저장하지 않은 새 씬으로도 플레이할 수 있어야 한다.
+    fn shell_for_zone(&self) -> Shell {
+        match self.levels.find_by_zone(self.zone_path.as_deref()) {
+            Some(id) => {
+                let level = self.levels.level(id).expect("방금 찾은 레벨");
+                Shell::new(id, level.base_screen())
+            }
+            None => Shell::new("", Some(HUD_SCREEN)),
+        }
+    }
+
+    /// 레벨을 연다 — 언리얼의 `Open Level`. 존이 있으면 그 존 파일을 열고 플레이를 시작하고,
+    /// 없으면 (메인 화면처럼) 시뮬레이션 없이 화면만 띄운다.
+    ///
+    /// **존이 있는 레벨은 에디터의 씬을 바꾼다** (언리얼의 PIE 가 맵을 여는 것과 같다).
+    /// 그래서 저장하지 않은 편집이 있으면 열지 않고 알린다.
+    fn open_level(&mut self, id: &str) {
+        let Some(level) = self.levels.level(id).cloned() else {
+            self.notify(format!("'{id}' 레벨이 없습니다"), true);
+            return;
+        };
+        match level.zone.as_deref() {
+            Some(zone) => {
+                if self.is_dirty() {
+                    self.notify(
+                        format!(
+                            "저장하지 않은 편집이 있어 '{}' 을 열지 않았습니다 — 먼저 저장하세요",
+                            level.name
+                        ),
+                        true,
+                    );
+                    return;
+                }
+                let same = self
+                    .levels
+                    .find_by_zone(self.zone_path.as_deref())
+                    .is_some_and(|here| here == id);
+                if !same {
+                    self.open_zone(PathBuf::from(zone));
+                }
+                self.stop_play();
+                self.start_play();
+            }
+            None => {
+                self.stop_play();
+                self.shell = Some(Shell::new(id, level.base_screen()));
+                self.notify(format!("레벨 '{}' — {}", id, level.name), false);
+            }
+        }
+    }
+
+    /// 마지막 저장 이후 씬이 바뀌었는가 — 상태 바의 `*` 와 같은 판정.
+    fn is_dirty(&self) -> bool {
+        self.editing.history().state_id() != self.saved_state
+    }
+
+    /// 화면 버튼의 동작 — 데이터에 적힌 [`screen::Action`] 을 실행한다.
+    fn run_action(&mut self, action: screen::Action) {
+        use screen::Action;
+        match action {
+            Action::OpenScreen(id) => {
+                if self.screens.screen(&id).is_none() {
+                    self.notify(format!("'{id}' 화면이 없습니다"), true);
+                } else if let Some(shell) = self.shell.as_mut() {
+                    shell.push(&id);
+                }
+            }
+            Action::Close => {
+                if let Some(shell) = self.shell.as_mut()
+                    && shell.pop()
+                {
+                    shell.paused = shell.screens.len() > 1;
+                }
+            }
+            Action::Resume => {
+                if let Some(shell) = self.shell.as_mut() {
+                    while shell.pop() {}
+                    shell.paused = false;
+                }
+            }
+            Action::OpenLevel(id) => self.open_level(&id),
+            Action::OpenStartLevel => {
+                let id = self.levels.startup().to_owned();
+                self.open_level(&id);
+            }
+            // 에디터에서는 창을 닫지 않고 플레이를 멈춘다 — 편집하던 씬으로 돌아온다.
+            Action::Quit => {
+                self.stop_play();
+                self.notify(
+                    String::from("게임을 종료했습니다 — 에디터로 돌아왔습니다"),
+                    false,
+                );
+            }
+            Action::None => {}
+        }
+    }
+
+    /// 화면 버튼에 포인터를 넘긴다. **처리했으면 `true`** — 그러면 클릭이 게임 명령으로 가지 않는다.
+    ///
+    /// 버튼은 **맨 위 화면에서만** 찾는다. 겹친 창(일시정지·설정)이 떠 있으면 아래 화면의
+    /// 버튼도, 게임 클릭도 받지 않는다 — 창이 모달로 동작한다.
+    fn ui_pointer(&mut self, actions: &UiActions, pointer: Option<&PointerInput>) -> bool {
+        self.ui_hover = None;
+        let Some(shell) = self.shell.clone() else {
+            return false;
+        };
+        let Some(p) = pointer else { return false };
+        let Some(at) = p.screen else { return false };
+        let Some(top) = shell.top() else { return false };
+
+        let values = Values::of(self.play.as_ref(), self.show_items);
+        let size = self.screen_size(actions.viewport_px);
+        let hit = self.screens.button_at(top, &values, size, at);
+        if p.over_viewport {
+            self.ui_hover = hit.as_ref().map(|(id, _)| id.clone());
+        }
+
+        let modal = !shell.is_base();
+        if p.pressed && p.over_viewport {
+            self.ui_press = hit.as_ref().map(|(id, _)| id.clone());
+            return hit.is_some() || modal;
+        }
+        if p.released {
+            let pressed = self.ui_press.take();
+            match (pressed, hit) {
+                // 누른 버튼에서 뗐을 때만 동작한다 (누른 뒤 밖으로 끌면 취소).
+                (Some(down), Some((up, action))) if down == up => {
+                    self.run_action(action);
+                    return true;
+                }
+                _ => return modal,
+            }
+        }
+        modal
+    }
+
     /// 플레이 중의 UI 요청. 편집 요청(언두·추가·삭제·인스펙터)은 받지 않는다 — 플레이는 씬을 바꾸지 않는다.
     fn apply_play_actions(&mut self, actions: &UiActions, pointer: Option<PointerInput>) {
-        // HUD 편집기가 열려 있으면 뷰포트 클릭은 위젯을 고르고 끄는 데 쓴다 (P6) —
+        // 위젯 편집기가 열려 있으면 뷰포트 클릭은 위젯을 고르고 끄는 데 쓴다 (P7) —
         // 편집 중에 클릭이 게임 명령(이동·공격)으로 새면 위젯을 잡을 수 없다.
-        let hud_grabbed = match (pointer.as_ref(), self.play.as_ref()) {
-            (Some(p), Some(play)) if self.hud_editor.is_open() => {
-                let size = self.hud_viewport();
-                self.hud_editor.handle_pointer(&self.hud, play, size, p)
-            }
-            _ => false,
-        };
+        let grabbed = self.screen_pointer(actions, pointer.as_ref())
+            || self.ui_pointer(actions, pointer.as_ref());
+        // Esc — 일시정지 화면을 열고 닫는다 (레벨이 정한 화면). 없으면 아무 일도 없다.
+        if actions.deselect {
+            self.toggle_pause();
+        }
         let Some(session) = self.play.as_mut() else {
             return;
         };
         if let Some(action) = actions.inventory {
             session.inventory(action);
         }
-        if !hud_grabbed
+        if !grabbed
             && let Some(p) = pointer
             && p.pressed
             && p.over_viewport
@@ -625,9 +795,51 @@ impl Editor {
         self.hover = None;
     }
 
-    /// HUD 가 기준으로 삼는 화면 크기 — 씬을 그리는 사각형(패널 사이 영역)이다.
-    fn hud_viewport(&self) -> (f32, f32) {
-        (self.camera.viewport.0 as f32, self.camera.viewport.1 as f32)
+    /// 일시정지 — 레벨이 정한 화면을 열고 닫는다. 겹친 창이 있으면 그것부터 닫는다.
+    fn toggle_pause(&mut self) {
+        let pause = self
+            .shell
+            .as_ref()
+            .and_then(|s| self.levels.level(&s.level))
+            .and_then(|l| l.pause.clone());
+        let Some(shell) = self.shell.as_mut() else {
+            return;
+        };
+        if shell.pop() {
+            shell.paused = shell.screens.len() > 1;
+            return;
+        }
+        if let Some(pause) = pause {
+            shell.push(&pause);
+            shell.paused = true;
+        }
+    }
+
+    /// 화면(UI)이 기준으로 삼는 크기 — **씬을 그리는 사각형**(패널 사이 영역)이다.
+    /// 그리기와 피킹이 같은 값을 써야 한다 — 창 전체 크기를 쓰면 클릭이 어긋난다.
+    fn screen_size(&self, viewport: Option<[u32; 4]>) -> (f32, f32) {
+        viewport.map_or(
+            (self.camera.viewport.0 as f32, self.camera.viewport.1 as f32),
+            |[_, _, w, h]| (w as f32, h as f32),
+        )
+    }
+
+    /// 위젯 편집기에 뷰포트 포인터를 넘긴다. **처리했으면 `true`** — 그러면 클릭이
+    /// 게임 명령이나 씬 편집으로 가지 않는다. 플레이 중이 아닐 때도 편집한다 (메인 화면 등).
+    fn screen_pointer(&mut self, actions: &UiActions, pointer: Option<&PointerInput>) -> bool {
+        if !self.screen_editor.is_open() {
+            return false;
+        }
+        let Some(p) = pointer else { return false };
+        let values = Values::of(self.play.as_ref(), self.show_items);
+        let size = self.screen_size(actions.viewport_px);
+        let grabbed = self
+            .screen_editor
+            .handle_pointer(&self.screens, &values, size, p);
+        if let Some((error, message)) = self.screen_editor.take_status() {
+            self.notify(message, error);
+        }
+        grabbed
     }
 
     /// 플레이 중 카메라 — 게임과 같은 고정 줌으로 플레이어를 따라간다.
@@ -699,8 +911,11 @@ impl Editor {
             self.save_game(&session);
             self.play = Some(session);
         }
-        if actions.open_hud_editor {
-            self.hud_editor.open(&self.hud);
+        if let Some(id) = actions.open_level.clone() {
+            self.open_level(&id);
+        }
+        if actions.open_screen_editor {
+            self.screen_editor.toggle(&self.screens);
         }
         if actions.toggle_items {
             self.show_items = !self.show_items;
@@ -726,7 +941,8 @@ impl Editor {
             }
         }
         self.manual_shot_requested |= actions.screenshot;
-        if self.play.is_some() {
+        // 셸이 떠 있으면(플레이 중이거나 UI 레벨) 뷰포트는 게임 화면이다 — 씬 편집을 받지 않는다.
+        if self.play.is_some() || self.shell.is_some() {
             let pointer = match actions.pointer {
                 Some(p) if self.script.is_some() => Some(self.scripted_pointer(p, actions)),
                 other => other,
@@ -790,6 +1006,12 @@ impl Editor {
         let pointer = match actions.pointer {
             Some(p) if self.script.is_some() => Some(self.scripted_pointer(p, actions)),
             other => other,
+        };
+        // 위젯 편집기가 먼저 포인터를 본다 — 플레이 중이 아니어도 화면을 편집하기 때문이다.
+        let pointer = if self.screen_pointer(actions, pointer.as_ref()) {
+            None
+        } else {
+            pointer
         };
         // 도구에 따라 포인터가 하는 일이 다르다. 칠하는 중에는 선택이 끼어들지 않는다.
         self.hover = match (self.editing.tool(), pointer) {
@@ -944,13 +1166,28 @@ impl Editor {
             }
             Step::ToggleItems => self.show_items = !self.show_items,
             Step::TogglePanels => self.hide_panels = !self.hide_panels,
-            Step::HudEdit => self.hud_editor.open(&self.hud),
-            Step::HudPick(id) => {
-                self.hud_editor.select(&id);
+            Step::UiEdit => self.screen_editor.toggle(&self.screens),
+            Step::UiScreen(id) => self.screen_editor.switch(&self.screens, &id),
+            Step::UiPick(id) => {
+                self.screen_editor.select(&id);
             }
-            Step::HudDrag(dx, dy) => self.hud_editor.nudge((dx, dy)),
-            Step::HudSave => {
-                self.hud_editor.save(&self.hud);
+            Step::UiDrag(dx, dy) => self.screen_editor.nudge((dx, dy)),
+            // 화면 좌표로 누르기·떼기 — 실제 마우스와 같은 경로로 버튼을 눌러 본다.
+            Step::ScreenPointer { button, at } => {
+                p.screen = Some(at);
+                p.world = None;
+                p.over_viewport = true;
+                p.pressed = button == Button::Press;
+                p.released = button == Button::Release;
+            }
+            Step::OpenLevel(id) => self.open_level(&id),
+            Step::Escape => self.toggle_pause(),
+            Step::StartLevel => {
+                let id = self.levels.startup().to_owned();
+                self.open_level(&id);
+            }
+            Step::UiSave => {
+                self.screen_editor.save();
             }
             Step::Brush(shape, radius) => self.editing.set_brush_shape(shape, radius),
             Step::Eyedropper => self.editing.set_eyedropper(true),
@@ -984,6 +1221,11 @@ impl Editor {
 
         if self.play.is_some() {
             self.build_play_commands(alpha, px, viewport);
+            return;
+        }
+        // 존이 없는 레벨(메인 화면 등) — 게임 화면만 그린다. 에디터 표시를 섞지 않는다.
+        if self.shell.is_some() {
+            self.build_screen_commands(viewport);
             return;
         }
 
@@ -1074,6 +1316,10 @@ impl Editor {
         self.draw_rotate_handle(px);
         self.draw_box_selection();
         self.draw_brush_preview();
+
+        // 위젯 편집기가 열려 있으면 편집 중인 화면을 씬 위에 얹어 보여 준다 (P7) —
+        // 메인 화면·설정 화면은 플레이 중이 아닐 때 편집하기 때문이다.
+        self.build_screen_commands(viewport);
     }
 
     /// 사각형 붓으로 끄는 중인 범위 — 뗄 때 이 칸들이 한 번에 칠해진다.
@@ -1098,8 +1344,6 @@ impl Editor {
     /// 플레이 화면 — 편집 표시(그리드·마커·핸들) 없이 게임에 보일 것만.
     /// 타일 레벨 색과 존 경계는 남긴다 — 아트가 생기기 전에는 지형을 알아볼 수단이 이것뿐이다.
     fn build_play_commands(&mut self, alpha: f32, px: f32, viewport: Option<[u32; 4]>) {
-        // 편집 중인 위젯 배치를 먼저 반영한다 — 고치는 즉시 화면에 보이게 (P6).
-        self.hud_editor.apply(&mut self.hud);
         let Some(play) = self.play.as_ref() else {
             return;
         };
@@ -1152,19 +1396,47 @@ impl Editor {
         // 시트가 없으면(로드 실패) 기본 칸 높이 48px 를 기준으로 막대를 띄운다.
         play.build_overlay(alpha, px, self.sprites.as_ref(), &mut self.commands);
 
-        // HUD 는 맨 마지막 — 화면 좌표라 카메라를 따라가지 않는다 (P5).
-        // 기준은 **씬을 그리는 사각형**이다 (에디터에서는 패널 사이 영역).
-        let size = viewport.map_or(
-            (self.camera.viewport.0 as f32, self.camera.viewport.1 as f32),
-            |[_, _, w, h]| (w as f32, h as f32),
-        );
-        self.hud.build_commands(
-            play,
-            size,
-            self.show_items,
-            self.hud_editor.selected(),
-            &mut self.commands,
-        );
+        // 화면(UI)은 맨 마지막 — 화면 좌표라 카메라를 따라가지 않는다 (P5).
+        self.build_screen_commands(viewport);
+    }
+
+    /// 화면(UI)을 그린다 — 플레이 중이면 HUD, 위젯 편집기가 열려 있으면 편집 중인 화면.
+    ///
+    /// 기준 크기는 **씬을 그리는 사각형**이다 (에디터에서는 패널 사이 영역).
+    fn build_screen_commands(&mut self, viewport: Option<[u32; 4]>) {
+        // 편집 중인 위젯 배치를 먼저 반영한다 — 고치는 즉시 화면에 보이게 (P7).
+        self.screen_editor.apply(&mut self.screens);
+        if !self.screens.ready() {
+            return;
+        }
+        let editing = self.screen_editor.is_open();
+        let mut ids: Vec<String> = Vec::new();
+        match self.shell.as_ref() {
+            // 레벨이 정한 화면 스택 — 바탕(HUD·메뉴) 위에 겹친 창들.
+            Some(shell) => ids.extend(shell.screens.iter().cloned()),
+            // 셸 없이 플레이하는 경우는 없지만, 있더라도 HUD 는 보여 준다.
+            None if self.play.is_some() => ids.push(String::from(HUD_SCREEN)),
+            None => {}
+        }
+        // 편집 중인 화면은 플레이 중이 아니어도 보여 준다 (메인 화면·설정 화면).
+        if let Some(id) = self.screen_editor.preview_screen()
+            && !ids.iter().any(|x| x == id)
+        {
+            ids.push(id.to_owned());
+        }
+        if ids.is_empty() {
+            return;
+        }
+        let values = Values::of(self.play.as_ref(), self.show_items || editing);
+        let size = self.screen_size(viewport);
+        let state = screen::DrawState {
+            hover: self.ui_hover.as_deref(),
+            pressed: self.ui_press.as_deref(),
+            selected: self.screen_editor.selected(),
+            editing,
+        };
+        self.screens
+            .build_commands(&ids, &values, state, size, &mut self.commands);
     }
 
     /// 단독 선택된 마커의 회전 핸들 — 화살표 끝에서 이어지는 가는 선 + 원 대신 마름모.
@@ -1418,12 +1690,14 @@ impl App for Editor {
             Ok(t) => self.terrain = t,
             Err(e) => warnings.push(format!("지형 그림을 읽지 못했습니다 — {e}")),
         }
-        // HUD 폰트·창 그림. 실패하면 HUD 없이 돈다 (에디터 패널은 그대로 보인다).
-        let (hud, warning) = Hud::load(&mut renderer);
-        self.hud = hud;
-        if let Some(w) = warning {
-            warnings.push(format!("HUD 를 읽지 못했습니다 — {w}"));
-        }
+        // UI 테마·화면 파일. 실패하면 화면 없이 돈다 (에디터 패널은 그대로 보인다).
+        let (screens, ui_warnings) = Screens::load(&mut renderer);
+        self.screens = screens;
+        warnings.extend(ui_warnings);
+        // 레벨 목록·프로젝트 설정 (P7). 없어도 F5 로 지금 씬을 플레이할 수 있다.
+        let (levels, level_warnings) = Levels::load();
+        self.levels = levels;
+        warnings.extend(level_warnings);
         for warning in warnings {
             self.notify(warning, true);
         }
@@ -1465,7 +1739,9 @@ impl App for Editor {
         }
         // 플레이 중이면 시뮬레이션이 여기서 돈다 — 게임 규칙은 20Hz 고정 timestep 에서만 진행한다.
         // 에디터 조작(카메라·선택·편집)은 뷰·저작 작업이므로 UI 프레임에서 처리한다.
-        if let Some(play) = self.play.as_mut() {
+        // 일시정지 화면이 떠 있으면 시뮬레이션을 멈춘다 (화면·애니메이션은 계속 돈다).
+        let paused = self.shell.as_ref().is_some_and(|s| s.paused);
+        if let Some(play) = self.play.as_mut().filter(|_| !paused) {
             play.tick(dt, self.sprites.as_ref());
             // 스크립트 오류는 콘솔만이 아니라 상태 바에도 — 창만 보는 사람도 알 수 있게.
             for alert in play.take_alerts() {
@@ -1488,6 +1764,16 @@ impl App for Editor {
         // 뷰포트가 확정된 뒤여야 배율이 맞는다.
         if viewport.is_some() {
             self.follow_player(alpha);
+        }
+
+        // 화면 문구에 새 글자(편집기에서 타이핑한 한글 등)가 생겼으면 글자 아틀라스를
+        // 다시 굽는다 — 프레임 바깥에서 텍스처를 올려야 하므로 그리기 전에 한다.
+        let font_warning = match self.renderer.as_mut() {
+            Some(renderer) => self.screens.ensure_text_glyphs(renderer),
+            None => None,
+        };
+        if let Some(e) = font_warning {
+            self.notify(e, true);
         }
 
         self.build_commands(viewport, alpha);

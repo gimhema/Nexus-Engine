@@ -39,6 +39,8 @@ egui              = "0.36"
 egui-wgpu         = "0.36"
 egui-winit        = "0.36"
 png               = "0.18"
+# 시스템 폰트 글자 래스터 (P7-E). egui(epaint) 가 이미 쓰는 크레이트다.
+ab_glyph          = "0.2"
 # 존 파일 (S7-2). 앱만 쓴다 — 코어·시뮬레이션 크레이트는 직렬화를 모른다.
 serde             = { version = "1.0", features = ["derive"] }
 ron               = "0.12"

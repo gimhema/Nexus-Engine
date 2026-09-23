@@ -26,8 +26,12 @@
 //! compile                      스크립트 편집기의 "컴파일" 버튼
 //! savegame | deletesave       진행 상황 저장 / 저장 데이터 삭제 (P3)
 //! items | panels              HUD 인벤토리 창 / 에디터 패널 숨기기 (P5)
-//! hudedit | hudpick 이름      HUD 편집기 열기 / 위젯 고르기 (P6)
-//! huddrag dx dy | hudsave     고른 위젯 옮기기 / data/hud.ron 저장
+//! uiedit | uiscreen 번호      위젯 편집기 열고 닫기 / 편집할 화면 바꾸기 (P7)
+//! uipick 이름 | uidrag dx dy  위젯 고르기 / 고른 위젯 옮기기
+//! uisave                      화면 파일(ui/<번호>.ui.ron) 저장
+//! uipress x y | uirelease x y 화면 좌표(뷰포트 픽셀)로 누르기 / 떼기 — 버튼 확인용
+//! level 번호 | startlevel     레벨 열기 / 시작 레벨 열기 (P7)
+//! esc                         일시정지 화면 열고 닫기 (Esc 와 같다)
 //! ```
 //!
 //! 예: `NEXUS_SELECT="상인 NPC" NEXUS_SCRIPT="wait; press rotate; move -8 20 ctrl"`
@@ -98,14 +102,27 @@ pub(crate) enum Step {
     ToggleItems,
     /// 에디터 패널 숨기기 (F9).
     TogglePanels,
-    /// HUD 편집기 열기 (P6).
-    HudEdit,
-    /// HUD 위젯 고르기 — 이름으로.
-    HudPick(String),
-    /// 고른 HUD 위젯을 (dx, dy) HUD 픽셀만큼 옮긴다 (끌기와 같은 경로).
-    HudDrag(i32, i32),
-    /// HUD 정의 저장 (data/hud.ron).
-    HudSave,
+    /// 위젯 편집기 열고 닫기 (P7).
+    UiEdit,
+    /// 편집할 화면 바꾸기.
+    UiScreen(String),
+    /// 위젯 고르기 — 이름으로.
+    UiPick(String),
+    /// 고른 위젯을 (dx, dy) UI 픽셀만큼 옮긴다 (끌기와 같은 경로).
+    UiDrag(i32, i32),
+    /// 화면 좌표(뷰포트 픽셀)로 누르기·떼기 — 버튼을 눌러 보는 데 쓴다.
+    ScreenPointer {
+        button: Button,
+        at: Vec2,
+    },
+    /// 레벨 열기 (P7) — 언리얼의 Open Level.
+    OpenLevel(String),
+    /// 시작 레벨 열기 (data/project.ron 의 startup_level).
+    StartLevel,
+    /// Esc — 일시정지 화면 열고 닫기 (겹친 창이 있으면 그것부터 닫는다).
+    Escape,
+    /// 화면 파일 저장 (ui/<번호>.ui.ron).
+    UiSave,
     /// 붓 모양과 반지름.
     Brush(BrushShape, u8),
     /// 스포이드 켜기.
@@ -193,22 +210,53 @@ fn parse_step(text: &str) -> Result<Step, String> {
         "deletesave" => return Ok(Step::DeleteSave),
         "items" => return Ok(Step::ToggleItems),
         "panels" => return Ok(Step::TogglePanels),
-        "hudedit" => return Ok(Step::HudEdit),
-        "hudsave" => return Ok(Step::HudSave),
-        "hudpick" => {
+        "uiedit" => return Ok(Step::UiEdit),
+        "startlevel" => return Ok(Step::StartLevel),
+        "esc" => return Ok(Step::Escape),
+        "level" => {
             let id = words
                 .get(1)
-                .ok_or_else(|| format!("'{text}': hudpick 뒤에 위젯 이름"))?;
-            return Ok(Step::HudPick((*id).to_string()));
+                .ok_or_else(|| format!("'{text}': level 뒤에 레벨 번호"))?;
+            return Ok(Step::OpenLevel((*id).to_string()));
         }
-        "huddrag" => {
+        "uipress" | "uirelease" => {
+            let num = |i: usize| -> Result<f32, String> {
+                words
+                    .get(i)
+                    .and_then(|w| w.parse::<f32>().ok())
+                    .ok_or_else(|| format!("'{text}': 뒤에 화면 좌표 x y (뷰포트 픽셀)"))
+            };
+            let button = if words[0] == "uipress" {
+                Button::Press
+            } else {
+                Button::Release
+            };
+            return Ok(Step::ScreenPointer {
+                button,
+                at: Vec2::new(num(1)?, num(2)?),
+            });
+        }
+        "uisave" => return Ok(Step::UiSave),
+        "uiscreen" => {
+            let id = words
+                .get(1)
+                .ok_or_else(|| format!("'{text}': uiscreen 뒤에 화면 번호"))?;
+            return Ok(Step::UiScreen((*id).to_string()));
+        }
+        "uipick" => {
+            let id = words
+                .get(1)
+                .ok_or_else(|| format!("'{text}': uipick 뒤에 위젯 이름"))?;
+            return Ok(Step::UiPick((*id).to_string()));
+        }
+        "uidrag" => {
             let int = |i: usize| -> Result<i32, String> {
                 words
                     .get(i)
                     .and_then(|w| w.parse().ok())
-                    .ok_or_else(|| format!("'{text}': huddrag 뒤에 dx dy (정수)"))
+                    .ok_or_else(|| format!("'{text}': uidrag 뒤에 dx dy (정수)"))
             };
-            return Ok(Step::HudDrag(int(1)?, int(2)?));
+            return Ok(Step::UiDrag(int(1)?, int(2)?));
         }
         "palette" => return Ok(Step::Palette(words.get(1).map(|w| (*w).to_string()))),
         "pick" => {

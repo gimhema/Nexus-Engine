@@ -10,9 +10,11 @@
 
 mod anim;
 mod font;
+mod glyphs;
 
 pub use anim::{AnimState, Clip, SpriteAnimator, SpriteSheet};
 pub use font::{BitmapFont, FontError, Glyph};
+pub use glyphs::{GlyphError, GlyphSheet, RasterGlyph};
 
 use nexus_core::Vec2;
 use nexus_render::{TextureDesc, UvRect};
@@ -142,6 +144,29 @@ impl Image {
     #[must_use]
     pub fn height(&self) -> u32 {
         self.height
+    }
+
+    /// 픽셀을 그대로 받아 이미지를 만든다 — 래스터한 글자 아틀라스처럼 **디코딩 없이**
+    /// 만드는 그림에 쓴다. 픽셀 수가 크기와 맞지 않으면 거부한다.
+    pub fn from_rgba(width: u32, height: u32, rgba: Vec<u8>) -> Result<Self, AssetError> {
+        let want = width as usize * height as usize * 4;
+        if width == 0 || height == 0 || rgba.len() != want {
+            return Err(AssetError::BadGrid(format!(
+                "{width}x{height} 그림에 픽셀 {}바이트 (필요: {want})",
+                rgba.len()
+            )));
+        }
+        Ok(Self {
+            width,
+            height,
+            rgba,
+        })
+    }
+
+    /// RGBA 픽셀 — 같은 입력이 같은 그림을 만드는지 보는 테스트가 쓴다.
+    #[must_use]
+    pub fn pixels(&self) -> &[u8] {
+        &self.rgba
     }
 
     /// 격자 계산 테스트 전용 — 디코딩 없이 빈 이미지를 만든다.

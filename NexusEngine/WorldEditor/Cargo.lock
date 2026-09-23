@@ -1383,6 +1383,7 @@ dependencies = [
 name = "nexus-assets"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "nexus-core",
  "nexus-render",
  "png",

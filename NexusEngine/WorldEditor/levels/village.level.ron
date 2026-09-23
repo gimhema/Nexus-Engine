@@ -1,0 +1,10 @@
+// 레벨 — 언리얼의 레벨(.umap)에 대응한다.
+//
+// 존 파일은 지형·마커만 담고(테스트가 바이트 대조), 어떤 화면을 띄울지는 이 파일이 정한다.
+(
+    version: 1,
+    name: "마을",
+    zone: Some("zones/village.zone.ron"),
+    hud: Some("hud"),
+    pause: Some("pause"),
+)

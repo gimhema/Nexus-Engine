@@ -82,6 +82,23 @@ impl UvRect {
         min: Vec2::ZERO,
         max: Vec2::ONE,
     };
+
+    /// 그림의 **픽셀 사각형**을 UV 로 바꾼다 (좌상단 원점).
+    ///
+    /// 경계값을 그대로 쓰고 여유(인셋)를 두지 않는다 — 샘플러가 `Nearest` 라 프래그먼트
+    /// 중심이 옆 텍셀로 넘어가지 않는다. 그림 크기가 0 이면 전체를 돌려준다.
+    #[must_use]
+    pub fn from_pixels(x: u32, y: u32, width: u32, height: u32, image: (u32, u32)) -> Self {
+        if image.0 == 0 || image.1 == 0 {
+            return Self::FULL;
+        }
+        let (iw, ih) = (image.0 as f32, image.1 as f32);
+        let min = Vec2::new(x as f32 / iw, y as f32 / ih);
+        Self {
+            min,
+            max: min + Vec2::new(width as f32 / iw, height as f32 / ih),
+        }
+    }
 }
 
 impl Default for UvRect {

@@ -1,0 +1,76 @@
+// 화면(UI) 한 장 — 위젯 트리. **에디터의 위젯 편집기가 이 파일을 다시 써낸다.**
+// 메뉴 UI → 위젯 편집기. 저장하면 이 파일이 통째로 다시 쓰이므로 주석은 남지 않는다.
+//
+// pos·size 는 UI 픽셀(테마의 scale 을 곱하기 전)이고, anchor 기준점에서 오른쪽·아래가 +다.
+// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {level} {exp} {exp_to_next}
+// ⚠ 비트맵 폰트에 한글도 '/' 도 없다 — 화면 문구는 영문 대문자·숫자만.
+(
+    version: 1,
+    name: "게임 화면",
+    widgets: [
+        (
+            id: "hp_text",
+            anchor: BottomLeft,
+            pos: (12, -46),
+            kind: Text(
+                format: "체력 {hp}",
+            ),
+        ),
+        (
+            id: "hp_bar",
+            anchor: BottomLeft,
+            pos: (12, -26),
+            size: Some((110, 9)),
+            kind: Bar(
+                source: Hp,
+                color: (0.85, 0.25, 0.25),
+            ),
+        ),
+        (
+            id: "exp_bar",
+            anchor: BottomLeft,
+            pos: (12, -12),
+            size: Some((110, 5)),
+            kind: Bar(
+                source: Exp,
+                color: (0.35, 0.75, 0.95),
+            ),
+        ),
+        (
+            id: "level_text",
+            anchor: BottomLeft,
+            pos: (134, -14),
+            kind: Text(
+                format: "레벨 {level}   경험치 {exp}",
+            ),
+        ),
+        (
+            id: "items_window",
+            anchor: TopRight,
+            pos: (-12, 12),
+            size: Some((150, 62)),
+            show: ItemsOpen,
+            kind: Panel(
+                frame: true,
+            ),
+            children: [
+                (
+                    id: "items_title",
+                    anchor: TopLeft,
+                    pos: (12, 10),
+                    kind: Text(
+                        format: "소지품",
+                    ),
+                ),
+                (
+                    id: "items",
+                    anchor: TopLeft,
+                    pos: (12, 30),
+                    kind: Items(
+                        columns: 6,
+                    ),
+                ),
+            ],
+        ),
+    ],
+)
