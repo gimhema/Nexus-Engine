@@ -817,6 +817,13 @@ impl Screens {
         self.screens.keys().cloned().collect()
     }
 
+    /// `ui/` 의 화면 파일을 다시 읽는다 — 이름 바꾸기·삭제 뒤 (P9). 그림은 다시 올리지 않는다.
+    pub(crate) fn reload_files(&mut self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        self.screens = load_screens(&mut warnings);
+        warnings
+    }
+
     /// 편집기가 고친 화면을 받아들인다 (화면에 바로 보이게).
     pub(crate) fn set_screen(&mut self, id: &str, screen: ScreenFile) {
         self.screens.insert(id.to_owned(), screen);
@@ -1226,6 +1233,12 @@ fn screen_id(path: &Path) -> Option<String> {
 /// 화면 번호 → 파일 경로. 이름은 **소문자**로 고정한다 (ext4 는 대소문자를 구분한다).
 pub(crate) fn screen_path(id: &str) -> PathBuf {
     Path::new(SCREEN_DIR).join(format!("{}{SCREEN_EXT}", id.to_ascii_lowercase()))
+}
+
+/// 실행 파일에 내장된 화면인가 — 디스크 파일을 지워도 내장본으로 되살아나므로
+/// 지우거나 이름을 바꾸지 않는다 (P9 파일 작업).
+pub(crate) fn is_builtin(id: &str) -> bool {
+    EMBEDDED_SCREENS.iter().any(|(i, _)| *i == id)
 }
 
 /// 화면 번호로 쓸 수 있는 이름인가 — 파일 이름이 되므로 경로 문자를 막는다.

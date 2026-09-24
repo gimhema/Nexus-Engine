@@ -46,18 +46,49 @@ fn entry_key(line: &str) -> Option<u32> {
 }
 
 /// 항목의 끝 줄 — 한 줄짜리면 그 줄, 아니면 같은 들여쓰기의 `),` 줄.
+///
+/// 여는 괄호가 `(` 면 `),`, `[` 면 `],` 를 찾는다 (드롭 표는 목록이다). 줄 끝 주석은 무시한다 —
+/// 아이템·스킬은 `1: (…),   // 이름` 처럼 한 줄에 주석을 단다.
 fn entry_end(lines: &[&str], at: usize, indent: usize, block_end: usize) -> Option<usize> {
-    let head = lines[at].trim_end();
-    if head.ends_with("),") || head.ends_with(')') {
-        return Some(at);
-    }
+    let head = code_part(lines[at]).trim_end();
+    let close = if head.ends_with('(') {
+        ")"
+    } else if head.ends_with('[') {
+        "]"
+    } else {
+        return Some(at); // 한 줄짜리
+    };
     lines[at + 1..block_end]
         .iter()
         .position(|l| {
-            let t = l.trim();
-            (t == ")," || t == ")") && indent_of(l) == indent
+            let t = code_part(l).trim();
+            (t == close || t == format!("{close},")) && indent_of(l) == indent
         })
         .map(|i| at + 1 + i)
+}
+
+/// 줄에서 주석을 뺀 부분 — 문자열 안의 `//` 는 주석이 아니다.
+fn code_part(line: &str) -> &str {
+    let mut in_string = false;
+    let mut escaped = false;
+    let bytes = line.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            _ if escaped => escaped = false,
+            b'\\' if in_string => escaped = true,
+            b'"' => in_string = !in_string,
+            b'/' if !in_string && bytes.get(i + 1) == Some(&b'/') => return &line[..i],
+            _ => {}
+        }
+    }
+    line
+}
+
+/// 줄 끝 주석 (`// 이름`) — 한 줄짜리 항목을 다시 쓸 때 붙여 준다.
+fn trailing_comment(line: &str) -> Option<&str> {
+    let code = code_part(line);
+    let rest = line[code.len()..].trim();
+    (!rest.is_empty() && !code.trim().is_empty()).then_some(rest)
 }
 
 /// 맵 `map` 의 `id` 항목을 `entry` 로 바꾼다. 없으면 **번호 순서에 맞는 자리**에 넣는다.
@@ -85,10 +116,18 @@ pub(crate) fn upsert_entry(text: &str, map: &str, id: u32, entry: &str) -> Resul
     let existing =
         (start + 1..end).find(|&i| indent_of(lines[i]) == inner && entry_key(lines[i]) == Some(id));
 
+    let mut body = body;
     let (from, to) = match existing {
         Some(at) => {
             let last = entry_end(&lines, at, inner, end)
                 .ok_or_else(|| format!("'{map}' 의 {id} 항목이 닫히지 않음"))?;
+            // 한 줄짜리 항목의 줄 끝 주석은 살린다 — 그 주석이 이름 노릇을 하는 표가 있다.
+            if at == last
+                && body.len() == 1
+                && let Some(comment) = trailing_comment(lines[at])
+            {
+                body[0] = format!("{}   {comment}", body[0]);
+            }
             (at, last + 1)
         }
         None => {
@@ -111,6 +150,31 @@ pub(crate) fn upsert_entry(text: &str, map: &str, id: u32, entry: &str) -> Resul
     let mut text = out.join("\n");
     text.push('\n');
     Ok(text)
+}
+
+/// 맵 `map` 의 `id` 항목을 뺀다 — `(남은 텍스트, 뺀 항목 텍스트)`. 항목 바로 위의 주석도
+/// 그 항목 것이므로 함께 뺀다 (남기면 다음 항목의 설명처럼 읽힌다).
+pub(crate) fn remove_entry(text: &str, map: &str, id: u32) -> Result<(String, String), String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let block = map_block(&lines, map).ok_or_else(|| format!("'{map}: {{' 블록을 찾지 못함"))?;
+    let (start, end, _) = block;
+    let inner = child_indent(&lines, block);
+    let at = (start + 1..end)
+        .find(|&i| indent_of(lines[i]) == inner && entry_key(lines[i]) == Some(id))
+        .ok_or_else(|| format!("'{map}' 에 {id} 항목이 없음"))?;
+    let last = entry_end(&lines, at, inner, end)
+        .ok_or_else(|| format!("'{map}' 의 {id} 항목이 닫히지 않음"))?;
+    let mut from = at;
+    while from > start + 1 && lines[from - 1].trim_start().starts_with("//") {
+        from -= 1;
+    }
+    let removed = lines[from..=last].join("\n");
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
+    out.extend(&lines[..from]);
+    out.extend(&lines[last + 1..]);
+    let mut text = out.join("\n");
+    text.push('\n');
+    Ok((text, removed))
 }
 
 /// 첫 `field:` 줄의 값을 바꾼다 — `startup_level: "main",` 같은 한 줄짜리 필드.
@@ -215,6 +279,78 @@ mod tests {
         let out = upsert_entry(TABLE, "items", 1, "1: (name: \"창\"),").unwrap();
         assert!(out.contains("1: (name: \"창\"),"));
         assert!(!out.contains("칼"));
+    }
+
+    const INLINE: &str = "\
+(
+    skills: {
+        1: (range: 2.0, cooldown_ms: 800),   // 플레이어 베기
+        2: (range: 1.5, cooldown_ms: 1200),  // 슬라임 물기
+    },
+    loot: {
+        1: [
+            (item: 909, count: 1),
+        ],
+        2: [(item: 1, count: 1)],
+    },
+    items: {
+        3: (name: \"a // b\"),
+    },
+)
+";
+
+    #[test]
+    fn one_line_entries_keep_their_end_of_line_comment() {
+        let out = upsert_entry(INLINE, "skills", 1, "1: (range: 3.0, cooldown_ms: 800),").unwrap();
+        assert!(
+            out.contains("        1: (range: 3.0, cooldown_ms: 800),   // 플레이어 베기"),
+            "{out}"
+        );
+        assert!(out.contains("// 슬라임 물기"), "옆 항목은 그대로");
+        // 새로 넣는 항목에는 주석이 없다.
+        let out = upsert_entry(INLINE, "skills", 5, "5: (range: 1.0, cooldown_ms: 1),").unwrap();
+        assert!(out.contains("        5: (range: 1.0, cooldown_ms: 1),\n"));
+    }
+
+    #[test]
+    fn list_entries_are_found_by_their_closing_bracket() {
+        let out = upsert_entry(INLINE, "loot", 1, "1: [\n    (item: 501, count: 2),\n],").unwrap();
+        assert!(out.contains("(item: 501, count: 2)"));
+        assert!(!out.contains("item: 909"));
+        assert!(
+            out.contains("2: [(item: 1, count: 1)],"),
+            "한 줄 목록은 그대로"
+        );
+        let (out, removed) = remove_entry(INLINE, "loot", 2).unwrap();
+        assert!(removed.contains("2: [(item: 1, count: 1)]"));
+        assert!(out.contains("1: ["));
+    }
+
+    #[test]
+    fn slashes_inside_strings_are_not_comments() {
+        assert_eq!(
+            code_part("3: (name: \"a // b\"), // 진짜"),
+            "3: (name: \"a // b\"), "
+        );
+        assert_eq!(trailing_comment("3: (name: \"a // b\"),"), None);
+        let out = upsert_entry(INLINE, "items", 3, "3: (name: \"c\"),").unwrap();
+        assert!(
+            out.contains("3: (name: \"c\"),\n"),
+            "문자열 속 // 를 주석으로 붙이지 않는다"
+        );
+    }
+
+    #[test]
+    fn removing_an_entry_takes_its_comment_and_leaves_the_rest() {
+        let (out, removed) = remove_entry(TABLE, "actors", 10).unwrap();
+        assert!(!out.contains("10: ("));
+        assert!(!out.contains("10 번 설명"), "항목 위 주석은 그 항목 것");
+        assert!(removed.contains("// 10 번 설명") && removed.contains("max_hp: 300"));
+        assert!(
+            out.contains("1: (\n            max_hp: 200,"),
+            "다른 항목은 그대로"
+        );
+        assert!(remove_entry(TABLE, "actors", 77).is_err(), "없는 번호");
     }
 
     #[test]

@@ -15,6 +15,7 @@
 //! 존 파일(`zones/*.zone.ron`)로 저장·로드한다 (S7-2). 서버 `ZoneConfig` 내보내기는 단계 2.
 
 mod actor_editor;
+mod asset_ops;
 mod content;
 mod edit;
 mod game_data;
@@ -33,6 +34,7 @@ mod script;
 mod script_editor;
 mod sheet_viewer;
 mod sprites;
+mod table_editor;
 mod terrain;
 mod tiles;
 mod ui;
@@ -709,6 +711,7 @@ impl Editor {
                     false,
                 );
             }
+            Some(content::ContentAction::FileOp(op)) => self.apply_file_op(op),
             _ => {}
         }
         if actions.reload_data {
@@ -727,6 +730,116 @@ impl Editor {
         if let Some(text) = &actions.notice {
             self.notify(text.clone(), false);
         }
+    }
+
+    /// 파일 작업 실행 (P9). 확인 창과 **같은 계획을 다시 세워** 실행한다 — 창을 띄운 뒤 디스크가
+    /// 바뀌었어도 지금 상태로 검사하게.
+    ///
+    /// 막는 경우: 그 리소스를 편집기에서 저장하지 않은 채 고치고 있을 때(옛 내용을 옛 경로로 저장하면
+    /// 되살아난다), 지금 열린 존을 지우려 할 때, 플레이 중일 때.
+    fn apply_file_op(&mut self, op: &asset_ops::FileOp) {
+        use content::AssetKind;
+        let refuse = |why: String| format!("{} 하지 않았습니다 — {why}", op.kind.label());
+        if self.play.is_some() || self.shell.is_some() {
+            self.notify(refuse(String::from("플레이를 멈춘 뒤에 하세요")), true);
+            return;
+        }
+        let key = op.asset.key.as_str();
+        let open_zone = self
+            .zone_path
+            .as_deref()
+            .map(|p| p.to_string_lossy().replace('\\', "/"));
+        if op.asset.kind == AssetKind::Zone && open_zone.as_deref() == Some(key) {
+            if op.kind == asset_ops::OpKind::Delete {
+                self.notify(refuse(String::from("지금 열려 있는 존입니다")), true);
+                return;
+            }
+            if op.kind == asset_ops::OpKind::Rename && self.is_dirty() {
+                self.notify(refuse(String::from("저장하지 않은 편집이 있습니다")), true);
+                return;
+            }
+        }
+        let screen_id = key
+            .rsplit('/')
+            .next()
+            .and_then(|n| n.strip_suffix(".ui.ron"))
+            .unwrap_or_default();
+        if op.asset.kind == AssetKind::Screen && self.screen_editor.blocks(screen_id) {
+            self.notify(
+                refuse(String::from(
+                    "위젯 편집기에서 고치는 중입니다 — 먼저 저장하세요",
+                )),
+                true,
+            );
+            return;
+        }
+        if let Some(why) = self
+            .ui
+            .as_ref()
+            .and_then(|ui| ui.file_op_blocked(&op.asset))
+        {
+            self.notify(refuse(why), true);
+            return;
+        }
+
+        let root = std::path::Path::new(".");
+        let plan = match asset_ops::plan(root, op) {
+            Ok(plan) => plan,
+            Err(e) => {
+                self.notify(refuse(e), true);
+                return;
+            }
+        };
+        let bin = match asset_ops::apply(root, &plan) {
+            Ok(bin) => bin,
+            Err(e) => {
+                self.notify(format!("{} 도중에 멈췄습니다 — {e}", op.kind.label()), true);
+                return;
+            }
+        };
+
+        // 다시 읽기 — 계획이 알려 준 것만.
+        if plan.touched.levels {
+            let (levels, warnings) = Levels::load();
+            self.levels = levels;
+            for w in warnings {
+                self.notify(w, true);
+            }
+        }
+        if plan.touched.screens {
+            if op.asset.kind == AssetKind::Screen && op.kind != asset_ops::OpKind::Duplicate {
+                self.screen_editor.forget(screen_id);
+            }
+            for w in self.screens.reload_files() {
+                self.notify(w, true);
+            }
+        }
+        if plan.touched.data {
+            match GameData::load() {
+                Ok(data) => self.data = Some(data),
+                Err(e) => self.notify(format!("게임 데이터를 다시 읽지 못했습니다 — {e}"), true),
+            }
+        }
+        // 열어 둔 존이 옮겨졌으면 경로를 따라간다 — 다음 Ctrl+S 가 옛 경로에 쓰지 않게.
+        let moved_to = plan.touched.moved.as_ref().map(|(_, to)| to.clone());
+        if let Some((from, to)) = &plan.touched.moved
+            && open_zone.as_deref() == Some(from.as_str())
+        {
+            self.zone_path = Some(PathBuf::from(to));
+        }
+        if let Some(ui) = self.ui.as_mut() {
+            ui.after_file_op(op, moved_to.as_deref());
+        }
+        let done = match bin {
+            Some(bin) => format!("{} — {} (휴지통: {bin})", op.kind.label(), op.asset.name),
+            None => format!(
+                "{} — {} ({}가지 일)",
+                op.kind.label(),
+                op.asset.name,
+                plan.steps.len()
+            ),
+        };
+        self.notify(done, false);
     }
 
     /// 마지막 저장 이후 씬이 바뀌었는가 — 상태 바의 `*` 와 같은 판정.
@@ -1241,6 +1354,27 @@ impl Editor {
                     .is_some_and(|ui| ui.content_mut().select_key(&key));
                 if !found {
                     self.notify(format!("콘텐츠 브라우저에 '{key}' 가 없습니다"), true);
+                }
+            }
+            Step::ContentOp(kind, target) => {
+                let ok = self
+                    .ui
+                    .as_mut()
+                    .is_some_and(|ui| ui.content_mut().begin_selected(kind, target.as_deref()));
+                if !ok {
+                    self.notify(
+                        String::from("콘텐츠 브라우저에서 고른 항목이 없습니다"),
+                        true,
+                    );
+                }
+            }
+            // 확인 창의 "실행" 과 같은 경로 — 계획이 서지 않으면 이유를 알린다.
+            Step::ContentConfirm => {
+                let result = self.ui.as_mut().map(|ui| ui.content_mut().confirm_op());
+                match result {
+                    Some(Ok(content::ContentAction::FileOp(op))) => self.apply_file_op(&op),
+                    Some(Err(e)) => self.notify(e, true),
+                    _ => {}
                 }
             }
             // 두 번 누르기와 같은 경로 — UI 창은 UI 가 열고, 나머지는 에디터가 맡는다.

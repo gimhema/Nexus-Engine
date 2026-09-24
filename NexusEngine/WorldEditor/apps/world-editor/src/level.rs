@@ -256,6 +256,11 @@ fn level_id(path: &Path) -> Option<String> {
     Some(name.strip_suffix(LEVEL_EXT)?.to_ascii_lowercase())
 }
 
+/// 실행 파일에 내장된 레벨인가 — 디스크 파일을 지워도 내장본으로 되살아난다 (P9).
+pub(crate) fn is_builtin(id: &str) -> bool {
+    EMBEDDED_LEVELS.iter().any(|(i, _)| *i == id)
+}
+
 /// 레벨 번호 → 파일 경로. 이름은 **소문자**로 고정한다 (ext4 는 대소문자를 구분한다).
 pub(crate) fn level_path(id: &str) -> PathBuf {
     Path::new(LEVEL_DIR).join(format!("{}{LEVEL_EXT}", id.to_ascii_lowercase()))

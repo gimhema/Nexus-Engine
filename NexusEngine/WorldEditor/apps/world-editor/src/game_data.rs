@@ -213,6 +213,15 @@ struct DisplayFile {
     /// 액터 타입의 표시 이름과 시트. 번호는 `rules.ron` 의 `actors` 와 같다.
     #[serde(default)]
     actors: BTreeMap<u32, ActorLookFile>,
+    /// 스킬의 표시 이름 (P10). 없으면 번호로 보인다.
+    #[serde(default)]
+    skills: BTreeMap<u32, SkillLookFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkillLookFile {
+    name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -437,6 +446,16 @@ impl GameData {
             check(
                 [r_, g, b].iter().all(|c| (0.0..=1.0).contains(c)),
                 format!("표시 아이템 {id}: 색은 0~1"),
+            );
+        }
+        for (id, look) in &d.skills {
+            check(
+                r.skills.contains_key(id),
+                format!("표시 스킬 {id}: rules.ron 에 없는 스킬"),
+            );
+            check(
+                !look.name.trim().is_empty(),
+                format!("표시 스킬 {id}: 이름이 비어 있음"),
             );
         }
         if !errors.is_empty() {
@@ -989,6 +1008,291 @@ pub(crate) fn actor_forms(rules: &str, display: &str) -> Result<BTreeMap<u32, Ac
         form.tint = look.tint;
     }
     Ok(out)
+}
+
+/// 실행 파일에 내장된 스크립트인가 (`data/` 기준 경로) — 지워도 내장본으로 되살아난다 (P9).
+pub(crate) fn is_builtin_script(path: &str) -> bool {
+    embedded_script(path).is_some()
+}
+
+/// 마커 종류의 기본 액터 번호들 — 이 번호의 액터는 지울 수 없다 (P9).
+pub(crate) fn default_actor_ids(rules: &str) -> Result<Vec<u32>, String> {
+    let r: RulesFile = ron::from_str(rules).map_err(|e| format!("{RULES_PATH}: {e}"))?;
+    Ok(r.default_actors.values().copied().collect())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 데이터 표 편집기용 — 아이템·스킬·드롭 표 (P10)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 아이템 하나 — 규칙 반쪽(종류·수치)과 표시 반쪽(이름·색).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ItemForm {
+    pub(crate) kind: ItemKindForm,
+    pub(crate) name: String,
+    /// 땅에 떨어졌을 때의 색 (sRGB).
+    pub(crate) color: (f32, f32, f32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ItemKindForm {
+    Consumable {
+        heal: u32,
+        max_stack: u32,
+    },
+    Equipment {
+        slot: SlotChoice,
+        attack: u32,
+        defense: u32,
+    },
+}
+
+/// 장착 자리 — 편집기 드롭다운용 (파일 형식 `SlotFile` 과 같은 다섯 가지, 서버 순서).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SlotChoice {
+    Weapon,
+    Head,
+    Body,
+    Hand,
+    Shoes,
+}
+
+impl SlotChoice {
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Weapon,
+        Self::Head,
+        Self::Body,
+        Self::Hand,
+        Self::Shoes,
+    ];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Weapon => "무기",
+            Self::Head => "머리",
+            Self::Body => "몸",
+            Self::Hand => "손",
+            Self::Shoes => "신발",
+        }
+    }
+
+    fn file_name(self) -> &'static str {
+        match self {
+            Self::Weapon => "Weapon",
+            Self::Head => "Head",
+            Self::Body => "Body",
+            Self::Hand => "Hand",
+            Self::Shoes => "Shoes",
+        }
+    }
+}
+
+impl From<SlotFile> for SlotChoice {
+    fn from(s: SlotFile) -> Self {
+        match s {
+            SlotFile::Weapon => Self::Weapon,
+            SlotFile::Head => Self::Head,
+            SlotFile::Body => Self::Body,
+            SlotFile::Hand => Self::Hand,
+            SlotFile::Shoes => Self::Shoes,
+        }
+    }
+}
+
+impl ItemForm {
+    pub(crate) fn new(name: &str) -> Self {
+        Self {
+            kind: ItemKindForm::Consumable {
+                heal: 10,
+                max_stack: 20,
+            },
+            name: name.to_owned(),
+            color: (0.9, 0.9, 0.9),
+        }
+    }
+
+    /// `rules.ron` 의 `items` 항목 — 손으로 쓴 것과 같은 한 줄.
+    pub(crate) fn rules_entry(&self, id: u32) -> String {
+        match self.kind {
+            ItemKindForm::Consumable { heal, max_stack } => {
+                format!("{id}: Consumable(heal: {heal}, max_stack: {max_stack}),")
+            }
+            ItemKindForm::Equipment {
+                slot,
+                attack,
+                defense,
+            } => format!(
+                "{id}: Equipment(slot: {}, attack: {attack}, defense: {defense}),",
+                slot.file_name()
+            ),
+        }
+    }
+
+    /// `display.ron` 의 `items` 항목.
+    pub(crate) fn display_entry(&self, id: u32) -> String {
+        let (r, g, b) = self.color;
+        format!(
+            "{id}: (name: {}, color: ({r:?}, {g:?}, {b:?})),",
+            crate::ron_patch::quote(&self.name)
+        )
+    }
+}
+
+/// 스킬 하나 — 규칙 반쪽(사거리·쿨타임·배율)과 표시 반쪽(이름).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SkillForm {
+    pub(crate) range: f32,
+    pub(crate) cooldown_ms: u32,
+    pub(crate) damage_mult: f32,
+    pub(crate) name: String,
+}
+
+impl SkillForm {
+    pub(crate) fn new(name: &str) -> Self {
+        Self {
+            range: 2.0,
+            cooldown_ms: 1000,
+            damage_mult: 1.0,
+            name: name.to_owned(),
+        }
+    }
+
+    pub(crate) fn rules_entry(&self, id: u32) -> String {
+        format!(
+            "{id}: (range: {:?}, cooldown_ms: {}, damage_mult: {:?}),",
+            self.range, self.cooldown_ms, self.damage_mult
+        )
+    }
+
+    pub(crate) fn display_entry(&self, id: u32) -> String {
+        format!("{id}: (name: {}),", crate::ron_patch::quote(&self.name))
+    }
+}
+
+/// 드롭 표 한 줄.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LootRow {
+    pub(crate) item: u32,
+    pub(crate) count: u32,
+    /// 천분율 (1000 = 반드시).
+    pub(crate) chance_per_mille: u32,
+}
+
+/// 드롭 표의 `rules.ron` 항목 — 목록이라 여러 줄이다. 드롭 표에는 표시 반쪽이 없다.
+pub(crate) fn loot_entry(id: u32, rows: &[LootRow]) -> String {
+    if rows.is_empty() {
+        return format!("{id}: [],");
+    }
+    let mut s = format!("{id}: [\n");
+    for r in rows {
+        s.push_str(&format!(
+            "    (item: {}, count: {}, chance_per_mille: {}),\n",
+            r.item, r.count, r.chance_per_mille
+        ));
+    }
+    s.push_str("],");
+    s
+}
+
+/// 아이템·스킬·드롭 표의 **파일에 적힌 그대로의** 값 — 데이터 표 편집기와 브라우저가 쓴다.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct TableForms {
+    pub(crate) items: BTreeMap<u32, ItemForm>,
+    pub(crate) skills: BTreeMap<u32, SkillForm>,
+    pub(crate) loot: BTreeMap<u32, Vec<LootRow>>,
+    /// 참조 찾기용 — 시작 소지품의 아이템, 플레이어 공격 스킬.
+    pub(crate) starting_kit: Vec<u32>,
+    pub(crate) player_attack: u32,
+}
+
+/// 두 파일에서 아이템·스킬·드롭 표를 읽는다. 표시 반쪽이 없는 번호는 빈 이름으로 만든다.
+pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, String> {
+    let r: RulesFile = ron::from_str(rules).map_err(|e| format!("{RULES_PATH}: {e}"))?;
+    let d: DisplayFile = ron::from_str(display).map_err(|e| format!("{DISPLAY_PATH}: {e}"))?;
+    let items = r
+        .items
+        .iter()
+        .map(|(id, it)| {
+            let kind = match *it {
+                ItemFile::Consumable { heal, max_stack } => {
+                    ItemKindForm::Consumable { heal, max_stack }
+                }
+                ItemFile::Equipment {
+                    slot,
+                    attack,
+                    defense,
+                } => ItemKindForm::Equipment {
+                    slot: slot.into(),
+                    attack,
+                    defense,
+                },
+            };
+            let look = d.items.get(id);
+            (
+                *id,
+                ItemForm {
+                    kind,
+                    name: look.map(|l| l.name.clone()).unwrap_or_default(),
+                    color: look.map_or((0.9, 0.9, 0.9), |l| l.color),
+                },
+            )
+        })
+        .collect();
+    let skills = r
+        .skills
+        .iter()
+        .map(|(id, s)| {
+            (
+                *id,
+                SkillForm {
+                    range: s.range,
+                    cooldown_ms: s.cooldown_ms,
+                    damage_mult: s.damage_mult,
+                    name: d.skills.get(id).map(|l| l.name.clone()).unwrap_or_default(),
+                },
+            )
+        })
+        .collect();
+    let loot = r
+        .loot
+        .iter()
+        .map(|(id, rows)| {
+            (
+                *id,
+                rows.iter()
+                    .map(|l| LootRow {
+                        item: l.item,
+                        count: l.count,
+                        chance_per_mille: l.chance_per_mille,
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    Ok(TableForms {
+        items,
+        skills,
+        loot,
+        starting_kit: r.starting_kit.iter().map(|s| s.item).collect(),
+        player_attack: r.player_attack,
+    })
+}
+
+/// 규칙·표시 두 파일을 쓴다 — **둘 다 임시 파일에 먼저** 쓴 뒤 이름을 바꾼다 (한쪽만 바뀐 채
+/// 멈추는 창을 좁힌다). 부르는 쪽이 `GameData::parse` 로 검증을 마친 텍스트를 넘긴다.
+pub(crate) fn write_tables(root: &Path, rules: &str, display: &str) -> Result<(), String> {
+    let rules_path = root.join(RULES_PATH);
+    let display_path = root.join(DISPLAY_PATH);
+    let tmp_rules = rules_path.with_extension("ron.tmp");
+    let tmp_display = display_path.with_extension("ron.tmp");
+    let io = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
+    std::fs::write(&tmp_rules, rules).map_err(|e| io(&tmp_rules, e))?;
+    if let Err(e) = std::fs::write(&tmp_display, display) {
+        let _ = std::fs::remove_file(&tmp_rules);
+        return Err(io(&tmp_display, e));
+    }
+    std::fs::rename(&tmp_rules, &rules_path).map_err(|e| io(&rules_path, e))?;
+    std::fs::rename(&tmp_display, &display_path).map_err(|e| io(&display_path, e))
 }
 
 /// 규칙·표시 파일의 지금 텍스트 — 디스크가 있으면 그것, 없으면 내장본 (읽기 규칙과 같다).

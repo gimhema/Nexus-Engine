@@ -30,7 +30,9 @@ use std::path::{Path, PathBuf};
 use nexus_assets::Image;
 use nexus_render_wgpu::egui;
 
-use crate::game_data::{ActorForm, actor_forms};
+use crate::asset_ops::{AssetRef, FileOp, OpKind, Plan, supports};
+use crate::game_data::{ActorForm, TableForms, actor_forms, table_forms};
+use crate::table_editor::Tab;
 
 /// 리소스 종류 — 왼쪽 목록의 순서이기도 하다.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -39,6 +41,10 @@ pub(crate) enum AssetKind {
     Zone,
     Screen,
     Actor,
+    /// 아이템·스킬·드롭 표 — 액터처럼 표 안의 항목 (P10).
+    Item,
+    Skill,
+    Loot,
     Script,
     Sheet,
     Image,
@@ -46,11 +52,14 @@ pub(crate) enum AssetKind {
 }
 
 impl AssetKind {
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 11] = [
         Self::Level,
         Self::Zone,
         Self::Screen,
         Self::Actor,
+        Self::Item,
+        Self::Skill,
+        Self::Loot,
         Self::Script,
         Self::Sheet,
         Self::Image,
@@ -63,6 +72,9 @@ impl AssetKind {
             Self::Zone => "맵",
             Self::Screen => "UI 화면",
             Self::Actor => "액터",
+            Self::Item => "아이템",
+            Self::Skill => "스킬",
+            Self::Loot => "드롭 표",
             Self::Script => "스크립트",
             Self::Sheet => "스프라이트 시트",
             Self::Image => "그림",
@@ -77,6 +89,9 @@ impl AssetKind {
             Self::Zone => egui::Color32::from_rgb(110, 200, 110),
             Self::Screen => egui::Color32::from_rgb(170, 130, 230),
             Self::Actor => egui::Color32::from_rgb(235, 140, 80),
+            Self::Item => egui::Color32::from_rgb(210, 170, 110),
+            Self::Skill => egui::Color32::from_rgb(230, 100, 90),
+            Self::Loot => egui::Color32::from_rgb(140, 190, 120),
             Self::Script => egui::Color32::from_rgb(100, 160, 240),
             Self::Sheet => egui::Color32::from_rgb(230, 120, 170),
             Self::Image => egui::Color32::from_rgb(90, 200, 200),
@@ -101,6 +116,11 @@ impl Asset {
     /// 액터 항목이면 그 번호.
     pub(crate) fn actor_id(&self) -> Option<u32> {
         self.key.strip_prefix("actor:")?.parse().ok()
+    }
+
+    /// 표 항목(`item:501`·`skill:1`·`loot:1`)이면 그 번호.
+    pub(crate) fn entry_id(&self) -> Option<u32> {
+        self.key.split_once(':')?.1.parse().ok()
     }
 
     /// 파일 이름에서 확장자를 뗀 번호 — `levels/village.level.ron` → `village`.
@@ -133,6 +153,9 @@ pub(crate) enum ContentAction {
     ViewSheet(String),
     /// 액터 편집기.
     EditActor(u32),
+    /// 데이터 표 편집기 — 아이템·스킬·드롭 표 (P10).
+    EditTable(Tab, u32),
+    NewTable(Tab),
     /// 새 레벨 / 새 액터 — 해당 편집기에서 만든다.
     NewLevel,
     NewActor,
@@ -141,6 +164,8 @@ pub(crate) enum ContentAction {
     NewScript,
     /// 편집기가 없는 파일 — 알림만.
     Notice(String),
+    /// 파일 작업 — 확인 창에서 '실행' 을 눌렀다 (P9). 에디터가 다시 계획을 세워 실행한다.
+    FileOp(FileOp),
 }
 
 /// 브라우저 상태. 창이 닫혀 있어도 고른 항목·검색어는 남는다.
@@ -148,8 +173,8 @@ pub(crate) enum ContentAction {
 pub(crate) struct ContentBrowser {
     open: bool,
     assets: Vec<Asset>,
-    /// 액터 폼 — 상세와 참조 검색에 쓴다.
-    forms: BTreeMap<u32, ActorForm>,
+    /// 액터·데이터 표 폼 — 상세와 참조 검색에 쓴다.
+    forms: Forms,
     /// 목록을 읽다 난 오류 (규칙·표시 파일이 깨졌을 때 등).
     error: Option<String>,
     /// 왼쪽에서 고른 종류. `None` = 전체.
@@ -162,6 +187,38 @@ pub(crate) struct ContentBrowser {
     thumbs: Thumbnails,
     /// 처음 열 때 목록을 읽는다.
     loaded: bool,
+    /// 파일 작업 확인 창 (P9).
+    op_dialog: Option<OpDialog>,
+}
+
+/// 파일 작업 확인 창 — 새 이름을 받고, 할 일을 **미리 계산해** 보여 준다.
+#[derive(Clone, Debug)]
+struct OpDialog {
+    kind: OpKind,
+    asset: AssetRef,
+    target: String,
+    /// 마지막으로 계산한 `(새 이름, 계획)` — 이름이 바뀔 때만 다시 계산한다.
+    cached: Option<(String, Result<Plan, String>)>,
+}
+
+impl OpDialog {
+    fn op(&self) -> FileOp {
+        FileOp {
+            kind: self.kind,
+            asset: self.asset.clone(),
+            target: self.target.clone(),
+        }
+    }
+
+    /// 계획 — 새 이름이 바뀌었을 때만 다시 계산한다 (디스크를 읽으므로 매 프레임 하지 않는다).
+    fn plan(&mut self) -> &Result<Plan, String> {
+        let stale = self.cached.as_ref().is_none_or(|(t, _)| *t != self.target);
+        if stale {
+            let plan = crate::asset_ops::plan(Path::new("."), &self.op());
+            self.cached = Some((self.target.clone(), plan));
+        }
+        &self.cached.as_ref().expect("방금 채웠다").1
+    }
 }
 
 impl std::fmt::Debug for ContentBrowser {
@@ -172,6 +229,13 @@ impl std::fmt::Debug for ContentBrowser {
             .field("selected", &self.selected)
             .finish()
     }
+}
+
+/// 표에서 읽은 것 — 액터와 아이템·스킬·드롭 표.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Forms {
+    actors: BTreeMap<u32, ActorForm>,
+    tables: TableForms,
 }
 
 /// 고른 항목의 상세.
@@ -234,12 +298,134 @@ impl ContentBrowser {
         Some(open_action(asset))
     }
 
+    /// 파일 작업 확인 창을 연다 — 새 이름 칸에는 쓸 만한 기본값을 넣어 둔다.
+    fn begin(&mut self, kind: OpKind, asset: &Asset) {
+        let target = match (kind, asset.kind) {
+            (OpKind::Delete, _) => String::new(),
+            (OpKind::Duplicate, AssetKind::Actor) => {
+                // 이 번호 다음의 빈 번호.
+                let id = asset.actor_id().unwrap_or(100);
+                let free = (id + 1..)
+                    .find(|n| !self.forms.actors.contains_key(n))
+                    .unwrap_or(id + 1);
+                free.to_string()
+            }
+            (OpKind::Duplicate, _) => format!("{}_copy", file_stem(asset)),
+            (OpKind::Rename, _) => file_stem(asset),
+        };
+        self.op_dialog = Some(OpDialog {
+            kind,
+            asset: AssetRef::from(asset),
+            target,
+            cached: None,
+        });
+    }
+
+    /// 고른 항목에 파일 작업을 건다 — 자동 검증(`NEXUS_SCRIPT`)용. 새 이름을 주면 그것으로.
+    pub(crate) fn begin_selected(&mut self, kind: OpKind, target: Option<&str>) -> bool {
+        let Some(asset) = self
+            .selected
+            .as_ref()
+            .and_then(|k| self.assets.iter().find(|a| &a.key == k))
+            .cloned()
+        else {
+            return false;
+        };
+        self.begin(kind, &asset);
+        if let (Some(t), Some(d)) = (target, self.op_dialog.as_mut()) {
+            d.target = t.to_owned();
+        }
+        true
+    }
+
+    /// 확인 창의 "실행" — 자동 검증용. 계획이 서지 않으면 이유를 돌려준다.
+    pub(crate) fn confirm_op(&mut self) -> Result<ContentAction, String> {
+        let dialog = self
+            .op_dialog
+            .as_mut()
+            .ok_or_else(|| String::from("열린 파일 작업이 없습니다"))?;
+        dialog.plan().clone()?;
+        let op = dialog.op();
+        self.op_dialog = None;
+        Ok(ContentAction::FileOp(op))
+    }
+
+    /// 파일 작업이 끝났다 — 목록을 다시 읽는다. 옮겨진 항목이면 새 자리를 고른다.
+    pub(crate) fn after_op(&mut self, op: &FileOp, moved_to: Option<&str>) {
+        if op.kind == OpKind::Delete && self.selected.as_deref() == Some(op.asset.key.as_str()) {
+            self.selected = None;
+        }
+        if let Some(to) = moved_to {
+            self.selected = Some(to.to_owned());
+        }
+        self.refresh();
+    }
+
+    /// 확인 창. "실행" 을 누르면 할 일을 돌려준다.
+    fn op_window(&mut self, ui: &mut egui::Ui) -> Option<ContentAction> {
+        let dialog = self.op_dialog.as_mut()?;
+        let mut open = true;
+        let mut run = false;
+        let mut cancel = false;
+        egui::Window::new(format!("{} — {}", dialog.kind.label(), dialog.asset.name))
+            .id(egui::Id::new("content_op"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(420.0)
+            .show(ui.ctx(), |ui| {
+                ui.weak(&dialog.asset.key);
+                if dialog.kind != OpKind::Delete {
+                    ui.horizontal(|ui| {
+                        ui.label(if dialog.asset.kind == AssetKind::Actor {
+                            "새 번호"
+                        } else {
+                            "새 이름"
+                        });
+                        ui.add(egui::TextEdit::singleline(&mut dialog.target).desired_width(200.0));
+                    });
+                }
+                ui.separator();
+                match dialog.plan() {
+                    Ok(plan) => {
+                        ui.label("할 일");
+                        for step in &plan.steps {
+                            ui.label(format!("  • {step}"));
+                        }
+                    }
+                    Err(e) => {
+                        ui.colored_label(egui::Color32::from_rgb(240, 110, 100), e);
+                    }
+                }
+                ui.add_space(4.0);
+                if dialog.kind == OpKind::Delete {
+                    ui.weak("지우지 않고 휴지통(trash/)으로 옮깁니다 — 되살리려면 원래 자리로 옮기면 됩니다.");
+                }
+                ui.horizontal(|ui| {
+                    let ok = dialog.cached.as_ref().is_some_and(|(_, p)| p.is_ok());
+                    if ui.add_enabled(ok, egui::Button::new("실행")).clicked() {
+                        run = true;
+                    }
+                    if ui.button("취소").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if run {
+            return self.confirm_op().ok();
+        }
+        if cancel || !open {
+            self.op_dialog = None;
+        }
+        None
+    }
+
     /// 하단 패널을 그린다. 두 번 누른 항목이 있으면 할 일을 돌려준다.
     pub(crate) fn show(&mut self, ui: &mut egui::Ui) -> Option<ContentAction> {
         if !self.open {
             return None;
         }
-        let mut action = None;
+        let mut action = self.op_window(ui);
         egui::Panel::bottom("content_browser")
             .resizable(true)
             .default_size(250.0)
@@ -287,6 +473,9 @@ impl ContentBrowser {
                 for (label, a) in [
                     ("레벨…", ContentAction::NewLevel),
                     ("액터…", ContentAction::NewActor),
+                    ("아이템…", ContentAction::NewTable(Tab::Items)),
+                    ("스킬…", ContentAction::NewTable(Tab::Skills)),
+                    ("드롭 표…", ContentAction::NewTable(Tab::Loot)),
                     ("UI 화면… (위젯 편집기)", ContentAction::NewScreen),
                     ("스크립트… (스크립트 편집기)", ContentAction::NewScript),
                 ] {
@@ -383,6 +572,21 @@ impl ContentBrowser {
                     if r.double_clicked() {
                         action = Some(open_action(asset));
                     }
+                    // 오른쪽 클릭 — 파일 작업 (P9).
+                    let _ = r.context_menu(|ui| {
+                        for kind in [OpKind::Duplicate, OpKind::Rename, OpKind::Delete] {
+                            if ui
+                                .add_enabled(
+                                    supports(asset.kind, kind),
+                                    egui::Button::new(format!("{}…", kind.label())),
+                                )
+                                .clicked()
+                            {
+                                self.begin(kind, asset);
+                                ui.close();
+                            }
+                        }
+                    });
                     r.on_hover_text(&asset.key);
                 }
             });
@@ -429,12 +633,41 @@ impl ContentBrowser {
                     ui.weak(format!("  {who}"));
                 }
                 ui.add_space(4.0);
-                if ui.button("열기").clicked() {
-                    action = Some(open_action(&asset));
-                }
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("열기").clicked() {
+                        action = Some(open_action(&asset));
+                    }
+                    for kind in [OpKind::Duplicate, OpKind::Rename, OpKind::Delete] {
+                        if ui
+                            .add_enabled(
+                                supports(asset.kind, kind),
+                                egui::Button::new(kind.label()),
+                            )
+                            .clicked()
+                        {
+                            self.begin(kind, &asset);
+                        }
+                    }
+                });
             });
         action
     }
+}
+
+/// 표 항목 → 데이터 표 편집기.
+fn table_action(asset: &Asset, tab: Tab) -> ContentAction {
+    asset.entry_id().map_or(ContentAction::NewTable(tab), |id| {
+        ContentAction::EditTable(tab, id)
+    })
+}
+
+/// 파일 이름에서 확장자를 뗀 것 — 새 이름 칸의 기본값. 스크립트는 `goblin`, 액터는 번호.
+fn file_stem(asset: &Asset) -> String {
+    if let Some(id) = asset.file_id() {
+        return id.to_owned();
+    }
+    let name = asset.key.rsplit('/').next().unwrap_or(&asset.key);
+    name.split('.').next().unwrap_or(name).to_owned()
 }
 
 /// 이미지 크기를 `max` 픽셀 안에 맞춘다 (비율 유지, 픽셀아트라 정수배 우선은 하지 않는다).
@@ -466,6 +699,9 @@ pub(crate) fn open_action(asset: &Asset) -> ContentAction {
         AssetKind::Actor => asset
             .actor_id()
             .map_or(ContentAction::NewActor, ContentAction::EditActor),
+        AssetKind::Item => table_action(asset, Tab::Items),
+        AssetKind::Skill => table_action(asset, Tab::Skills),
+        AssetKind::Loot => table_action(asset, Tab::Loot),
         AssetKind::Data => match asset.key.as_str() {
             // 표를 통째로 여는 편집기는 없다 — 그 표의 항목을 고치는 편집기로 간다.
             "data/rules.ron" | "data/display.ron" => ContentAction::Notice(String::from(
@@ -486,7 +722,7 @@ pub(crate) fn open_action(asset: &Asset) -> ContentAction {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// 리소스 목록과 액터 폼을 모은다. 액터 표를 못 읽으면 오류로 알리고 나머지는 그대로 보인다.
-fn collect(root: &Path) -> (Vec<Asset>, BTreeMap<u32, ActorForm>, Option<String>) {
+fn collect(root: &Path) -> (Vec<Asset>, Forms, Option<String>) {
     let mut out = Vec::new();
 
     for path in scan_files(root, "levels", ".level.ron") {
@@ -531,13 +767,18 @@ fn collect(root: &Path) -> (Vec<Asset>, BTreeMap<u32, ActorForm>, Option<String>
         read(root, crate::game_data::RULES_PATH),
         read(root, crate::game_data::DISPLAY_PATH),
     ) {
-        (Some(rules), Some(display)) => match actor_forms(&rules, &display) {
-            Ok(forms) => (forms, None),
-            Err(e) => (BTreeMap::new(), Some(format!("액터 표를 읽지 못함 — {e}"))),
-        },
-        _ => (BTreeMap::new(), None),
+        (Some(rules), Some(display)) => {
+            match (actor_forms(&rules, &display), table_forms(&rules, &display)) {
+                (Ok(actors), Ok(tables)) => (Forms { actors, tables }, None),
+                (Err(e), _) | (_, Err(e)) => (
+                    Forms::default(),
+                    Some(format!("데이터 표를 읽지 못함 — {e}")),
+                ),
+            }
+        }
+        _ => (Forms::default(), None),
     };
-    for (id, form) in &forms {
+    for (id, form) in &forms.actors {
         let name = if form.name.is_empty() {
             format!("(이름 없음 #{id})")
         } else {
@@ -548,6 +789,38 @@ fn collect(root: &Path) -> (Vec<Asset>, BTreeMap<u32, ActorForm>, Option<String>
             key: format!("actor:{id}"),
             name,
             note: format!("#{id}"),
+        });
+    }
+    // 아이템·스킬·드롭 표 — 같은 두 표의 다른 칸들.
+    let named = |name: &str, id: u32, what: &str| {
+        if name.is_empty() {
+            format!("({what} #{id})")
+        } else {
+            name.to_owned()
+        }
+    };
+    for (id, f) in &forms.tables.items {
+        out.push(Asset {
+            kind: AssetKind::Item,
+            key: format!("item:{id}"),
+            name: named(&f.name, *id, "아이템"),
+            note: format!("#{id}"),
+        });
+    }
+    for (id, f) in &forms.tables.skills {
+        out.push(Asset {
+            kind: AssetKind::Skill,
+            key: format!("skill:{id}"),
+            name: named(&f.name, *id, "스킬"),
+            note: format!("#{id}"),
+        });
+    }
+    for (id, rows) in &forms.tables.loot {
+        out.push(Asset {
+            kind: AssetKind::Loot,
+            key: format!("loot:{id}"),
+            name: format!("드롭 표 #{id}"),
+            note: format!("{}줄", rows.len()),
         });
     }
     (out, forms, error)
@@ -609,17 +882,17 @@ fn read(root: &Path, path: &str) -> Option<String> {
 // 상세와 참조
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn details(
-    root: &Path,
-    asset: &Asset,
-    assets: &[Asset],
-    forms: &BTreeMap<u32, ActorForm>,
-) -> Details {
+fn details(root: &Path, asset: &Asset, assets: &[Asset], forms: &Forms) -> Details {
     let mut rows: Vec<(String, String)> = Vec::new();
     let mut preview = None;
     let mut row = |k: &str, v: String| rows.push((k.to_owned(), v));
 
-    if asset.kind != AssetKind::Actor {
+    // 표 항목(액터·아이템·스킬·드롭 표)은 파일이 아니라 경로가 없다.
+    let virtual_entry = matches!(
+        asset.kind,
+        AssetKind::Actor | AssetKind::Item | AssetKind::Skill | AssetKind::Loot
+    );
+    if !virtual_entry {
         row("경로", asset.key.clone());
         if let Ok(meta) = std::fs::metadata(root.join(&asset.key)) {
             row("크기", size_text(meta.len()));
@@ -692,7 +965,7 @@ fn details(
         }
         AssetKind::Actor => {
             if let Some(id) = asset.actor_id()
-                && let Some(f) = forms.get(&id)
+                && let Some(f) = forms.actors.get(&id)
             {
                 row("번호", format!("#{id}"));
                 row(
@@ -712,6 +985,49 @@ fn details(
                     "스크립트",
                     f.script.clone().unwrap_or_else(|| String::from("—")),
                 );
+            }
+        }
+        AssetKind::Item => {
+            if let Some(f) = asset.entry_id().and_then(|id| forms.tables.items.get(&id)) {
+                use crate::game_data::ItemKindForm;
+                row("번호", format!("#{}", asset.entry_id().unwrap_or_default()));
+                row(
+                    "종류",
+                    match f.kind {
+                        ItemKindForm::Consumable { heal, max_stack } => {
+                            format!("소모품 · 회복 {heal} · 최대 {max_stack}개")
+                        }
+                        ItemKindForm::Equipment {
+                            slot,
+                            attack,
+                            defense,
+                        } => format!("장비({}) · 공격 {attack} · 방어 {defense}", slot.label()),
+                    },
+                );
+            }
+        }
+        AssetKind::Skill => {
+            if let Some(f) = asset.entry_id().and_then(|id| forms.tables.skills.get(&id)) {
+                row("번호", format!("#{}", asset.entry_id().unwrap_or_default()));
+                row(
+                    "사거리 · 쿨타임 · 배율",
+                    format!("{}m · {}ms · ×{}", f.range, f.cooldown_ms, f.damage_mult),
+                );
+            }
+        }
+        AssetKind::Loot => {
+            if let Some(lines) = asset.entry_id().and_then(|id| forms.tables.loot.get(&id)) {
+                for r in lines {
+                    let name = forms
+                        .tables
+                        .items
+                        .get(&r.item)
+                        .map_or_else(|| format!("#{}", r.item), |f| f.name.clone());
+                    row(
+                        &name,
+                        format!("{}개 · {:.1}%", r.count, r.chance_per_mille as f32 / 10.0),
+                    );
+                }
             }
         }
         AssetKind::Zone | AssetKind::Data => {}
@@ -747,12 +1063,7 @@ fn image_size(root: &Path, path: &str) -> Option<[u32; 2]> {
 }
 
 /// 이 리소스를 가리키는 곳 — 문자열 검색 (모듈 머리 주석의 한계 참고).
-fn references(
-    root: &Path,
-    asset: &Asset,
-    assets: &[Asset],
-    forms: &BTreeMap<u32, ActorForm>,
-) -> Vec<String> {
+fn references(root: &Path, asset: &Asset, assets: &[Asset], forms: &Forms) -> Vec<String> {
     // 어떤 종류의 파일에서 어떤 문자열을 찾을지.
     let mut needles: Vec<(AssetKind, String)> = Vec::new();
     let mut out: Vec<String> = Vec::new();
@@ -770,14 +1081,14 @@ fn references(
         }
         AssetKind::Script => {
             let rel = asset.key.strip_prefix("data/").unwrap_or(&asset.key);
-            for (id, f) in forms {
+            for (id, f) in &forms.actors {
                 if f.script.as_deref() == Some(rel) {
                     out.push(format!("액터 #{id} {}", f.name));
                 }
             }
         }
         AssetKind::Sheet => {
-            for (id, f) in forms {
+            for (id, f) in &forms.actors {
                 if f.sheet == asset.key {
                     out.push(format!("액터 #{id} {}", f.name));
                 }
@@ -797,6 +1108,36 @@ fn references(
         AssetKind::Actor => {
             let id = asset.actor_id().unwrap_or_default();
             needles.push((AssetKind::Zone, format!("actor: {id},")));
+        }
+        AssetKind::Item => {
+            let id = asset.entry_id().unwrap_or_default();
+            for (loot, rows) in &forms.tables.loot {
+                if rows.iter().any(|r| r.item == id) {
+                    out.push(format!("드롭 표 #{loot}"));
+                }
+            }
+            if forms.tables.starting_kit.contains(&id) {
+                out.push(String::from("시작 소지품 (rules.ron)"));
+            }
+        }
+        AssetKind::Skill => {
+            let id = asset.entry_id().unwrap_or_default();
+            for (a, f) in &forms.actors {
+                if f.basic_attack == Some(id) {
+                    out.push(format!("액터 #{a} {}", f.name));
+                }
+            }
+            if forms.tables.player_attack == id {
+                out.push(String::from("플레이어 공격 (rules.ron)"));
+            }
+        }
+        AssetKind::Loot => {
+            let id = asset.entry_id().unwrap_or_default();
+            for (a, f) in &forms.actors {
+                if f.loot == Some(id) {
+                    out.push(format!("액터 #{a} {}", f.name));
+                }
+            }
         }
         AssetKind::Data => {}
     }
@@ -887,7 +1228,7 @@ mod tests {
                 .any(|a| a.kind == AssetKind::Data && a.key.contains("scripts/")),
             "스크립트는 데이터가 아니다"
         );
-        assert_eq!(forms[&102].name, "고블린");
+        assert_eq!(forms.actors[&102].name, "고블린");
         // 경로는 `/` 구분이고 폴더부터 시작한다 — 두 OS 에서 같은 모양.
         for a in assets.iter().filter(|a| a.kind != AssetKind::Actor) {
             assert!(!a.key.contains('\\'), "{}", a.key);

@@ -84,6 +84,22 @@ impl ScriptEditor {
         self.path.is_some() && self.text != self.saved
     }
 
+    /// 이 파일(`data/` 기준)을 저장하지 않은 채 고치고 있는가 — 파일 작업이 막는다 (P9).
+    pub(crate) fn blocks(&self, path: &str) -> bool {
+        self.path.as_deref() == Some(path) && self.is_dirty()
+    }
+
+    /// 파일이 옮겨지거나 지워졌다 — 열어 둔 것이 그 파일이면 닫는다 (옛 경로로 저장하지 않게).
+    pub(crate) fn forget(&mut self, path: &str) {
+        if self.path.as_deref() == Some(path) {
+            self.path = None;
+            self.text.clear();
+            self.saved.clear();
+            self.result = None;
+        }
+        self.files = list(&Path::new(DATA_DIR).join(SCRIPT_DIR));
+    }
+
     /// 지금 내용을 컴파일한다 (저장하지 않는다).
     pub(crate) fn compile(&mut self) {
         self.result = Some(nexus_script::check(&self.text));

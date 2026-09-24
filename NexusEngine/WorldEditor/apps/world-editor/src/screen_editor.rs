@@ -171,6 +171,22 @@ impl ScreenEditor {
         found
     }
 
+    /// 이 화면을 저장하지 않은 채 고치고 있는가 — 파일 작업이 막는다 (P9).
+    pub(crate) fn blocks(&self, id: &str) -> bool {
+        self.current == id && self.is_dirty()
+    }
+
+    /// 화면이 옮겨지거나 지워졌다 — 열어 둔 것이 그 화면이면 비운다 (옛 번호로 저장하지 않게).
+    pub(crate) fn forget(&mut self, id: &str) {
+        if self.current == id {
+            self.current.clear();
+            self.screen = None;
+            self.saved = None;
+            self.selected = None;
+            self.history.clear();
+        }
+    }
+
     /// 편집할 화면을 번호로 바꾼다 — 스크립트용.
     pub(crate) fn switch(&mut self, screens: &Screens, id: &str) {
         self.load(screens, id);

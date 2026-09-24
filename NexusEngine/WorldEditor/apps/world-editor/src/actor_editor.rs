@@ -94,6 +94,21 @@ impl ActorEditor {
         std::mem::take(&mut self.saved_now)
     }
 
+    /// 이 액터를 저장하지 않은 채 고치고 있는가 — 파일 작업이 막는다 (P9).
+    pub(crate) fn blocks(&self, id: u32) -> bool {
+        self.current == Some(id) && self.is_dirty()
+    }
+
+    /// 액터가 지워졌다 — 열어 둔 것이 그 액터면 닫는다.
+    pub(crate) fn forget(&mut self, id: u32) {
+        if self.current == Some(id) {
+            self.current = None;
+            self.edit = None;
+            self.is_new = false;
+        }
+        let _ = self.reload();
+    }
+
     fn is_dirty(&self) -> bool {
         match (self.current, &self.edit) {
             (Some(id), Some(edit)) => self.is_new || self.saved.get(&id) != Some(edit),
@@ -442,17 +457,7 @@ fn save_actor(root: &Path, id: u32, form: &ActorForm) -> Result<(), String> {
     let display =
         std::fs::read_to_string(&display_path).map_err(|e| format!("{DISPLAY_PATH}: {e}"))?;
     let (rules, display) = patch_actor(&rules, &display, id, form)?;
-    // 둘 다 임시 파일에 먼저 쓰고 이름을 바꾼다 — 한쪽만 바뀐 채 멈추는 창을 좁힌다.
-    let tmp_rules = rules_path.with_extension("ron.tmp");
-    let tmp_display = display_path.with_extension("ron.tmp");
-    let io = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
-    std::fs::write(&tmp_rules, &rules).map_err(|e| io(&tmp_rules, e))?;
-    if let Err(e) = std::fs::write(&tmp_display, &display) {
-        let _ = std::fs::remove_file(&tmp_rules);
-        return Err(io(&tmp_display, e));
-    }
-    std::fs::rename(&tmp_rules, &rules_path).map_err(|e| io(&rules_path, e))?;
-    std::fs::rename(&tmp_display, &display_path).map_err(|e| io(&display_path, e))
+    crate::game_data::write_tables(root, &rules, &display)
 }
 
 /// 두 텍스트에 액터 항목을 끼우고 **게임이 읽는 것과 같은 검사**를 통과하는지 본다.

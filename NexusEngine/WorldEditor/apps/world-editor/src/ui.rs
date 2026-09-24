@@ -34,6 +34,7 @@ use crate::screen::Screens;
 use crate::screen_editor::ScreenEditor;
 use crate::script_editor::ScriptEditor;
 use crate::sheet_viewer::SheetViewer;
+use crate::table_editor::TableEditor;
 use crate::terrain::ArtKind;
 use crate::zone_file;
 
@@ -219,6 +220,8 @@ pub(crate) struct EditorUi {
     actors: ActorEditor,
     levels: LevelEditor,
     sheets: SheetViewer,
+    /// 데이터 표 편집기 — 아이템·스킬·드롭 표 (P10).
+    tables: TableEditor,
 }
 
 /// 존 열기 / 다른 이름으로 저장 창.
@@ -286,6 +289,7 @@ impl EditorUi {
             actors: ActorEditor::default(),
             levels: LevelEditor::default(),
             sheets: SheetViewer::default(),
+            tables: TableEditor::default(),
         }
     }
 
@@ -309,6 +313,52 @@ impl EditorUi {
         &mut self.content
     }
 
+    /// 이 리소스를 **저장하지 않은 채** 고치고 있는 UI 편집기가 있으면 그 이유 — 파일 작업을 막는다 (P9).
+    /// 옮기거나 지운 뒤에 옛 내용을 옛 경로로 저장하면 되살아나 버리기 때문이다.
+    pub(crate) fn file_op_blocked(&self, asset: &crate::asset_ops::AssetRef) -> Option<String> {
+        use crate::content::AssetKind;
+        let busy = match asset.kind {
+            AssetKind::Script => self
+                .scripts
+                .blocks(asset.key.strip_prefix("data/").unwrap_or(&asset.key)),
+            AssetKind::Actor => asset
+                .key
+                .strip_prefix("actor:")
+                .and_then(|n| n.parse().ok())
+                .is_some_and(|id| self.actors.blocks(id)),
+            AssetKind::Level => self.levels.blocks(level_id(&asset.key)),
+            _ => false,
+        };
+        busy.then(|| {
+            format!(
+                "'{}' 를 편집기에서 고치는 중입니다 — 먼저 저장하거나 되돌리세요",
+                asset.name
+            )
+        })
+    }
+
+    /// 파일 작업이 끝났다 — 옛 것을 열어 둔 편집기를 닫고 브라우저를 다시 읽는다.
+    pub(crate) fn after_file_op(&mut self, op: &crate::asset_ops::FileOp, moved_to: Option<&str>) {
+        use crate::asset_ops::OpKind;
+        use crate::content::AssetKind;
+        if op.kind != OpKind::Duplicate {
+            let key = &op.asset.key;
+            match op.asset.kind {
+                AssetKind::Script => self
+                    .scripts
+                    .forget(key.strip_prefix("data/").unwrap_or(key)),
+                AssetKind::Actor => {
+                    if let Some(id) = key.strip_prefix("actor:").and_then(|n| n.parse().ok()) {
+                        self.actors.forget(id);
+                    }
+                }
+                AssetKind::Level => self.levels.forget(level_id(key)),
+                _ => {}
+            }
+        }
+        self.content.after_op(op, moved_to);
+    }
+
     /// 콘텐츠 브라우저의 "두 번 누르기" — 마우스와 같은 경로로 처리한다 (자동 검증용).
     /// UI 창이 맡는 것은 여기서 열고, 에디터가 맡는 것은 `actions` 에 담아 돌려준다.
     pub(crate) fn open_content(&mut self, action: ContentAction, dirty: bool) -> UiActions {
@@ -319,6 +369,7 @@ impl EditorUi {
             actors: &mut self.actors,
             levels: &mut self.levels,
             sheets: &mut self.sheets,
+            tables: &mut self.tables,
         };
         dispatch(action, &mut editors, dirty, &mut actions);
         actions
@@ -366,6 +417,7 @@ impl EditorUi {
         let actors = &mut self.actors;
         let levels = &mut self.levels;
         let sheets = &mut self.sheets;
+        let tables = &mut self.tables;
 
         let output = self.ctx.run_ui(raw, |ui| {
             menu_bar(ui, model, &mut actions);
@@ -392,6 +444,7 @@ impl EditorUi {
             actors.show(ui);
             levels.show(ui);
             sheets.show(ui);
+            tables.show(ui);
             if actions.toggle_content {
                 content.toggle();
             }
@@ -406,6 +459,7 @@ impl EditorUi {
                         actors,
                         levels,
                         sheets,
+                        tables,
                     };
                     dispatch(action, &mut editors, model.dirty, &mut actions);
                 }
@@ -422,6 +476,10 @@ impl EditorUi {
             }
             // 편집기가 저장했으면 에디터와 브라우저가 새 내용을 다시 읽는다.
             if actors.take_saved() {
+                actions.reload_data = true;
+                content.refresh();
+            }
+            if tables.take_saved() {
                 actions.reload_data = true;
                 content.refresh();
             }
@@ -451,6 +509,12 @@ impl EditorUi {
 // 콘텐츠 브라우저 → 편집기 (P8)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// `levels/village.level.ron` → `village`.
+fn level_id(key: &str) -> &str {
+    let name = key.rsplit('/').next().unwrap_or(key);
+    name.strip_suffix(".level.ron").unwrap_or(name)
+}
+
 /// UI 가 가진 편집기 창들 — 브라우저가 연 리소스를 여기로 보낸다.
 struct Editors<'a> {
     palette: &'a mut Palette,
@@ -458,6 +522,7 @@ struct Editors<'a> {
     actors: &'a mut ActorEditor,
     levels: &'a mut LevelEditor,
     sheets: &'a mut SheetViewer,
+    tables: &'a mut TableEditor,
 }
 
 /// 브라우저가 연 리소스를 맞는 편집기로 보낸다.
@@ -483,8 +548,12 @@ fn dispatch(action: ContentAction, e: &mut Editors<'_>, dirty: bool, actions: &m
         ContentAction::NewActor => e.actors.open_new(),
         ContentAction::EditLevel(id) => e.levels.open_level(&id),
         ContentAction::NewLevel => e.levels.open_new(),
+        ContentAction::EditTable(tab, id) => e.tables.open_entry(tab, id),
+        ContentAction::NewTable(tab) => e.tables.open_new(tab),
         ContentAction::Notice(text) => actions.notice = Some(text),
-        other @ (ContentAction::EditScreen(_) | ContentAction::NewScreen) => {
+        other @ (ContentAction::EditScreen(_)
+        | ContentAction::NewScreen
+        | ContentAction::FileOp(_)) => {
             actions.content = Some(other);
         }
     }

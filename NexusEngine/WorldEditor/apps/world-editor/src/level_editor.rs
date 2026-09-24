@@ -92,6 +92,21 @@ impl LevelEditor {
         self.edit.is_some() && self.edit != self.saved
     }
 
+    /// 이 레벨을 저장하지 않은 채 고치고 있는가 — 파일 작업이 막는다 (P9).
+    pub(crate) fn blocks(&self, id: &str) -> bool {
+        self.current == id && self.is_dirty()
+    }
+
+    /// 레벨이 옮겨지거나 지워졌다 — 열어 둔 것이 그 레벨이면 닫는다.
+    pub(crate) fn forget(&mut self, id: &str) {
+        if self.current == id {
+            self.current.clear();
+            self.edit = None;
+            self.saved = None;
+        }
+        self.reload_lists();
+    }
+
     fn reload_lists(&mut self) {
         let root = Path::new(".");
         self.levels = crate::content::scan_files(root, "levels", ".level.ron")

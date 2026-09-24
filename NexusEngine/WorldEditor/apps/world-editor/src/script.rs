@@ -34,6 +34,8 @@
 //! esc                         일시정지 화면 열고 닫기 (Esc 와 같다)
 //! content | contentpick 키    콘텐츠 브라우저 열고 닫기 / 항목 고르기 (P8, 키 = 경로 또는 actor:번호)
 //! contentopen                 고른 항목 열기 (두 번 누르기와 같다)
+//! contentop delete|duplicate|rename [새이름]  고른 항목에 파일 작업 확인 창 (P9)
+//! contentconfirm              확인 창의 "실행"
 //! ```
 //!
 //! 예: `NEXUS_SELECT="상인 NPC" NEXUS_SCRIPT="wait; press rotate; move -8 20 ctrl"`
@@ -129,6 +131,10 @@ pub(crate) enum Step {
     ContentPick(String),
     /// 고른 항목 열기 (두 번 누르기).
     ContentOpen,
+    /// 고른 항목에 파일 작업 확인 창 — `(작업, 새 이름)` (P9).
+    ContentOp(crate::asset_ops::OpKind, Option<String>),
+    /// 확인 창의 "실행".
+    ContentConfirm,
     /// 화면 파일 저장 (ui/<번호>.ui.ron).
     UiSave,
     /// 붓 모양과 반지름.
@@ -223,6 +229,20 @@ fn parse_step(text: &str) -> Result<Step, String> {
         "esc" => return Ok(Step::Escape),
         "content" => return Ok(Step::ContentToggle),
         "contentopen" => return Ok(Step::ContentOpen),
+        "contentconfirm" => return Ok(Step::ContentConfirm),
+        "contentop" => {
+            use crate::asset_ops::OpKind;
+            let kind = match words.get(1).copied() {
+                Some("delete") => OpKind::Delete,
+                Some("duplicate") => OpKind::Duplicate,
+                Some("rename") => OpKind::Rename,
+                _ => return Err(format!("'{text}': contentop 뒤에 delete|duplicate|rename")),
+            };
+            return Ok(Step::ContentOp(
+                kind,
+                words.get(2).map(|w| (*w).to_string()),
+            ));
+        }
         "contentpick" => {
             let key = words
                 .get(1)

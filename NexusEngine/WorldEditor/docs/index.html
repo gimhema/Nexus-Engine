@@ -277,7 +277,7 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
   <tr><td>한 번 누르기</td><td>오른쪽에 <strong>상세</strong> — 경로·크기, 종류별 요약, 그리고 <strong>쓰는 곳</strong>(이 리소스를 가리키는 파일)</td></tr>
   <tr><td>두 번 누르기</td><td>그 종류의 <strong>편집기</strong>가 열립니다 (아래 표)</td></tr>
   <tr><td>검색</td><td>이름이나 경로의 일부로 걸러 봅니다</td></tr>
-  <tr><td>새로 만들기</td><td>레벨 · 액터 · UI 화면 · 스크립트</td></tr>
+  <tr><td>새로 만들기</td><td>레벨 · 액터 · 아이템 · 스킬 · 드롭 표 · UI 화면 · 스크립트</td></tr>
 </table>
 <table>
   <tr><th style="width:26%">종류</th><th>두 번 누르면</th></tr>
@@ -285,13 +285,18 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
   <tr><td>레벨</td><td><strong>레벨 편집기</strong> — 존(없으면 UI 레벨)·HUD·들어갈 때·일시정지 화면 고르기, <em>시작 레벨로 지정</em>, <em>이 레벨 플레이</em></td></tr>
   <tr><td>UI 화면</td><td>위젯 편집기 (그 화면으로 바꿔서)</td></tr>
   <tr><td>액터</td><td><strong>액터 편집기</strong> — 이름·시트·색과 수치(HP·공격·AI·스킬·드롭·스크립트·성장)를 한 폼에서</td></tr>
+  <tr><td>아이템 · 스킬 · 드롭 표</td><td><strong>데이터 표 편집기</strong> — 탭 셋. 아이템(소모품·장비, 이름·색) · 스킬(사거리·쿨타임·배율·이름) · 드롭 표(아이템·개수·확률 ‰)</td></tr>
   <tr><td>스크립트</td><td>스크립트 편집기</td></tr>
   <tr><td>스프라이트 시트</td><td><strong>시트 뷰어</strong> — 칸 격자와 클립 재생 미리보기 (보기 전용)</td></tr>
   <tr><td>그림</td><td>지형 팔레트</td></tr>
 </table>
 <div class="box">
   <p>
-    <strong>액터는 파일이 아닙니다.</strong> 수치는 <code>data/rules.ron</code>, 이름·그림은
+    <strong>액터·아이템·스킬·드롭 표는 파일이 아닙니다.</strong> 모두 두 표 안의 항목이고,
+    편집기는 저장할 때 그 항목만 고쳐 씁니다. 아래는 액터의 예입니다.
+  </p>
+  <p>
+        <strong>액터는 파일이 아닙니다.</strong> 수치는 <code>data/rules.ron</code>, 이름·그림은
     <code>data/display.ron</code> 표 안에 있고, 브라우저는 그 표의 항목을 하나씩 보여 줍니다.
     액터 편집기는 저장할 때 <strong>그 액터의 항목만</strong> 두 파일에 나눠 씁니다 —
     다른 항목의 주석은 그대로 남지만, 고친 항목 <em>안</em>의 주석은 사라집니다.
@@ -299,7 +304,25 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
   </p>
   <p>
     "쓰는 곳"은 파일 안의 글자를 찾아서 알아냅니다. 경로를 다른 모양으로 적은 곳은 놓칠 수 있습니다.
-    지우기·복제·이름 바꾸기는 아직 없습니다.
+  </p>
+</div>
+
+<h4>복제 · 이름 바꾸기 · 삭제</h4>
+<p>
+  항목을 <strong>오른쪽 클릭</strong>하거나 상세 칸의 버튼을 누르면 확인 창이 뜹니다. 확인 창은
+  <strong>실행하기 전에 할 일을 먼저 보여 줍니다</strong> — 옮길 파일, 고쳐 쓸 파일, 안 되는 이유.
+</p>
+<table>
+  <tr><th style="width:18%">작업</th><th>하는 일</th></tr>
+  <tr><td>복제</td><td>새 이름으로 복사합니다. 액터는 다음 빈 번호로, 이름에 "복사본" 이 붙습니다</td></tr>
+  <tr><td>이름 바꾸기</td><td>파일을 옮기고 <strong>그것을 가리키는 곳을 전부 고쳐 씁니다</strong> — 맵을 바꾸면 레벨의 존 경로가, 레벨을 바꾸면 메인 메뉴 버튼과 시작 레벨이, 스크립트를 바꾸면 액터의 스크립트 칸이 따라 바뀝니다</td></tr>
+  <tr><td>삭제</td><td><strong>지우지 않고 휴지통(<code>trash/</code>)으로 옮깁니다</strong> — 원래 경로 그대로 들어가니 되살리려면 제자리로 옮기면 됩니다. 다른 곳이 쓰고 있으면 지우지 않고 쓰는 곳을 알려 줍니다</td></tr>
+</table>
+<div class="box warn">
+  <p>
+    <strong>기본으로 들어 있는 리소스</strong>(hud·main_menu 화면, main·village 레벨, goblin 스크립트 등)는
+    지우거나 이름을 바꿀 수 없습니다 — 파일을 지워도 엔진에 들어 있는 기본본으로 되살아나기 때문입니다.
+    복제해서 쓰세요. 편집기에서 저장하지 않은 채 고치고 있는 리소스, 지금 열려 있는 맵도 지울 수 없습니다.
   </p>
 </div>
 
@@ -1160,6 +1183,8 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
   <tr><td><code>content</code></td><td>콘텐츠 브라우저 열고 닫기</td></tr>
   <tr><td><code>contentpick 키</code></td><td>항목 고르기 — 경로 또는 <code>actor:번호</code> (예: <code>contentpick actor:102</code>)</td></tr>
   <tr><td><code>contentopen</code></td><td>고른 항목 열기 (두 번 누르기와 같다)</td></tr>
+  <tr><td><code>contentop delete|duplicate|rename [새이름]</code></td><td>고른 항목에 파일 작업 확인 창 띄우기</td></tr>
+  <tr><td><code>contentconfirm</code></td><td>확인 창의 "실행"</td></tr>
   <tr><td><code>play</code></td><td>플레이 시작/정지 (<kbd>F5</kbd>와 같음). 플레이 중 <code>press</code>는 클릭 명령이 됩니다</td></tr>
   <tr><td><code>save 경로</code> / <code>open 경로</code></td><td>존 저장 / 열기 (경로에 공백 불가)</td></tr>
   <tr><td><code>dialog open|saveas</code></td><td>열기 / 다른 이름으로 저장 창 띄우기</td></tr>
@@ -1278,7 +1303,7 @@ NEXUS_SCREENSHOT=out.png NEXUS_SCREENSHOT_FRAME=40 cargo run -p world-editor</co
   <tr><td>캐릭터 아트</td><td>플레이스홀더(무채색 시트 + 색 입히기). 공격·피격·사망 애니메이션 클립이 없습니다</td></tr>
   <tr><td>게임 화면(UI)</td><td>체력·경험치 막대와 소지품 창까지입니다. <strong>스킬 단축키 칸이 없고</strong>, 소지품 조작(사용·장착)은 아직 에디터 패널 쪽입니다</td></tr>
   <tr><td>위젯 편집기</td><td>위젯을 끌어 옮기고 크기·계층·순서를 고칠 수 있습니다(6.8). <strong>자동 정렬</strong>(세로·가로 배치)과 폰트·창 그림 교체는 아직 파일을 직접 고쳐야 합니다</td></tr>
-  <tr><td>콘텐츠 브라우저</td><td>지우기·복제·이름 바꾸기가 없습니다. 아이템·스킬 편집기, 시트 정의 편집도 아직 없습니다(시트 뷰어는 보기 전용)</td></tr>
+  <tr><td>콘텐츠 브라우저</td><td>휴지통을 비우거나 되살리는 화면이 없습니다(<code>trash/</code> 에서 직접). 그림·시트 파일은 복제·삭제하지 않습니다. 시트 정의 편집도 아직 없습니다(시트 뷰어는 보기 전용)</td></tr>
   <tr><td>사운드</td><td>없음</td></tr>
   <tr><td>스킬</td><td>기본 공격 하나만. 스킬 여러 개·단축키·범위 공격·MP가 없습니다</td></tr>
   <tr><td>저장</td><td>저장 칸은 <strong>하나</strong>입니다. 이어 할지 묻지 않고 늘 이어 합니다. 죽은 채로 저장하면 HP 1 로 이어집니다</td></tr>
