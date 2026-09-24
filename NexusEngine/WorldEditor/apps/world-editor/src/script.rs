@@ -32,6 +32,8 @@
 //! uipress x y | uirelease x y 화면 좌표(뷰포트 픽셀)로 누르기 / 떼기 — 버튼 확인용
 //! level 번호 | startlevel     레벨 열기 / 시작 레벨 열기 (P7)
 //! esc                         일시정지 화면 열고 닫기 (Esc 와 같다)
+//! content | contentpick 키    콘텐츠 브라우저 열고 닫기 / 항목 고르기 (P8, 키 = 경로 또는 actor:번호)
+//! contentopen                 고른 항목 열기 (두 번 누르기와 같다)
 //! ```
 //!
 //! 예: `NEXUS_SELECT="상인 NPC" NEXUS_SCRIPT="wait; press rotate; move -8 20 ctrl"`
@@ -121,6 +123,12 @@ pub(crate) enum Step {
     StartLevel,
     /// Esc — 일시정지 화면 열고 닫기 (겹친 창이 있으면 그것부터 닫는다).
     Escape,
+    /// 콘텐츠 브라우저 열고 닫기 (P8).
+    ContentToggle,
+    /// 콘텐츠 브라우저에서 항목 고르기 — 경로 또는 `actor:번호`.
+    ContentPick(String),
+    /// 고른 항목 열기 (두 번 누르기).
+    ContentOpen,
     /// 화면 파일 저장 (ui/<번호>.ui.ron).
     UiSave,
     /// 붓 모양과 반지름.
@@ -213,6 +221,14 @@ fn parse_step(text: &str) -> Result<Step, String> {
         "uiedit" => return Ok(Step::UiEdit),
         "startlevel" => return Ok(Step::StartLevel),
         "esc" => return Ok(Step::Escape),
+        "content" => return Ok(Step::ContentToggle),
+        "contentopen" => return Ok(Step::ContentOpen),
+        "contentpick" => {
+            let key = words
+                .get(1)
+                .ok_or_else(|| format!("'{text}': contentpick 뒤에 경로 또는 actor:번호"))?;
+            return Ok(Step::ContentPick((*key).to_string()));
+        }
         "level" => {
             let id = words
                 .get(1)

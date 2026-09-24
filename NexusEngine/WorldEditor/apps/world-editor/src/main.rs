@@ -14,12 +14,16 @@
 //! 화면에 보이는 배치는 NexusEngine `Server.cpp` 의 기본 존 설정을 옮겨온 것이다.
 //! 존 파일(`zones/*.zone.ron`)로 저장·로드한다 (S7-2). 서버 `ZoneConfig` 내보내기는 단계 2.
 
+mod actor_editor;
+mod content;
 mod edit;
 mod game_data;
 mod grid;
 mod level;
+mod level_editor;
 mod palette;
 mod play;
+mod ron_patch;
 mod save_file;
 mod scene;
 mod screen;
@@ -27,6 +31,7 @@ mod screen_editor;
 mod screenshot;
 mod script;
 mod script_editor;
+mod sheet_viewer;
 mod sprites;
 mod terrain;
 mod tiles;
@@ -683,6 +688,47 @@ impl Editor {
         }
     }
 
+    /// 콘텐츠 브라우저·편집기가 에디터에 맡긴 일 (P8).
+    fn apply_content_actions(&mut self, actions: &UiActions) {
+        match &actions.content {
+            Some(content::ContentAction::EditScreen(id)) => {
+                if !self.screen_editor.is_open() {
+                    self.screen_editor.toggle(&self.screens);
+                }
+                self.screen_editor.switch(&self.screens, id);
+                if let Some((error, message)) = self.screen_editor.take_status() {
+                    self.notify(message, error);
+                }
+            }
+            Some(content::ContentAction::NewScreen) => {
+                if !self.screen_editor.is_open() {
+                    self.screen_editor.toggle(&self.screens);
+                }
+                self.notify(
+                    String::from("위젯 편집기의 '+ 새 화면' 에서 번호를 적어 만드세요"),
+                    false,
+                );
+            }
+            _ => {}
+        }
+        if actions.reload_data {
+            match GameData::load() {
+                Ok(data) => self.data = Some(data),
+                Err(e) => self.notify(format!("게임 데이터를 다시 읽지 못했습니다 — {e}"), true),
+            }
+        }
+        if actions.reload_levels {
+            let (levels, warnings) = Levels::load();
+            self.levels = levels;
+            for w in warnings {
+                self.notify(w, true);
+            }
+        }
+        if let Some(text) = &actions.notice {
+            self.notify(text.clone(), false);
+        }
+    }
+
     /// 마지막 저장 이후 씬이 바뀌었는가 — 상태 바의 `*` 와 같은 판정.
     fn is_dirty(&self) -> bool {
         self.editing.history().state_id() != self.saved_state
@@ -902,6 +948,7 @@ impl Editor {
         if let Some(path) = &actions.open_zone {
             self.open_zone(path.clone());
         }
+        self.apply_content_actions(actions);
         if actions.toggle_play {
             self.toggle_play();
         }
@@ -1182,6 +1229,34 @@ impl Editor {
             }
             Step::OpenLevel(id) => self.open_level(&id),
             Step::Escape => self.toggle_pause(),
+            Step::ContentToggle => {
+                if let Some(ui) = self.ui.as_mut() {
+                    ui.content_mut().toggle();
+                }
+            }
+            Step::ContentPick(key) => {
+                let found = self
+                    .ui
+                    .as_mut()
+                    .is_some_and(|ui| ui.content_mut().select_key(&key));
+                if !found {
+                    self.notify(format!("콘텐츠 브라우저에 '{key}' 가 없습니다"), true);
+                }
+            }
+            // 두 번 누르기와 같은 경로 — UI 창은 UI 가 열고, 나머지는 에디터가 맡는다.
+            Step::ContentOpen => {
+                let dirty = self.is_dirty();
+                let acts = self.ui.as_mut().and_then(|ui| {
+                    let action = ui.content_mut().open_selected()?;
+                    Some(ui.open_content(action, dirty))
+                });
+                if let Some(acts) = acts {
+                    if let Some(path) = &acts.open_zone {
+                        self.open_zone(path.clone());
+                    }
+                    self.apply_content_actions(&acts);
+                }
+            }
             Step::StartLevel => {
                 let id = self.levels.startup().to_owned();
                 self.open_level(&id);

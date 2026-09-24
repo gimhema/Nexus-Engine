@@ -233,6 +233,95 @@ fn resolve(rel: &str, base: Option<&Path>) -> PathBuf {
 // 올라간 시트
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// 시트 정의 한 장의 요약 — 콘텐츠 브라우저의 상세와 시트 뷰어가 쓴다 (P8).
+#[derive(Clone, Debug)]
+pub(crate) struct SheetInfo {
+    /// 그림 경로 (`root` 기준, `/` 구분). 내장 그림이면 저장소의 `assets/sprites/markers.png`.
+    pub(crate) image_path: Option<String>,
+    /// 사람이 읽는 그림 이름.
+    pub(crate) image_label: String,
+    pub(crate) cell: (u32, u32),
+    pub(crate) directions: u32,
+    /// 엔진 방향 → 시트 행 (비어 있던 경우 `0, 1, 2, …` 로 채운다).
+    pub(crate) direction_rows: Vec<u32>,
+    pub(crate) pixels_per_meter: f32,
+    pub(crate) tinted: bool,
+    pub(crate) clips: Vec<ClipInfo>,
+}
+
+/// 클립 하나 — 시트 뷰어가 재생한다.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ClipInfo {
+    pub(crate) state: String,
+    pub(crate) row: u32,
+    pub(crate) frames: u32,
+    pub(crate) frame_ms: u64,
+    pub(crate) looping: bool,
+}
+
+/// 시트 정의를 읽어 요약한다. **게임이 읽을 때와 같은 검사**(`plan_sheet`)를 통과해야 한다 —
+/// 뷰어에서는 멀쩡해 보이는데 게임에서는 거부되는 일이 없게.
+///
+/// `key` 는 `root` 기준 경로다 (콘텐츠 브라우저의 항목 키).
+pub(crate) fn inspect_sheet(root: &Path, key: &str) -> Result<SheetInfo, String> {
+    let path = root.join(key);
+    let def = std::fs::read_to_string(&path).map_err(|e| format!("{key}: {e}"))?;
+    let base = path.parent();
+    let plan = plan_sheet(&def, base).map_err(|e| format!("{key}: {e}"))?;
+    let file: SheetFile = ron::from_str(&def).map_err(|e| format!("{key}: {e}"))?;
+
+    // 그림 경로를 `root` 기준으로 — 작업 디렉터리 기준으로 먼저, 없으면 정의 파일 폴더 기준.
+    let folder = key.rsplit_once('/').map_or("", |(dir, _)| dir);
+    let (image_path, image_label) = if file.image.is_empty() {
+        let builtin = "assets/sprites/markers.png";
+        (
+            root.join(builtin).exists().then(|| builtin.to_owned()),
+            String::from("markers.png (내장)"),
+        )
+    } else if root.join(&file.image).exists() {
+        (Some(normalize(&file.image)), file.image.clone())
+    } else {
+        let joined = normalize(&format!("{folder}/{}", file.image));
+        (Some(joined.clone()), joined)
+    };
+
+    Ok(SheetInfo {
+        image_path,
+        image_label,
+        cell: plan.cell,
+        directions: plan.sheet.directions(),
+        direction_rows: plan.direction_rows,
+        pixels_per_meter: plan.pixels_per_meter,
+        tinted: plan.tinted,
+        clips: file
+            .clips
+            .iter()
+            .map(|c| ClipInfo {
+                state: format!("{:?}", c.state),
+                row: c.row,
+                frames: c.frames,
+                frame_ms: c.frame_ms,
+                looping: c.looping,
+            })
+            .collect(),
+    })
+}
+
+/// `a/b/../c` → `a/c`, `\` → `/`. 경로를 브라우저 키와 같은 모양으로.
+fn normalize(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            p => parts.push(p),
+        }
+    }
+    parts.join("/")
+}
+
 /// GPU 에 올라간 시트 하나.
 ///
 /// `Clone` 은 **텍스처를 복사하지 않는다** — `TextureId` 는 핸들이라 여러 액터 타입이

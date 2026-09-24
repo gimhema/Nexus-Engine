@@ -256,6 +256,39 @@ fn level_id(path: &Path) -> Option<String> {
     Some(name.strip_suffix(LEVEL_EXT)?.to_ascii_lowercase())
 }
 
+/// 레벨 번호 → 파일 경로. 이름은 **소문자**로 고정한다 (ext4 는 대소문자를 구분한다).
+pub(crate) fn level_path(id: &str) -> PathBuf {
+    Path::new(LEVEL_DIR).join(format!("{}{LEVEL_EXT}", id.to_ascii_lowercase()))
+}
+
+/// 레벨을 RON 으로 — 레벨 편집기가 저장할 때 쓴다 (P8). 줄바꿈은 LF 고정.
+///
+/// 화면 파일처럼 **편집기가 파일을 소유한다** — 통째로 다시 쓰므로 손으로 쓴 주석은 남지 않는다
+/// (머리 주석만 늘 새로 붙는다). 레벨 파일은 몇 줄뿐이라 설명은 이 머리 주석으로 충분하다.
+pub(crate) fn to_ron(level: &LevelFile) -> String {
+    let config = ron::ser::PrettyConfig::new()
+        .new_line("\n")
+        .indentor("    ")
+        .struct_names(false);
+    let body = ron::ser::to_string_pretty(level, config).expect("레벨 직렬화 실패");
+    let header = "\
+// 레벨 — 언리얼의 레벨(.umap)에 대응한다. 쓸 존 파일과 띄울 화면을 적는다.
+// **에디터의 레벨 편집기가 이 파일을 다시 써낸다** (콘텐츠 브라우저 → 레벨 두 번 누르기).
+//
+// zone 이 없으면 UI 만 있는 레벨이다 (메인 화면). hud = 플레이 중 바탕 화면,
+// on_enter = 들어갈 때 띄울 화면, pause = Esc 로 띄울 화면 (전부 ui/<번호>.ui.ron).
+";
+    format!("{header}{body}\n")
+}
+
+/// 프로젝트 설정의 시작 레벨만 바꾼다 — 주석은 그대로 둔다 (`startup_level:` 줄만).
+pub(crate) fn patch_startup(project: &str, id: &str) -> Result<String, String> {
+    let text =
+        crate::ron_patch::replace_field(project, "startup_level", &crate::ron_patch::quote(id))?;
+    read_project(&text)?;
+    Ok(text)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 실행 중 상태
 // ─────────────────────────────────────────────────────────────────────────────
@@ -350,6 +383,43 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// 저장소의 레벨 파일은 **레벨 편집기가 저장하는 모양 그대로**다 — 열어서 그냥 저장만 해도
+    /// 바이트가 달라지면 diff 가 지저분해진다 (화면 파일·존 샘플과 같은 규칙).
+    #[test]
+    fn shipped_levels_are_already_in_editor_format() {
+        for (id, text) in EMBEDDED_LEVELS {
+            let level = read_level(text).unwrap();
+            assert_eq!(
+                to_ron(&level),
+                *text,
+                "levels/{id}.level.ron 을 편집기로 저장하면 바이트가 바뀐다 — \
+                 `cargo test -p world-editor -- --ignored regenerate_shipped_levels` 로 갱신하라"
+            );
+            assert_eq!(read_level(&to_ron(&level)).unwrap(), level, "왕복");
+        }
+    }
+
+    #[test]
+    #[ignore = "저장소의 레벨 파일을 덮어쓴다 — 필요할 때만 직접 실행"]
+    fn regenerate_shipped_levels() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for (id, text) in EMBEDDED_LEVELS {
+            let level = read_level(text).unwrap();
+            std::fs::write(root.join(level_path(id)), to_ron(&level)).unwrap();
+        }
+    }
+
+    #[test]
+    fn the_startup_level_line_is_patched_in_place() {
+        let out = patch_startup(EMBEDDED_PROJECT, "village").unwrap();
+        assert_eq!(read_project(&out).unwrap().startup_level, "village");
+        assert!(out.contains("// 프로젝트 설정"), "머리 주석이 남는다");
+        assert!(
+            patch_startup(EMBEDDED_PROJECT, " ").is_err(),
+            "빈 이름은 거부"
+        );
     }
 
     #[test]

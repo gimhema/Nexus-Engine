@@ -785,6 +785,220 @@ impl From<&UnitFile> for UnitDef {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 액터 편집기용 — 표의 항목 하나를 폼으로 (P8)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 액터 타입 하나의 **파일에 적힌 그대로의** 값 — 규칙 반쪽(`rules.ron`)과 표시 반쪽
+/// (`display.ron`)을 한 폼에 모은다. 액터 편집기가 고치고 다시 두 파일에 나눠 쓴다.
+///
+/// `UnitDef` 가 아니라 이 타입을 쓰는 이유: `UnitDef` 는 **보정을 거친** 값이다
+/// (귀환 거리를 어그로 범위까지 올리는 등). 그걸 다시 쓰면 파일이 조용히 바뀐다.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ActorForm {
+    // 규칙 반쪽 (rules.ron)
+    pub(crate) move_speed: f32,
+    pub(crate) max_hp: u32,
+    pub(crate) attack: u32,
+    pub(crate) defense: u32,
+    pub(crate) immortal: bool,
+    pub(crate) faction: u32,
+    pub(crate) ai: AiChoice,
+    pub(crate) aggro_range: f32,
+    pub(crate) leash_range: f32,
+    pub(crate) basic_attack: Option<u32>,
+    pub(crate) loot: Option<u32>,
+    pub(crate) script: Option<String>,
+    pub(crate) exp_reward: u32,
+    pub(crate) growth: (u32, u32, u32),
+    // 표시 반쪽 (display.ron)
+    pub(crate) name: String,
+    pub(crate) sheet: String,
+    pub(crate) tint: (f32, f32, f32),
+}
+
+/// AI 종류 — 편집기 드롭다운용 (파일 형식 `AiFile` 과 같은 세 가지).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum AiChoice {
+    #[default]
+    Passive,
+    Defensive,
+    Aggressive,
+}
+
+impl AiChoice {
+    pub(crate) const ALL: [Self; 3] = [Self::Passive, Self::Defensive, Self::Aggressive];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Passive => "수동 (먼저 덤비지도 반격하지도 않음)",
+            Self::Defensive => "방어 (맞으면 반격)",
+            Self::Aggressive => "공격 (보이는 적에게 먼저 덤빔)",
+        }
+    }
+
+    fn file_name(self) -> &'static str {
+        match self {
+            Self::Passive => "Passive",
+            Self::Defensive => "Defensive",
+            Self::Aggressive => "Aggressive",
+        }
+    }
+}
+
+impl From<AiFile> for AiChoice {
+    fn from(a: AiFile) -> Self {
+        match a {
+            AiFile::Passive => Self::Passive,
+            AiFile::Defensive => Self::Defensive,
+            AiFile::Aggressive => Self::Aggressive,
+        }
+    }
+}
+
+impl ActorForm {
+    /// 새 액터의 처음 값 — 걷고 치는 최소 유닛.
+    pub(crate) fn new(name: &str) -> Self {
+        Self {
+            move_speed: 2.0,
+            max_hp: 50,
+            attack: 5,
+            defense: 0,
+            immortal: false,
+            faction: 0,
+            ai: AiChoice::Passive,
+            aggro_range: 0.0,
+            leash_range: 0.0,
+            basic_attack: None,
+            loot: None,
+            script: None,
+            exp_reward: 0,
+            growth: (0, 0, 0),
+            name: name.to_owned(),
+            sheet: String::new(),
+            tint: (1.0, 1.0, 1.0),
+        }
+    }
+
+    /// `rules.ron` 의 `actors` 항목 텍스트 (들여쓰기 없음). **기본값인 필드는 적지 않는다** —
+    /// 손으로 쓴 항목과 같은 모양이 되게.
+    pub(crate) fn rules_entry(&self, id: u32) -> String {
+        let mut s = format!("{id}: (\n");
+        let mut line = |text: String| {
+            s.push_str("    ");
+            s.push_str(&text);
+            s.push_str(",\n");
+        };
+        line(format!("move_speed: {:?}", self.move_speed));
+        line(format!("max_hp: {}", self.max_hp));
+        line(format!("attack: {}", self.attack));
+        line(format!("defense: {}", self.defense));
+        if self.immortal {
+            line(String::from("immortal: true"));
+        }
+        if self.faction != 0 {
+            line(format!("faction: {}", self.faction));
+        }
+        if self.ai != AiChoice::Passive {
+            line(format!("ai: {}", self.ai.file_name()));
+        }
+        if self.aggro_range != 0.0 {
+            line(format!("aggro_range: {:?}", self.aggro_range));
+        }
+        if self.leash_range != 0.0 {
+            line(format!("leash_range: {:?}", self.leash_range));
+        }
+        if let Some(skill) = self.basic_attack {
+            line(format!("basic_attack: Some({skill})"));
+        }
+        if let Some(table) = self.loot {
+            line(format!("loot: Some({table})"));
+        }
+        if let Some(script) = &self.script {
+            line(format!("script: Some({})", crate::ron_patch::quote(script)));
+        }
+        if self.exp_reward != 0 {
+            line(format!("exp_reward: {}", self.exp_reward));
+        }
+        let (hp, atk, def) = self.growth;
+        if (hp, atk, def) != (0, 0, 0) {
+            line(format!(
+                "growth: (max_hp: {hp}, attack: {atk}, defense: {def})"
+            ));
+        }
+        s.push_str("),");
+        s
+    }
+
+    /// `display.ron` 의 `actors` 항목 텍스트 (들여쓰기 없음).
+    pub(crate) fn display_entry(&self, id: u32) -> String {
+        let mut s = format!("{id}: (\n");
+        s.push_str(&format!(
+            "    name: {},\n",
+            crate::ron_patch::quote(&self.name)
+        ));
+        if !self.sheet.is_empty() {
+            s.push_str(&format!(
+                "    sheet: {},\n",
+                crate::ron_patch::quote(&self.sheet)
+            ));
+        }
+        if self.tint != white() {
+            let (r, g, b) = self.tint;
+            s.push_str(&format!("    tint: ({r:?}, {g:?}, {b:?}),\n"));
+        }
+        s.push_str("),");
+        s
+    }
+}
+
+/// 두 파일에서 액터 항목을 **파일에 적힌 그대로** 읽는다 — 번호 → 폼.
+///
+/// 한쪽에만 있는 번호도 폼을 만든다 (빈 이름 / 기본 수치로) — 저장할 때 `GameData::parse`
+/// 가 짝이 맞는지 검사하므로, 편집기에서 채워 넣고 저장하면 고쳐진다.
+pub(crate) fn actor_forms(rules: &str, display: &str) -> Result<BTreeMap<u32, ActorForm>, String> {
+    let r: RulesFile = ron::from_str(rules).map_err(|e| format!("{RULES_PATH}: {e}"))?;
+    let d: DisplayFile = ron::from_str(display).map_err(|e| format!("{DISPLAY_PATH}: {e}"))?;
+    let mut out: BTreeMap<u32, ActorForm> = BTreeMap::new();
+    for (id, u) in &r.actors {
+        out.insert(
+            *id,
+            ActorForm {
+                move_speed: u.move_speed,
+                max_hp: u.max_hp,
+                attack: u.attack,
+                defense: u.defense,
+                immortal: u.immortal,
+                faction: u.faction,
+                ai: u.ai.into(),
+                aggro_range: u.aggro_range,
+                leash_range: u.leash_range,
+                basic_attack: u.basic_attack,
+                loot: u.loot,
+                script: u.script.clone(),
+                exp_reward: u.exp_reward,
+                growth: (u.growth.max_hp, u.growth.attack, u.growth.defense),
+                ..ActorForm::new("")
+            },
+        );
+    }
+    for (id, look) in d.actors {
+        let form = out.entry(id).or_insert_with(|| ActorForm::new(""));
+        form.name = look.name;
+        form.sheet = look.sheet;
+        form.tint = look.tint;
+    }
+    Ok(out)
+}
+
+/// 규칙·표시 파일의 지금 텍스트 — 디스크가 있으면 그것, 없으면 내장본 (읽기 규칙과 같다).
+pub(crate) fn data_texts() -> Result<(String, String), String> {
+    Ok((
+        read_or_embedded(Path::new(RULES_PATH), EMBEDDED_RULES)?,
+        read_or_embedded(Path::new(DISPLAY_PATH), EMBEDDED_DISPLAY)?,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

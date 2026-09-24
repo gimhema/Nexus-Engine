@@ -3,6 +3,7 @@
 //! ```text
 //! ┌────────────────────── 메뉴 바 ──────────────────────┐
 //! │  씬  │                 뷰포트                │ 인스펙터 │
+//! ├──────────── 콘텐츠 브라우저 (Ctrl+Space) ─────────────┤
 //! ├────────────────────── 상태 바 ──────────────────────┤
 //! ```
 //!
@@ -19,8 +20,11 @@ use nexus_platform::{WindowEvent, WindowTarget};
 use nexus_render_wgpu::{UiFrame, egui};
 use nexus_sim::{AiKind, BagKind, Tile, UnitDef};
 
+use crate::actor_editor::ActorEditor;
+use crate::content::{ContentAction, ContentBrowser};
 use crate::edit::{BrushShape, InspectorEdit, MAX_BRUSH_RADIUS, PointerInput, Tool};
 use crate::grid;
+use crate::level_editor::LevelEditor;
 use crate::palette::Palette;
 use crate::play::{InventoryAction, PlaySession};
 use crate::scene::{
@@ -29,6 +33,7 @@ use crate::scene::{
 use crate::screen::Screens;
 use crate::screen_editor::ScreenEditor;
 use crate::script_editor::ScriptEditor;
+use crate::sheet_viewer::SheetViewer;
 use crate::terrain::ArtKind;
 use crate::zone_file;
 
@@ -179,6 +184,16 @@ pub(crate) struct UiActions {
     pub(crate) set_brush_shape: Option<(BrushShape, u8)>,
     /// 스포이드 켜기/끄기.
     pub(crate) set_eyedropper: Option<bool>,
+    /// 콘텐츠 브라우저 열고 닫기 (Ctrl+Space, P8).
+    pub(crate) toggle_content: bool,
+    /// 콘텐츠 브라우저가 연 것 중 에디터가 맡는 것 — 위젯 편집기의 화면 등.
+    pub(crate) content: Option<ContentAction>,
+    /// 액터 편집기가 저장했다 — 게임 데이터를 다시 읽는다.
+    pub(crate) reload_data: bool,
+    /// 레벨 편집기가 저장했다 — 레벨 목록을 다시 읽는다.
+    pub(crate) reload_levels: bool,
+    /// 상태 바에 띄울 알림 (오류 아님).
+    pub(crate) notice: Option<String>,
     /// 뷰포트 포인터 — 뷰포트가 그려진 프레임에만 있다.
     pub(crate) pointer: Option<PointerInput>,
     /// 씬을 그릴 사각형 `[x, y, w, h]` (물리 픽셀).
@@ -198,6 +213,12 @@ pub(crate) struct EditorUi {
     palette: Palette,
     /// 스크립트 편집기 창 (P2). 닫혀 있어도 고치던 내용은 남긴다.
     scripts: ScriptEditor,
+    /// 콘텐츠 브라우저 — 하단 패널 (P8).
+    content: ContentBrowser,
+    /// 액터 · 레벨 편집기, 시트 뷰어 (P8) — 브라우저에서 두 번 눌러 연다.
+    actors: ActorEditor,
+    levels: LevelEditor,
+    sheets: SheetViewer,
 }
 
 /// 존 열기 / 다른 이름으로 저장 창.
@@ -261,6 +282,10 @@ impl EditorUi {
             file_dialog: None,
             palette: Palette::default(),
             scripts: ScriptEditor::default(),
+            content: ContentBrowser::default(),
+            actors: ActorEditor::default(),
+            levels: LevelEditor::default(),
+            sheets: SheetViewer::default(),
         }
     }
 
@@ -277,6 +302,26 @@ impl EditorUi {
     /// 스크립트 편집기 — 자동 검증의 `compile` 단계가 쓴다.
     pub(crate) fn scripts_mut(&mut self) -> &mut ScriptEditor {
         &mut self.scripts
+    }
+
+    /// 콘텐츠 브라우저 — 자동 검증의 `content*` 단계가 쓴다.
+    pub(crate) fn content_mut(&mut self) -> &mut ContentBrowser {
+        &mut self.content
+    }
+
+    /// 콘텐츠 브라우저의 "두 번 누르기" — 마우스와 같은 경로로 처리한다 (자동 검증용).
+    /// UI 창이 맡는 것은 여기서 열고, 에디터가 맡는 것은 `actions` 에 담아 돌려준다.
+    pub(crate) fn open_content(&mut self, action: ContentAction, dirty: bool) -> UiActions {
+        let mut actions = UiActions::default();
+        let mut editors = Editors {
+            palette: &mut self.palette,
+            scripts: &mut self.scripts,
+            actors: &mut self.actors,
+            levels: &mut self.levels,
+            sheets: &mut self.sheets,
+        };
+        dispatch(action, &mut editors, dirty, &mut actions);
+        actions
     }
 
     /// 저장하지 않은 스크립트가 있으면 저장한다 — 플레이는 디스크의 파일로 돌기 때문이다.
@@ -317,6 +362,10 @@ impl EditorUi {
         let dialog = &mut self.file_dialog;
         let palette = &mut self.palette;
         let scripts = &mut self.scripts;
+        let content = &mut self.content;
+        let actors = &mut self.actors;
+        let levels = &mut self.levels;
+        let sheets = &mut self.sheets;
 
         let output = self.ctx.run_ui(raw, |ui| {
             menu_bar(ui, model, &mut actions);
@@ -340,9 +389,26 @@ impl EditorUi {
                     .collect()
             };
             actions.toggle_play |= scripts.show(ui, &users).toggle_play;
+            actors.show(ui);
+            levels.show(ui);
+            sheets.show(ui);
+            if actions.toggle_content {
+                content.toggle();
+            }
             // F9 로 패널을 숨기면 뷰포트만 남는다 — HUD 만으로 플레이되는지 확인하는 모드 (P5).
             if !model.hide_panels {
                 status_bar(ui, model, *cursor_world);
+                // 상태 바 바로 위, 좌우 패널보다 먼저 — 그래야 화면 아래 폭 전체를 쓴다.
+                if let Some(action) = content.show(ui) {
+                    let mut editors = Editors {
+                        palette,
+                        scripts,
+                        actors,
+                        levels,
+                        sheets,
+                    };
+                    dispatch(action, &mut editors, model.dirty, &mut actions);
+                }
                 outline_panel(ui, model, &mut actions);
                 inspector_panel(ui, model, &mut actions);
             }
@@ -353,6 +419,18 @@ impl EditorUi {
             }
             if let Some(path) = actions.open_scripts.take() {
                 scripts.open(path.as_deref());
+            }
+            // 편집기가 저장했으면 에디터와 브라우저가 새 내용을 다시 읽는다.
+            if actors.take_saved() {
+                actions.reload_data = true;
+                content.refresh();
+            }
+            if levels.take_saved() {
+                actions.reload_levels = true;
+                content.refresh();
+            }
+            if let Some(id) = levels.take_play() {
+                actions.open_level = Some(id);
             }
         });
 
@@ -366,6 +444,49 @@ impl EditorUi {
             pixels_per_point: output.pixels_per_point,
         };
         (frame, actions)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 콘텐츠 브라우저 → 편집기 (P8)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// UI 가 가진 편집기 창들 — 브라우저가 연 리소스를 여기로 보낸다.
+struct Editors<'a> {
+    palette: &'a mut Palette,
+    scripts: &'a mut ScriptEditor,
+    actors: &'a mut ActorEditor,
+    levels: &'a mut LevelEditor,
+    sheets: &'a mut SheetViewer,
+}
+
+/// 브라우저가 연 리소스를 맞는 편집기로 보낸다.
+///
+/// UI 창(팔레트·스크립트·액터·레벨·시트)은 여기서 바로 열고, 에디터가 가진 것(존·위젯 편집기)은
+/// `actions` 에 담는다. **존은 저장하지 않은 편집이 있으면 열지 않는다** — 열기 창과 같은 규칙.
+fn dispatch(action: ContentAction, e: &mut Editors<'_>, dirty: bool, actions: &mut UiActions) {
+    match action {
+        ContentAction::OpenZone(path) => {
+            if dirty {
+                actions.notice = Some(String::from(
+                    "저장하지 않은 편집이 있어 존을 열지 않았습니다 — 먼저 저장하세요 (Ctrl+S)",
+                ));
+            } else {
+                actions.open_zone = Some(path);
+            }
+        }
+        ContentAction::EditScript(path) => e.scripts.open(Some(&path)),
+        ContentAction::NewScript => e.scripts.open(None),
+        ContentAction::OpenPalette(path) => e.palette.open((!path.is_empty()).then_some(path)),
+        ContentAction::ViewSheet(path) => e.sheets.open(&path),
+        ContentAction::EditActor(id) => e.actors.open_actor(id),
+        ContentAction::NewActor => e.actors.open_new(),
+        ContentAction::EditLevel(id) => e.levels.open_level(&id),
+        ContentAction::NewLevel => e.levels.open_new(),
+        ContentAction::Notice(text) => actions.notice = Some(text),
+        other @ (ContentAction::EditScreen(_) | ContentAction::NewScreen) => {
+            actions.content = Some(other);
+        }
     }
 }
 
@@ -547,6 +668,13 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
             });
             ui.menu_button("보기", |ui| {
                 if ui
+                    .add(egui::Button::new("콘텐츠 브라우저").shortcut_text("Ctrl+Space"))
+                    .clicked()
+                {
+                    actions.toggle_content = true;
+                }
+                ui.separator();
+                if ui
                     .add(egui::Button::new("존 전체 보기").shortcut_text("Home"))
                     .clicked()
                 {
@@ -687,6 +815,8 @@ fn shortcuts(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
         actions.toggle_items |= i.key_pressed(Key::I);
         actions.toggle_panels |= i.key_pressed(Key::F9);
         actions.open_screen_editor |= i.key_pressed(Key::F7);
+        actions.toggle_content |=
+            i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Space));
         // Shift+F5 = 시작 레벨부터 (F5 는 지금 씬으로 플레이).
         if i.key_pressed(Key::F5) && i.modifiers.shift && !model.startup_level.is_empty() {
             actions.toggle_play = false;
