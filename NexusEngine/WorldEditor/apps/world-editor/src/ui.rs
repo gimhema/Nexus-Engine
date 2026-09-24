@@ -27,6 +27,7 @@ use crate::grid;
 use crate::level_editor::LevelEditor;
 use crate::palette::Palette;
 use crate::play::{InventoryAction, PlaySession};
+use crate::rules_editor::RulesEditor;
 use crate::scene::{
     ActorId, ArtId, Item, ItemKind, OverrideEdit, Overrides, Pick, Scene, Target, ZONE_LABEL,
 };
@@ -222,6 +223,7 @@ pub(crate) struct EditorUi {
     sheets: SheetViewer,
     /// 데이터 표 편집기 — 아이템·스킬·드롭 표 (P10).
     tables: TableEditor,
+    rules: RulesEditor,
 }
 
 /// 존 열기 / 다른 이름으로 저장 창.
@@ -290,6 +292,7 @@ impl EditorUi {
             levels: LevelEditor::default(),
             sheets: SheetViewer::default(),
             tables: TableEditor::default(),
+            rules: RulesEditor::default(),
         }
     }
 
@@ -327,6 +330,10 @@ impl EditorUi {
                 .and_then(|n| n.parse().ok())
                 .is_some_and(|id| self.actors.blocks(id)),
             AssetKind::Level => self.levels.blocks(level_id(&asset.key)),
+            AssetKind::Item | AssetKind::Skill | AssetKind::Loot => {
+                table_entry(asset.kind, &asset.key)
+                    .is_some_and(|(tab, id)| self.tables.blocks(tab, id))
+            }
             _ => false,
         };
         busy.then(|| {
@@ -353,6 +360,11 @@ impl EditorUi {
                     }
                 }
                 AssetKind::Level => self.levels.forget(level_id(key)),
+                AssetKind::Item | AssetKind::Skill | AssetKind::Loot => {
+                    if let Some((tab, id)) = table_entry(op.asset.kind, key) {
+                        self.tables.forget(tab, id);
+                    }
+                }
                 _ => {}
             }
         }
@@ -370,6 +382,7 @@ impl EditorUi {
             levels: &mut self.levels,
             sheets: &mut self.sheets,
             tables: &mut self.tables,
+            rules: &mut self.rules,
         };
         dispatch(action, &mut editors, dirty, &mut actions);
         actions
@@ -418,6 +431,7 @@ impl EditorUi {
         let levels = &mut self.levels;
         let sheets = &mut self.sheets;
         let tables = &mut self.tables;
+        let rules = &mut self.rules;
 
         let output = self.ctx.run_ui(raw, |ui| {
             menu_bar(ui, model, &mut actions);
@@ -445,6 +459,7 @@ impl EditorUi {
             levels.show(ui);
             sheets.show(ui);
             tables.show(ui);
+            rules.show(ui);
             if actions.toggle_content {
                 content.toggle();
             }
@@ -460,6 +475,7 @@ impl EditorUi {
                         levels,
                         sheets,
                         tables,
+                        rules,
                     };
                     dispatch(action, &mut editors, model.dirty, &mut actions);
                 }
@@ -480,6 +496,10 @@ impl EditorUi {
                 content.refresh();
             }
             if tables.take_saved() {
+                actions.reload_data = true;
+                content.refresh();
+            }
+            if rules.take_saved() {
                 actions.reload_data = true;
                 content.refresh();
             }
@@ -509,6 +529,22 @@ impl EditorUi {
 // 콘텐츠 브라우저 → 편집기 (P8)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// 표 항목의 키(`item:501`) → 표 편집기의 탭과 번호.
+fn table_entry(
+    kind: crate::content::AssetKind,
+    key: &str,
+) -> Option<(crate::table_editor::Tab, u32)> {
+    use crate::content::AssetKind;
+    use crate::table_editor::Tab;
+    let tab = match kind {
+        AssetKind::Item => Tab::Items,
+        AssetKind::Skill => Tab::Skills,
+        AssetKind::Loot => Tab::Loot,
+        _ => return None,
+    };
+    Some((tab, key.split_once(':')?.1.parse().ok()?))
+}
+
 /// `levels/village.level.ron` → `village`.
 fn level_id(key: &str) -> &str {
     let name = key.rsplit('/').next().unwrap_or(key);
@@ -523,6 +559,7 @@ struct Editors<'a> {
     levels: &'a mut LevelEditor,
     sheets: &'a mut SheetViewer,
     tables: &'a mut TableEditor,
+    rules: &'a mut RulesEditor,
 }
 
 /// 브라우저가 연 리소스를 맞는 편집기로 보낸다.
@@ -550,6 +587,7 @@ fn dispatch(action: ContentAction, e: &mut Editors<'_>, dirty: bool, actions: &m
         ContentAction::NewLevel => e.levels.open_new(),
         ContentAction::EditTable(tab, id) => e.tables.open_entry(tab, id),
         ContentAction::NewTable(tab) => e.tables.open_new(tab),
+        ContentAction::EditRules => e.rules.open(),
         ContentAction::Notice(text) => actions.notice = Some(text),
         other @ (ContentAction::EditScreen(_)
         | ContentAction::NewScreen

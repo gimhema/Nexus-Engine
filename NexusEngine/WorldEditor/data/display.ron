@@ -38,6 +38,9 @@
             sheet: "assets/third_party/zelda-like-armm1998/player.sheet.ron",
             tint: (0.55, 0.9, 0.45),
         ),
+        103: (
+            name: "테스트액터",
+        ),
     },
 
     items: {

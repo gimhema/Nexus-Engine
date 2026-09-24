@@ -66,7 +66,20 @@ pub(crate) struct LevelFile {
     /// Esc 로 띄울 화면 (일시정지).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) pause: Option<String>,
+    /// 이 레벨을 **여는 동안** 띄울 화면 (로딩 화면). 없으면 곧바로 연다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) loading: Option<String>,
+    /// 로딩 화면을 최소 이만큼(ms) 보여 준다 — 여는 일이 금방 끝나도 화면이 번쩍이고 사라지지 않게.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub(crate) loading_ms: u32,
 }
+
+fn is_zero(v: &u32) -> bool {
+    *v == 0
+}
+
+/// 로딩 화면 최소 시간의 상한 — 데이터 실수로 한참 멈춰 있지 않게.
+pub(crate) const MAX_LOADING_MS: u32 = 10_000;
 
 impl LevelFile {
     /// 바탕 화면 — 존이 있으면 HUD, 없으면 들어갈 때 띄우는 화면.
@@ -204,6 +217,12 @@ pub(crate) fn read_level(text: &str) -> Result<LevelFile, String> {
             ));
         }
     }
+    if file.loading_ms > MAX_LOADING_MS {
+        return Err(format!("loading_ms 는 {MAX_LOADING_MS} 이하여야 함"));
+    }
+    if file.loading.as_deref().is_some_and(|s| s.trim().is_empty()) {
+        return Err(String::from("loading 화면 번호가 비어 있음"));
+    }
     if file.zone.is_none() && file.on_enter.is_none() {
         return Err(String::from(
             "존도 화면도 없는 레벨입니다 — zone 이나 on_enter 중 하나는 있어야 합니다",
@@ -281,7 +300,8 @@ pub(crate) fn to_ron(level: &LevelFile) -> String {
 // **에디터의 레벨 편집기가 이 파일을 다시 써낸다** (콘텐츠 브라우저 → 레벨 두 번 누르기).
 //
 // zone 이 없으면 UI 만 있는 레벨이다 (메인 화면). hud = 플레이 중 바탕 화면,
-// on_enter = 들어갈 때 띄울 화면, pause = Esc 로 띄울 화면 (전부 ui/<번호>.ui.ron).
+// on_enter = 들어갈 때 띄울 화면, pause = Esc 로 띄울 화면, loading = 여는 동안 띄울 화면
+// (전부 ui/<번호>.ui.ron). loading_ms = 로딩 화면을 최소로 보여 줄 시간(ms).
 ";
     format!("{header}{body}\n")
 }
@@ -378,7 +398,7 @@ mod tests {
                     "레벨 '{id}' 의 존 파일 {zone} 이 없다"
                 );
             }
-            for screen in [&level.hud, &level.on_enter, &level.pause]
+            for screen in [&level.hud, &level.on_enter, &level.pause, &level.loading]
                 .into_iter()
                 .flatten()
             {
@@ -511,5 +531,33 @@ mod tests {
             None
         );
         assert_eq!(levels.find_by_zone(None), None);
+    }
+
+    #[test]
+    fn a_level_can_name_a_loading_screen() {
+        let level = read_level(
+            "(version: 1, name: \"숲\", zone: Some(\"zones/forest.zone.ron\"), loading: Some(\"loading\"), loading_ms: 500)",
+        )
+        .unwrap();
+        assert_eq!(level.loading.as_deref(), Some("loading"));
+        assert_eq!(level.loading_ms, 500);
+        // 로딩 화면이 없는 레벨은 두 필드를 쓰지 않는다 (옛 파일과 바이트가 같다).
+        let plain =
+            read_level("(version: 1, name: \"메뉴\", on_enter: Some(\"main_menu\"))").unwrap();
+        let text = to_ron(&plain);
+        assert!(
+            !text.contains("loading: ") && !text.contains("loading_ms: "),
+            "{text}"
+        );
+        assert!(
+            read_level("(version: 1, name: \"x\", on_enter: Some(\"m\"), loading_ms: 60000)")
+                .unwrap_err()
+                .contains("loading_ms")
+        );
+        assert!(
+            read_level("(version: 1, name: \"x\", on_enter: Some(\"m\"), loading: Some(\" \"))")
+                .unwrap_err()
+                .contains("loading")
+        );
     }
 }

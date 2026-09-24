@@ -60,6 +60,7 @@ const EMBEDDED_SCREENS: &[(&str, &str)] = &[
     ("main_menu", include_str!("../../../ui/main_menu.ui.ron")),
     ("settings", include_str!("../../../ui/settings.ui.ron")),
     ("pause", include_str!("../../../ui/pause.ui.ron")),
+    ("loading", include_str!("../../../ui/loading.ui.ron")),
 ];
 
 const FORMAT_VERSION: u32 = 1;
@@ -84,6 +85,8 @@ const BACKDROP: [f32; 4] = [0.0, 0.0, 0.02, 0.45];
 const SELECT: [f32; 4] = [1.0, 0.82, 0.25, 1.0];
 /// 편집 중 컨테이너(그림 없는 패널)의 테두리 — 안 보이면 잡을 수 없다.
 const GUIDE: [f32; 4] = [0.45, 0.55, 0.75, 0.55];
+/// 그림을 못 읽은 그림 위젯의 테두리 — 자리는 보이게.
+const MISSING: [f32; 4] = [0.95, 0.35, 0.75, 0.9];
 
 /// 위젯 하나가 쓰는 깊이 칸 수 (테두리·바탕·채움·글자·선택 테두리).
 const BIAS_SLOTS: f32 = 6.0;
@@ -96,7 +99,8 @@ const BIAS_SELECT: f32 = 5.0;
 const MAX_DRAWN: usize = 400;
 
 /// 글자 문구에 쓸 수 있는 값 이름 — 여기 없는 이름은 파일을 읽을 때 거부한다.
-pub(crate) const PLACEHOLDERS: &[&str] = &["hp", "max_hp", "level", "exp", "exp_to_next"];
+pub(crate) const PLACEHOLDERS: &[&str] =
+    &["hp", "max_hp", "level", "exp", "exp_to_next", "loading"];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 테마 파일
@@ -352,6 +356,32 @@ pub(crate) enum WidgetKind {
     /// 누를 수 있는 버튼 — 눌리면 [`Action`] 을 낸다.
     /// `size` 가 없으면 글자 + 여백에 맞춘다.
     Button { label: String, action: Action },
+    /// 그림 — 배너·로딩 그림·아이콘 (PHASE_2 §5). `path` 는 작업 디렉터리 기준 PNG.
+    /// `size` 가 없으면 **그림(또는 `region`) 원래 크기 × 배율**로 그린다.
+    Image {
+        path: String,
+        /// 그림의 일부만 — 픽셀 사각형 `(x, y, 너비, 높이)`. 없으면 그림 전체.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region: Option<(u32, u32, u32, u32)>,
+        /// 0 보다 크면 **9-slice** — 이 두께(그림 픽셀)의 가장자리는 늘리지 않는다 (창·배너 틀).
+        #[serde(default, skip_serializing_if = "is_zero")]
+        border: u32,
+        /// 곱하는 색 (sRGB, 알파 포함) — 흰색이면 그림 그대로.
+        #[serde(default = "white", skip_serializing_if = "is_white")]
+        tint: (f32, f32, f32, f32),
+    },
+}
+
+fn is_zero(v: &u32) -> bool {
+    *v == 0
+}
+
+fn white() -> (f32, f32, f32, f32) {
+    (1.0, 1.0, 1.0, 1.0)
+}
+
+fn is_white(c: &(f32, f32, f32, f32)) -> bool {
+    *c == white()
 }
 
 impl WidgetKind {
@@ -362,6 +392,7 @@ impl WidgetKind {
             Self::Bar { .. } => "막대",
             Self::Items { .. } => "아이템 칸",
             Self::Button { .. } => "버튼",
+            Self::Image { .. } => "그림",
         }
     }
 
@@ -380,15 +411,18 @@ impl WidgetKind {
 pub(crate) enum BarSource {
     Hp,
     Exp,
+    /// 로딩 화면의 진행 (레벨을 여는 중).
+    Loading,
 }
 
 impl BarSource {
-    pub(crate) const ALL: [Self; 2] = [Self::Hp, Self::Exp];
+    pub(crate) const ALL: [Self; 3] = [Self::Hp, Self::Exp, Self::Loading];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Hp => "HP",
             Self::Exp => "경험치",
+            Self::Loading => "로딩 진행",
         }
     }
 
@@ -396,6 +430,7 @@ impl BarSource {
         match self {
             Self::Hp => (v.hp, v.max_hp),
             Self::Exp => (v.exp, v.exp_to_next),
+            Self::Loading => v.loading,
         }
     }
 }
@@ -452,6 +487,8 @@ pub(crate) struct Values {
     /// 인벤토리 칸 — `(색, 개수)`.
     pub(crate) items: Vec<([f32; 4], u32)>,
     pub(crate) show_items: bool,
+    /// 로딩 진행 `(지난 ms, 전체 ms)` — 레벨을 여는 동안만 0 이 아니다.
+    pub(crate) loading: (u32, u32),
 }
 
 impl Values {
@@ -467,6 +504,7 @@ impl Values {
             exp_to_next: p.exp_to_next(),
             items: play.hud_slots(),
             show_items,
+            loading: (0, 0),
         })
     }
 
@@ -484,6 +522,7 @@ impl Values {
                 ([0.45, 0.65, 0.95, 1.0], 12),
             ],
             show_items: true,
+            loading: (60, 100),
         }
     }
 
@@ -513,6 +552,8 @@ pub(crate) struct Screens {
     theme: Option<ThemeFile>,
     /// 화면 번호 → 화면. `BTreeMap` 이라 목록 순서가 OS·실행마다 같다.
     screens: BTreeMap<String, ScreenFile>,
+    /// 그림 위젯이 쓰는 그림 — 경로 → 올린 텍스처와 크기, 또는 읽지 못한 이유.
+    images: BTreeMap<String, LoadedImage>,
 }
 
 impl Default for Screens {
@@ -524,9 +565,13 @@ impl Default for Screens {
             panel: None,
             theme: None,
             screens: BTreeMap::new(),
+            images: BTreeMap::new(),
         }
     }
 }
+
+/// 그림 위젯의 그림 — 올린 텍스처와 픽셀 크기, 또는 읽지 못한 이유.
+type LoadedImage = Result<(TextureId, (u32, u32)), String>;
 
 /// 시스템 폰트로 구운 글자 아틀라스와 그 텍스처.
 ///
@@ -711,6 +756,7 @@ impl Screens {
             panel: Some(panel),
             theme: Some(theme),
             screens: BTreeMap::new(),
+            images: BTreeMap::new(),
         })
     }
 
@@ -877,6 +923,10 @@ impl Screens {
             }
             (None, WidgetKind::Items { columns }) => self.items_size(*columns, values),
             (None, WidgetKind::Bar { .. }) => (110.0 * s, 9.0 * s),
+            (None, WidgetKind::Image { path, region, .. }) => {
+                let (w, h) = self.image_size(path, *region);
+                (w as f32 * s, h as f32 * s)
+            }
         };
         let pos = (w.pos.0 as f32 * s, w.pos.1 as f32 * s);
         let at = if matches!((w.size, &w.kind), (None, WidgetKind::Panel { .. })) {
@@ -996,7 +1046,14 @@ impl Screens {
                 match &laid.widget.kind {
                     WidgetKind::Panel { frame } => {
                         if *frame {
-                            self.nine_slice(panel, r, bias(BIAS_BACK), out);
+                            self.nine_slice(
+                                panel,
+                                self.texture,
+                                PANEL_TINT,
+                                r,
+                                bias(BIAS_BACK),
+                                out,
+                            );
                         } else if editing {
                             outline(r, GUIDE, bias(BIAS_EDGE), 1.0, out);
                         }
@@ -1032,6 +1089,15 @@ impl Screens {
                         let (tw, th) = self.text_size(label);
                         let at = Rect::new(r.x + (r.w - tw) * 0.5, r.y + (r.h - th) * 0.5, tw, th);
                         self.text(label, at, color, bias(BIAS_TEXT), out);
+                    }
+                    WidgetKind::Image {
+                        path,
+                        region,
+                        border,
+                        tint,
+                    } => {
+                        let tint = [tint.0, tint.1, tint.2, tint.3];
+                        self.image(path, *region, *border, tint, r, bias(BIAS_BACK), out);
                     }
                 }
                 if selected == Some(laid.widget.id.as_str()) {
@@ -1122,8 +1188,109 @@ impl Screens {
         }
     }
 
+    /// 그림 위젯이 쓰는 그림을 올린다 — 아직 올리지 않은 경로만. 프레임 바깥에서 부른다.
+    ///
+    /// 읽지 못한 그림은 이유를 기억해 두고 **처음 한 번만** 경고로 돌려준다 (그 위젯은 빈 칸
+    /// 테두리로 그려진다 — 그림이 없다고 화면을 막지 않는다). 올린 그림은 다시 올리지 않는다
+    /// (텍스처 해제 API 가 없다) — 그림 파일을 바꿨으면 다시 시작한다.
+    pub(crate) fn ensure_images(&mut self, renderer: &mut dyn Renderer) -> Vec<String> {
+        let mut wanted: BTreeSet<String> = BTreeSet::new();
+        for screen in self.screens.values() {
+            let mut stack: Vec<&Widget> = screen.widgets.iter().collect();
+            while let Some(w) = stack.pop() {
+                stack.extend(w.children.iter());
+                if let WidgetKind::Image { path, .. } = &w.kind {
+                    wanted.insert(path.clone());
+                }
+            }
+        }
+        let mut warnings = Vec::new();
+        for path in wanted {
+            if self.images.contains_key(&path) {
+                continue;
+            }
+            let loaded = std::fs::read(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| Image::decode_png(&bytes).map_err(|e| e.to_string()))
+                .and_then(|image| {
+                    let size = (image.width(), image.height());
+                    renderer
+                        .load_texture(&image.desc("ui-image"))
+                        .map(|t| (t, size))
+                        .map_err(|e| e.to_string())
+                });
+            if let Err(e) = &loaded {
+                warnings.push(format!("UI 그림 {path}: {e}"));
+            }
+            self.images.insert(path, loaded);
+        }
+        warnings
+    }
+
+    /// 그림(또는 `region`)의 원래 픽셀 크기. 아직 못 읽었으면 32×32 자리만 잡는다.
+    fn image_size(&self, path: &str, region: Option<(u32, u32, u32, u32)>) -> (u32, u32) {
+        if let Some((_, _, w, h)) = region {
+            return (w.max(1), h.max(1));
+        }
+        match self.images.get(path) {
+            Some(Ok((_, size))) => *size,
+            _ => (32, 32),
+        }
+    }
+
+    /// 그림 위젯 하나 — 늘여 그리거나(`border == 0`) 9-slice 로.
+    /// 그림이 없거나 `region` 이 그림 밖이면 빈 칸 테두리만 그린다 (자리는 보이게).
+    #[allow(clippy::too_many_arguments)]
+    fn image(
+        &self,
+        path: &str,
+        region: Option<(u32, u32, u32, u32)>,
+        border: u32,
+        tint: [f32; 4],
+        r: Rect,
+        bias: f32,
+        out: &mut Vec<RenderCommand>,
+    ) {
+        let Some(Ok((texture, size))) = self.images.get(path) else {
+            outline(r, MISSING, bias, self.scale(), out);
+            return;
+        };
+        let (x, y, w, h) = region.unwrap_or((0, 0, size.0, size.1));
+        if x + w > size.0 || y + h > size.1 {
+            outline(r, MISSING, bias, self.scale(), out);
+            return;
+        }
+        if border > 0 && border * 2 < w.min(h) {
+            let p = PanelUv {
+                rect: (x as f32, y as f32, w as f32, h as f32),
+                border: border as f32,
+                image: (size.0 as f32, size.1 as f32),
+            };
+            self.nine_slice(p, *texture, tint, r, bias, out);
+            return;
+        }
+        out.push(RenderCommand::DrawRect {
+            center: r.center(),
+            size: r.size(),
+            rotation: 0.0,
+            z: 0.0,
+            depth_bias: bias,
+            color: tint,
+            uv: UvRect::from_pixels(x, y, w, h, *size),
+            texture: *texture,
+        });
+    }
+
     /// 창 그림을 아홉 조각으로 늘린다 — 모서리는 그대로, 변은 한 방향으로, 가운데만 양방향으로.
-    fn nine_slice(&self, p: PanelUv, r: Rect, bias: f32, out: &mut Vec<RenderCommand>) {
+    fn nine_slice(
+        &self,
+        p: PanelUv,
+        texture: TextureId,
+        color: [f32; 4],
+        r: Rect,
+        bias: f32,
+        out: &mut Vec<RenderCommand>,
+    ) {
         let (x, y, w, h) = (r.x, r.y, r.w, r.h);
         let b = p.border * self.scale();
         let (px, py, pw, ph) = p.rect;
@@ -1147,12 +1314,12 @@ impl Screens {
                     rotation: 0.0,
                     z: 0.0,
                     depth_bias: bias,
-                    color: PANEL_TINT,
+                    color,
                     uv: UvRect {
                         min: Vec2::new(tx / p.image.0, ty / p.image.1),
                         max: Vec2::new((tx + tw) / p.image.0, (ty + th) / p.image.1),
                     },
-                    texture: self.texture,
+                    texture,
                 });
             }
         }
@@ -1266,8 +1433,8 @@ pub(crate) fn to_ron(screen: &ScreenFile) -> String {
 // 메뉴 UI → 위젯 편집기. 저장하면 이 파일이 통째로 다시 쓰이므로 주석은 남지 않는다.
 //
 // pos·size 는 UI 픽셀(테마의 scale 을 곱하기 전)이고, anchor 기준점에서 오른쪽·아래가 +다.
-// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {level} {exp} {exp_to_next}
-// ⚠ 비트맵 폰트에 한글도 '/' 도 없다 — 화면 문구는 영문 대문자·숫자만.
+// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {level} {exp} {exp_to_next} {loading}(로딩 %)
+// Image 위젯의 path 는 작업 디렉터리 기준 PNG (소문자·'/'), region 은 그림의 픽셀 사각형이다.
 ";
     format!("{header}{body}\n")
 }
@@ -1303,6 +1470,7 @@ fn fill(format: &str, v: &Values) -> String {
         ("level", v.level),
         ("exp", v.exp),
         ("exp_to_next", v.exp_to_next),
+        ("loading", loading_percent(v.loading)),
     ] {
         out = out.replace(&format!("{{{name}}}"), &value.to_string());
     }
@@ -1353,6 +1521,20 @@ fn check_widgets<'a>(
                     return Err(format!("'{}': 칸 수가 0", w.id));
                 }
             }
+            WidgetKind::Image {
+                path, region, tint, ..
+            } => {
+                check_image_path(path).map_err(|e| format!("'{}': {e}", w.id))?;
+                if let Some((_, _, rw, rh)) = region
+                    && (*rw == 0 || *rh == 0)
+                {
+                    return Err(format!("'{}': region 크기가 0", w.id));
+                }
+                let t = [tint.0, tint.1, tint.2, tint.3];
+                if t.iter().any(|c| !(0.0..=1.0).contains(c)) {
+                    return Err(format!("'{}': tint 는 0~1", w.id));
+                }
+            }
             WidgetKind::Panel { .. } => {}
         }
         check_widgets(&w.children, depth + 1, seen)?;
@@ -1387,6 +1569,27 @@ pub(crate) fn placeholder_names(format: &str) -> Vec<String> {
         }
     }
     names
+}
+
+/// 그림 경로 규칙 — 에셋·스크립트와 같다 (리눅스에서 "파일 없음" 이 되는 것을 미리 막는다).
+fn check_image_path(path: &str) -> Result<(), String> {
+    if path.is_empty()
+        || path != path.to_ascii_lowercase()
+        || path.contains('\\')
+        || path.starts_with('/')
+        || path.contains(':')
+        || !path.ends_with(".png")
+    {
+        return Err(format!(
+            "그림 '{path}' — 소문자·'/'·'.png' 로 끝나는 상대 경로여야 함"
+        ));
+    }
+    Ok(())
+}
+
+/// 로딩 진행을 백분율로 — `{loading}` 값.
+fn loading_percent((done, total): (u32, u32)) -> u32 {
+    (ratio(done, total) * 100.0).round() as u32
 }
 
 /// 단색 사각형 — 화면 좌표, `(x, y)` 는 왼쪽 위.
@@ -1449,6 +1652,7 @@ mod tests {
             panel: Some(panel),
             theme: Some(theme),
             screens: BTreeMap::new(),
+            images: BTreeMap::new(),
         }
     }
 
@@ -1789,5 +1993,83 @@ mod tests {
         assert!(r.contains(Vec2::new(10.0, 20.0)));
         assert!(r.contains(Vec2::new(110.0, 60.0)));
         assert!(!r.contains(Vec2::new(9.0, 40.0)));
+    }
+
+    fn image(path: &str, region: Option<(u32, u32, u32, u32)>) -> Widget {
+        Widget::new(
+            "pic",
+            WidgetKind::Image {
+                path: path.to_owned(),
+                region,
+                border: 0,
+                tint: (1.0, 1.0, 1.0, 1.0),
+            },
+        )
+    }
+
+    #[test]
+    fn an_image_widget_round_trips_and_writes_only_what_it_needs() {
+        let mut screen = ScreenFile::new("그림");
+        screen
+            .widgets
+            .push(image("assets/ui/banner.png", Some((8, 16, 64, 24))));
+        let text = to_ron(&screen);
+        assert!(text.contains("region: Some((8, 16, 64, 24))"), "{text}");
+        assert!(!text.contains("tint"), "흰색은 적지 않는다\n{text}");
+        assert!(!text.contains("border"), "0 은 적지 않는다\n{text}");
+        assert_eq!(Screens::read_screen(&text).unwrap(), screen);
+    }
+
+    #[test]
+    fn a_bad_image_widget_says_why() {
+        let wrap = |w: Widget| {
+            let mut s = ScreenFile::new("x");
+            s.widgets.push(w);
+            Screens::read_screen(&to_ron(&s))
+        };
+        for bad in [
+            "Assets/a.png",
+            "assets\\a.png",
+            "/abs/a.png",
+            "assets/a.jpg",
+            "",
+        ] {
+            let err = wrap(image(bad, None)).expect_err(bad);
+            assert!(err.contains("상대 경로"), "{bad}: {err}");
+        }
+        let err = wrap(image("assets/a.png", Some((0, 0, 0, 8)))).unwrap_err();
+        assert!(err.contains("region 크기가 0"), "{err}");
+        let mut tinted = image("assets/a.png", None);
+        if let WidgetKind::Image { tint, .. } = &mut tinted.kind {
+            *tint = (1.5, 1.0, 1.0, 1.0);
+        }
+        assert!(wrap(tinted).unwrap_err().contains("tint"));
+    }
+
+    #[test]
+    fn an_image_without_a_size_takes_its_region_size_times_the_scale() {
+        let screens = measured();
+        let scale = screens.scale();
+        let mut screen = ScreenFile::new("x");
+        screen
+            .widgets
+            .push(image("assets/a.png", Some((0, 0, 40, 20))));
+        let laid = screens.layout(&screen, &Values::preview(), (800.0, 600.0));
+        assert_eq!(laid[0].rect.w, 40.0 * scale);
+        assert_eq!(laid[0].rect.h, 20.0 * scale);
+    }
+
+    #[test]
+    fn the_loading_value_is_a_percentage_and_the_bar_reads_it() {
+        let mut v = Values::preview();
+        v.loading = (200, 800);
+        assert_eq!(fill("{loading}%", &v), "25%");
+        assert_eq!(BarSource::Loading.values(&v), (200, 800));
+        v.loading = (0, 0);
+        assert_eq!(
+            fill("{loading}", &v),
+            "0",
+            "최소 시간이 0 이어도 나누지 않는다"
+        );
     }
 }

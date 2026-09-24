@@ -108,6 +108,12 @@
             exp_reward: 90,
             script: Some("scripts/goblin.rhai"),
         ),
+        103: (
+            move_speed: 2.0,
+            max_hp: 50,
+            attack: 5,
+            defense: 0,
+        ),
     },
 
     // 마커 종류별 기본 액터 — 마커가 타입을 정하지 않았을 때(예전 존 파일 포함) 쓴다.

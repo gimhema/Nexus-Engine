@@ -15,6 +15,7 @@
 //!   디스크 파일을 지워도 실행 파일 안의 내장본으로 되살아나서, 사용자가 본 것과 게임이 어긋난다.
 //! - 액터는 파일이 아니라 **표의 항목**이다 — 삭제하면 두 표에서 빼고, 뺀 텍스트를 휴지통에
 //!   기록 파일로 남긴다. 번호 바꾸기는 하지 않는다 (이름은 액터 편집기에서 바꾼다).
+//! - 아이템·스킬·드롭 표도 같다 — 쓰는 곳(드롭 표·시작 소지품·액터·플레이어 공격)이 있으면 지우지 않는다.
 //! - 참조를 찾고 고치는 것은 **문자열 치환**이다 (`OpenLevel("old")` → `OpenLevel("new")` 처럼
 //!   따옴표까지 포함해 바꾼다 — 이름의 일부가 겹쳐도 잘못 바뀌지 않게).
 
@@ -23,6 +24,7 @@ use std::path::{Path, PathBuf};
 use crate::content::{Asset, AssetKind, scan_files};
 use crate::game_data::{
     DISPLAY_PATH, GameData, RULES_PATH, actor_forms, default_actor_ids, is_builtin_script,
+    table_forms,
 };
 
 /// 휴지통 폴더 (작업 디렉터리 기준, git 무시).
@@ -76,13 +78,11 @@ impl From<&Asset> for AssetRef {
 pub(crate) fn supports(kind: AssetKind, op: OpKind) -> bool {
     match kind {
         AssetKind::Level | AssetKind::Zone | AssetKind::Screen | AssetKind::Script => true,
-        AssetKind::Actor => op != OpKind::Rename,
-        AssetKind::Item
-        | AssetKind::Skill
-        | AssetKind::Loot
-        | AssetKind::Sheet
-        | AssetKind::Image
-        | AssetKind::Data => false,
+        // 표의 항목 — 번호는 바꾸지 않는다 (이름은 각 편집기에서 바꾼다).
+        AssetKind::Actor | AssetKind::Item | AssetKind::Skill | AssetKind::Loot => {
+            op != OpKind::Rename
+        }
+        AssetKind::Sheet | AssetKind::Image | AssetKind::Data => false,
     }
 }
 
@@ -121,6 +121,9 @@ pub(crate) fn plan(root: &Path, op: &FileOp) -> Result<Plan, String> {
             AssetKind::Actor => {
                 String::from("액터의 이름은 액터 편집기에서 바꿉니다 (번호는 바꾸지 않습니다)")
             }
+            AssetKind::Item | AssetKind::Skill | AssetKind::Loot => String::from(
+                "표 항목의 이름은 데이터 표 편집기에서 바꿉니다 (번호는 바꾸지 않습니다)",
+            ),
             _ => format!(
                 "{} 은(는) 아직 파일 작업을 하지 않습니다 (받아온 애셋 팩·데이터 표)",
                 op.asset.kind.label()
@@ -129,6 +132,7 @@ pub(crate) fn plan(root: &Path, op: &FileOp) -> Result<Plan, String> {
     }
     match op.asset.kind {
         AssetKind::Actor => plan_actor(root, op),
+        AssetKind::Item | AssetKind::Skill | AssetKind::Loot => plan_table(root, op),
         _ => plan_file(root, op),
     }
 }
@@ -302,6 +306,127 @@ fn plan_actor(root: &Path, op: &FileOp) -> Result<Plan, String> {
         OpKind::Rename => unreachable!("supports() 가 막는다"),
     }
     Ok(p)
+}
+
+/// 아이템·스킬·드롭 표 — 액터처럼 표의 항목이다. 번호 바꾸기는 하지 않는다.
+fn plan_table(root: &Path, op: &FileOp) -> Result<Plan, String> {
+    use crate::table_editor::Tab;
+    let (tab, map) = match op.asset.kind {
+        AssetKind::Item => (Tab::Items, "items"),
+        AssetKind::Skill => (Tab::Skills, "skills"),
+        AssetKind::Loot => (Tab::Loot, "loot"),
+        other => return Err(format!("{} 은(는) 표 항목이 아닙니다", other.label())),
+    };
+    let label = tab.label();
+    let id: u32 = op
+        .asset
+        .key
+        .split_once(':')
+        .and_then(|(_, n)| n.parse().ok())
+        .ok_or_else(|| format!("'{}' 는 {label} 항목이 아닙니다", op.asset.key))?;
+    let rules = read(root, RULES_PATH)?;
+    let display = read(root, DISPLAY_PATH)?;
+    let mut p = Plan {
+        touched: Touched {
+            data: true,
+            ..Touched::default()
+        },
+        ..Plan::default()
+    };
+    match op.kind {
+        OpKind::Delete => {
+            // 검증도 막지만, 이유를 사람이 읽을 수 있게 먼저 찾아 알린다.
+            let users = table_users(&rules, &display, tab, id)?;
+            if !users.is_empty() {
+                return Err(format!(
+                    "쓰는 곳이 있어 지우지 않습니다 — {}",
+                    users.join(", ")
+                ));
+            }
+            let (rules2, gone_rules) = crate::ron_patch::remove_entry(&rules, map, id)?;
+            // 표시 반쪽은 없을 수도 있다 (이름 없는 스킬, 드롭 표는 원래 없음).
+            let (display2, gone_display) = match crate::ron_patch::remove_entry(&display, map, id) {
+                Ok((text, gone)) if tab != Tab::Loot => (text, Some(gone)),
+                _ => (display.clone(), None),
+            };
+            GameData::parse(&rules2, &display2)?;
+            p.steps
+                .push(format!("{label} #{id} {} 를 표에서 뺌", op.asset.name));
+            p.steps
+                .push(String::from("뺀 항목은 휴지통에 기록으로 남김"));
+            let mut note = format!("// {RULES_PATH} 의 {map} 에서 뺀 항목\n{gone_rules}\n");
+            if let Some(gone) = gone_display {
+                note.push_str(&format!(
+                    "\n// {DISPLAY_PATH} 의 {map} 에서 뺀 항목\n{gone}\n"
+                ));
+            }
+            p.writes.push((RULES_PATH.to_owned(), rules2));
+            if display2 != display {
+                p.writes.push((DISPLAY_PATH.to_owned(), display2));
+            }
+            p.notes.push((format!("{map}-{id}.ron"), note));
+        }
+        OpKind::Duplicate => {
+            let new_id: u32 = op
+                .target
+                .trim()
+                .parse()
+                .map_err(|_| String::from("새 번호를 숫자로 적으세요"))?;
+            let (rules2, display2, name) =
+                crate::table_editor::duplicate(&rules, &display, tab, id, new_id)?;
+            p.steps.push(format!("새 {label}: #{new_id} {name}"));
+            p.writes.push((RULES_PATH.to_owned(), rules2));
+            if display2 != display {
+                p.writes.push((DISPLAY_PATH.to_owned(), display2));
+            }
+        }
+        OpKind::Rename => unreachable!("supports() 가 막는다"),
+    }
+    Ok(p)
+}
+
+/// 이 표 항목을 쓰는 곳 — 드롭 표·시작 소지품(아이템) / 액터의 기본 공격·플레이어 공격(스킬) /
+/// 액터(드롭 표).
+fn table_users(
+    rules: &str,
+    display: &str,
+    tab: crate::table_editor::Tab,
+    id: u32,
+) -> Result<Vec<String>, String> {
+    use crate::table_editor::Tab;
+    let tables = table_forms(rules, display)?;
+    let actors = actor_forms(rules, display)?;
+    let mut out = Vec::new();
+    match tab {
+        Tab::Items => {
+            for (loot, rows) in &tables.loot {
+                if rows.iter().any(|r| r.item == id) {
+                    out.push(format!("드롭 표 #{loot}"));
+                }
+            }
+            if tables.starting_kit.contains(&id) {
+                out.push(String::from("시작 소지품"));
+            }
+        }
+        Tab::Skills => {
+            for (a, f) in &actors {
+                if f.basic_attack == Some(id) {
+                    out.push(format!("액터 #{a} {}", f.name));
+                }
+            }
+            if tables.player_attack == id {
+                out.push(String::from("플레이어 공격"));
+            }
+        }
+        Tab::Loot => {
+            for (a, f) in &actors {
+                if f.loot == Some(id) {
+                    out.push(format!("액터 #{a} {}", f.name));
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// 계획을 실행한다. 휴지통을 썼으면 그 폴더를 돌려준다.
@@ -770,6 +895,54 @@ mod tests {
             note.contains("150: (") && note.contains("슬라임 복사본"),
             "되살릴 수 있는 기록"
         );
+    }
+
+    #[test]
+    fn table_entries_can_be_duplicated_and_the_copy_deleted() {
+        let sb = Sandbox::new("tables");
+        let tables = || table_forms(&sb.read(RULES_PATH), &sb.read(DISPLAY_PATH)).unwrap();
+        // 아이템 — 두 반쪽에 들어가고, 이름에 "복사본".
+        let dup = op(OpKind::Duplicate, AssetKind::Item, "item:501", "502");
+        apply(&sb.0, &plan(&sb.0, &dup).unwrap()).unwrap();
+        let t = tables();
+        assert_eq!(t.items[&502].name, format!("{} 복사본", t.items[&501].name));
+        assert_eq!(t.items[&502].kind, t.items[&501].kind);
+        let del = op(OpKind::Delete, AssetKind::Item, "item:502", "");
+        let bin = apply(&sb.0, &plan(&sb.0, &del).unwrap()).unwrap().unwrap();
+        assert!(!tables().items.contains_key(&502));
+        let note = std::fs::read_to_string(sb.0.join(&bin).join("items-502.ron")).unwrap();
+        assert!(note.contains("502:") && note.contains("복사본"), "{note}");
+
+        // 드롭 표 — 규칙에만 있다. 표시 파일은 건드리지 않는다.
+        let display_before = sb.read(DISPLAY_PATH);
+        let dup = op(OpKind::Duplicate, AssetKind::Loot, "loot:1", "2");
+        let p = plan(&sb.0, &dup).unwrap();
+        assert!(p.writes.iter().all(|(path, _)| path != DISPLAY_PATH));
+        apply(&sb.0, &p).unwrap();
+        assert_eq!(tables().loot[&2], tables().loot[&1]);
+        let del = op(OpKind::Delete, AssetKind::Loot, "loot:2", "");
+        apply(&sb.0, &plan(&sb.0, &del).unwrap()).unwrap();
+        assert!(!tables().loot.contains_key(&2));
+        assert_eq!(sb.read(DISPLAY_PATH), display_before);
+
+        // 번호가 이미 있으면 거부, 이름 바꾸기는 하지 않는다.
+        let taken = op(OpKind::Duplicate, AssetKind::Skill, "skill:1", "2");
+        assert!(plan(&sb.0, &taken).unwrap_err().contains("이미"));
+        let rename = op(OpKind::Rename, AssetKind::Skill, "skill:1", "9");
+        assert!(plan(&sb.0, &rename).unwrap_err().contains("번호는 바꾸지"));
+    }
+
+    #[test]
+    fn a_used_table_entry_is_not_deleted_and_says_who_uses_it() {
+        let sb = Sandbox::new("table-users");
+        let err = plan(&sb.0, &op(OpKind::Delete, AssetKind::Item, "item:909", "")).unwrap_err();
+        assert!(err.contains("드롭 표 #1"), "{err}");
+        let err = plan(&sb.0, &op(OpKind::Delete, AssetKind::Item, "item:501", "")).unwrap_err();
+        assert!(err.contains("시작 소지품"), "{err}");
+        let err = plan(&sb.0, &op(OpKind::Delete, AssetKind::Skill, "skill:1", "")).unwrap_err();
+        assert!(err.contains("플레이어 공격"), "{err}");
+        let err = plan(&sb.0, &op(OpKind::Delete, AssetKind::Loot, "loot:1", "")).unwrap_err();
+        assert!(err.contains("액터 #100"), "{err}");
     }
 
     #[test]

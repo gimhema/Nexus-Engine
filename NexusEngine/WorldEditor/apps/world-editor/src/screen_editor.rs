@@ -36,6 +36,10 @@ use crate::screen::{
 };
 
 /// 되돌리기 기록 상한 — 존 편집(256)보다 짧게. 화면은 위젯 몇십 개뿐이다.
+/// "+ 그림" 의 처음 그림 — 받아온 타일셋의 집 (data/terrain.ron 의 오브젝트 100 과 같은 자리).
+const SAMPLE_IMAGE: &str = "assets/third_party/zelda-like-armm1998/gfx/overworld.png";
+const SAMPLE_REGION: (u32, u32, u32, u32) = (96, 0, 80, 64);
+
 const HISTORY_LIMIT: usize = 64;
 
 /// 크기 조절 손잡이의 한 변 (화면 픽셀).
@@ -79,6 +83,8 @@ pub(crate) struct ScreenEditor {
     status: Option<(bool, String)>,
     new_widget: String,
     new_screen: String,
+    /// 그림 위젯에 고를 수 있는 PNG (`assets/` 아래) — 창을 열 때 한 번 훑는다.
+    images: Vec<String>,
 }
 
 impl ScreenEditor {
@@ -94,6 +100,7 @@ impl ScreenEditor {
     /// 창을 열고 지금 화면을 복사해 온다.
     pub(crate) fn open(&mut self, screens: &Screens) {
         self.open = true;
+        self.images = crate::content::scan_files(Path::new("."), "assets", ".png");
         self.scale = screens.theme().map_or(2, |t| t.scale.max(1));
         self.saved_scale = self.scale;
         if self.screen.is_none() {
@@ -428,6 +435,15 @@ impl ScreenEditor {
                         action: Action::None,
                     },
                 ),
+                (
+                    "+ 그림",
+                    WidgetKind::Image {
+                        path: String::from(SAMPLE_IMAGE),
+                        region: Some(SAMPLE_REGION),
+                        border: 0,
+                        tint: (1.0, 1.0, 1.0, 1.0),
+                    },
+                ),
             ] {
                 if ui.add_enabled(named, egui::Button::new(label)).clicked() {
                     self.add(kind);
@@ -514,6 +530,7 @@ impl ScreenEditor {
             if w.size.is_none() {
                 ui.weak(match w.kind {
                     WidgetKind::Panel { .. } => "창: 부모 사각형을 가득 채웁니다.",
+                    WidgetKind::Image { .. } => "그림: 원래 픽셀 크기 × 배율로 그립니다.",
                     _ => "내용 크기에 맞춥니다.",
                 });
             }
@@ -526,7 +543,7 @@ impl ScreenEditor {
                     }
                 });
 
-            kind_fields(ui, &mut w.kind);
+            kind_fields(ui, &mut w.kind, &self.images);
 
             // 부모 바꾸기 — 자기 자손은 고를 수 없다 (트리가 끊긴다).
             egui::ComboBox::from_label("부모")
@@ -809,9 +826,69 @@ impl ScreenEditor {
     }
 }
 
+/// 그림 위젯의 항목 — 그림 고르기 · 일부 영역 · 9-slice 두께 · 곱하는 색.
+fn image_fields(
+    ui: &mut egui::Ui,
+    path: &mut String,
+    region: &mut Option<(u32, u32, u32, u32)>,
+    border: &mut u32,
+    tint: &mut (f32, f32, f32, f32),
+    images: &[String],
+) {
+    egui::ComboBox::from_label("그림")
+        .width(200.0)
+        .selected_text(path.rsplit('/').next().unwrap_or(path).to_owned())
+        .show_ui(ui, |ui| {
+            for p in images {
+                ui.selectable_value(path, p.clone(), p);
+            }
+        });
+    ui.horizontal(|ui| {
+        ui.label("경로");
+        ui.add(egui::TextEdit::singleline(path).desired_width(200.0));
+    });
+    let mut part = region.is_some();
+    if ui
+        .checkbox(&mut part, "그림의 일부만 (픽셀 사각형)")
+        .changed()
+    {
+        *region = part.then_some((0, 0, 32, 32));
+    }
+    if let Some((x, y, w, h)) = region.as_mut() {
+        ui.horizontal(|ui| {
+            ui.add(egui::DragValue::new(x).range(0..=8192).prefix("x "));
+            ui.add(egui::DragValue::new(y).range(0..=8192).prefix("y "));
+            ui.add(egui::DragValue::new(w).range(1..=8192).prefix("w "));
+            ui.add(egui::DragValue::new(h).range(1..=8192).prefix("h "));
+        });
+    }
+    ui.horizontal(|ui| {
+        ui.label("9-slice 가장자리");
+        ui.add(egui::DragValue::new(border).range(0..=256).suffix(" px"));
+    });
+    ui.weak("0 = 늘여 그리기. 0 보다 크면 가장자리는 그대로 두고 가운데만 늘린다 (창·배너 틀).");
+    let mut rgba = [tint.0, tint.1, tint.2, tint.3];
+    ui.horizontal(|ui| {
+        ui.label("색 (곱하기)");
+        if ui.color_edit_button_rgba_unmultiplied(&mut rgba).changed() {
+            *tint = (rgba[0], rgba[1], rgba[2], rgba[3]);
+        }
+        if ui.small_button("흰색").clicked() {
+            *tint = (1.0, 1.0, 1.0, 1.0);
+        }
+    });
+    ui.weak("그림 파일을 바꿨으면 다시 시작해야 보입니다 (새 그림은 곧바로 올라갑니다).");
+}
+
 /// 종류마다 다른 항목.
-fn kind_fields(ui: &mut egui::Ui, kind: &mut WidgetKind) {
+fn kind_fields(ui: &mut egui::Ui, kind: &mut WidgetKind, images: &[String]) {
     match kind {
+        WidgetKind::Image {
+            path,
+            region,
+            border,
+            tint,
+        } => image_fields(ui, path, region, border, tint, images),
         WidgetKind::Panel { frame } => {
             ui.checkbox(frame, "창 그림 (끄면 자리만 잡는 투명 그룹)");
         }
@@ -828,7 +905,7 @@ fn kind_fields(ui: &mut egui::Ui, kind: &mut WidgetKind) {
                     .collect::<Vec<_>>()
                     .join(" ")
             ));
-            ui.weak("⚠ 폰트에 한글과 '/' 가 없습니다 — 영문·숫자만 보입니다.");
+            ui.weak("테마에 시스템 폰트(text_font)가 없으면 한글이 보이지 않습니다.");
         }
         WidgetKind::Bar { source, color } => {
             egui::ComboBox::from_label("값")

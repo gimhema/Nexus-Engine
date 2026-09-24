@@ -6,50 +6,42 @@
 // Image 위젯의 path 는 작업 디렉터리 기준 PNG (소문자·'/'), region 은 그림의 픽셀 사각형이다.
 (
     version: 1,
-    name: "일시정지",
+    name: "로딩",
     widgets: [
         (
             id: "window",
             anchor: Center,
             pos: (0, 0),
-            size: Some((140, 132)),
+            size: Some((200, 124)),
             kind: Panel(
                 frame: true,
             ),
             children: [
                 (
-                    id: "title",
+                    id: "picture",
                     anchor: Top,
                     pos: (0, 12),
-                    kind: Text(
-                        format: "일시정지",
+                    kind: Image(
+                        path: "assets/third_party/zelda-like-armm1998/gfx/overworld.png",
+                        region: Some((96, 0, 80, 64)),
                     ),
                 ),
                 (
-                    id: "resume",
-                    anchor: Center,
-                    pos: (0, -12),
-                    kind: Button(
-                        label: "계속하기",
-                        action: Resume,
-                    ),
-                ),
-                (
-                    id: "options",
-                    anchor: Center,
-                    pos: (0, 14),
-                    kind: Button(
-                        label: "설정",
-                        action: OpenScreen("settings"),
-                    ),
-                ),
-                (
-                    id: "to_menu",
+                    id: "label",
                     anchor: Bottom,
-                    pos: (0, -10),
-                    kind: Button(
-                        label: "메인 화면",
-                        action: OpenStartLevel,
+                    pos: (0, -24),
+                    kind: Text(
+                        format: "불러오는 중…",
+                    ),
+                ),
+                (
+                    id: "progress",
+                    anchor: Bottom,
+                    pos: (0, -12),
+                    size: Some((160, 6)),
+                    kind: Bar(
+                        source: Loading,
+                        color: (0.45, 0.75, 1.0),
                     ),
                 ),
             ],

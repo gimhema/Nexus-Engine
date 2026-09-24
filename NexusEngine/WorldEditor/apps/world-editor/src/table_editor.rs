@@ -40,7 +40,7 @@ pub(crate) enum Tab {
 impl Tab {
     const ALL: [Self; 3] = [Self::Items, Self::Skills, Self::Loot];
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Items => "아이템",
             Self::Skills => "스킬",
@@ -113,6 +113,21 @@ impl TableEditor {
 
     pub(crate) fn take_saved(&mut self) -> bool {
         std::mem::take(&mut self.saved_now)
+    }
+
+    /// 이 항목을 저장하지 않은 채 고치는 중인가 — 파일 작업(삭제)이 막는다 (P9).
+    pub(crate) fn blocks(&self, tab: Tab, id: u32) -> bool {
+        self.tab == tab && self.current == Some(id) && self.is_dirty()
+    }
+
+    /// 항목이 지워졌다 — 열어 둔 것이 그 항목이면 닫는다.
+    pub(crate) fn forget(&mut self, tab: Tab, id: u32) {
+        if self.tab == tab && self.current == Some(id) {
+            self.current = None;
+            self.edit = None;
+            self.is_new = false;
+        }
+        let _ = self.reload();
     }
 
     fn select(&mut self, id: u32) {
@@ -391,6 +406,58 @@ impl TableEditor {
             Err(e) => self.status = Some((true, format!("저장하지 않았습니다 — {e}"))),
         }
     }
+}
+
+/// 항목 하나를 새 번호로 복사한 두 텍스트와 새 이름 — 콘텐츠 브라우저의 "복제" (P9 파일 작업).
+///
+/// 저장과 **같은 모양**으로 끼운다 (`patch`) — 그래서 검사도 같다. 이름이 있는 표(아이템·스킬)는
+/// "복사본" 을 붙인다 — 목록에서 두 개가 같은 이름으로 보이지 않게.
+pub(crate) fn duplicate(
+    rules: &str,
+    display: &str,
+    tab: Tab,
+    from: u32,
+    to: u32,
+) -> Result<(String, String, String), String> {
+    let forms = table_forms(rules, display)?;
+    let copy = |name: &str| {
+        if name.is_empty() {
+            String::new()
+        } else {
+            format!("{name} 복사본")
+        }
+    };
+    let (edit, taken) = match tab {
+        Tab::Items => (
+            forms.items.get(&from).cloned().map(|mut f| {
+                f.name = copy(&f.name);
+                Edit::Item(f)
+            }),
+            forms.items.contains_key(&to),
+        ),
+        Tab::Skills => (
+            forms.skills.get(&from).cloned().map(|mut f| {
+                f.name = copy(&f.name);
+                Edit::Skill(f)
+            }),
+            forms.skills.contains_key(&to),
+        ),
+        Tab::Loot => (
+            forms.loot.get(&from).cloned().map(Edit::Loot),
+            forms.loot.contains_key(&to),
+        ),
+    };
+    if taken {
+        return Err(format!("{} #{to} 은(는) 이미 있습니다", tab.label()));
+    }
+    let edit = edit.ok_or_else(|| format!("{} #{from} 이 없습니다", tab.label()))?;
+    let name = match &edit {
+        Edit::Item(f) => f.name.clone(),
+        Edit::Skill(f) => f.name.clone(),
+        Edit::Loot(_) => format!("드롭 표 #{to}"),
+    };
+    let (rules, display) = patch(rules, display, to, &edit)?;
+    Ok((rules, display, name))
 }
 
 /// 두 텍스트에 항목을 끼우고 **게임이 읽는 것과 같은 검사**를 통과하는지 본다.

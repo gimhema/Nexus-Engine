@@ -2,8 +2,8 @@
 // 메뉴 UI → 위젯 편집기. 저장하면 이 파일이 통째로 다시 쓰이므로 주석은 남지 않는다.
 //
 // pos·size 는 UI 픽셀(테마의 scale 을 곱하기 전)이고, anchor 기준점에서 오른쪽·아래가 +다.
-// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {level} {exp} {exp_to_next}
-// ⚠ 비트맵 폰트에 한글도 '/' 도 없다 — 화면 문구는 영문 대문자·숫자만.
+// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {level} {exp} {exp_to_next} {loading}(로딩 %)
+// Image 위젯의 path 는 작업 디렉터리 기준 PNG (소문자·'/'), region 은 그림의 픽셀 사각형이다.
 (
     version: 1,
     name: "게임 화면",

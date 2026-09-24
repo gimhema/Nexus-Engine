@@ -202,6 +202,75 @@ pub(crate) fn replace_field(text: &str, field: &str, value: &str) -> Result<Stri
     Ok(text)
 }
 
+/// 필드 블록 `field: [` … `],` (또는 `{` … `},`) 의 **안쪽을 통째로** `entries` 로 바꾼다.
+///
+/// 블록 **안**의 주석은 남지 않는다 (다시 쓰는 줄이다) — 블록 위의 주석은 남는다.
+/// `field: [],` 처럼 한 줄로 빈 블록이어도 되고, `entries` 가 비면 한 줄 빈 블록으로 쓴다.
+/// 블록이 아예 없으면 파일 맨 끝 `)` 바로 앞에 새로 넣는다 (`#[serde(default)]` 필드).
+pub(crate) fn replace_block(
+    text: &str,
+    field: &str,
+    open: char,
+    entries: &[String],
+) -> Result<String, String> {
+    let close = match open {
+        '[' => ']',
+        '{' => '}',
+        _ => return Err(format!("'{open}' 은(는) 블록 괄호가 아님")),
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let head = format!("{field}:");
+    let start = lines.iter().position(|l| {
+        let t = code_part(l).trim();
+        t.starts_with(&head) && t.contains(open)
+    });
+    let (start, end, indent) = match start {
+        Some(start) => {
+            let indent = indent_of(lines[start]);
+            let t = code_part(lines[start]).trim();
+            let end = if t.ends_with(&format!("{close},")) || t.ends_with(close) {
+                start // 한 줄짜리 (`field: [],`)
+            } else {
+                lines[start + 1..]
+                    .iter()
+                    .position(|l| {
+                        let t = code_part(l).trim();
+                        (t == close.to_string() || t == format!("{close},"))
+                            && indent_of(l) == indent
+                    })
+                    .map(|i| start + 1 + i)
+                    .ok_or_else(|| format!("'{field}' 블록이 닫히지 않음"))?
+            };
+            (start, end, indent)
+        }
+        None => {
+            // 없는 블록 — 맨 끝 `)` 앞에 넣는다. 들여쓰기는 최상위 필드와 같은 4칸.
+            let at = lines
+                .iter()
+                .rposition(|l| l.trim() == ")")
+                .ok_or_else(|| format!("'{field}' 을 넣을 자리(맨 끝 ')')를 찾지 못함"))?;
+            (at, at - 1, 4)
+        }
+    };
+    let pad = " ".repeat(indent);
+    let mut block = Vec::new();
+    if entries.is_empty() {
+        block.push(format!("{pad}{field}: {open}{close},"));
+    } else {
+        block.push(format!("{pad}{field}: {open}"));
+        block.extend(entries.iter().map(|e| format!("{pad}    {e}")));
+        block.push(format!("{pad}{close},"));
+    }
+    let mut out: Vec<String> = lines[..start].iter().map(|l| (*l).to_owned()).collect();
+    out.extend(block);
+    // 새로 넣은 경우(end < start)는 맨 끝 `)` 부터 그대로 잇는다.
+    let rest = if end < start { start } else { end + 1 };
+    out.extend(lines[rest..].iter().map(|l| (*l).to_owned()));
+    let mut text = out.join("\n");
+    text.push('\n');
+    Ok(text)
+}
+
 /// RON 문자열 값 — 따옴표와 역슬래시를 막는다.
 pub(crate) fn quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))

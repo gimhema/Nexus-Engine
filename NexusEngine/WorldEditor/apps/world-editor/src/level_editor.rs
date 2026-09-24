@@ -8,6 +8,7 @@
 //! │ HUD       [hud ▼]                         │
 //! │ 들어갈 때 [없음 ▼]                        │
 //! │ 일시정지  [pause ▼]                       │
+//! │ 로딩 화면 [loading ▼]  최소 [800 ms]        │
 //! │ ★ 시작 레벨 / [시작 레벨로 지정]           │
 //! │ [저장] [원래대로] [이 레벨 플레이]          │
 //! └──────────────────────────────────────────┘
@@ -254,6 +255,7 @@ impl LevelEditor {
                 ("HUD", &mut level.hud, "level-hud"),
                 ("들어갈 때", &mut level.on_enter, "level-enter"),
                 ("일시정지", &mut level.pause, "level-pause"),
+                ("로딩 화면", &mut level.loading, "level-loading"),
             ] {
                 ui.label(label);
                 egui::ComboBox::from_id_salt(salt)
@@ -267,8 +269,19 @@ impl LevelEditor {
                     });
                 ui.end_row();
             }
+
+            ui.label("로딩 최소 시간");
+            ui.add_enabled(
+                level.loading.is_some(),
+                egui::DragValue::new(&mut level.loading_ms)
+                    .range(0..=crate::level::MAX_LOADING_MS)
+                    .speed(10.0)
+                    .suffix(" ms"),
+            );
+            ui.end_row();
         });
         ui.weak("존이 없으면 UI 만 있는 레벨(메인 화면)입니다 — '들어갈 때' 화면이 바탕이 됩니다.");
+        ui.weak("로딩 화면은 이 레벨을 여는 동안 뜹니다 — 막대의 값을 '로딩 진행' 으로, 글자에 {loading} 을 쓰면 진행률이 보입니다.");
     }
 
     fn footer(&mut self, ui: &mut egui::Ui) {

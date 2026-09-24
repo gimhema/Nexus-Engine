@@ -25,6 +25,7 @@ mod level_editor;
 mod palette;
 mod play;
 mod ron_patch;
+mod rules_editor;
 mod save_file;
 mod scene;
 mod screen;
@@ -148,6 +149,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// 로딩 화면을 띄워 두고 기다리는 레벨.
+#[derive(Debug)]
+struct PendingLevel {
+    id: String,
+    /// 로딩 화면이 떠 있던 시간 (시뮬레이션 시계).
+    elapsed: Duration,
+    /// 레벨 파일의 `loading_ms`.
+    min: Duration,
+    /// 로딩 화면을 그린 프레임 수.
+    frames: u32,
+}
+
 #[derive(Debug)]
 struct Editor {
     renderer: Option<WgpuRenderer>,
@@ -181,6 +194,8 @@ struct Editor {
     levels: Levels,
     /// 게임 셸 — 열린 레벨과 화면 스택. `None` 이면 에디터 편집 중이다.
     shell: Option<Shell>,
+    /// 로딩 화면을 띄워 두고 열기를 기다리는 레벨 (레벨 파일의 `loading`).
+    pending_level: Option<PendingLevel>,
     /// 화면 버튼 상태 — 마우스가 올라간 것 / 누르고 있는 것.
     ui_hover: Option<String>,
     ui_press: Option<String>,
@@ -245,6 +260,7 @@ impl Default for Editor {
             screen_editor: ScreenEditor::default(),
             levels: Levels::default(),
             shell: None,
+            pending_level: None,
             ui_hover: None,
             ui_press: None,
             data: None,
@@ -560,6 +576,7 @@ impl Editor {
     /// 플레이를 멈추고 에디터로 돌아온다. 진행 상황은 저장한다 (P3-4 정상 종료 경로).
     fn stop_play(&mut self) {
         self.shell = None;
+        self.pending_level = None;
         self.ui_hover = None;
         self.ui_press = None;
         if let Some(session) = self.play.take() {
@@ -660,18 +677,59 @@ impl Editor {
             self.notify(format!("'{id}' 레벨이 없습니다"), true);
             return;
         };
+        // 막을 일은 로딩 화면을 띄우기 **전에** 확인한다 — 로딩 화면이 뜬 뒤에 거절되면 헷갈린다.
+        if level.zone.is_some() && self.is_dirty() {
+            self.notify(
+                format!(
+                    "저장하지 않은 편집이 있어 '{}' 을 열지 않았습니다 — 먼저 저장하세요",
+                    level.name
+                ),
+                true,
+            );
+            return;
+        }
+        // 로딩 화면이 있으면 그것만 띄워 두고, 몇 프레임 그린 뒤에 실제로 연다 (`finish_pending_level`).
+        // 여는 일(존 파일 읽기·시뮬레이션 만들기)이 한 프레임을 멈추게 해도 그동안 로딩 화면이 보인다.
+        if let Some(screen) = level.loading.clone() {
+            self.stop_play();
+            self.shell = Some(Shell::new(id, Some(&screen)));
+            self.pending_level = Some(PendingLevel {
+                id: id.to_owned(),
+                elapsed: Duration::ZERO,
+                min: Duration::from_millis(u64::from(level.loading_ms)),
+                frames: 0,
+            });
+            return;
+        }
+        self.enter_level(id, &level);
+    }
+
+    /// 로딩 화면을 충분히 보여 줬으면 기다리던 레벨을 실제로 연다 — 그린 **뒤에** 부른다.
+    ///
+    /// 조건: 로딩 화면을 적어도 두 프레임 그렸고(한 번은 화면에 나갔다), 최소 시간이 지났다.
+    fn finish_pending_level(&mut self) {
+        let Some(p) = self.pending_level.as_mut() else {
+            return;
+        };
+        p.frames += 1;
+        if p.frames < 2 || p.elapsed < p.min {
+            return;
+        }
+        let id = p.id.clone();
+        self.pending_level = None;
+        match self.levels.level(&id).cloned() {
+            Some(level) => self.enter_level(&id, &level),
+            None => {
+                self.stop_play();
+                self.notify(format!("'{id}' 레벨이 없습니다"), true);
+            }
+        }
+    }
+
+    /// 레벨에 실제로 들어간다 — 존이 있으면 열고 플레이를 시작하고, 없으면 화면만 띄운다.
+    fn enter_level(&mut self, id: &str, level: &level::LevelFile) {
         match level.zone.as_deref() {
             Some(zone) => {
-                if self.is_dirty() {
-                    self.notify(
-                        format!(
-                            "저장하지 않은 편집이 있어 '{}' 을 열지 않았습니다 — 먼저 저장하세요",
-                            level.name
-                        ),
-                        true,
-                    );
-                    return;
-                }
                 let same = self
                     .levels
                     .find_by_zone(self.zone_path.as_deref())
@@ -956,6 +1014,10 @@ impl Editor {
 
     /// 일시정지 — 레벨이 정한 화면을 열고 닫는다. 겹친 창이 있으면 그것부터 닫는다.
     fn toggle_pause(&mut self) {
+        // 로딩 중에는 일시정지하지 않는다 — 아직 그 레벨에 들어가지 않았다.
+        if self.pending_level.is_some() {
+            return;
+        }
         let pause = self
             .shell
             .as_ref()
@@ -1356,6 +1418,11 @@ impl Editor {
                     self.notify(format!("콘텐츠 브라우저에 '{path}' 폴더가 없습니다"), true);
                 }
             }
+            Step::ContentMenu => {
+                if let Some(ui) = self.ui.as_mut() {
+                    ui.content_mut().open_menu();
+                }
+            }
             Step::ContentView(list) => {
                 if let Some(ui) = self.ui.as_mut() {
                     ui.content_mut().set_list_view(list);
@@ -1650,7 +1717,10 @@ impl Editor {
         if ids.is_empty() {
             return;
         }
-        let values = Values::of(self.play.as_ref(), self.show_items || editing);
+        let mut values = Values::of(self.play.as_ref(), self.show_items || editing);
+        if let Some(p) = &self.pending_level {
+            values.loading = (p.elapsed.as_millis() as u32, p.min.as_millis() as u32);
+        }
         let size = self.screen_size(viewport);
         let state = screen::DrawState {
             hover: self.ui_hover.as_deref(),
@@ -1963,6 +2033,10 @@ impl App for Editor {
         // 플레이 중이면 시뮬레이션이 여기서 돈다 — 게임 규칙은 20Hz 고정 timestep 에서만 진행한다.
         // 에디터 조작(카메라·선택·편집)은 뷰·저작 작업이므로 UI 프레임에서 처리한다.
         // 일시정지 화면이 떠 있으면 시뮬레이션을 멈춘다 (화면·애니메이션은 계속 돈다).
+        // 로딩 화면의 시계도 시뮬레이션 시계로 잰다 (렌더 프레임과 무관하게 같은 속도로).
+        if let Some(p) = self.pending_level.as_mut() {
+            p.elapsed += dt;
+        }
         let paused = self.shell.as_ref().is_some_and(|s| s.paused);
         if let Some(play) = self.play.as_mut().filter(|_| !paused) {
             play.tick(dt, self.sprites.as_ref());
@@ -1991,11 +2065,18 @@ impl App for Editor {
 
         // 화면 문구에 새 글자(편집기에서 타이핑한 한글 등)가 생겼으면 글자 아틀라스를
         // 다시 굽는다 — 프레임 바깥에서 텍스처를 올려야 하므로 그리기 전에 한다.
-        let font_warning = match self.renderer.as_mut() {
-            Some(renderer) => self.screens.ensure_text_glyphs(renderer),
-            None => None,
+        let (font_warning, image_warnings) = match self.renderer.as_mut() {
+            Some(renderer) => (
+                self.screens.ensure_text_glyphs(renderer),
+                // 그림 위젯의 그림도 같은 이유로 여기서 — 처음 보는 경로만 올린다.
+                self.screens.ensure_images(renderer),
+            ),
+            None => (None, Vec::new()),
         };
         if let Some(e) = font_warning {
+            self.notify(e, true);
+        }
+        for e in image_warnings {
             self.notify(e, true);
         }
 
@@ -2007,6 +2088,8 @@ impl App for Editor {
         {
             eprintln!("프레임 스킵: {e}");
         }
+        // 로딩 화면이 화면에 나간 뒤에 레벨을 연다.
+        self.finish_pending_level();
 
         // 그리지 못한 UI 프레임(최소화 등)의 텍스처 변경분은 다음 프레임으로 넘긴다.
         if let Some(frame) = ui_frame {

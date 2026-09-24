@@ -238,6 +238,8 @@ pub(crate) enum ContentAction {
     /// 데이터 표 편집기 — 아이템·스킬·드롭 표 (P10).
     EditTable(Tab, u32),
     NewTable(Tab),
+    /// 게임 규칙 설정 — `rules.ron` 의 한 벌짜리 값 (시드·기본 액터·진영·시작 소지품).
+    EditRules,
     /// 새 레벨 / 새 액터 — 해당 편집기에서 만든다.
     NewLevel,
     NewActor,
@@ -280,6 +282,10 @@ pub(crate) struct ContentBrowser {
     loaded: bool,
     /// 파일 작업 확인 창 (P9).
     op_dialog: Option<OpDialog>,
+    /// 빈 곳 오른쪽 클릭 메뉴를 코드로 연다 — 자동 검증(`contentmenu`)용.
+    menu_request: bool,
+    /// 코드로 연 메뉴의 자리 (마우스 자리가 없으므로).
+    menu_at: Option<egui::Pos2>,
 }
 
 /// 파일 작업 확인 창 — 새 이름을 받고, 할 일을 **미리 계산해** 보여 준다.
@@ -474,12 +480,17 @@ impl ContentBrowser {
     fn begin(&mut self, kind: OpKind, asset: &Asset) {
         let target = match (kind, asset.kind) {
             (OpKind::Delete, _) => String::new(),
-            (OpKind::Duplicate, AssetKind::Actor) => {
-                // 이 번호 다음의 빈 번호.
-                let id = asset.actor_id().unwrap_or(100);
-                let free = (id + 1..)
-                    .find(|n| !self.forms.actors.contains_key(n))
-                    .unwrap_or(id + 1);
+            (OpKind::Duplicate, kind) if kind.is_virtual() => {
+                // 이 번호 다음의 빈 번호 — 그 표 안에서.
+                let id = asset.entry_id().unwrap_or(100);
+                let t = &self.forms.tables;
+                let taken = |n: &u32| match kind {
+                    AssetKind::Item => t.items.contains_key(n),
+                    AssetKind::Skill => t.skills.contains_key(n),
+                    AssetKind::Loot => t.loot.contains_key(n),
+                    _ => self.forms.actors.contains_key(n),
+                };
+                let free = (id + 1..).find(|n| !taken(n)).unwrap_or(id + 1);
                 free.to_string()
             }
             (OpKind::Duplicate, _) => format!("{}_copy", file_stem(asset)),
@@ -549,7 +560,7 @@ impl ContentBrowser {
                 ui.weak(&dialog.asset.key);
                 if dialog.kind != OpKind::Delete {
                     ui.horizontal(|ui| {
-                        ui.label(if dialog.asset.kind == AssetKind::Actor {
+                        ui.label(if dialog.asset.kind.is_virtual() {
                             "새 번호"
                         } else {
                             "새 이름"
@@ -621,7 +632,7 @@ impl ContentBrowser {
                         egui::ScrollArea::vertical()
                             .id_salt("content_tree")
                             .auto_shrink([false, false])
-                            .show(ui, |ui| self.tree(ui, "", &mut nav));
+                            .show(ui, |ui| self.tree(ui, "", &mut nav, &mut action));
                         self.reveal = false;
                         if let Some(f) = nav {
                             self.navigate(&f);
@@ -650,21 +661,9 @@ impl ContentBrowser {
         let mut action = None;
         ui.horizontal(|ui| {
             ui.strong("콘텐츠 브라우저");
+            // 오른쪽 클릭 메뉴와 같은 목록.
             ui.menu_button("새로 만들기", |ui| {
-                for (label, a) in [
-                    ("레벨…", ContentAction::NewLevel),
-                    ("액터…", ContentAction::NewActor),
-                    ("아이템…", ContentAction::NewTable(Tab::Items)),
-                    ("스킬…", ContentAction::NewTable(Tab::Skills)),
-                    ("드롭 표…", ContentAction::NewTable(Tab::Loot)),
-                    ("UI 화면… (위젯 편집기)", ContentAction::NewScreen),
-                    ("스크립트… (스크립트 편집기)", ContentAction::NewScript),
-                ] {
-                    if ui.button(label).clicked() {
-                        action = Some(a);
-                        ui.close();
-                    }
-                }
+                action = create_menu(ui, &self.folder);
             });
             if ui.button("새로 고침").clicked() {
                 self.refresh();
@@ -765,8 +764,31 @@ impl ContentBrowser {
         });
     }
 
-    /// 왼쪽 — 폴더 트리. 누른 폴더는 `nav` 로 돌려준다.
-    fn tree(&self, ui: &mut egui::Ui, folder: &str, nav: &mut Option<String>) {
+    /// 왼쪽 — 폴더 트리. 누른 폴더는 `nav` 로, 오른쪽 클릭 메뉴에서 고른 것은 `act` 로 돌려준다.
+    fn tree(
+        &self,
+        ui: &mut egui::Ui,
+        folder: &str,
+        nav: &mut Option<String>,
+        act: &mut Option<ContentAction>,
+    ) {
+        // 폴더 이름 오른쪽 클릭 — 그 폴더로 가면서 그 폴더에 맞는 새로 만들기 메뉴.
+        let menu =
+            |r: egui::Response, nav: &mut Option<String>, act: &mut Option<ContentAction>| {
+                if r.clicked() {
+                    *nav = Some(folder.to_owned());
+                }
+                let _ = r.context_menu(|ui| {
+                    if ui.button("이 폴더 열기").clicked() {
+                        *nav = Some(folder.to_owned());
+                        ui.close();
+                    }
+                    ui.separator();
+                    if let Some(a) = create_menu(ui, folder) {
+                        *act = Some(a);
+                    }
+                });
+            };
         let kids = self.subfolders(folder);
         let picked = self.folder == folder;
         let count = self
@@ -784,9 +806,7 @@ impl ContentBrowser {
         if kids.is_empty() {
             ui.horizontal(|ui| {
                 ui.add_space(ui.spacing().indent);
-                if ui.selectable_label(picked, text).clicked() {
-                    *nav = Some(folder.to_owned());
-                }
+                menu(ui.selectable_label(picked, text), nav, act);
             });
             return;
         }
@@ -802,21 +822,80 @@ impl ContentBrowser {
         }
         state
             .show_header(ui, |ui| {
-                if ui.selectable_label(picked, text).clicked() {
-                    *nav = Some(folder.to_owned());
-                }
+                menu(ui.selectable_label(picked, text), nav, act);
             })
             .body(|ui| {
                 for kid in &kids {
-                    self.tree(ui, kid, nav);
+                    self.tree(ui, kid, nav, act);
                 }
             });
+    }
+
+    /// 빈 곳 오른쪽 클릭 — 이 폴더에 맞는 새로 만들기 · 편집기 열기 · 보기 · 새로 고침.
+    fn background_menu(&mut self, bg: &egui::Response, action: &mut Option<ContentAction>) {
+        let mut popup = egui::Popup::context_menu(bg);
+        if std::mem::take(&mut self.menu_request) {
+            self.menu_at = Some(bg.rect.left_top() + egui::vec2(40.0, 24.0));
+            popup = popup.open_memory(Some(egui::containers::SetOpenCommand::Bool(true)));
+        }
+        if let Some(at) = self.menu_at {
+            popup = popup.at_position(at);
+        }
+        let folder = self.folder.clone();
+        let (mut view, mut refresh) = (None, false);
+        let shown = popup.show(|ui| {
+            if let Some(a) = create_menu(ui, &folder) {
+                *action = Some(a);
+            }
+            ui.separator();
+            for (label, v) in [("아이콘 보기", View::Icons), ("자세히 보기", View::List)]
+            {
+                if ui.button(label).clicked() {
+                    view = Some(v);
+                    ui.close();
+                }
+            }
+            if ui.button("새로 고침").clicked() {
+                refresh = true;
+                ui.close();
+            }
+        });
+        if shown.is_none() {
+            self.menu_at = None;
+        }
+        if let Some(v) = view {
+            self.view = v;
+        }
+        if refresh {
+            self.refresh();
+        }
+    }
+
+    /// 빈 곳 오른쪽 클릭 메뉴를 연다 — 자동 검증용.
+    pub(crate) fn open_menu(&mut self) {
+        self.open = true;
+        if !self.loaded {
+            self.refresh();
+        }
+        self.menu_request = true;
     }
 
     /// 가운데 — 지금 폴더의 내용 (아이콘 / 자세히).
     fn contents(&mut self, ui: &mut egui::Ui, entries: &[Entry]) -> Option<ContentAction> {
         let mut action = None;
         let mut nav = None;
+        // 빈 곳 — 항목보다 **먼저** 등록해야 항목이 위에서 클릭을 받는다 (egui 는 나중 것이 위).
+        let bg = ui.interact(
+            ui.available_rect_before_wrap(),
+            ui.id().with("content_bg"),
+            egui::Sense::click(),
+        );
+        if bg.clicked() {
+            // 탐색기처럼 빈 곳을 누르면 선택이 풀린다.
+            self.selected = None;
+            self.details = None;
+        }
+        self.background_menu(&bg, &mut action);
         egui::ScrollArea::vertical()
             .id_salt("content_list")
             .auto_shrink([false, false])
@@ -1113,6 +1192,85 @@ impl ContentBrowser {
     }
 }
 
+/// 오른쪽 클릭 메뉴의 "새로 만들기" 항목 — 도구 줄의 *새로 만들기* 와 같은 목록이다.
+/// 파일 이름·번호는 각 편집기에서 정한다 (여기서는 편집기를 새 항목 상태로 열 뿐이다).
+fn create_items() -> [(&'static str, ContentAction); 5] {
+    [
+        ("레벨…", ContentAction::NewLevel),
+        ("액터…", ContentAction::NewActor),
+        ("아이템…", ContentAction::NewTable(Tab::Items)),
+        ("스킬…", ContentAction::NewTable(Tab::Skills)),
+        ("드롭 표…", ContentAction::NewTable(Tab::Loot)),
+    ]
+}
+
+/// 창 안에 "새로 만들기" 가 있는 편집기들 — 창을 열어 그 안에서 만든다.
+fn editor_items() -> [(&'static str, ContentAction); 4] {
+    [
+        (
+            "게임 규칙 설정 (진영·기본 액터·시작 소지품)",
+            ContentAction::EditRules,
+        ),
+        (
+            "스크립트 편집기 (새 스크립트·편집)",
+            ContentAction::NewScript,
+        ),
+        ("위젯 편집기 (UI 화면 디자인)", ContentAction::NewScreen),
+        (
+            "지형 팔레트 (타일·건물 조각)",
+            ContentAction::OpenPalette(String::new()),
+        ),
+    ]
+}
+
+/// 이 폴더에서 가장 그럴듯한 새 리소스 — 메뉴 맨 위에 굵게 보인다.
+fn suggestion(folder: &str) -> Option<(&'static str, ContentAction)> {
+    let actor = format!("{VIRTUAL_ROOT}/{}", AssetKind::Actor.label());
+    let item = format!("{VIRTUAL_ROOT}/{}", AssetKind::Item.label());
+    let skill = format!("{VIRTUAL_ROOT}/{}", AssetKind::Skill.label());
+    let loot = format!("{VIRTUAL_ROOT}/{}", AssetKind::Loot.label());
+    Some(match folder {
+        f if is_under(f, "levels") && !f.is_empty() => ("새 레벨…", ContentAction::NewLevel),
+        f if is_under(f, "ui") && !f.is_empty() => {
+            ("새 UI 화면… (위젯 편집기)", ContentAction::NewScreen)
+        }
+        f if is_under(f, "data/scripts") && !f.is_empty() => {
+            ("새 스크립트… (스크립트 편집기)", ContentAction::NewScript)
+        }
+        f if f == actor => ("새 액터…", ContentAction::NewActor),
+        f if f == item => ("새 아이템…", ContentAction::NewTable(Tab::Items)),
+        f if f == skill => ("새 스킬…", ContentAction::NewTable(Tab::Skills)),
+        f if f == loot => ("새 드롭 표…", ContentAction::NewTable(Tab::Loot)),
+        _ => return None,
+    })
+}
+
+/// 오른쪽 클릭 메뉴 — 이 폴더에 맞는 것 먼저, 그다음 새로 만들기 · 편집기 열기.
+/// 고른 것을 돌려준다.
+fn create_menu(ui: &mut egui::Ui, folder: &str) -> Option<ContentAction> {
+    let mut picked = None;
+    let mut item = |ui: &mut egui::Ui, text: egui::RichText, a: ContentAction| {
+        if ui.button(text).clicked() {
+            picked = Some(a);
+            ui.close();
+        }
+    };
+    if let Some((label, a)) = suggestion(folder) {
+        item(ui, egui::RichText::new(label).strong(), a);
+        ui.separator();
+    }
+    ui.weak("새로 만들기");
+    for (label, a) in create_items() {
+        item(ui, egui::RichText::new(label), a);
+    }
+    ui.separator();
+    ui.weak("편집기 열기");
+    for (label, a) in editor_items() {
+        item(ui, egui::RichText::new(label), a);
+    }
+    picked
+}
+
 /// 폴더 아이콘 색 (sRGB).
 const FOLDER_COLOR: egui::Color32 = egui::Color32::from_rgb(225, 185, 85);
 /// 가상 폴더(게임 데이터) 색 — 디스크에 없는 폴더라는 표시.
@@ -1245,8 +1403,11 @@ pub(crate) fn open_action(asset: &Asset) -> ContentAction {
         AssetKind::Loot => table_action(asset, Tab::Loot),
         AssetKind::Data => match asset.key.as_str() {
             // 표를 통째로 여는 편집기는 없다 — 그 표의 항목을 고치는 편집기로 간다.
-            "data/rules.ron" | "data/display.ron" => ContentAction::Notice(String::from(
-                "이 표의 항목은 '액터' 목록에서 하나씩 엽니다 (아이템·스킬 편집기는 아직 없습니다)",
+            // 표의 항목(액터·아이템·스킬·드롭 표)은 "게임 데이터" 폴더에서 하나씩 연다.
+            // 파일을 두 번 누르면 항목이 아닌 한 벌짜리 값(시드·기본 액터·진영·시작 소지품)을 고친다.
+            "data/rules.ron" => ContentAction::EditRules,
+            "data/display.ron" => ContentAction::Notice(String::from(
+                "이름·그림·색은 '게임 데이터' 폴더의 각 항목 편집기에서 고칩니다",
             )),
             "data/terrain.ron" => ContentAction::OpenPalette(String::new()),
             "data/ui.ron" => ContentAction::EditScreen(String::from("hud")),
@@ -1967,5 +2128,26 @@ mod tests {
         // 항목을 고르면 그 폴더로 간다.
         assert!(b.select_key("actor:102"));
         assert_eq!(b.folder, "게임 데이터/액터");
+    }
+
+    #[test]
+    fn the_right_click_menu_suggests_what_belongs_in_the_folder() {
+        let pick = |f: &str| suggestion(f).map(|(_, a)| a);
+        assert_eq!(pick("levels"), Some(ContentAction::NewLevel));
+        assert_eq!(pick("ui"), Some(ContentAction::NewScreen));
+        assert_eq!(pick("data/scripts"), Some(ContentAction::NewScript));
+        assert_eq!(pick("게임 데이터/액터"), Some(ContentAction::NewActor));
+        assert_eq!(
+            pick("게임 데이터/드롭 표"),
+            Some(ContentAction::NewTable(Tab::Loot))
+        );
+        assert_eq!(pick(""), None, "맨 위는 고르지 않는다");
+        assert_eq!(pick("data"), None);
+        assert_eq!(pick("assets/sprites"), None);
+        assert_eq!(pick("levels2"), None, "이름 앞부분만 같은 폴더");
+        // 새로 만들기 목록은 가상 항목 종류를 모두 덮는다.
+        let all: Vec<ContentAction> = create_items().into_iter().map(|(_, a)| a).collect();
+        assert!(all.contains(&ContentAction::NewActor));
+        assert!(all.contains(&ContentAction::NewTable(Tab::Skills)));
     }
 }

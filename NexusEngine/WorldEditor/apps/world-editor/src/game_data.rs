@@ -1278,6 +1278,130 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
     })
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 게임 규칙 설정 — 번호 표가 아닌 한 벌짜리 값들 (시드·플레이어 공격·기본 액터·진영·시작 소지품)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 진영 관계 — 편집기용 (파일 형식 타입을 밖에 내보내지 않으려고 따로 둔다).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum RelationChoice {
+    #[default]
+    Hostile,
+    Neutral,
+    Friendly,
+}
+
+impl RelationChoice {
+    pub(crate) const ALL: [Self; 3] = [Self::Hostile, Self::Neutral, Self::Friendly];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Hostile => "적대",
+            Self::Neutral => "중립",
+            Self::Friendly => "우호",
+        }
+    }
+
+    /// 파일에 적는 이름.
+    fn ron(self) -> &'static str {
+        match self {
+            Self::Hostile => "Hostile",
+            Self::Neutral => "Neutral",
+            Self::Friendly => "Friendly",
+        }
+    }
+}
+
+/// 진영 관계 한 줄 (대칭).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RelationRow {
+    pub(crate) a: u32,
+    pub(crate) b: u32,
+    pub(crate) relation: RelationChoice,
+}
+
+/// 마커 종류 — 기본 액터 칸의 순서 (파일의 `default_actors` 키와 같다).
+pub(crate) const MARKER_KINDS: [(&str, &str); 3] = [
+    ("Player", "플레이어 스폰"),
+    ("Npc", "NPC"),
+    ("Monster", "몬스터"),
+];
+
+/// `rules.ron` 의 한 벌짜리 값들 — 파일에 적힌 그대로.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct SettingsForm {
+    pub(crate) seed: u64,
+    /// 플레이어가 클릭으로 공격할 때 쓰는 스킬.
+    pub(crate) player_attack: u32,
+    /// [`MARKER_KINDS`] 순서의 기본 액터 번호.
+    pub(crate) default_actors: [u32; 3],
+    pub(crate) relations: Vec<RelationRow>,
+    /// `(아이템, 개수)`.
+    pub(crate) starting_kit: Vec<(u32, u32)>,
+}
+
+pub(crate) fn settings_form(rules: &str) -> Result<SettingsForm, String> {
+    let r: RulesFile = ron::from_str(rules).map_err(|e| format!("{RULES_PATH}: {e}"))?;
+    let actor = |k: MarkerKindFile| r.default_actors.get(&k).copied().unwrap_or(0);
+    Ok(SettingsForm {
+        seed: r.seed,
+        player_attack: r.player_attack,
+        default_actors: [
+            actor(MarkerKindFile::Player),
+            actor(MarkerKindFile::Npc),
+            actor(MarkerKindFile::Monster),
+        ],
+        relations: r
+            .relations
+            .iter()
+            .map(|x| RelationRow {
+                a: x.a,
+                b: x.b,
+                relation: match x.relation {
+                    RelationKindFile::Hostile => RelationChoice::Hostile,
+                    RelationKindFile::Neutral => RelationChoice::Neutral,
+                    RelationKindFile::Friendly => RelationChoice::Friendly,
+                },
+            })
+            .collect(),
+        starting_kit: r.starting_kit.iter().map(|s| (s.item, s.count)).collect(),
+    })
+}
+
+/// 설정을 `rules.ron` 텍스트에 끼운다 — 그 줄·그 블록만 바꾸고 나머지 주석은 둔다.
+/// 결과는 **두 파일을 함께 다시 검증**한 뒤에만 돌려준다 (없는 스킬·액터·아이템을 가리키면 거부).
+///
+/// ⚠ `relations`·`starting_kit`·`default_actors` 블록 **안**의 주석은 남지 않는다 (블록을 다시 쓴다).
+pub(crate) fn patch_settings(
+    rules: &str,
+    display: &str,
+    f: &SettingsForm,
+) -> Result<String, String> {
+    use crate::ron_patch::{replace_block, replace_field};
+    let mut text = replace_field(rules, "seed", &f.seed.to_string())?;
+    text = replace_field(&text, "player_attack", &f.player_attack.to_string())?;
+    let actors: Vec<String> = MARKER_KINDS
+        .iter()
+        .zip(f.default_actors)
+        .map(|((key, _), id)| format!("{key}: {id},"))
+        .collect();
+    text = replace_block(&text, "default_actors", '{', &actors)?;
+    let relations: Vec<String> = f
+        .relations
+        .iter()
+        .map(|r| format!("(a: {}, b: {}, relation: {}),", r.a, r.b, r.relation.ron()))
+        .collect();
+    text = replace_block(&text, "relations", '[', &relations)?;
+    let kit: Vec<String> = f
+        .starting_kit
+        .iter()
+        .map(|(item, count)| format!("(item: {item}, count: {count}),"))
+        .collect();
+    text = replace_block(&text, "starting_kit", '[', &kit)?;
+    GameData::parse(&text, display)?;
+    Ok(text)
+}
+
 /// 규칙·표시 두 파일을 쓴다 — **둘 다 임시 파일에 먼저** 쓴 뒤 이름을 바꾼다 (한쪽만 바뀐 채
 /// 멈추는 창을 좁힌다). 부르는 쪽이 `GameData::parse` 로 검증을 마친 텍스트를 넘긴다.
 pub(crate) fn write_tables(root: &Path, rules: &str, display: &str) -> Result<(), String> {
