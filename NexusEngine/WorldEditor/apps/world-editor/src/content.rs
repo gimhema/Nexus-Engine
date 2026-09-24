@@ -2,21 +2,27 @@
 //!
 //! ```text
 //! ┌ 콘텐츠 브라우저 ──────────────────────────────────────────────────────────┐
-//! │ [검색……]  [새로 고침] [새로 만들기 ▼]                                        │
-//! │ ▸ 전체 (52)     │ ● 마을           levels/village.level.ron  │ 레벨 · 마을     │
-//! │ ▸ 레벨 (3)      │ ● 메인 화면      levels/main.level.ron     │ 존: zones/…     │
-//! │ ▸ 맵 (2)        │ ● 샘플 존        levels/sample.level.ron   │ 쓰는 곳:        │
-//! │ ▸ UI 화면 (4)   │                                           │  ui/main_menu…  │
-//! │ ▸ 액터 (5) …    │                                           │ [열기]          │
+//! │ [새로 만들기 ▼] [새로 고침]  보기: (아이콘)(자세히)  종류: [모든 종류 ▼]      │
+//! │ [◀][▲]  프로젝트 › levels                                    [검색……]      │
+//! │ ▾ 프로젝트      │ ┌──┐ ┌──┐ ┌──┐                             │ 레벨 · 마을     │
+//! │   ▸ assets      │ │LV│ │LV│ │LV│                             │ 존: zones/…     │
+//! │   ▾ data        │ └──┘ └──┘ └──┘                             │ 쓰는 곳:        │
+//! │     scripts     │ 마을 메인 화면 샘플 존                       │  ui/main_menu…  │
+//! │   ▸ 게임 데이터 │                                            │ [열기]          │
+//! │ 3개 항목 · 선택: 마을                                                         │
 //! └──────────────────────────────────────────────────────────────────────────┘
 //! ```
 //!
+//! - **파일 탐색기처럼** 왼쪽은 폴더 트리, 가운데는 지금 폴더의 내용(하위 폴더 먼저),
+//!   위는 주소 줄(뒤로 · 위로 · 경로 조각)이다. 가운데는 **아이콘 / 자세히** 두 보기가 있다.
 //! - **한 번 누르면 상세**(오른쪽), **두 번 누르면 그 종류의 편집기**가 열린다 (언리얼과 같다).
-//! - 왼쪽은 폴더가 아니라 **종류별** 목록이다 — 같은 종류가 여러 폴더에 흩어져 있기 때문이다
-//!   (스프라이트 시트는 받아온 팩 폴더마다 그림 옆에 있다).
+//!   폴더는 두 번 누르면 들어간다.
+//! - **검색어나 종류 필터가 있으면 지금 폴더 아래 전체**에서 찾는다 (탐색기의 검색과 같다) —
+//!   같은 종류가 여러 폴더에 흩어져 있어서다 (스프라이트 시트는 받아온 팩 폴더마다 그림 옆에 있다).
 //! - **액터는 파일이 아니다.** `rules.ron`(수치)·`display.ron`(이름·시트) 표 안의 항목을
 //!   하나씩 가상 항목으로 보여 준다 — 서버 테이블과 짝을 맞춘 "반으로 나눈 표" 구조를
-//!   건드리지 않기 위해서다 (사용자 결정 2026-09-24).
+//!   건드리지 않기 위해서다 (사용자 결정 2026-09-24). 트리에서는 **"게임 데이터" 가상 폴더**
+//!   아래에 종류마다 하위 폴더로 모인다 (디스크에 그런 폴더는 없다).
 //! - **디스크의 파일만** 보인다. 실행 파일에 내장된 기본 데이터는 파일이 없으면 목록에 없다.
 //! - 목록은 창을 열 때·새로 고침·편집기가 저장한 뒤에만 다시 읽는다 (매 프레임 디스크를 훑지 않는다).
 //!
@@ -98,6 +104,71 @@ impl AssetKind {
             Self::Data => egui::Color32::from_rgb(160, 160, 170),
         }
     }
+
+    /// 아이콘 안의 짧은 글씨 — 영문이라 어느 폰트에서나 나온다.
+    fn badge(self) -> &'static str {
+        match self {
+            Self::Level => "LV",
+            Self::Zone => "MAP",
+            Self::Screen => "UI",
+            Self::Actor => "ACT",
+            Self::Item => "ITM",
+            Self::Skill => "SKL",
+            Self::Loot => "DRP",
+            Self::Script => "RHAI",
+            Self::Sheet => "SHT",
+            Self::Image => "PNG",
+            Self::Data => "RON",
+        }
+    }
+
+    /// 파일이 아니라 표 안의 항목인가.
+    fn is_virtual(self) -> bool {
+        matches!(self, Self::Actor | Self::Item | Self::Skill | Self::Loot)
+    }
+}
+
+/// 표 항목이 모이는 가상 폴더의 이름. 디스크 경로는 소문자 영문이라 겹치지 않는다.
+const VIRTUAL_ROOT: &str = "게임 데이터";
+
+/// 폴더의 부모 — `""` 가 프로젝트 맨 위.
+fn parent(folder: &str) -> &str {
+    folder.rsplit_once('/').map_or("", |(p, _)| p)
+}
+
+/// 트리·주소 줄에 보이는 폴더 이름.
+fn folder_name(folder: &str) -> &str {
+    if folder.is_empty() {
+        "프로젝트"
+    } else {
+        folder.rsplit('/').next().unwrap_or(folder)
+    }
+}
+
+/// `folder` 가 `ancestor` 아래(또는 그 자신)인가.
+fn is_under(folder: &str, ancestor: &str) -> bool {
+    ancestor.is_empty()
+        || folder == ancestor
+        || folder
+            .strip_prefix(ancestor)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// 가운데 보기 방식.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum View {
+    /// 큰 아이콘 타일 (그림은 썸네일).
+    #[default]
+    Icons,
+    /// 한 줄에 하나 — 이름 · 종류 · 크기 · 경로.
+    List,
+}
+
+/// 가운데의 한 칸 — 하위 폴더 또는 항목.
+#[derive(Clone, Debug)]
+enum Entry {
+    Folder(String),
+    Asset(Asset),
 }
 
 /// 목록의 항목 하나.
@@ -110,9 +181,20 @@ pub(crate) struct Asset {
     pub(crate) name: String,
     /// 이름 옆의 작은 글씨 — 경로나 번호.
     pub(crate) note: String,
+    /// 파일 크기 (표 항목은 없다).
+    pub(crate) bytes: Option<u64>,
 }
 
 impl Asset {
+    /// 이 항목이 들어 있는 폴더 — 파일은 경로의 폴더, 표 항목은 `게임 데이터/<종류>`.
+    pub(crate) fn folder(&self) -> String {
+        if self.kind.is_virtual() {
+            format!("{VIRTUAL_ROOT}/{}", self.kind.label())
+        } else {
+            parent(&self.key).to_owned()
+        }
+    }
+
     /// 액터 항목이면 그 번호.
     pub(crate) fn actor_id(&self) -> Option<u32> {
         self.key.strip_prefix("actor:")?.parse().ok()
@@ -177,7 +259,16 @@ pub(crate) struct ContentBrowser {
     forms: Forms,
     /// 목록을 읽다 난 오류 (규칙·표시 파일이 깨졌을 때 등).
     error: Option<String>,
-    /// 왼쪽에서 고른 종류. `None` = 전체.
+    /// 모든 폴더 (조상 포함, 이름순) — 목록을 읽을 때 한 번 만든다.
+    folders: Vec<String>,
+    /// 지금 보고 있는 폴더. `""` = 프로젝트 맨 위.
+    folder: String,
+    /// 뒤로 가기 기록.
+    back: Vec<String>,
+    /// 다음 프레임에 트리에서 지금 폴더까지 펼친다 (이동한 직후 한 번).
+    reveal: bool,
+    view: View,
+    /// 종류 필터. `None` = 모든 종류.
     kind: Option<AssetKind>,
     search: String,
     /// 한 번 누른 항목의 key.
@@ -262,9 +353,14 @@ impl ContentBrowser {
         self.loaded = true;
         let root = Path::new(".");
         let (assets, forms, error) = collect(root);
+        self.folders = folders_of(&assets);
         self.assets = assets;
         self.forms = forms;
         self.error = error;
+        // 보던 폴더가 사라졌으면(이름 바꾸기 등) 남아 있는 가장 가까운 조상으로.
+        while !self.folder.is_empty() && !self.folders.contains(&self.folder) {
+            self.folder = parent(&self.folder).to_owned();
+        }
         // 고른 항목이 사라졌으면 상세도 비운다. 남아 있으면 상세를 다시 계산한다.
         self.details = self
             .selected
@@ -285,10 +381,86 @@ impl ContentBrowser {
             return false;
         };
         self.open = true;
-        self.kind = Some(asset.kind);
+        // 그 항목이 든 폴더로 간다 — 필터가 걸려 있으면 안 보일 수 있으니 푼다.
+        self.navigate(&asset.folder());
+        self.kind = None;
+        self.search.clear();
         self.selected = Some(asset.key.clone());
         self.details = Some(details(Path::new("."), &asset, &self.assets, &self.forms));
         true
+    }
+
+    /// 폴더로 간다 (뒤로 가기 기록을 남긴다). 없는 폴더면 `false`.
+    pub(crate) fn navigate(&mut self, folder: &str) -> bool {
+        if !self.loaded {
+            self.refresh();
+        }
+        let folder = folder.trim_matches('/');
+        if !folder.is_empty() && !self.folders.iter().any(|f| f == folder) {
+            return false;
+        }
+        if self.folder != folder {
+            self.back
+                .push(std::mem::replace(&mut self.folder, folder.to_owned()));
+        }
+        self.reveal = true;
+        true
+    }
+
+    /// 보기 방식 바꾸기 — 자동 검증용 (`true` = 자세히).
+    pub(crate) fn set_list_view(&mut self, list: bool) {
+        self.view = if list { View::List } else { View::Icons };
+    }
+
+    fn go_back(&mut self) {
+        if let Some(f) = self.back.pop() {
+            self.folder = f;
+            self.reveal = true;
+        }
+    }
+
+    /// 바로 아래 폴더들.
+    fn subfolders(&self, folder: &str) -> Vec<String> {
+        self.folders
+            .iter()
+            .filter(|f| parent(f) == folder)
+            .cloned()
+            .collect()
+    }
+
+    /// 필터(종류·검색어)에 맞는 항목인가.
+    fn matches(&self, asset: &Asset, needle: &str) -> bool {
+        self.kind.is_none_or(|k| asset.kind == k)
+            && (needle.is_empty()
+                || asset.name.to_lowercase().contains(needle)
+                || asset.key.to_lowercase().contains(needle))
+    }
+
+    /// 가운데에 보일 것 — 필터가 없으면 지금 폴더의 하위 폴더 + 항목,
+    /// 있으면 지금 폴더 **아래 전체**에서 맞는 항목만.
+    fn entries(&self) -> Vec<Entry> {
+        let needle = self.search.trim().to_lowercase();
+        let filtering = self.kind.is_some() || !needle.is_empty();
+        let mut out = Vec::new();
+        if !filtering {
+            out.extend(self.subfolders(&self.folder).into_iter().map(Entry::Folder));
+        }
+        out.extend(
+            self.assets
+                .iter()
+                .filter(|a| {
+                    let f = a.folder();
+                    if filtering {
+                        is_under(&f, &self.folder)
+                    } else {
+                        f == self.folder
+                    }
+                })
+                .filter(|a| self.matches(a, &needle))
+                .cloned()
+                .map(Entry::Asset),
+        );
+        out
     }
 
     /// 고른 항목을 연다 — 자동 검증의 "두 번 누르기".
@@ -426,20 +598,37 @@ impl ContentBrowser {
             return None;
         }
         let mut action = self.op_window(ui);
+        let entries = self.entries();
         egui::Panel::bottom("content_browser")
             .resizable(true)
-            .default_size(250.0)
-            .min_size(120.0)
+            .default_size(270.0)
+            .min_size(140.0)
             .show(ui, |ui| {
-                // 패널 안에 패널 — 도구 줄(위) · 종류(왼쪽) · 상세(오른쪽) · 목록(가운데).
-                // 가운데를 마지막에 두어야 남은 폭을 목록이 다 쓴다.
+                // 패널 안에 패널 — 도구 줄·주소 줄(위) · 상태 줄(아래) · 폴더 트리(왼쪽) ·
+                // 상세(오른쪽) · 내용(가운데). 가운데를 마지막에 두어야 남은 폭을 다 쓴다.
                 egui::Panel::top("content_toolbar").show(ui, |ui| {
                     action = self.toolbar(ui);
+                    self.address_bar(ui);
                 });
-                egui::Panel::left("content_kinds")
-                    .resizable(false)
-                    .exact_size(170.0)
-                    .show(ui, |ui| self.kinds(ui));
+                egui::Panel::bottom("content_status").show(ui, |ui| {
+                    self.status_line(ui, entries.len());
+                });
+                egui::Panel::left("content_tree")
+                    .resizable(true)
+                    .default_size(190.0)
+                    .show(ui, |ui| {
+                        let mut nav = None;
+                        egui::ScrollArea::vertical()
+                            .id_salt("content_tree")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| self.tree(ui, "", &mut nav));
+                        self.reveal = false;
+                        if let Some(f) = nav {
+                            self.navigate(&f);
+                            // 트리에서 고른 폴더는 펼침 상태를 사용자가 정한다.
+                            self.reveal = false;
+                        }
+                    });
                 egui::Panel::right("content_details")
                     .resizable(true)
                     .default_size(320.0)
@@ -449,7 +638,7 @@ impl ContentBrowser {
                         }
                     });
                 egui::CentralPanel::default().show(ui, |ui| {
-                    if let Some(a) = self.list(ui) {
+                    if let Some(a) = self.contents(ui, &entries) {
                         action = Some(a);
                     }
                 });
@@ -461,14 +650,6 @@ impl ContentBrowser {
         let mut action = None;
         ui.horizontal(|ui| {
             ui.strong("콘텐츠 브라우저");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("검색 (이름·경로)")
-                    .desired_width(200.0),
-            );
-            if ui.button("새로 고침").clicked() {
-                self.refresh();
-            }
             ui.menu_button("새로 만들기", |ui| {
                 for (label, a) in [
                     ("레벨…", ContentAction::NewLevel),
@@ -485,7 +666,29 @@ impl ContentBrowser {
                     }
                 }
             });
-            ui.weak("한 번 = 상세 · 두 번 = 편집기 · Ctrl+Space = 닫기");
+            if ui.button("새로 고침").clicked() {
+                self.refresh();
+            }
+            ui.separator();
+            ui.label("보기");
+            ui.selectable_value(&mut self.view, View::Icons, "아이콘");
+            ui.selectable_value(&mut self.view, View::List, "자세히");
+            ui.separator();
+            ui.label("종류");
+            egui::ComboBox::from_id_salt("content_kind")
+                .selected_text(self.kind.map_or("모든 종류", AssetKind::label))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.kind, None, "모든 종류");
+                    for kind in AssetKind::ALL {
+                        let n = self.assets.iter().filter(|a| a.kind == kind).count();
+                        ui.selectable_value(
+                            &mut self.kind,
+                            Some(kind),
+                            format!("{} ({n})", kind.label()),
+                        );
+                    }
+                });
+            ui.weak("한 번 = 상세 · 두 번 = 편집기(폴더는 들어가기) · Ctrl+Space = 닫기");
         });
         if let Some(e) = &self.error {
             ui.colored_label(egui::Color32::from_rgb(240, 110, 100), e);
@@ -493,104 +696,360 @@ impl ContentBrowser {
         action
     }
 
-    /// 왼쪽 — 종류별 목록과 개수.
-    fn kinds(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical()
-            .id_salt("content_kinds")
-            .show(ui, |ui| {
-                let total = self.assets.len();
-                if ui
-                    .selectable_label(self.kind.is_none(), format!("전체 ({total})"))
-                    .clicked()
-                {
-                    self.kind = None;
+    /// 주소 줄 — 뒤로 · 위로 · 경로 조각, 오른쪽에 검색.
+    fn address_bar(&mut self, ui: &mut egui::Ui) {
+        let mut nav: Option<String> = None;
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(!self.back.is_empty(), egui::Button::new("◀"))
+                .on_hover_text("뒤로")
+                .clicked()
+            {
+                self.go_back();
+            }
+            if ui
+                .add_enabled(!self.folder.is_empty(), egui::Button::new("▲"))
+                .on_hover_text("위 폴더로")
+                .clicked()
+            {
+                nav = Some(parent(&self.folder).to_owned());
+            }
+            // 경로 조각 — 누르면 그 폴더로.
+            let mut crumbs = vec![String::new()];
+            let mut acc = String::new();
+            for part in self.folder.split('/').filter(|p| !p.is_empty()) {
+                if !acc.is_empty() {
+                    acc.push('/');
                 }
-                for kind in AssetKind::ALL {
-                    let n = self.assets.iter().filter(|a| a.kind == kind).count();
-                    let text = egui::RichText::new(format!("● {} ({n})", kind.label()));
-                    let picked = self.kind == Some(kind);
-                    let label = if picked {
-                        text
-                    } else {
-                        text.color(kind.color())
-                    };
-                    if ui.selectable_label(picked, label).clicked() {
-                        self.kind = Some(kind);
-                    }
+                acc.push_str(part);
+                crumbs.push(acc.clone());
+            }
+            for (i, crumb) in crumbs.iter().enumerate() {
+                if i > 0 {
+                    ui.weak("›");
+                }
+                let last = i + 1 == crumbs.len();
+                if ui.selectable_label(last, folder_name(crumb)).clicked() && !last {
+                    nav = Some(crumb.clone());
+                }
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.search)
+                        .hint_text("이 폴더 아래에서 검색")
+                        .desired_width(200.0),
+                );
+            });
+        });
+        if let Some(f) = nav {
+            self.navigate(&f);
+        }
+    }
+
+    fn status_line(&self, ui: &mut egui::Ui, count: usize) {
+        ui.horizontal(|ui| {
+            ui.weak(format!("{count}개 항목"));
+            if self.kind.is_some() || !self.search.trim().is_empty() {
+                ui.weak(format!(
+                    "· '{}' 아래 전체에서 찾음",
+                    folder_name(&self.folder)
+                ));
+            }
+            if let Some(a) = self
+                .selected
+                .as_ref()
+                .and_then(|k| self.assets.iter().find(|a| &a.key == k))
+            {
+                ui.weak(format!("· 선택: {}", a.name));
+            }
+        });
+    }
+
+    /// 왼쪽 — 폴더 트리. 누른 폴더는 `nav` 로 돌려준다.
+    fn tree(&self, ui: &mut egui::Ui, folder: &str, nav: &mut Option<String>) {
+        let kids = self.subfolders(folder);
+        let picked = self.folder == folder;
+        let count = self
+            .assets
+            .iter()
+            .filter(|a| is_under(&a.folder(), folder))
+            .count();
+        let text = format!("{} ({count})", folder_name(folder));
+        let text = if folder == VIRTUAL_ROOT || parent(folder) == VIRTUAL_ROOT {
+            // 가상 폴더 — 디스크에 없다는 표시로 색을 다르게.
+            egui::RichText::new(text).color(VIRTUAL_COLOR)
+        } else {
+            egui::RichText::new(text)
+        };
+        if kids.is_empty() {
+            ui.horizontal(|ui| {
+                ui.add_space(ui.spacing().indent);
+                if ui.selectable_label(picked, text).clicked() {
+                    *nav = Some(folder.to_owned());
+                }
+            });
+            return;
+        }
+        let id = ui.make_persistent_id(("content_tree", folder));
+        let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(),
+            id,
+            folder.is_empty(),
+        );
+        // 이동한 직후 — 지금 폴더까지 펼친다.
+        if self.reveal && self.folder != folder && is_under(&self.folder, folder) {
+            state.set_open(true);
+        }
+        state
+            .show_header(ui, |ui| {
+                if ui.selectable_label(picked, text).clicked() {
+                    *nav = Some(folder.to_owned());
+                }
+            })
+            .body(|ui| {
+                for kid in &kids {
+                    self.tree(ui, kid, nav);
                 }
             });
     }
 
-    /// 가운데 — 항목 목록.
-    fn list(&mut self, ui: &mut egui::Ui) -> Option<ContentAction> {
-        let needle = self.search.trim().to_lowercase();
-        let shown: Vec<Asset> = self
-            .assets
-            .iter()
-            .filter(|a| self.kind.is_none_or(|k| a.kind == k))
-            .filter(|a| {
-                needle.is_empty()
-                    || a.name.to_lowercase().contains(&needle)
-                    || a.key.to_lowercase().contains(&needle)
-            })
-            .cloned()
-            .collect();
+    /// 가운데 — 지금 폴더의 내용 (아이콘 / 자세히).
+    fn contents(&mut self, ui: &mut egui::Ui, entries: &[Entry]) -> Option<ContentAction> {
         let mut action = None;
+        let mut nav = None;
         egui::ScrollArea::vertical()
             .id_salt("content_list")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                if shown.is_empty() {
+                if entries.is_empty() {
                     ui.weak("항목이 없습니다.");
+                    return;
                 }
-                for asset in &shown {
-                    let picked = self.selected.as_deref() == Some(asset.key.as_str());
-                    let row = ui.horizontal(|ui| {
-                        // 그림은 작은 썸네일, 나머지는 종류 색 점.
-                        let thumb = (asset.kind == AssetKind::Image)
-                            .then(|| self.thumbs.get(ui.ctx(), &asset.key))
-                            .flatten();
-                        match thumb {
-                            Some((tex, size)) => {
-                                let s = fit(size, 20.0);
-                                ui.image((tex, s));
+                match self.view {
+                    View::Icons => {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                            for entry in entries {
+                                self.tile(ui, entry, &mut action, &mut nav);
                             }
-                            None => {
-                                ui.colored_label(asset.kind.color(), "●");
-                            }
-                        }
-                        let r = ui.selectable_label(picked, &asset.name);
-                        ui.weak(&asset.note);
-                        r
-                    });
-                    let r = row.inner;
-                    if r.clicked() {
-                        self.selected = Some(asset.key.clone());
-                        self.details =
-                            Some(details(Path::new("."), asset, &self.assets, &self.forms));
+                        });
                     }
-                    if r.double_clicked() {
-                        action = Some(open_action(asset));
-                    }
-                    // 오른쪽 클릭 — 파일 작업 (P9).
-                    let _ = r.context_menu(|ui| {
-                        for kind in [OpKind::Duplicate, OpKind::Rename, OpKind::Delete] {
-                            if ui
-                                .add_enabled(
-                                    supports(asset.kind, kind),
-                                    egui::Button::new(format!("{}…", kind.label())),
-                                )
-                                .clicked()
-                            {
-                                self.begin(kind, asset);
-                                ui.close();
-                            }
+                    View::List => {
+                        let filtering = self.kind.is_some() || !self.search.trim().is_empty();
+                        let cols = Columns::new(ui.available_width());
+                        list_header(ui, &cols, filtering);
+                        for entry in entries {
+                            self.row(ui, entry, &cols, &mut action, &mut nav);
                         }
-                    });
-                    r.on_hover_text(&asset.key);
+                    }
                 }
             });
+        if let Some(f) = nav {
+            self.navigate(&f);
+            self.search.clear();
+        }
         action
+    }
+
+    /// 아이콘 보기의 칸 하나.
+    fn tile(
+        &mut self,
+        ui: &mut egui::Ui,
+        entry: &Entry,
+        action: &mut Option<ContentAction>,
+        nav: &mut Option<String>,
+    ) {
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(88.0, 100.0), egui::Sense::click());
+        if ui.is_rect_visible(rect) {
+            self.paint_back(ui, rect, entry, &resp);
+            let icon = egui::Rect::from_center_size(
+                egui::pos2(rect.center().x, rect.min.y + 34.0),
+                egui::vec2(56.0, 56.0),
+            );
+            self.paint_icon(ui, icon, entry);
+            let mut job = egui::text::LayoutJob::simple(
+                entry_name(entry).to_owned(),
+                egui::FontId::proportional(12.0),
+                ui.visuals().text_color(),
+                rect.width() - 6.0,
+            );
+            job.wrap.max_rows = 2;
+            job.wrap.break_anywhere = true;
+            job.halign = egui::Align::Center;
+            let galley = ui.painter().layout_job(job);
+            ui.painter().galley(
+                egui::pos2(rect.center().x, rect.min.y + 66.0),
+                galley,
+                ui.visuals().text_color(),
+            );
+        }
+        self.interact(resp, entry, action, nav);
+    }
+
+    /// 자세히 보기의 줄 하나.
+    fn row(
+        &mut self,
+        ui: &mut egui::Ui,
+        entry: &Entry,
+        cols: &Columns,
+        action: &mut Option<ContentAction>,
+        nav: &mut Option<String>,
+    ) {
+        let (rect, resp) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), egui::Sense::click());
+        if ui.is_rect_visible(rect) {
+            self.paint_back(ui, rect, entry, &resp);
+            let icon =
+                egui::Rect::from_min_size(rect.min + egui::vec2(4.0, 2.0), egui::vec2(16.0, 16.0));
+            self.paint_icon(ui, icon, entry);
+            let (kind, size, note) = match entry {
+                Entry::Folder(f) => {
+                    let n = self
+                        .assets
+                        .iter()
+                        .filter(|a| is_under(&a.folder(), f))
+                        .count();
+                    (String::from("폴더"), format!("{n}개"), String::new())
+                }
+                Entry::Asset(a) => (
+                    a.kind.label().to_owned(),
+                    a.bytes.map(size_text).unwrap_or_default(),
+                    a.note.clone(),
+                ),
+            };
+            let text = ui.visuals().text_color();
+            let weak = ui.visuals().weak_text_color();
+            cols.paint(
+                ui,
+                rect,
+                [entry_name(entry), &kind, &size, &note],
+                [text, weak, weak, weak],
+            );
+        }
+        self.interact(resp, entry, action, nav);
+    }
+
+    /// 고른 칸·마우스가 올라간 칸의 바탕.
+    fn paint_back(&self, ui: &egui::Ui, rect: egui::Rect, entry: &Entry, resp: &egui::Response) {
+        let picked =
+            matches!(entry, Entry::Asset(a) if self.selected.as_deref() == Some(a.key.as_str()));
+        let fill = if picked {
+            Some(ui.visuals().selection.bg_fill)
+        } else if resp.hovered() {
+            Some(ui.visuals().widgets.hovered.weak_bg_fill)
+        } else {
+            None
+        };
+        if let Some(fill) = fill {
+            ui.painter().rect_filled(rect, 3.0, fill);
+        }
+    }
+
+    /// 아이콘 — 폴더 모양, 그림 썸네일, 또는 종류 색 네모 + 짧은 글씨.
+    fn paint_icon(&mut self, ui: &egui::Ui, rect: egui::Rect, entry: &Entry) {
+        let painter = ui.painter();
+        let (w, h) = (rect.width(), rect.height());
+        match entry {
+            Entry::Folder(f) => {
+                let color = if f == VIRTUAL_ROOT || parent(f) == VIRTUAL_ROOT {
+                    VIRTUAL_COLOR
+                } else {
+                    FOLDER_COLOR
+                };
+                let tab = egui::Rect::from_min_size(
+                    rect.min + egui::vec2(0.0, h * 0.12),
+                    egui::vec2(w * 0.42, h * 0.2),
+                );
+                let body = egui::Rect::from_min_max(
+                    egui::pos2(rect.min.x, rect.min.y + h * 0.24),
+                    egui::pos2(rect.max.x, rect.max.y - h * 0.08),
+                );
+                painter.rect_filled(tab, 2.0, color.gamma_multiply(0.8));
+                painter.rect_filled(body, 3.0, color);
+            }
+            Entry::Asset(a) => {
+                let thumb = (a.kind == AssetKind::Image)
+                    .then(|| self.thumbs.get(ui.ctx(), &a.key))
+                    .flatten();
+                if let Some((tex, size)) = thumb {
+                    let fitted = egui::Rect::from_center_size(rect.center(), fit(size, w));
+                    egui::Image::new((tex, fitted.size())).paint_at(ui, fitted);
+                    return;
+                }
+                let color = a.kind.color();
+                let body = rect.shrink2(egui::vec2(w * 0.1, 0.0));
+                painter.rect_filled(body, 4.0, color.gamma_multiply(0.22));
+                painter.rect_stroke(
+                    body,
+                    4.0,
+                    egui::Stroke::new(if h >= 32.0 { 1.5 } else { 1.0 }, color),
+                    egui::StrokeKind::Inside,
+                );
+                if h >= 32.0 {
+                    painter.text(
+                        body.center(),
+                        egui::Align2::CENTER_CENTER,
+                        a.kind.badge(),
+                        egui::FontId::proportional(h * 0.24),
+                        color,
+                    );
+                }
+            }
+        }
+    }
+
+    /// 누르기 — 폴더는 두 번 눌러 들어가고, 항목은 한 번 = 상세 · 두 번 = 편집기 · 오른쪽 = 파일 작업.
+    fn interact(
+        &mut self,
+        resp: egui::Response,
+        entry: &Entry,
+        action: &mut Option<ContentAction>,
+        nav: &mut Option<String>,
+    ) {
+        match entry {
+            Entry::Folder(f) => {
+                let resp = resp.on_hover_text(if f.is_empty() { "프로젝트" } else { f });
+                if resp.double_clicked() {
+                    *nav = Some(f.clone());
+                }
+                let _ = resp.context_menu(|ui| {
+                    if ui.button("열기").clicked() {
+                        *nav = Some(f.clone());
+                        ui.close();
+                    }
+                });
+            }
+            Entry::Asset(asset) => {
+                let resp = resp.on_hover_text(&asset.key);
+                if resp.clicked() || resp.secondary_clicked() {
+                    self.selected = Some(asset.key.clone());
+                    self.details = Some(details(Path::new("."), asset, &self.assets, &self.forms));
+                }
+                if resp.double_clicked() {
+                    *action = Some(open_action(asset));
+                }
+                // 오른쪽 클릭 — 열기 + 파일 작업 (P9).
+                let _ = resp.context_menu(|ui| {
+                    if ui.button("열기").clicked() {
+                        *action = Some(open_action(asset));
+                        ui.close();
+                    }
+                    ui.separator();
+                    for kind in [OpKind::Duplicate, OpKind::Rename, OpKind::Delete] {
+                        if ui
+                            .add_enabled(
+                                supports(asset.kind, kind),
+                                egui::Button::new(format!("{}…", kind.label())),
+                            )
+                            .clicked()
+                        {
+                            self.begin(kind, asset);
+                            ui.close();
+                        }
+                    }
+                });
+            }
+        }
     }
 
     /// 오른쪽 — 고른 항목의 상세.
@@ -652,6 +1111,88 @@ impl ContentBrowser {
             });
         action
     }
+}
+
+/// 폴더 아이콘 색 (sRGB).
+const FOLDER_COLOR: egui::Color32 = egui::Color32::from_rgb(225, 185, 85);
+/// 가상 폴더(게임 데이터) 색 — 디스크에 없는 폴더라는 표시.
+const VIRTUAL_COLOR: egui::Color32 = egui::Color32::from_rgb(140, 170, 235);
+
+/// 항목들이 든 폴더 전부 — 조상까지 채워 넣는다 (`assets/third_party/x` 면 `assets`·`assets/third_party` 도).
+/// 맨 위(`""`)는 넣지 않는다.
+fn folders_of(assets: &[Asset]) -> Vec<String> {
+    let mut set = std::collections::BTreeSet::new();
+    for a in assets {
+        let mut f = a.folder();
+        while !f.is_empty() {
+            let up = parent(&f).to_owned();
+            set.insert(f);
+            f = up;
+        }
+    }
+    set.into_iter().collect()
+}
+
+fn entry_name(entry: &Entry) -> &str {
+    match entry {
+        Entry::Folder(f) => folder_name(f),
+        Entry::Asset(a) => &a.name,
+    }
+}
+
+/// 자세히 보기의 칸 경계 — 이름 · 종류 · 크기 · 경로.
+struct Columns {
+    x: [f32; 4],
+    width: f32,
+}
+
+impl Columns {
+    fn new(width: f32) -> Self {
+        let name = 24.0;
+        let kind = (width * 0.38).max(180.0);
+        let size = kind + 110.0;
+        let note = size + 80.0;
+        Self {
+            x: [name, kind, size, note],
+            width,
+        }
+    }
+
+    /// 칸마다 글씨를 그린다 — 칸을 넘는 글씨는 잘린다.
+    fn paint(&self, ui: &egui::Ui, rect: egui::Rect, texts: [&str; 4], colors: [egui::Color32; 4]) {
+        for i in 0..4 {
+            let left = rect.min.x + self.x[i];
+            let right = if i + 1 < 4 {
+                rect.min.x + self.x[i + 1] - 8.0
+            } else {
+                rect.min.x + self.width
+            };
+            if right <= left {
+                continue;
+            }
+            let clip = egui::Rect::from_x_y_ranges(left..=right, rect.y_range());
+            ui.painter().with_clip_rect(clip).text(
+                egui::pos2(left, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                texts[i],
+                egui::FontId::proportional(13.0),
+                colors[i],
+            );
+        }
+    }
+}
+
+fn list_header(ui: &mut egui::Ui, cols: &Columns, filtering: bool) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
+    let weak = ui.visuals().weak_text_color();
+    let last = if filtering { "경로" } else { "메모" };
+    cols.paint(ui, rect, ["이름", "종류", "크기", last], [weak; 4]);
+    ui.painter().hline(
+        rect.x_range(),
+        rect.max.y,
+        egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+    );
 }
 
 /// 표 항목 → 데이터 표 편집기.
@@ -729,29 +1270,29 @@ fn collect(root: &Path) -> (Vec<Asset>, Forms, Option<String>) {
         let name = read(root, &path)
             .and_then(|t| crate::level::read_level(&t).ok())
             .map_or_else(|| stem(&path, ".level.ron"), |l| l.name);
-        out.push(file_asset(AssetKind::Level, path, name));
+        out.push(file_asset(root, AssetKind::Level, path, name));
     }
     for path in scan_files(root, "zones", ".zone.ron") {
         let name = stem(&path, ".zone.ron");
-        out.push(file_asset(AssetKind::Zone, path, name));
+        out.push(file_asset(root, AssetKind::Zone, path, name));
     }
     for path in scan_files(root, "ui", ".ui.ron") {
         let name = read(root, &path)
             .and_then(|t| crate::screen::Screens::read_screen(&t).ok())
             .map_or_else(|| stem(&path, ".ui.ron"), |s| s.name);
-        out.push(file_asset(AssetKind::Screen, path, name));
+        out.push(file_asset(root, AssetKind::Screen, path, name));
     }
     for path in scan_files(root, "data/scripts", ".rhai") {
         let name = stem(&path, ".rhai");
-        out.push(file_asset(AssetKind::Script, path, name));
+        out.push(file_asset(root, AssetKind::Script, path, name));
     }
     for path in scan_files(root, "assets", ".sheet.ron") {
         let name = stem(&path, ".sheet.ron");
-        out.push(file_asset(AssetKind::Sheet, path, name));
+        out.push(file_asset(root, AssetKind::Sheet, path, name));
     }
     for path in scan_files(root, "assets", ".png") {
         let name = stem(&path, ".png");
-        out.push(file_asset(AssetKind::Image, path, name));
+        out.push(file_asset(root, AssetKind::Image, path, name));
     }
     // 데이터는 data/ 바로 아래의 .ron 만 (스크립트 폴더는 따로 보인다).
     for path in scan_files(root, "data", ".ron")
@@ -759,7 +1300,7 @@ fn collect(root: &Path) -> (Vec<Asset>, Forms, Option<String>) {
         .filter(|p| p.matches('/').count() == 1)
     {
         let name = stem(&path, ".ron");
-        out.push(file_asset(AssetKind::Data, path, name));
+        out.push(file_asset(root, AssetKind::Data, path, name));
     }
 
     // 액터 — 두 표의 항목을 가상 항목으로.
@@ -789,6 +1330,7 @@ fn collect(root: &Path) -> (Vec<Asset>, Forms, Option<String>) {
             key: format!("actor:{id}"),
             name,
             note: format!("#{id}"),
+            bytes: None,
         });
     }
     // 아이템·스킬·드롭 표 — 같은 두 표의 다른 칸들.
@@ -805,6 +1347,7 @@ fn collect(root: &Path) -> (Vec<Asset>, Forms, Option<String>) {
             key: format!("item:{id}"),
             name: named(&f.name, *id, "아이템"),
             note: format!("#{id}"),
+            bytes: None,
         });
     }
     for (id, f) in &forms.tables.skills {
@@ -813,6 +1356,7 @@ fn collect(root: &Path) -> (Vec<Asset>, Forms, Option<String>) {
             key: format!("skill:{id}"),
             name: named(&f.name, *id, "스킬"),
             note: format!("#{id}"),
+            bytes: None,
         });
     }
     for (id, rows) in &forms.tables.loot {
@@ -821,14 +1365,16 @@ fn collect(root: &Path) -> (Vec<Asset>, Forms, Option<String>) {
             key: format!("loot:{id}"),
             name: format!("드롭 표 #{id}"),
             note: format!("{}줄", rows.len()),
+            bytes: None,
         });
     }
     (out, forms, error)
 }
 
-fn file_asset(kind: AssetKind, path: String, name: String) -> Asset {
+fn file_asset(root: &Path, kind: AssetKind, path: String, name: String) -> Asset {
     Asset {
         kind,
+        bytes: std::fs::metadata(root.join(&path)).ok().map(|m| m.len()),
         note: path.clone(),
         key: path,
         name,
@@ -1305,5 +1851,121 @@ mod tests {
             None,
             "PNG 가 아니면 None"
         );
+    }
+
+    /// 저장소를 읽은 브라우저 — `refresh` 는 작업 디렉터리(`.`)를 읽으므로 직접 채운다.
+    fn browser() -> ContentBrowser {
+        let (assets, forms, error) = collect(&repo());
+        assert!(error.is_none(), "{error:?}");
+        ContentBrowser {
+            folders: folders_of(&assets),
+            assets,
+            forms,
+            loaded: true,
+            ..ContentBrowser::default()
+        }
+    }
+
+    fn names(entries: &[Entry]) -> Vec<String> {
+        entries.iter().map(|e| entry_name(e).to_owned()).collect()
+    }
+
+    #[test]
+    fn folders_include_ancestors_and_the_virtual_data_folder() {
+        let b = browser();
+        for f in [
+            "assets",
+            "assets/third_party",
+            "assets/third_party/slime-garakh",
+            "data",
+            "data/scripts",
+            "levels",
+            "게임 데이터",
+            "게임 데이터/액터",
+            "게임 데이터/드롭 표",
+        ] {
+            assert!(b.folders.iter().any(|x| x == f), "{f} 가 없다");
+        }
+        assert!(
+            !b.folders.iter().any(String::is_empty),
+            "맨 위는 목록에 넣지 않는다"
+        );
+        assert_eq!(parent("assets/third_party"), "assets");
+        assert_eq!(parent("assets"), "");
+        assert!(is_under("assets/third_party", "assets"));
+        assert!(
+            !is_under("assets2", "assets"),
+            "이름 앞부분만 같은 폴더는 아래가 아니다"
+        );
+    }
+
+    #[test]
+    fn a_folder_shows_its_subfolders_first_then_its_own_items() {
+        let mut b = browser();
+        let top = names(&b.entries());
+        assert_eq!(top.last().map(String::as_str), Some("게임 데이터"));
+        assert!(top.contains(&String::from("levels")));
+
+        assert!(b.navigate("data"));
+        let data = b.entries();
+        assert!(matches!(&data[0], Entry::Folder(f) if f == "data/scripts"));
+        assert!(
+            data.iter()
+                .any(|e| matches!(e, Entry::Asset(a) if a.key == "data/rules.ron"))
+        );
+        assert!(
+            !data
+                .iter()
+                .any(|e| matches!(e, Entry::Asset(a) if a.kind == AssetKind::Script)),
+            "하위 폴더의 항목은 그 폴더에서 보인다"
+        );
+
+        assert!(b.navigate("게임 데이터/액터"));
+        let actors = b.entries();
+        assert!(
+            actors
+                .iter()
+                .all(|e| matches!(e, Entry::Asset(a) if a.kind == AssetKind::Actor))
+        );
+    }
+
+    #[test]
+    fn a_filter_searches_everything_below_the_current_folder() {
+        let mut b = browser();
+        b.kind = Some(AssetKind::Sheet);
+        let sheets = b.entries();
+        assert!(sheets.len() >= 3, "팩 폴더마다 흩어진 시트가 다 모인다");
+        assert!(
+            sheets
+                .iter()
+                .all(|e| matches!(e, Entry::Asset(a) if a.kind == AssetKind::Sheet))
+        );
+
+        b.kind = None;
+        b.search = String::from("goblin");
+        assert!(b.navigate("levels"));
+        assert!(b.entries().is_empty(), "지금 폴더 밖은 찾지 않는다");
+        assert!(b.navigate(""));
+        assert!(
+            b.entries()
+                .iter()
+                .any(|e| matches!(e, Entry::Asset(a) if a.key == "data/scripts/goblin.rhai"))
+        );
+    }
+
+    #[test]
+    fn navigation_keeps_a_back_history_and_refuses_unknown_folders() {
+        let mut b = browser();
+        assert!(!b.navigate("no/such/folder"));
+        assert_eq!(b.folder, "");
+        assert!(b.navigate("assets"));
+        assert!(b.navigate("assets/sprites"));
+        b.go_back();
+        assert_eq!(b.folder, "assets");
+        b.go_back();
+        assert_eq!(b.folder, "");
+        // 항목을 고르면 그 폴더로 간다.
+        assert!(b.select_key("actor:102"));
+        assert_eq!(b.folder, "게임 데이터/액터");
     }
 }

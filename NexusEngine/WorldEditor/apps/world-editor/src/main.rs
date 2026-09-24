@@ -1347,6 +1347,20 @@ impl Editor {
                     ui.content_mut().toggle();
                 }
             }
+            Step::ContentFolder(path) => {
+                let found = self
+                    .ui
+                    .as_mut()
+                    .is_some_and(|ui| ui.content_mut().navigate(&path));
+                if !found {
+                    self.notify(format!("콘텐츠 브라우저에 '{path}' 폴더가 없습니다"), true);
+                }
+            }
+            Step::ContentView(list) => {
+                if let Some(ui) = self.ui.as_mut() {
+                    ui.content_mut().set_list_view(list);
+                }
+            }
             Step::ContentPick(key) => {
                 let found = self
                     .ui

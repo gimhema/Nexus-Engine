@@ -34,6 +34,7 @@
 //! esc                         일시정지 화면 열고 닫기 (Esc 와 같다)
 //! content | contentpick 키    콘텐츠 브라우저 열고 닫기 / 항목 고르기 (P8, 키 = 경로 또는 actor:번호)
 //! contentopen                 고른 항목 열기 (두 번 누르기와 같다)
+//! contentfolder 경로 | contentview icons|list   브라우저 폴더로 가기 (`/` = 맨 위) / 보기 방식
 //! contentop delete|duplicate|rename [새이름]  고른 항목에 파일 작업 확인 창 (P9)
 //! contentconfirm              확인 창의 "실행"
 //! ```
@@ -131,6 +132,10 @@ pub(crate) enum Step {
     ContentPick(String),
     /// 고른 항목 열기 (두 번 누르기).
     ContentOpen,
+    /// 콘텐츠 브라우저의 폴더로 가기 — `/` 는 맨 위.
+    ContentFolder(String),
+    /// 보기 방식 — `true` = 자세히.
+    ContentView(bool),
     /// 고른 항목에 파일 작업 확인 창 — `(작업, 새 이름)` (P9).
     ContentOp(crate::asset_ops::OpKind, Option<String>),
     /// 확인 창의 "실행".
@@ -242,6 +247,20 @@ fn parse_step(text: &str) -> Result<Step, String> {
                 kind,
                 words.get(2).map(|w| (*w).to_string()),
             ));
+        }
+        "contentfolder" => {
+            // 가상 폴더 이름에는 공백이 있다 (`게임 데이터/액터`) — 나머지 단어를 이어 붙인다.
+            if words.len() < 2 {
+                return Err(format!("'{text}': contentfolder 뒤에 폴더 경로"));
+            }
+            return Ok(Step::ContentFolder(words[1..].join(" ")));
+        }
+        "contentview" => {
+            return match words.get(1).copied() {
+                Some("icons") => Ok(Step::ContentView(false)),
+                Some("list") => Ok(Step::ContentView(true)),
+                _ => Err(format!("'{text}': contentview 뒤에 icons|list")),
+            };
         }
         "contentpick" => {
             let key = words

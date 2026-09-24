@@ -243,7 +243,7 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
 │ 마을 경비병   │                                   │ 위치·방향 편집    │
 │ 슬라임        │                                   │                   │
 ├───────────────┴───────────────────────────────────┴───────────────────┤
-│ 콘텐츠 브라우저 (Ctrl+Space) — 종류 │ 항목 │ 상세                         │
+│ 콘텐츠 브라우저 (Ctrl+Space) — 폴더 │ 내용 │ 상세                         │
 ├───────────────────────────────────────────────────────────────────────┤
 │ 파일이름 *  X 12.7  Y 8.2 m │ 시야 21m · 그리드 1m │ 타일 (44,40)·L0  │
 └───────────────────────────────────────────────────────────────────────┘
@@ -262,21 +262,27 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
 <p>
   <kbd>Ctrl</kbd>+<kbd>Space</kbd>(또는 메뉴 <em>보기 → 콘텐츠 브라우저</em>)를 누르면 화면 아래에
   <strong>콘텐츠 브라우저</strong>가 열립니다. 언리얼 엔진의 콘텐츠 브라우저와 같은 자리입니다 —
-  엔진이 다루는 리소스를 종류별로 보고, 누르면 맞는 편집기가 열립니다.
+  <strong>파일 탐색기처럼</strong> 폴더를 따라 리소스를 보고, 누르면 맞는 편집기가 열립니다.
 </p>
-<pre class="layout"><code>┌ 콘텐츠 브라우저 [검색…] [새로 고침] [새로 만들기 ▼] ──────────────────────┐
-│ 전체 (35)       │ ● 메인 화면  levels/main.level.ron   │ 레벨  마을           │
-│ ● 레벨 (3)      │ ● 샘플 존    levels/sample.level.ron │ 존   zones/village…  │
-│ ● 맵 (2)        │ ● 마을       levels/village.level.ron│ HUD  hud             │
-│ ● UI 화면 (4)   │                                      │ 쓰는 곳              │
-│ ● 액터 (5) …    │                                      │  ui/main_menu.ui.ron │
+<pre class="layout"><code>┌ 콘텐츠 브라우저 [새로 만들기 ▼] [새로 고침]  보기: 아이콘 | 자세히  종류: [모든 종류 ▼] ┐
+│ [◀][▲] 프로젝트 › levels                                         [검색……]     │
+│ ▾ 프로젝트 (43) │  ┌──┐  ┌──┐  ┌──┐                   │ 레벨  마을           │
+│   ▸ assets      │  │LV│  │LV│  │LV│                   │ 존   zones/village…  │
+│   ▸ data        │  └──┘  └──┘  └──┘                   │ 쓰는 곳              │
+│     levels      │  메인   샘플   마을                  │  ui/main_menu.ui.ron │
+│   ▸ 게임 데이터 │                                     │ [열기] [복제] …      │
+│ 3개 항목 · 선택: 마을                                                          │
 └──────────────────────────────────────────────────────────────────────────────┘
-  종류(왼쪽)          항목(가운데)                            상세(오른쪽)</code></pre>
+  폴더 트리(왼쪽)       폴더 내용(가운데)                       상세(오른쪽)</code></pre>
 <table>
   <tr><th style="width:26%">동작</th><th>결과</th></tr>
+  <tr><td>폴더 트리 / 경로 조각 누르기</td><td>그 폴더로 갑니다. <strong>◀</strong> = 뒤로, <strong>▲</strong> = 위 폴더</td></tr>
+  <tr><td>폴더 두 번 누르기</td><td>그 폴더로 들어갑니다</td></tr>
   <tr><td>한 번 누르기</td><td>오른쪽에 <strong>상세</strong> — 경로·크기, 종류별 요약, 그리고 <strong>쓰는 곳</strong>(이 리소스를 가리키는 파일)</td></tr>
   <tr><td>두 번 누르기</td><td>그 종류의 <strong>편집기</strong>가 열립니다 (아래 표)</td></tr>
-  <tr><td>검색</td><td>이름이나 경로의 일부로 걸러 봅니다</td></tr>
+  <tr><td>보기: 아이콘 / 자세히</td><td>큰 아이콘(그림은 썸네일) 또는 한 줄 목록(이름·종류·크기·경로)</td></tr>
+  <tr><td>검색 · 종류</td><td>이름·경로의 일부나 종류로 걸러 봅니다. 걸러 볼 때는 <strong>지금 폴더 아래 전체</strong>에서 찾습니다 — 맨 위 폴더에서 종류를 고르면 그 종류가 전부 모입니다</td></tr>
+  <tr><td>게임 데이터 (파란 폴더)</td><td>액터·아이템·스킬·드롭 표는 파일이 아니라 <code>rules.ron</code>·<code>display.ron</code> 표 안의 항목이라, 디스크에 없는 <strong>가상 폴더</strong>에 종류별로 모여 있습니다</td></tr>
   <tr><td>새로 만들기</td><td>레벨 · 액터 · 아이템 · 스킬 · 드롭 표 · UI 화면 · 스크립트</td></tr>
 </table>
 <table>
@@ -1183,6 +1189,7 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
   <tr><td><code>content</code></td><td>콘텐츠 브라우저 열고 닫기</td></tr>
   <tr><td><code>contentpick 키</code></td><td>항목 고르기 — 경로 또는 <code>actor:번호</code> (예: <code>contentpick actor:102</code>)</td></tr>
   <tr><td><code>contentopen</code></td><td>고른 항목 열기 (두 번 누르기와 같다)</td></tr>
+  <tr><td><code>contentfolder 경로</code> / <code>contentview icons|list</code></td><td>브라우저의 폴더로 가기 (<code>/</code> = 맨 위, 예: <code>contentfolder 게임 데이터/액터</code>) / 보기 방식</td></tr>
   <tr><td><code>contentop delete|duplicate|rename [새이름]</code></td><td>고른 항목에 파일 작업 확인 창 띄우기</td></tr>
   <tr><td><code>contentconfirm</code></td><td>확인 창의 "실행"</td></tr>
   <tr><td><code>play</code></td><td>플레이 시작/정지 (<kbd>F5</kbd>와 같음). 플레이 중 <code>press</code>는 클릭 명령이 됩니다</td></tr>
