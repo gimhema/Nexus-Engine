@@ -127,7 +127,7 @@
 <main>
 <h1>Nexus WorldEditor 사용 설명서</h1>
 <p class="lead">
-  라그나로크 계열 <strong>쿼터뷰 2D 스프라이트 MMORPG</strong>를 만들기 위한 Rust 게임 엔진이자,
+  <strong>쿼터뷰 2D 스프라이트 MMORPG</strong>를 만들기 위한 Rust 게임 엔진이자,
   그 위에 올라간 존(맵) 저작 도구입니다. 지금은 <strong>서버 없이 혼자 돌아가는 단계</strong>이고,
   맵을 만들고 <strong>그 자리에서 바로 플레이</strong>해 볼 수 있습니다.
 </p>
@@ -284,6 +284,8 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
   <tr><td>검색 · 종류</td><td>이름·경로의 일부나 종류로 걸러 봅니다. 걸러 볼 때는 <strong>지금 폴더 아래 전체</strong>에서 찾습니다 — 맨 위 폴더에서 종류를 고르면 그 종류가 전부 모입니다</td></tr>
   <tr><td>게임 데이터 (파란 폴더)</td><td>액터·아이템·스킬·드롭 표는 파일이 아니라 <code>rules.ron</code>·<code>display.ron</code> 표 안의 항목이라, 디스크에 없는 <strong>가상 폴더</strong>에 종류별로 모여 있습니다</td></tr>
   <tr><td>새로 만들기</td><td>레벨 · 액터 · 아이템 · 스킬 · 드롭 표 · UI 화면 · 스크립트</td></tr>
+  <tr><td>빈 곳 / 폴더 <strong>오른쪽 클릭</strong></td><td>만들기 메뉴 — 맨 위에 <strong>지금 폴더에 맞는 것</strong>(levels 에서는 <em>새 레벨</em>, 게임 데이터/액터 에서는 <em>새 액터</em> …), 그 아래 <em>새로 만들기</em>(레벨·액터·아이템·스킬·드롭 표)와 <em>편집기 열기</em>(스크립트 편집기 · 위젯 편집기(UI 디자인) · 지형 팔레트), 보기 전환 · 새로 고침. 고르면 그 편집기가 새 항목 상태로 열리고, 이름·번호를 정해 저장하면 파일이 생깁니다</td></tr>
+  <tr><td>항목 오른쪽 클릭</td><td>열기 · 복제 · 이름 바꾸기 · 삭제</td></tr>
 </table>
 <table>
   <tr><th style="width:26%">종류</th><th>두 번 누르면</th></tr>
@@ -295,6 +297,7 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
   <tr><td>스크립트</td><td>스크립트 편집기</td></tr>
   <tr><td>스프라이트 시트</td><td><strong>시트 뷰어</strong> — 칸 격자와 클립 재생 미리보기 (보기 전용)</td></tr>
   <tr><td>그림</td><td>지형 팔레트</td></tr>
+  <tr><td><code>data/rules.ron</code></td><td><strong>게임 규칙 설정</strong> — 난수 시드 · 플레이어 공격 스킬 · 마커 종류별 기본 액터 · <strong>진영 관계</strong>(줄 더하기·빼기) · <strong>시작 소지품</strong>. 진영 번호에 마우스를 올리면 그 진영을 쓰는 액터가 보입니다</td></tr>
 </table>
 <div class="box">
   <p>
@@ -320,9 +323,9 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
 </p>
 <table>
   <tr><th style="width:18%">작업</th><th>하는 일</th></tr>
-  <tr><td>복제</td><td>새 이름으로 복사합니다. 액터는 다음 빈 번호로, 이름에 "복사본" 이 붙습니다</td></tr>
+  <tr><td>복제</td><td>새 이름으로 복사합니다. 액터·아이템·스킬·드롭 표는 다음 빈 번호로, 이름에 "복사본" 이 붙습니다 (번호 바꾸기는 없습니다)</td></tr>
   <tr><td>이름 바꾸기</td><td>파일을 옮기고 <strong>그것을 가리키는 곳을 전부 고쳐 씁니다</strong> — 맵을 바꾸면 레벨의 존 경로가, 레벨을 바꾸면 메인 메뉴 버튼과 시작 레벨이, 스크립트를 바꾸면 액터의 스크립트 칸이 따라 바뀝니다</td></tr>
-  <tr><td>삭제</td><td><strong>지우지 않고 휴지통(<code>trash/</code>)으로 옮깁니다</strong> — 원래 경로 그대로 들어가니 되살리려면 제자리로 옮기면 됩니다. 다른 곳이 쓰고 있으면 지우지 않고 쓰는 곳을 알려 줍니다</td></tr>
+  <tr><td>삭제</td><td><strong>지우지 않고 휴지통(<code>trash/</code>)으로 옮깁니다</strong> — 원래 경로 그대로 들어가니 되살리려면 제자리로 옮기면 됩니다. 다른 곳이 쓰고 있으면 지우지 않고 쓰는 곳을 알려 줍니다 — 예: 드롭 표에 든 아이템, 액터가 기본 공격으로 쓰는 스킬, 액터가 쓰는 드롭 표. 표 항목은 뺀 내용을 휴지통에 기록 파일로 남깁니다</td></tr>
 </table>
 <div class="box warn">
   <p>
@@ -477,7 +480,7 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
     "걸을 수 있음"을 따로 꺼야</strong> 합니다.
   </p>
   <p>
-    라그나로크가 지형 그림과 걷기 맵(GAT)을 따로 두는 것과 같은 방식입니다 — 그림을 바꿔도
+    지형 그림과 걷기 맵(GAT)을 따로 두는 것과 같은 방식입니다 — 그림을 바꿔도
     이동·전투 판정이 달라지지 않아야 나중에 서버와 어긋나지 않습니다.
   </p>
 </div>
@@ -634,7 +637,13 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
 </table>
 <p>
   위젯은 <strong>계층</strong>을 가집니다. 창(<em>Panel</em>) 안에 글자와 버튼을 넣으면, 창을 옮길 때
-  안에 있는 것들이 함께 따라옵니다. 종류는 <strong>창 · 글자 · 막대 · 아이템 칸 · 버튼</strong> 다섯 가지입니다.
+  안에 있는 것들이 함께 따라옵니다. 종류는 <strong>창 · 글자 · 막대 · 아이템 칸 · 버튼 · 그림</strong> 여섯 가지입니다.
+</p>
+<p>
+  <strong>그림</strong> 위젯은 배너·로딩 그림·아이콘용입니다. <code>assets/</code> 의 PNG 를 고르고, 그림의 일부만
+  쓰려면 <em>그림의 일부만</em> 에 픽셀 사각형(x·y·w·h)을 적습니다. 크기를 정하지 않으면 <strong>원래 픽셀 크기 × 배율</strong>로
+  그려지고, <em>9-slice 가장자리</em> 를 0 보다 크게 하면 가장자리는 두고 가운데만 늘려 창·배너 틀로 씁니다.
+  <em>색</em> 은 곱해지는 색이라 알파를 낮추면 반투명이 됩니다. 그림을 못 읽으면 분홍 테두리로 자리만 보입니다.
 </p>
 <table>
   <tr><th style="width:22%">키</th><th>동작</th></tr>
@@ -680,7 +689,7 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
 </p>
 <p>
   글자 문구에는 값을 끼울 수 있습니다 — <code>{hp}</code> <code>{max_hp}</code> <code>{level}</code>
-  <code>{exp}</code> <code>{exp_to_next}</code>. 다른 이름을 쓰면 데이터 오류로 알려 줍니다.
+  <code>{exp}</code> <code>{exp_to_next}</code> <code>{loading}</code>(로딩 진행 %). 다른 이름을 쓰면 데이터 오류로 알려 줍니다.
 </p>
 <div class="box warn">
   <p>
@@ -707,6 +716,8 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
     zone: Some("zones/village.zone.ron"),  // 없으면 UI 만 있는 레벨 (메인 화면)
     hud: Some("hud"),                      // 플레이 중 바탕 화면
     pause: Some("pause"),                  // Esc 로 띄울 화면
+    loading: Some("loading"),              // 이 레벨을 여는 동안 띄울 화면
+    loading_ms: 800,                       // 로딩 화면을 최소로 보여 줄 시간
 )</code></pre>
 <table>
   <tr><th style="width:26%">동작</th><th>방법</th></tr>
@@ -715,6 +726,11 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
   <tr><td>레벨 열기</td><td>메뉴 <em>레벨</em> 에서 고릅니다 (★ 은 시작 레벨). 게임 안에서는 버튼이 엽니다</td></tr>
   <tr><td>일시정지</td><td><kbd>Esc</kbd> — 겹친 창이 있으면 그것부터 닫힙니다</td></tr>
 </table>
+<p>
+  <strong>로딩 화면</strong> — 레벨에 <code>loading</code> 을 적으면 그 레벨을 여는 동안 그 화면이 뜹니다 (레벨 편집기의
+  <em>로딩 화면</em>·<em>로딩 최소 시간</em>). 화면에 막대를 두고 값을 <em>로딩 진행</em> 으로, 글자에 <code>{loading}</code> 을 쓰면
+  진행률이 보입니다. 기본으로 들어 있는 <code>ui/loading.ui.ron</code> 을 복제해 고쳐 쓰면 됩니다.
+</p>
 <p>
   버튼이 하는 일은 데이터에 적습니다 — <em>화면 열기 · 화면 닫기 · 레벨 열기 · 시작 레벨로 ·
   계속하기 · 종료</em>. 겹쳐 뜬 창(일시정지·설정)은 아래를 어둡게 덮고, 그 동안 아래 화면의 버튼과
@@ -1017,7 +1033,7 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
 <div class="box bad">
   <p>
     <strong>라이선스는 받은 페이지에서 직접 확인하세요.</strong> "CC0" 검색 결과에 실제로는 출처 표기가
-    필요한(CC-BY·OGA-BY) 팩이 섞여 나옵니다. 그리고 <strong>라그나로크 온라인의 원본 리소스는 쓰지 않습니다</strong> —
+    필요한(CC-BY·OGA-BY) 팩이 섞여 나옵니다.
     이 엔진이 그 장르를 지향하는 것과 별개로 저작권 침해입니다.
   </p>
 </div>
@@ -1190,6 +1206,7 @@ cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gn
   <tr><td><code>contentpick 키</code></td><td>항목 고르기 — 경로 또는 <code>actor:번호</code> (예: <code>contentpick actor:102</code>)</td></tr>
   <tr><td><code>contentopen</code></td><td>고른 항목 열기 (두 번 누르기와 같다)</td></tr>
   <tr><td><code>contentfolder 경로</code> / <code>contentview icons|list</code></td><td>브라우저의 폴더로 가기 (<code>/</code> = 맨 위, 예: <code>contentfolder 게임 데이터/액터</code>) / 보기 방식</td></tr>
+  <tr><td><code>contentmenu</code></td><td>브라우저 빈 곳의 오른쪽 클릭 메뉴 열기</td></tr>
   <tr><td><code>contentop delete|duplicate|rename [새이름]</code></td><td>고른 항목에 파일 작업 확인 창 띄우기</td></tr>
   <tr><td><code>contentconfirm</code></td><td>확인 창의 "실행"</td></tr>
   <tr><td><code>play</code></td><td>플레이 시작/정지 (<kbd>F5</kbd>와 같음). 플레이 중 <code>press</code>는 클릭 명령이 됩니다</td></tr>
@@ -1227,7 +1244,7 @@ NEXUS_SCREENSHOT=out.png NEXUS_SCREENSHOT_FRAME=40 cargo run -p world-editor</co
 <ul>
   <li>8방향 A* 길찾기. 평지 우회로가 있으면 경사로로 돌아가는 길보다 평지를 고릅니다.</li>
   <li>이동 중 타일이 바뀌면(편집으로 벽을 칠하면) <strong>뚫고 가지 않고 멈춥니다</strong>.</li>
-  <li>유닛끼리는 서로 막지 않고 겹칩니다(라그나로크와 같습니다).</li>
+  <li>유닛끼리는 서로 막지 않고 겹칩니다</li>
   <li>시뮬레이션은 <strong>20Hz 고정</strong>이고, 화면은 두 tick 사이를 보간해 부드럽게 그립니다.</li>
 </ul>
 
