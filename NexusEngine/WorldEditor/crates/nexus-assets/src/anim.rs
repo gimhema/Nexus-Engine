@@ -137,7 +137,7 @@ pub struct SpriteAnimator {
     frame: u32,
     /// 현재 프레임에서 지난 시간.
     elapsed: Duration,
-    /// 비루프 클립이 마지막 프레임에 도달했는가.
+    /// 비루프 클립이 마지막 프레임까지 **제 시간을 다 보여 줬는가**.
     finished: bool,
 }
 
@@ -163,7 +163,9 @@ impl SpriteAnimator {
         self.frame
     }
 
-    /// 비루프 클립이 끝까지 갔는가. 루프 클립은 항상 `false`.
+    /// 비루프 클립이 끝까지 갔는가 — 마지막 프레임도 제 시간(`frame_time`)만큼 보여 준 뒤에 켜진다.
+    /// 그래서 이것이 켜졌을 때 다음 동작으로 넘어가도 마지막 프레임이 잘리지 않는다.
+    /// 루프 클립은 항상 `false`.
     #[must_use]
     pub fn finished(&self) -> bool {
         self.finished
@@ -177,6 +179,12 @@ impl SpriteAnimator {
         if self.state == state {
             return;
         }
+        self.play(state);
+    }
+
+    /// 상태를 **처음부터** 재생한다 — 같은 상태여도 리셋한다. 연속 공격처럼 한 번짜리 동작을
+    /// 다시 시작할 때 쓴다 (매 tick 부르는 곳에서는 [`set_state`](Self::set_state)).
+    pub fn play(&mut self, state: AnimState) {
         self.state = state;
         self.frame = 0;
         self.elapsed = Duration::ZERO;
@@ -314,6 +322,38 @@ mod tests {
         }
         assert_eq!(a.frame(), 2, "마지막 프레임에서 멈춰야 한다");
         assert!(a.finished());
+    }
+
+    #[test]
+    fn finished_waits_for_the_last_frame_to_be_shown() {
+        // 3프레임 × 100ms — 마지막 프레임은 200ms 에 들어서고 300ms 에 끝난다.
+        // 끝난 것을 보고 다음 동작으로 넘어가도 마지막 프레임이 잘리지 않아야 한다.
+        let s = sheet();
+        let mut a = SpriteAnimator::default();
+        a.play(AnimState::Die);
+        tick(&mut a, &s, 200);
+        assert_eq!(
+            (a.frame(), a.finished()),
+            (2, false),
+            "마지막 프레임에 막 들어섰다"
+        );
+        tick(&mut a, &s, 50);
+        assert!(!a.finished());
+        tick(&mut a, &s, 50);
+        assert!(a.finished(), "마지막 프레임도 100ms 보여 줬다");
+    }
+
+    #[test]
+    fn play_restarts_even_the_same_state() {
+        let s = sheet();
+        let mut a = SpriteAnimator::default();
+        a.play(AnimState::Die);
+        tick(&mut a, &s, 1000);
+        assert!(a.finished());
+        a.set_state(AnimState::Die);
+        assert!(a.finished(), "set_state 는 같은 상태를 리셋하지 않는다");
+        a.play(AnimState::Die);
+        assert_eq!((a.frame(), a.finished()), (0, false));
     }
 
     #[test]

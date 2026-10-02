@@ -16,7 +16,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
-use nexus_assets::{AnimState, SpriteAnimator};
+use nexus_assets::{AnimState, SpriteAnimator, SpriteSheet};
 use nexus_core::{Camera2d, Entity, Vec2, Vec3};
 use nexus_render::{DEPTH_LAYER, RenderCommand, SpriteAnchor, TextureId, UvRect};
 use nexus_script::RhaiHost;
@@ -48,6 +48,10 @@ const BAR_BACK: [f32; 4] = [0.05, 0.05, 0.07, 1.0];
 const BAR_HP: [f32; 4] = [0.30, 0.85, 0.40, 1.0];
 const BAR_HP_LOW: [f32; 4] = [0.95, 0.30, 0.25, 1.0];
 const CORPSE_TINT: [f32; 4] = [0.35, 0.35, 0.38, 1.0];
+/// 맞은 유닛을 붉게 깜빡인다 — 피격 그림이 없는 시트에도 맞은 것이 보이게. 곱하는 색이다.
+const HIT_TINT: [f32; 4] = [1.0, 0.35, 0.35, 1.0];
+/// 깜빡임 길이 (tick). 3 tick = 150ms.
+const HIT_FLASH_TICKS: u8 = 3;
 
 /// 플레이어가 클릭으로 내린 주문. 매 tick 이것을 보고 Intent 를 낸다.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +101,8 @@ pub(crate) struct PlaySession {
     labels: HashMap<Entity, Label>,
     /// 유닛마다 따로 — 걷는 유닛과 서 있는 유닛의 위상이 달라야 한다.
     animators: HashMap<Entity, SpriteAnimator>,
+    /// 맞은 유닛의 붉은 깜빡임 — 남은 tick.
+    hit_flash: HashMap<Entity, u8>,
     order: Order,
     /// 주문을 위해 마지막으로 경로를 잡은 지점.
     chase_goal: Option<Vec2>,
@@ -195,6 +201,7 @@ impl PlaySession {
             player,
             labels,
             animators: HashMap::new(),
+            hit_flash: HashMap::new(),
             order: Order::Idle,
             chase_goal: None,
             log: VecDeque::new(),
@@ -338,8 +345,20 @@ impl PlaySession {
         for intent in self.follow_order() {
             self.auth.submit(intent);
         }
-        for event in self.auth.tick(dt) {
+        let events = self.auth.tick(dt);
+        let cues = AnimCue::collect(&events);
+        for event in events {
             self.on_event(event);
+        }
+        // 깜빡임은 tick 으로 센다 — 렌더 프레임으로 세면 fps 에 따라 길이가 달라진다.
+        self.hit_flash.retain(|_, left| {
+            *left -= 1;
+            *left > 0
+        });
+        for (unit, cue) in &cues {
+            if cue.hit {
+                self.hit_flash.insert(*unit, HIT_FLASH_TICKS);
+            }
         }
         // 스크립트의 print 는 이벤트 기록으로, 오류는 상태 바로도 (그 스크립트는 꺼졌다).
         let lines = self
@@ -364,18 +383,16 @@ impl PlaySession {
         let world = self.auth.world();
         for (unit, actor) in actors {
             let Some(u) = world.unit(unit) else { continue };
-            let animator = self.animators.entry(unit).or_default();
-            if !u.is_alive() {
-                continue; // 시체는 마지막 프레임에 멈춘다
-            }
-            animator.set_state(if u.is_moving() {
-                AnimState::Walk
-            } else {
-                AnimState::Idle
-            });
-            if let Some(sprites) = sprites {
-                animator.advance(sprites.sheet(actor).anim(), dt);
-            }
+            next_anim(
+                self.animators.entry(unit).or_default(),
+                sprites.map(|s| s.sheet(actor).anim()),
+                UnitPose {
+                    alive: u.is_alive(),
+                    moving: u.is_moving(),
+                },
+                cues.get(&unit).copied().unwrap_or_default(),
+                dt,
+            );
         }
     }
 
@@ -672,6 +689,7 @@ impl PlaySession {
             // 시체는 어떤 시트든 회색 — 명시한 색으로 넘겨 컬러 아트에도 곱해지게 한다.
             let (tint, fallback) = match self.labels.get(&unit) {
                 _ if !u.is_alive() => (CORPSE_TINT, CORPSE_TINT),
+                _ if self.hit_flash.contains_key(&unit) => (HIT_TINT, HIT_TINT),
                 Some(l) => (l.tint, l.fallback),
                 None => (NO_TINT, NO_TINT),
             };
@@ -773,6 +791,89 @@ pub(crate) struct BagLine {
 }
 
 /// 화면 문구 — 데이터가 아니라 UI 의 일부라 코드에 둔다.
+/// 한 tick 동안 유닛에게 일어난 일 중 **동작을 바꾸는 것** — 전투 이벤트에서 모은다.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct AnimCue {
+    /// 공격이 맞았다 (때린 쪽).
+    attacked: bool,
+    /// 공격에 맞았다.
+    hit: bool,
+    died: bool,
+}
+
+impl AnimCue {
+    fn collect(events: &[Event]) -> HashMap<Entity, Self> {
+        let mut cues: HashMap<Entity, Self> = HashMap::new();
+        for event in events {
+            match *event {
+                Event::Damaged {
+                    attacker, target, ..
+                } => {
+                    cues.entry(attacker).or_default().attacked = true;
+                    cues.entry(target).or_default().hit = true;
+                }
+                Event::Died { unit, .. } => cues.entry(unit).or_default().died = true,
+                _ => {}
+            }
+        }
+        cues
+    }
+}
+
+/// 동작을 고르는 데 필요한 유닛 상태.
+#[derive(Clone, Copy, Debug)]
+struct UnitPose {
+    alive: bool,
+    moving: bool,
+}
+
+/// 유닛 하나의 재생기를 한 tick 진행한다.
+///
+/// 우선순위: **사망 > 공격 > 피격 > 걷기·대기.** 공격·피격·사망은 한 번짜리 동작이라 끝날 때까지
+/// 걷기·대기로 덮지 않는다. 다만 **시트에 그 클립이 있을 때만** 들어간다 — 없는 클립은 대기로
+/// 대체되는데(`clip_or_fallback`), 대기는 루프라 끝나지 않아 유닛이 그 자리에 얼어붙는다.
+/// 피격 그림이 없는 시트는 대신 붉게 깜빡인다 ([`HIT_TINT`]).
+///
+/// 시트가 없으면(`None` — 시험이나 로드 실패) 상태만 바꾸고 진행하지 않는다.
+fn next_anim(
+    animator: &mut SpriteAnimator,
+    sheet: Option<&SpriteSheet>,
+    pose: UnitPose,
+    cue: AnimCue,
+    dt: Duration,
+) {
+    let has = |state| sheet.is_some_and(|s| s.clip(state).is_some());
+    if !pose.alive {
+        if cue.died && has(AnimState::Die) {
+            animator.play(AnimState::Die);
+        }
+        // 사망 동작이 없으면 시체는 쓰러진 순간의 프레임에 멈춘다.
+        if animator.state() != AnimState::Die {
+            return;
+        }
+    } else {
+        if cue.attacked && has(AnimState::Attack) {
+            // 연속 공격은 처음부터 다시 — 같은 상태여도 리셋한다.
+            animator.play(AnimState::Attack);
+        } else if cue.hit && has(AnimState::Hit) && animator.state() != AnimState::Attack {
+            // 휘두르는 중에 맞아도 공격 동작은 끊지 않는다.
+            animator.play(AnimState::Hit);
+        }
+        let busy =
+            matches!(animator.state(), AnimState::Attack | AnimState::Hit) && !animator.finished();
+        if !busy {
+            animator.set_state(if pose.moving {
+                AnimState::Walk
+            } else {
+                AnimState::Idle
+            });
+        }
+    }
+    if let Some(sheet) = sheet {
+        animator.advance(sheet, dt);
+    }
+}
+
 mod text {
     use nexus_sim::{EquipSlot, Rejection};
 
@@ -992,6 +1093,131 @@ mod tests {
                 .filter(|(_, item, _)| *item == ItemId(501))
                 .map(|(_, _, n)| n)
                 .sum::<u32>()
+        );
+    }
+
+    // ── 전투 동작 ────────────────────────────────────────────────────────────
+
+    const PLAYER_SHEET: &str = "assets/third_party/zelda-like-armm1998/player.sheet.ron";
+    const SLIME_SHEET: &str = "assets/third_party/slime-garakh/monster.sheet.ron";
+    const STANDING: UnitPose = UnitPose {
+        alive: true,
+        moving: false,
+    };
+    const WALKING: UnitPose = UnitPose {
+        alive: true,
+        moving: true,
+    };
+    const DEAD: UnitPose = UnitPose {
+        alive: false,
+        moving: false,
+    };
+    const NONE: AnimCue = AnimCue {
+        attacked: false,
+        hit: false,
+        died: false,
+    };
+    const ATTACKED: AnimCue = AnimCue {
+        attacked: true,
+        ..NONE
+    };
+
+    #[test]
+    fn an_attack_plays_once_then_walking_resumes() {
+        // 플레이어 시트의 공격 = 4프레임 × 90ms = 360ms → 8 tick 째에 끝난다.
+        let sheet = crate::sprites::sheet_for_test(PLAYER_SHEET);
+        let mut a = SpriteAnimator::default();
+        next_anim(&mut a, Some(&sheet), WALKING, ATTACKED, DT);
+        assert_eq!(a.state(), AnimState::Attack, "걷는 중이어도 휘두른다");
+        for _ in 0..6 {
+            next_anim(&mut a, Some(&sheet), WALKING, NONE, DT);
+            assert_eq!(
+                a.state(),
+                AnimState::Attack,
+                "끝날 때까지 걷기로 덮지 않는다"
+            );
+        }
+        assert_eq!(a.frame(), 3, "마지막 프레임까지 보여 준다");
+        next_anim(&mut a, Some(&sheet), WALKING, NONE, DT); // 400ms — 끝
+        next_anim(&mut a, Some(&sheet), WALKING, NONE, DT);
+        assert_eq!(a.state(), AnimState::Walk);
+    }
+
+    #[test]
+    fn a_second_hit_restarts_the_swing() {
+        let sheet = crate::sprites::sheet_for_test(PLAYER_SHEET);
+        let mut a = SpriteAnimator::default();
+        next_anim(&mut a, Some(&sheet), STANDING, ATTACKED, DT);
+        for _ in 0..4 {
+            next_anim(&mut a, Some(&sheet), STANDING, NONE, DT);
+        }
+        assert!(a.frame() > 0);
+        next_anim(&mut a, Some(&sheet), STANDING, ATTACKED, DT);
+        assert_eq!((a.state(), a.frame()), (AnimState::Attack, 0));
+    }
+
+    #[test]
+    fn a_missing_clip_is_never_entered() {
+        // 슬라임 시트에는 공격·피격 그림이 없다 — 들어가면 대기(루프)로 대체되어 끝나지 않는다.
+        let sheet = crate::sprites::sheet_for_test(SLIME_SHEET);
+        let mut a = SpriteAnimator::default();
+        let both = AnimCue {
+            attacked: true,
+            hit: true,
+            died: false,
+        };
+        next_anim(&mut a, Some(&sheet), WALKING, both, DT);
+        assert_eq!(a.state(), AnimState::Walk);
+    }
+
+    #[test]
+    fn death_plays_its_clip_and_stays_on_the_last_frame() {
+        let sheet = crate::sprites::sheet_for_test(SLIME_SHEET);
+        let mut a = SpriteAnimator::default();
+        let died = AnimCue { died: true, ..NONE };
+        next_anim(&mut a, Some(&sheet), DEAD, died, DT);
+        assert_eq!(a.state(), AnimState::Die);
+        for _ in 0..40 {
+            next_anim(&mut a, Some(&sheet), DEAD, NONE, DT);
+        }
+        assert_eq!(
+            (a.state(), a.frame(), a.finished()),
+            (AnimState::Die, 2, true)
+        );
+
+        // 사망 그림이 없는 시트는 쓰러진 순간의 프레임에 멈춘다 — 대기로 돌아가지 않는다.
+        let player = crate::sprites::sheet_for_test(PLAYER_SHEET);
+        let mut b = SpriteAnimator::default();
+        next_anim(&mut b, Some(&player), WALKING, NONE, DT * 3);
+        let frozen = (b.state(), b.frame());
+        for _ in 0..10 {
+            next_anim(&mut b, Some(&player), DEAD, died, DT);
+        }
+        assert_eq!((b.state(), b.frame()), frozen);
+    }
+
+    #[test]
+    fn hits_flash_for_a_few_ticks_in_play() {
+        // 슬라임을 끝까지 잡는 판 — 맞은 쪽이 깜빡이고, 깜빡임은 tick 으로 끝난다.
+        let mut s = session();
+        let slime = find(&s, "슬라임");
+        s.click(s.world().unit(slime).unwrap().pos(), 0.01);
+        let mut flashed = false;
+        for _ in 0..900 {
+            s.tick(DT, None);
+            flashed |= s.hit_flash.contains_key(&slime);
+            if !s.world().unit(slime).unwrap().is_alive() {
+                break;
+            }
+        }
+        assert!(flashed, "맞은 슬라임이 깜빡였어야 한다");
+        assert!(!s.world().unit(slime).unwrap().is_alive(), "{:?}", s.log);
+        for _ in 0..HIT_FLASH_TICKS {
+            s.tick(DT, None);
+        }
+        assert!(
+            !s.hit_flash.contains_key(&slime),
+            "더 맞지 않으면 깜빡임은 tick 으로 끝난다"
         );
     }
 

@@ -534,6 +534,16 @@ impl SpriteLibrary {
     }
 }
 
+/// 시험용 — 저장소의 시트 정의 하나를 GPU 없이 읽는다 (`key` 는 저장소 기준 경로).
+#[cfg(test)]
+pub(crate) fn sheet_for_test(key: &str) -> SpriteSheet {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(key);
+    let def = std::fs::read_to_string(&path).unwrap();
+    plan_sheet(&def, path.parent()).unwrap().sheet
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -652,6 +662,22 @@ mod tests {
             if let Err(e) = plan_sheet(&def, path.parent()) {
                 // 그림 경로는 정의 파일 폴더 기준으로 찾으므로 작업 디렉터리와 무관하다.
                 panic!("{kind:?}: {rel} — {e}");
+            }
+        }
+    }
+
+    #[test]
+    fn combat_clips_are_one_shot() {
+        // 공격·피격·사망은 한 번짜리여야 끝난다 — 루프면 플레이에서 그 동작에 갇힌다.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for (kind, rel) in crate::game_data::GameData::embedded().sprite_sheets() {
+            let path = root.join(&rel);
+            let def = std::fs::read_to_string(&path).unwrap();
+            let sheet = plan_sheet(&def, path.parent()).unwrap().sheet;
+            for state in [AnimState::Attack, AnimState::Hit, AnimState::Die] {
+                if let Some(clip) = sheet.clip(state) {
+                    assert!(!clip.looping, "{kind:?}: {rel} 의 {state:?} 가 루프다");
+                }
             }
         }
     }
