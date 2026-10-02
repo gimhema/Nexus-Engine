@@ -126,6 +126,9 @@ pub enum Event {
     },
     /// 유닛이 죽었다. 월드에는 시체로 남는다 — 치울지는 스폰한 쪽이 정한다.
     Died { unit: Entity, killer: Entity },
+    /// 죽은 유닛이 리스폰했다 (`UnitDef::respawn_ms`). 시체(`replaces`)는 치워져 핸들이 무효이고,
+    /// 스폰 지점에 **새 핸들**(`unit`)로 가득 찬 채 나타났다 — 이름·스크립트를 붙여 둔 쪽은 옮겨야 한다.
+    Respawned { unit: Entity, replaces: Entity },
     /// AI 가 싸울 상대를 정했다 (먼저 발견했거나 반격).
     Engaged { unit: Entity, target: Entity },
     /// AI 가 추격 한계를 넘어 포기하고 스폰 지점으로 돌아간다.

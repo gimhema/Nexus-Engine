@@ -218,6 +218,68 @@ mod flow_tests {
     }
 
     #[test]
+    fn a_respawning_unit_comes_back_fresh_at_its_spawn_point_after_its_time() {
+        let (mut auth, a, _) = arena();
+        // 한 방(30 − 10 = 20)에 죽고 1초 뒤 리스폰.
+        let def = UnitDef {
+            max_hp: 20,
+            respawn_ms: 1000,
+            ..fighter()
+        };
+        let spawn = Vec2::new(3.5, 2.5);
+        let t = auth.world_mut().spawn_unit(spawn, 1.0, def);
+        // 죽기 전에 자리를 옮겨 둔다 — 리스폰은 죽은 자리가 아니라 스폰 지점이다.
+        auth.world_mut().unit_mut(t).unwrap().pos = Vec2::new(2.5, 2.5);
+        let died = attack(&mut auth, a, t, MELEE); // tick 1 — 시계 0 에 죽는다
+        assert!(died.contains(&Event::Died { unit: t, killer: a }));
+
+        for n in 2..=19 {
+            let events = auth.tick(DT);
+            assert!(
+                !events.iter().any(|e| matches!(e, Event::Respawned { .. })),
+                "tick {n}: 아직"
+            );
+            assert!(auth.world().unit(t).is_some(), "그동안은 시체로 남는다");
+        }
+        let events = auth.tick(DT); // tick 20 — 시계 1000ms
+        let new = events
+            .iter()
+            .find_map(|e| match *e {
+                Event::Respawned { unit, replaces } if replaces == t => Some(unit),
+                _ => None,
+            })
+            .expect("1초 뒤 리스폰");
+        assert_ne!(new, t, "새 핸들");
+        assert!(auth.world().unit(t).is_none(), "시체는 치워졌다");
+        let u = auth.world().unit(new).unwrap();
+        assert_eq!((u.hp(), u.pos(), u.heading()), (20, spawn, 1.0));
+        assert!(u.is_ready(MELEE, auth.world().now()));
+    }
+
+    #[test]
+    fn units_without_respawn_stay_as_corpses() {
+        let (mut auth, a, _) = arena();
+        let t = auth.world_mut().spawn_unit(
+            Vec2::new(3.5, 2.5),
+            0.0,
+            UnitDef {
+                max_hp: 20,
+                ..fighter()
+            },
+        );
+        attack(&mut auth, a, t, MELEE);
+        for _ in 0..200 {
+            assert!(
+                !auth
+                    .tick(DT)
+                    .iter()
+                    .any(|e| matches!(e, Event::Respawned { .. }))
+            );
+        }
+        assert!(!auth.world().unit(t).unwrap().is_alive());
+    }
+
+    #[test]
     fn cooldown_left_counts_down_to_zero() {
         let (mut auth, a, t) = arena();
         let left = |auth: &LocalAuthority| {

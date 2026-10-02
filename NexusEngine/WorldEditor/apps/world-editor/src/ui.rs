@@ -1587,6 +1587,14 @@ fn actor_section(ui: &mut egui::Ui, model: &UiModel<'_>, items: &[&Item], action
                 format!("{} (초당 +{})", base.max_mp, base.mp_regen)
             }));
             ui.end_row();
+            // 리스폰도 타입의 성질이다 (덮어쓰기 없음).
+            ui.weak("리스폰");
+            ui.label(shown(if base.respawn_ms == 0 {
+                String::from("없음 (시체로 남음)")
+            } else {
+                format!("{:.1}초", f64::from(base.respawn_ms) / 1000.0)
+            }));
+            ui.end_row();
 
             // 이동 속도는 덮어쓰지 않는다 — 걷는 애니메이션·경로와 묶인 타입의 성질이다.
             ui.weak("이동");

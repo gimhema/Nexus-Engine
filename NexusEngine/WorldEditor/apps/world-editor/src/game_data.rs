@@ -38,6 +38,8 @@ const FORMAT_VERSION: u32 = 1;
 
 pub(crate) const RULES_PATH: &str = "data/rules.ron";
 pub(crate) const DISPLAY_PATH: &str = "data/display.ron";
+/// 리스폰 시간 상한 (ms) — 1시간. 오타(0 을 하나 더)로 영영 안 나오는 몬스터를 막는다.
+const MAX_RESPAWN_MS: u32 = 3_600_000;
 /// 단축키 칸 수 — 숫자키 1~9.
 pub(crate) const MAX_HOTBAR: usize = 9;
 
@@ -194,6 +196,9 @@ struct UnitFile {
     /// 레벨이 오를 때마다 더해지는 수치 (P3). 적지 않으면 성장하지 않는다.
     #[serde(default)]
     growth: GrowthFile,
+    /// 죽은 뒤 리스폰까지 (ms). 적지 않으면 0 — 리스폰하지 않고 시체로 남는다.
+    #[serde(default)]
+    respawn_ms: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
@@ -394,6 +399,10 @@ impl GameData {
                 .iter()
                 .all(|v| v.is_finite() && *v >= 0.0);
             check(finite, format!("액터 {id}: 속도·거리는 0 이상의 수"));
+            check(
+                u.respawn_ms <= MAX_RESPAWN_MS,
+                format!("액터 {id}: respawn_ms 는 {MAX_RESPAWN_MS} 이하 (1시간)"),
+            );
             if let Some(skill) = u.basic_attack {
                 check(
                     r.skills.contains_key(&skill),
@@ -897,6 +906,7 @@ impl From<&UnitFile> for UnitDef {
                 attack: u.growth.attack,
                 defense: u.growth.defense,
             },
+            respawn_ms: u.respawn_ms,
         }
     }
 }
@@ -934,6 +944,8 @@ pub(crate) struct ActorForm {
     pub(crate) growth: (u32, u32, u32),
     /// 레벨당 최대 MP 성장. 튜플에 넣지 않았다 — 기존 편집기·테스트가 튜플 순서에 기대고 있다.
     pub(crate) growth_mp: u32,
+    /// 리스폰까지 (ms). 0 = 리스폰하지 않음.
+    pub(crate) respawn_ms: u32,
     // 표시 반쪽 (display.ron)
     pub(crate) name: String,
     pub(crate) sheet: String,
@@ -1001,6 +1013,7 @@ impl ActorForm {
             exp_reward: 0,
             growth: (0, 0, 0),
             growth_mp: 0,
+            respawn_ms: 0,
             name: name.to_owned(),
             sheet: String::new(),
             tint: (1.0, 1.0, 1.0),
@@ -1056,6 +1069,9 @@ impl ActorForm {
         }
         if self.exp_reward != 0 {
             line(format!("exp_reward: {}", self.exp_reward));
+        }
+        if self.respawn_ms != 0 {
+            line(format!("respawn_ms: {}", self.respawn_ms));
         }
         let (hp, atk, def) = self.growth;
         let mp = self.growth_mp;
@@ -1126,6 +1142,7 @@ pub(crate) fn actor_forms(rules: &str, display: &str) -> Result<BTreeMap<u32, Ac
                 exp_reward: u.exp_reward,
                 growth: (u.growth.max_hp, u.growth.attack, u.growth.defense),
                 growth_mp: u.growth.max_mp,
+                respawn_ms: u.respawn_ms,
                 ..ActorForm::new("")
             },
         );
@@ -1767,6 +1784,25 @@ mod tests {
             let err = GameData::parse(&rules, EMBEDDED_DISPLAY).unwrap_err();
             assert!(err.contains(expect), "'{expect}' 기대: {err}");
         }
+    }
+
+    #[test]
+    fn respawn_times_come_from_the_actor_and_are_capped() {
+        let data = GameData::embedded();
+        assert_eq!(
+            data.unit_def(ActorId::new(100)).respawn_ms,
+            10_000,
+            "슬라임"
+        );
+        assert_eq!(
+            data.unit_def(ActorId::new(1)).respawn_ms,
+            0,
+            "플레이어는 리스폰하지 않는다"
+        );
+        let rules = EMBEDDED_RULES.replacen("respawn_ms: 10000,", "respawn_ms: 36000000,", 1);
+        assert_ne!(rules, EMBEDDED_RULES, "시험 전제");
+        let err = GameData::parse(&rules, EMBEDDED_DISPLAY).unwrap_err();
+        assert!(err.contains("respawn_ms"), "{err}");
     }
 
     #[test]

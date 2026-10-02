@@ -115,6 +115,7 @@ impl SimWorld {
             u.pos = pos;
             u.prev_pos = pos;
             u.home = pos;
+            u.spawn_pos = pos;
             u.waypoints.clear();
         }
     }
@@ -423,6 +424,7 @@ impl SimWorld {
         if remaining_hp == 0 {
             t.waypoints.clear();
             t.ai = AiState::default();
+            t.died_at = Some(now);
             let (corpse, table, reward) = (t.pos, t.def.loot, t.def.exp_reward);
             events.push(Event::Died {
                 unit: target,
@@ -676,9 +678,37 @@ impl SimWorld {
         }
     }
 
+    /// 리스폰 시각이 된 시체를 치우고 스폰 지점에 새로 세운다 — 슬롯 순서대로 (결정적).
+    ///
+    /// 새 유닛은 **처음 스폰과 같은 수치**(마커별 덮어쓰기가 얹힌 `UnitDef`)로 가득 찬 채 나타나고,
+    /// 레벨·소지품·쿨타임은 없다. 핸들이 새로 나오므로 [`Event::Respawned`] 로 알린다.
+    fn respawn_due(&mut self, events: &mut Vec<Event>) {
+        let now = self.now;
+        let due: Vec<(Entity, UnitDef, Vec2, f32)> = self
+            .units()
+            .filter(|(_, u)| {
+                !u.is_alive()
+                    && u.def.respawn_ms > 0
+                    && u.died_at.is_some_and(|t| {
+                        now >= t + Duration::from_millis(u64::from(u.def.respawn_ms))
+                    })
+            })
+            .map(|(e, u)| (e, u.def, u.spawn_pos, u.spawn_heading))
+            .collect();
+        for (old, def, pos, heading) in due {
+            self.despawn(old);
+            let unit = self.spawn_unit(pos, heading, def);
+            events.push(Event::Respawned {
+                unit,
+                replaces: old,
+            });
+        }
+    }
+
     /// 한 tick 진행.
     pub(crate) fn step(&mut self, dt: Duration, events: &mut Vec<Event>) {
         self.now += dt;
+        self.respawn_due(events);
         let tick = dt;
         let dt = dt.as_secs_f32();
         let tiles = &self.tiles;

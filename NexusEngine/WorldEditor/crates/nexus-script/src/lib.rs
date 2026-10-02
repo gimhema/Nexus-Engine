@@ -347,6 +347,23 @@ impl ScriptHost for RhaiHost {
                 Event::Died { unit: dead, killer } => {
                     self.call(dead, 4, vec![unit(dead), unit(killer)]);
                 }
+                // 리스폰 — 스크립트를 새 핸들로 옮긴다. 상태(this)는 비우고 on_spawn 부터 다시
+                // (새로 태어난 액터다). 아래 "살아 있는 유닛" 순회에서 바로 on_spawn 이 불린다.
+                Event::Respawned {
+                    unit: fresh,
+                    replaces,
+                } => {
+                    if let Some(old) = self.attached.remove(&replaces) {
+                        self.attached.insert(
+                            fresh,
+                            Attached {
+                                script: old.script,
+                                state: Dynamic::from_map(Map::new()),
+                                spawned: false,
+                            },
+                        );
+                    }
+                }
                 _ => {}
             }
         }

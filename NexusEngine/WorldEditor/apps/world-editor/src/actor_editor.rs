@@ -378,6 +378,14 @@ impl ActorEditor {
                 ui.label("경험치 보상");
                 ui.add(egui::DragValue::new(&mut f.exp_reward).range(0..=1_000_000));
                 ui.end_row();
+                ui.label("리스폰 (ms)")
+                    .on_hover_text("죽은 뒤 이만큼 지나면 스폰 지점에 새로 나타난다. 0 = 리스폰하지 않고 시체로 남음");
+                ui.add(
+                    egui::DragValue::new(&mut f.respawn_ms)
+                        .speed(100)
+                        .range(0..=3_600_000),
+                );
+                ui.end_row();
                 ui.label("레벨당 성장");
                 ui.horizontal(|ui| {
                     ui.add(egui::DragValue::new(&mut f.growth.0).prefix("HP "));

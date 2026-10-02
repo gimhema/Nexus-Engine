@@ -593,6 +593,18 @@ impl PlaySession {
             self.order = Order::Idle;
             self.chase_goal = None;
         }
+        // 리스폰 — 핸들이 새로 나왔다. 이름표를 옮기고, 옛 핸들에 걸린 재생기·깜빡임은 버린다
+        // (새 유닛은 대기 동작부터). 플레이어였다면 조작 대상도 옮긴다.
+        if let Event::Respawned { unit, replaces } = event {
+            if let Some(label) = self.labels.remove(&replaces) {
+                self.labels.insert(unit, label);
+            }
+            self.animators.remove(&replaces);
+            self.hit_flash.remove(&replaces);
+            if self.player == replaces {
+                self.player = unit;
+            }
+        }
         // 예약한 스킬이 맞았으면 비운다 — 이후로는 기본 공격으로 이어 간다.
         if let Event::Damaged {
             attacker, skill, ..
@@ -634,6 +646,7 @@ impl PlaySession {
                 String::from("플레이어가 쓰러졌습니다")
             }
             Event::Died { unit, .. } => format!("{} 쓰러짐", self.name(unit)),
+            Event::Respawned { unit, .. } => format!("{} 다시 나타남", self.name(unit)),
             Event::ItemSpawned { stack, .. } => {
                 format!(
                     "{} ×{} 떨어짐",
@@ -1207,6 +1220,10 @@ mod tests {
         s.click(s.world().unit(slime).unwrap().pos(), 0.01);
         for _ in 0..900 {
             s.tick(DT, None);
+            // 쓰러지면 멈춘다 — 더 돌리면 리스폰해서(10초) 옛 핸들이 사라진다.
+            if !s.world().unit(slime).unwrap().is_alive() {
+                break;
+            }
         }
         assert!(!s.world().unit(slime).unwrap().is_alive(), "{:?}", s.log);
         let before = s.world().unit(s.player()).unwrap().progress();
@@ -1243,6 +1260,44 @@ mod tests {
                 .filter(|(_, item, _)| *item == ItemId(501))
                 .map(|(_, _, n)| n)
                 .sum::<u32>()
+        );
+    }
+
+    // ── 리스폰 ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn a_slain_slime_respawns_at_its_marker_with_its_name() {
+        // rules.ron: 슬라임 respawn_ms 10000.
+        let mut s = session();
+        let slime = find(&s, "슬라임");
+        let spawn = s.world().unit(slime).unwrap().pos();
+        s.click(spawn, 0.01);
+        for _ in 0..900 {
+            s.tick(DT, None);
+            if !s.world().unit(slime).unwrap().is_alive() {
+                break;
+            }
+        }
+        assert!(!s.world().unit(slime).unwrap().is_alive(), "{:?}", s.log);
+        // 플레이어를 멀리 치워 둔다 — 되살아난 슬라임이 곧바로 덤벼 죽지 않게.
+        let me = s.player();
+        s.auth.world_mut().set_position(me, Vec2::new(-30.0, 30.0));
+
+        // 쓰러진 tick 의 시작 시각부터 10초 = 그 뒤 199 tick 째.
+        for _ in 0..198 {
+            s.tick(DT, None);
+        }
+        assert!(s.world().unit(slime).is_some(), "10초 전에는 시체로 남는다");
+        s.tick(DT, None);
+        assert!(s.world().unit(slime).is_none(), "시체는 치워졌다");
+        let again = find(&s, "슬라임");
+        let u = s.world().unit(again).unwrap();
+        assert!(u.is_alive() && u.hp() == u.max_hp());
+        assert_eq!(u.pos(), spawn, "마커 자리");
+        assert!(
+            s.log.iter().any(|l| l == "슬라임 다시 나타남"),
+            "{:?}",
+            s.log
         );
     }
 

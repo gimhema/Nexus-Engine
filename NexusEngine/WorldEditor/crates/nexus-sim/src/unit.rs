@@ -58,6 +58,9 @@ pub struct UnitDef {
     pub exp_reward: u32,
     /// 레벨이 오를 때마다 더해지는 수치. 기본은 0 — 성장하지 않는다.
     pub growth: Growth,
+    /// 죽은 뒤 이만큼(ms) 지나면 시체를 치우고 **스폰 지점에 새로** 나타난다. 0 이면 리스폰하지 않고
+    /// 시체로 남는다 (플레이어·보스).
+    pub respawn_ms: u32,
 }
 
 impl Default for UnitDef {
@@ -79,6 +82,7 @@ impl Default for UnitDef {
             loot: None,
             exp_reward: 0,
             growth: Growth::default(),
+            respawn_ms: 0,
         }
     }
 }
@@ -146,6 +150,11 @@ pub struct Unit {
     pub(crate) bonus_defense: u32,
     /// 레벨·경험치 (P3). 몬스터도 갖지만 보통 1레벨 그대로다.
     pub(crate) progress: Progress,
+    /// 스폰 지점과 방향 — 리스폰하면 여기에 다시 선다. `home` 과 달리 AI 가 옮기지 않는다.
+    pub(crate) spawn_pos: Vec2,
+    pub(crate) spawn_heading: f32,
+    /// 죽은 시각 (시뮬레이션 시계). 리스폰 시각의 기준.
+    pub(crate) died_at: Option<Duration>,
 }
 
 impl Unit {
@@ -167,6 +176,9 @@ impl Unit {
             bonus_attack: 0,
             bonus_defense: 0,
             progress: Progress::default(),
+            spawn_pos: pos,
+            spawn_heading: heading,
+            died_at: None,
         }
     }
 

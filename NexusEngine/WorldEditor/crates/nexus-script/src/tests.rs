@@ -186,6 +186,71 @@ fn damage_and_death_hooks_fire_for_the_right_unit() {
 }
 
 #[test]
+fn a_respawned_actor_keeps_its_script_and_starts_over() {
+    // 한 방(20)에 죽고 1초 뒤 리스폰하는 고블린 — 스크립트가 새 핸들로 따라가고 on_spawn 부터 다시.
+    let src = r#"
+        fn on_spawn(me) { this.hits = 0; print(`spawn ${me.hp}`); }
+        fn on_damaged(me, attacker, amount) { this.hits += 1; }
+        fn on_death(me, killer) { print("죽음"); }
+    "#;
+    let mut world = SimWorld::new(TileMap::new(
+        40,
+        40,
+        1.0,
+        Vec2::new(-20.0, -20.0),
+        Tile::default(),
+    ));
+    world.define_skill(
+        BITE,
+        SkillDef {
+            range: 1.5,
+            cooldown_ms: 1000,
+            damage_mult: 1.0,
+            mp_cost: 0,
+        },
+    );
+    world.set_relation(HEROES, GOBLINS, Relation::Hostile);
+    let goblin = world.spawn_unit(
+        Vec2::ZERO,
+        0.0,
+        UnitDef {
+            max_hp: 20,
+            respawn_ms: 1000,
+            ..fighter(GOBLINS)
+        },
+    );
+    let hero = world.spawn_unit(Vec2::new(1.0, 0.0), 0.0, fighter(HEROES));
+    let mut host = RhaiHost::new(1);
+    let id = host.add_script("goblin.rhai", src).unwrap();
+    host.attach(goblin, id);
+    let mut auth = LocalAuthority::new(world);
+    auth.set_script_host(Box::new(host));
+
+    run(&mut auth, 1);
+    auth.submit(nexus_sim::Intent::Attack {
+        unit: hero,
+        target: goblin,
+        skill: BITE,
+    });
+    let events = run(&mut auth, 25);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::Respawned { replaces, .. } if *replaces == goblin))
+    );
+    let lines: Vec<String> = log(&mut auth).into_iter().map(|(_, m)| m).collect();
+    assert_eq!(
+        lines,
+        [
+            "goblin.rhai: spawn 20",
+            "goblin.rhai: 죽음",
+            "goblin.rhai: spawn 20"
+        ],
+        "새로 태어난 액터 — on_spawn 이 다시 불린다"
+    );
+}
+
+#[test]
 fn a_script_cannot_drive_another_unit_and_is_switched_off_once() {
     let src = r#"
         fn on_tick(me, dt) {

@@ -90,6 +90,8 @@
             basic_attack: Some(2),
             loot: Some(1),
             exp_reward: 60,
+            // 죽은 뒤 10초면 스폰 지점에 다시 나타난다. 적지 않으면 시체로 남는다 (플레이어·NPC).
+            respawn_ms: 10000,
         ),
         // 같은 몬스터 마커라도 타입이 다르면 수치가 다르다 — 액터 타입의 요점.
         101: (
@@ -104,6 +106,7 @@
             basic_attack: Some(2),
             loot: Some(1),
             exp_reward: 140,
+            respawn_ms: 15000,
         ),
         // 스크립트로 움직이는 액터 (P2). AI 는 Passive — 누구를 언제 칠지는 스크립트가 정한다.
         // script 는 data/ 기준 경로. 스크립트를 고치고 F5 만 다시 누르면 적용된다.
@@ -118,6 +121,7 @@
             basic_attack: Some(2),
             loot: Some(1),
             exp_reward: 90,
+            respawn_ms: 12000,
             script: Some("scripts/goblin.rhai"),
         ),
         103: (
