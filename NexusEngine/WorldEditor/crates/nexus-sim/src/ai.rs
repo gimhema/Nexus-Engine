@@ -113,12 +113,15 @@ fn think_one(world: &mut SimWorld, me: Entity, events: &mut Vec<Event>, out: &mu
     let target_pos = world.unit(target).map_or(pos, |t| t.pos());
     let in_range = skill.is_some_and(|(_, s)| pos.distance(target_pos) <= s.range);
 
-    if let Some((skill_id, _)) = skill.filter(|_| in_range) {
+    if let Some((skill_id, skill_def)) = skill.filter(|_| in_range) {
         if moving {
             out.push(Intent::Stop { unit: me });
         }
         ai.chase_goal = None;
-        let ready = world.unit(me).is_some_and(|u| u.is_ready(skill_id, now));
+        // MP 가 모자라면 쿨타임처럼 서서 기다린다 — 차오르면 다시 친다.
+        let ready = world
+            .unit(me)
+            .is_some_and(|u| u.is_ready(skill_id, now) && u.has_mp(skill_def.mp_cost));
         if ready {
             out.push(Intent::Attack {
                 unit: me,
@@ -254,6 +257,7 @@ mod tests {
             range,
             cooldown_ms,
             damage_mult: 1.0,
+            mp_cost: 0,
         };
         w.define_skill(BITE, skill(1.5, 1000));
         w.define_skill(SWORD, skill(2.0, 800));

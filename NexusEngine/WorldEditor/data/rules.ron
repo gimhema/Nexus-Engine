@@ -15,14 +15,17 @@
     ],
 
     // 스킬 — 서버 SkillDef 의 단일 대상 부분.
+    // mp_cost 는 적지 않으면 0 — MP 를 보지 않는다. MP 가 모자라면 거절되고 쿨타임도 걸리지 않는다.
     skills: {
         1: (range: 2.0, cooldown_ms: 800, damage_mult: 1.0),   // 플레이어 베기
         2: (range: 1.5, cooldown_ms: 1200, damage_mult: 1.0),  // 슬라임 물기
         3: (range: 2.0, cooldown_ms: 1000, damage_mult: 1.2),  // 경비병 일격
+        4: (range: 2.0, cooldown_ms: 3000, damage_mult: 2.0, mp_cost: 20),  // 고블린 강타
     },
 
     items: {
         501: Consumable(heal: 60, max_stack: 20),   // 빨간 포션
+        502: Consumable(heal: 0, mana: 40, max_stack: 20),   // 파란 포션
         909: Consumable(heal: 15, max_stack: 99),   // 젤리
         1101: Equipment(slot: Weapon, attack: 12, defense: 0),  // 숏소드
         2101: Equipment(slot: Head, attack: 0, defense: 4),     // 모자
@@ -47,12 +50,15 @@
         1: (
             move_speed: 4.0,
             max_hp: 200,
+            // MP 는 초당 mp_regen 씩 차오른다. 적지 않으면 0 — MP 가 없는 액터.
+            max_mp: 60,
+            mp_regen: 2,
             attack: 20,
             defense: 5,
             faction: 1,
             basic_attack: Some(1),
             // 레벨이 오를 때마다 더해지는 수치 (P3). 필요 경험치는 level² × 100.
-            growth: (max_hp: 40, attack: 4, defense: 2),
+            growth: (max_hp: 40, max_mp: 10, attack: 4, defense: 2),
         ),
         // 서버 NpcEntityData 기본값처럼 불사·방어형.
         10: (
@@ -100,6 +106,8 @@
         102: (
             move_speed: 3.2,
             max_hp: 90,
+            max_mp: 30,
+            mp_regen: 3,
             attack: 16,
             defense: 3,
             faction: 201,
@@ -128,6 +136,7 @@
     // 플레이어 시작 소지품.
     starting_kit: [
         (item: 501, count: 3),
+        (item: 502, count: 2),
         (item: 1101, count: 1),
     ],
 )

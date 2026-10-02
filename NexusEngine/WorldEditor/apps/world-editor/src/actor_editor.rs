@@ -307,6 +307,13 @@ impl ActorEditor {
                 ui.label("HP");
                 ui.add(egui::DragValue::new(&mut f.max_hp).range(1..=1_000_000));
                 ui.end_row();
+                ui.label("MP");
+                ui.add(egui::DragValue::new(&mut f.max_mp).range(0..=1_000_000))
+                    .on_hover_text("0 이면 MP 가 없는 액터 — MP 가 드는 스킬을 쓸 수 없다");
+                ui.end_row();
+                ui.label("MP 회복 (초당)");
+                ui.add(egui::DragValue::new(&mut f.mp_regen).range(0..=100_000));
+                ui.end_row();
                 ui.label("공격");
                 ui.add(egui::DragValue::new(&mut f.attack).range(0..=100_000));
                 ui.end_row();
@@ -370,6 +377,7 @@ impl ActorEditor {
                 ui.label("레벨당 성장");
                 ui.horizontal(|ui| {
                     ui.add(egui::DragValue::new(&mut f.growth.0).prefix("HP "));
+                    ui.add(egui::DragValue::new(&mut f.growth_mp).prefix("MP "));
                     ui.add(egui::DragValue::new(&mut f.growth.1).prefix("공 "));
                     ui.add(egui::DragValue::new(&mut f.growth.2).prefix("방 "));
                 });

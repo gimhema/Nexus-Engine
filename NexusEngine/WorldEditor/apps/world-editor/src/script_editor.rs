@@ -373,7 +373,7 @@ impl ScriptEditor {
 }
 
 const HELP: &[&str] = &[
-    "읽기   u.x  u.y  u.hp  u.max_hp  u.alive  u.moving  u.id",
+    "읽기   u.x  u.y  u.hp  u.max_hp  u.mp  u.max_mp  u.alive  u.moving  u.id",
     "       distance(a, b)          nearest_enemy(me, 거리)   enemies(me, 거리)",
     "       can_see(me, u)          attack_range(me)          time()",
     "       rand(n)  rand_float()   — 시드 있는 난수",

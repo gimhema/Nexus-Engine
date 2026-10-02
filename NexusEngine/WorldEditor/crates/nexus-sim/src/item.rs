@@ -41,8 +41,8 @@ impl EquipSlot {
 /// 아이템이 하는 일.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ItemKind {
-    /// 쓰면 사라지고 HP 를 회복한다.
-    Consumable { heal: u32 },
+    /// 쓰면 사라지고 HP·MP 를 회복한다.
+    Consumable { heal: u32, mana: u32 },
     /// `slot` 에 장착하면 수치가 더해진다.
     Equipment {
         slot: EquipSlot,
@@ -340,12 +340,13 @@ mod flow_tests {
                 range: 2.0,
                 cooldown_ms: 500,
                 damage_mult: 1.0,
+                mp_cost: 0,
             },
         );
         w.define_item(
             POTION,
             ItemDef {
-                kind: ItemKind::Consumable { heal: 30 },
+                kind: ItemKind::Consumable { heal: 30, mana: 0 },
                 max_stack: 10,
             },
         );
@@ -362,7 +363,7 @@ mod flow_tests {
         w.define_item(
             JELLY,
             ItemDef {
-                kind: ItemKind::Consumable { heal: 5 },
+                kind: ItemKind::Consumable { heal: 5, mana: 0 },
                 max_stack: 99,
             },
         );
@@ -577,6 +578,50 @@ mod flow_tests {
     }
 
     // ── 사용 · 장착 ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn mana_potion_restores_only_mp() {
+        const ETHER: ItemId = ItemId(502);
+        let mut w = world();
+        w.define_item(
+            ETHER,
+            ItemDef {
+                kind: ItemKind::Consumable { heal: 0, mana: 40 },
+                max_stack: 10,
+            },
+        );
+        let h = w.spawn_unit(
+            Vec2::new(1.5, 1.5),
+            0.0,
+            UnitDef {
+                max_mp: 60,
+                ..hero()
+            },
+        );
+        w.set_mp(h, 10);
+        assert!(w.give_item(h, ETHER, 2));
+        let mut auth = LocalAuthority::new(w);
+
+        let events = submit(&mut auth, Intent::UseItem { unit: h, slot: 0 });
+        assert_eq!(
+            events,
+            vec![Event::ManaRestored {
+                unit: h,
+                amount: 40,
+                remaining_mp: 50
+            }],
+            "HP 를 채우지 않는 물약은 Healed 를 내지 않는다"
+        );
+        let events = submit(&mut auth, Intent::UseItem { unit: h, slot: 0 });
+        assert!(
+            events.contains(&Event::ManaRestored {
+                unit: h,
+                amount: 10,
+                remaining_mp: 60
+            }),
+            "상한까지만"
+        );
+    }
 
     #[test]
     fn potion_heals_up_to_max_and_is_consumed() {

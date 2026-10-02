@@ -97,6 +97,9 @@ struct SkillFile {
     range: f32,
     cooldown_ms: u32,
     damage_mult: f32,
+    /// 쓸 때 드는 MP. 적지 않으면 0 — MP 를 보지 않는다.
+    #[serde(default)]
+    mp_cost: u32,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -104,6 +107,9 @@ struct SkillFile {
 enum ItemFile {
     Consumable {
         heal: u32,
+        /// MP 회복량. 적지 않으면 0.
+        #[serde(default)]
+        mana: u32,
         max_stack: u32,
     },
     Equipment {
@@ -152,6 +158,12 @@ impl MarkerKindFile {
 struct UnitFile {
     move_speed: f32,
     max_hp: u32,
+    /// 최대 MP. 적지 않으면 0 — MP 가 없는 액터.
+    #[serde(default)]
+    max_mp: u32,
+    /// 초당 MP 회복량.
+    #[serde(default)]
+    mp_regen: u32,
     attack: u32,
     defense: u32,
     #[serde(default)]
@@ -184,6 +196,8 @@ struct UnitFile {
 struct GrowthFile {
     #[serde(default)]
     max_hp: u32,
+    #[serde(default)]
+    max_mp: u32,
     #[serde(default)]
     attack: u32,
     #[serde(default)]
@@ -376,6 +390,17 @@ impl GameData {
                     r.skills.contains_key(&skill),
                     format!("액터 {id}: 없는 스킬 {skill}"),
                 );
+                // 레벨이 올라도 MP 가 늘지 않는데 비용이 최대 MP 보다 크면 영영 칠 수 없다 —
+                // AI 가 사거리 안에서 서서 기다리기만 한다.
+                if let Some(s) = r.skills.get(&skill) {
+                    check(
+                        s.mp_cost <= u.max_mp || u.growth.max_mp > 0,
+                        format!(
+                            "액터 {id}: 기본 공격 스킬 {skill} 의 MP {} 이(가) 최대 MP {} 보다 커서 쓸 수 없음",
+                            s.mp_cost, u.max_mp
+                        ),
+                    );
+                }
             }
             if let Some(table) = u.loot {
                 check(
@@ -479,6 +504,7 @@ impl GameData {
                             range: s.range,
                             cooldown_ms: s.cooldown_ms,
                             damage_mult: s.damage_mult,
+                            mp_cost: s.mp_cost,
                         },
                     )
                 })
@@ -756,8 +782,12 @@ impl From<SlotFile> for EquipSlot {
 impl From<ItemFile> for ItemDef {
     fn from(i: ItemFile) -> Self {
         match i {
-            ItemFile::Consumable { heal, max_stack } => Self {
-                kind: SimItemKind::Consumable { heal },
+            ItemFile::Consumable {
+                heal,
+                mana,
+                max_stack,
+            } => Self {
+                kind: SimItemKind::Consumable { heal, mana },
                 max_stack,
             },
             ItemFile::Equipment {
@@ -781,6 +811,8 @@ impl From<&UnitFile> for UnitDef {
         Self {
             move_speed: u.move_speed,
             max_hp: u.max_hp,
+            max_mp: u.max_mp,
+            mp_regen: u.mp_regen,
             attack: u.attack,
             defense: u.defense,
             immortal: u.immortal,
@@ -797,6 +829,7 @@ impl From<&UnitFile> for UnitDef {
             exp_reward: u.exp_reward,
             growth: Growth {
                 max_hp: u.growth.max_hp,
+                max_mp: u.growth.max_mp,
                 attack: u.growth.attack,
                 defense: u.growth.defense,
             },
@@ -818,6 +851,8 @@ pub(crate) struct ActorForm {
     // 규칙 반쪽 (rules.ron)
     pub(crate) move_speed: f32,
     pub(crate) max_hp: u32,
+    pub(crate) max_mp: u32,
+    pub(crate) mp_regen: u32,
     pub(crate) attack: u32,
     pub(crate) defense: u32,
     pub(crate) immortal: bool,
@@ -829,7 +864,10 @@ pub(crate) struct ActorForm {
     pub(crate) loot: Option<u32>,
     pub(crate) script: Option<String>,
     pub(crate) exp_reward: u32,
+    /// 레벨당 성장 — (HP, 공격, 방어).
     pub(crate) growth: (u32, u32, u32),
+    /// 레벨당 최대 MP 성장. 튜플에 넣지 않았다 — 기존 편집기·테스트가 튜플 순서에 기대고 있다.
+    pub(crate) growth_mp: u32,
     // 표시 반쪽 (display.ron)
     pub(crate) name: String,
     pub(crate) sheet: String,
@@ -881,6 +919,8 @@ impl ActorForm {
         Self {
             move_speed: 2.0,
             max_hp: 50,
+            max_mp: 0,
+            mp_regen: 0,
             attack: 5,
             defense: 0,
             immortal: false,
@@ -893,6 +933,7 @@ impl ActorForm {
             script: None,
             exp_reward: 0,
             growth: (0, 0, 0),
+            growth_mp: 0,
             name: name.to_owned(),
             sheet: String::new(),
             tint: (1.0, 1.0, 1.0),
@@ -910,6 +951,12 @@ impl ActorForm {
         };
         line(format!("move_speed: {:?}", self.move_speed));
         line(format!("max_hp: {}", self.max_hp));
+        if self.max_mp != 0 {
+            line(format!("max_mp: {}", self.max_mp));
+        }
+        if self.mp_regen != 0 {
+            line(format!("mp_regen: {}", self.mp_regen));
+        }
         line(format!("attack: {}", self.attack));
         line(format!("defense: {}", self.defense));
         if self.immortal {
@@ -940,9 +987,16 @@ impl ActorForm {
             line(format!("exp_reward: {}", self.exp_reward));
         }
         let (hp, atk, def) = self.growth;
-        if (hp, atk, def) != (0, 0, 0) {
+        let mp = self.growth_mp;
+        if (hp, atk, def, mp) != (0, 0, 0, 0) {
+            // MP 성장은 있을 때만 적는다 — MP 를 안 쓰는 액터의 줄이 예전 모양 그대로 남게.
+            let mp = if mp == 0 {
+                String::new()
+            } else {
+                format!("max_mp: {mp}, ")
+            };
             line(format!(
-                "growth: (max_hp: {hp}, attack: {atk}, defense: {def})"
+                "growth: (max_hp: {hp}, {mp}attack: {atk}, defense: {def})"
             ));
         }
         s.push_str("),");
@@ -985,6 +1039,8 @@ pub(crate) fn actor_forms(rules: &str, display: &str) -> Result<BTreeMap<u32, Ac
             ActorForm {
                 move_speed: u.move_speed,
                 max_hp: u.max_hp,
+                max_mp: u.max_mp,
+                mp_regen: u.mp_regen,
                 attack: u.attack,
                 defense: u.defense,
                 immortal: u.immortal,
@@ -997,6 +1053,7 @@ pub(crate) fn actor_forms(rules: &str, display: &str) -> Result<BTreeMap<u32, Ac
                 script: u.script.clone(),
                 exp_reward: u.exp_reward,
                 growth: (u.growth.max_hp, u.growth.attack, u.growth.defense),
+                growth_mp: u.growth.max_mp,
                 ..ActorForm::new("")
             },
         );
@@ -1038,6 +1095,7 @@ pub(crate) struct ItemForm {
 pub(crate) enum ItemKindForm {
     Consumable {
         heal: u32,
+        mana: u32,
         max_stack: u32,
     },
     Equipment {
@@ -1104,6 +1162,7 @@ impl ItemForm {
         Self {
             kind: ItemKindForm::Consumable {
                 heal: 10,
+                mana: 0,
                 max_stack: 20,
             },
             name: name.to_owned(),
@@ -1114,8 +1173,18 @@ impl ItemForm {
     /// `rules.ron` 의 `items` 항목 — 손으로 쓴 것과 같은 한 줄.
     pub(crate) fn rules_entry(&self, id: u32) -> String {
         match self.kind {
-            ItemKindForm::Consumable { heal, max_stack } => {
-                format!("{id}: Consumable(heal: {heal}, max_stack: {max_stack}),")
+            ItemKindForm::Consumable {
+                heal,
+                mana,
+                max_stack,
+            } => {
+                // MP 회복은 있을 때만 적는다 — 예전 항목이 바이트 그대로 남게.
+                let mana = if mana == 0 {
+                    String::new()
+                } else {
+                    format!("mana: {mana}, ")
+                };
+                format!("{id}: Consumable(heal: {heal}, {mana}max_stack: {max_stack}),")
             }
             ItemKindForm::Equipment {
                 slot,
@@ -1144,6 +1213,7 @@ pub(crate) struct SkillForm {
     pub(crate) range: f32,
     pub(crate) cooldown_ms: u32,
     pub(crate) damage_mult: f32,
+    pub(crate) mp_cost: u32,
     pub(crate) name: String,
 }
 
@@ -1153,13 +1223,20 @@ impl SkillForm {
             range: 2.0,
             cooldown_ms: 1000,
             damage_mult: 1.0,
+            mp_cost: 0,
             name: name.to_owned(),
         }
     }
 
     pub(crate) fn rules_entry(&self, id: u32) -> String {
+        // MP 비용은 있을 때만 적는다 — 예전 항목이 바이트 그대로 남게.
+        let mp = if self.mp_cost == 0 {
+            String::new()
+        } else {
+            format!(", mp_cost: {}", self.mp_cost)
+        };
         format!(
-            "{id}: (range: {:?}, cooldown_ms: {}, damage_mult: {:?}),",
+            "{id}: (range: {:?}, cooldown_ms: {}, damage_mult: {:?}{mp}),",
             self.range, self.cooldown_ms, self.damage_mult
         )
     }
@@ -1214,9 +1291,15 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
         .iter()
         .map(|(id, it)| {
             let kind = match *it {
-                ItemFile::Consumable { heal, max_stack } => {
-                    ItemKindForm::Consumable { heal, max_stack }
-                }
+                ItemFile::Consumable {
+                    heal,
+                    mana,
+                    max_stack,
+                } => ItemKindForm::Consumable {
+                    heal,
+                    mana,
+                    max_stack,
+                },
                 ItemFile::Equipment {
                     slot,
                     attack,
@@ -1248,6 +1331,7 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
                     range: s.range,
                     cooldown_ms: s.cooldown_ms,
                     damage_mult: s.damage_mult,
+                    mp_cost: s.mp_cost,
                     name: d.skills.get(id).map(|l| l.name.clone()).unwrap_or_default(),
                 },
             )
@@ -1570,6 +1654,22 @@ mod tests {
         ] {
             assert!(err.contains(expected), "'{expected}' 기대, 실제: {err}");
         }
+    }
+
+    #[test]
+    fn a_basic_attack_that_costs_more_mp_than_the_actor_ever_has_is_refused() {
+        // 슬라임 물기에 MP 를 매기면 MP 가 없는 슬라임은 영영 칠 수 없다.
+        let rules = EMBEDDED_RULES.replacen(
+            "2: (range: 1.5, cooldown_ms: 1200, damage_mult: 1.0),",
+            "2: (range: 1.5, cooldown_ms: 1200, damage_mult: 1.0, mp_cost: 5),",
+            1,
+        );
+        assert_ne!(
+            rules, EMBEDDED_RULES,
+            "시험 전제: 스킬 2 줄을 찾았어야 한다"
+        );
+        let err = GameData::parse(&rules, EMBEDDED_DISPLAY).unwrap_err();
+        assert!(err.contains("액터 100") && err.contains("MP 5"), "{err}");
     }
 
     #[test]

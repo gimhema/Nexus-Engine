@@ -1277,9 +1277,11 @@ fn play_inspector(ui: &mut egui::Ui, play: &PlaySession, actions: &mut UiActions
         return;
     };
     ui.monospace(format!(
-        "HP {}/{}  공격 {}  방어 {}",
+        "HP {}/{}  MP {}/{}  공격 {}  방어 {}",
         me.hp(),
         me.max_hp(),
+        me.mp(),
+        me.max_mp(),
         me.attack(),
         me.defense()
     ));
@@ -1558,6 +1560,15 @@ fn actor_section(ui: &mut egui::Ui, model: &UiModel<'_>, items: &[&Item], action
                 OverrideEdit::Defense,
                 0,
             );
+
+            // MP 는 덮어쓰지 않는다 — 스킬 비용과 짝인 타입의 성질이다 (스킬처럼 닫힌 항목).
+            ui.weak("MP");
+            ui.label(shown(if base.max_mp == 0 {
+                String::from("없음")
+            } else {
+                format!("{} (초당 +{})", base.max_mp, base.mp_regen)
+            }));
+            ui.end_row();
 
             // 이동 속도는 덮어쓰지 않는다 — 걷는 애니메이션·경로와 묶인 타입의 성질이다.
             ui.weak("이동");

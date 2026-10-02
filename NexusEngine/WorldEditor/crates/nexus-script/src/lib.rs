@@ -24,7 +24,7 @@
 //!
 //! | 읽기 | |
 //! |---|---|
-//! | `u.x` `u.y` `u.hp` `u.max_hp` `u.alive` `u.moving` `u.id` | 유닛 속성 |
+//! | `u.x` `u.y` `u.hp` `u.max_hp` `u.mp` `u.max_mp` `u.alive` `u.moving` `u.id` | 유닛 속성 |
 //! | `distance(a, b)` | 지면 거리 (m) |
 //! | `nearest_enemy(me, 거리)` | 가장 가까운 **보이는 적대** 유닛, 없으면 `()` |
 //! | `enemies(me, 거리)` | 그 목록 (가까운 순) |
@@ -134,6 +134,8 @@ struct UnitInfo {
     pos: Vec2,
     hp: u32,
     max_hp: u32,
+    mp: u32,
+    max_mp: u32,
     alive: bool,
     moving: bool,
     faction: FactionId,
@@ -258,7 +260,9 @@ impl RhaiHost {
                 entity,
                 pos: u.pos(),
                 hp: u.hp(),
-                max_hp: def.max_hp,
+                max_hp: u.max_hp(),
+                mp: u.mp(),
+                max_mp: u.max_mp(),
                 alive: u.is_alive(),
                 moving: u.is_moving(),
                 faction: def.faction,
@@ -514,6 +518,8 @@ fn build_engine(ctx: &Rc<RefCell<Ctx>>) -> Engine {
     getter!("y", FLOAT, 0.0, |u| u.pos.y);
     getter!("hp", INT, 0, |u| INT::from(u.hp));
     getter!("max_hp", INT, 0, |u| INT::from(u.max_hp));
+    getter!("mp", INT, 0, |u| INT::from(u.mp));
+    getter!("max_mp", INT, 0, |u| INT::from(u.max_mp));
     getter!("alive", bool, false, |u| u.alive);
     getter!("moving", bool, false, |u| u.moving);
     engine.register_get("id", |r: &mut UnitRef| INT::from(r.0.index()));

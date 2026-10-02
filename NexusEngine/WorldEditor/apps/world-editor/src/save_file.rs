@@ -35,6 +35,8 @@ pub(crate) struct SaveData {
     pub(crate) level: u32,
     pub(crate) exp: u32,
     pub(crate) hp: u32,
+    /// 현재 MP. `None` = MP 가 생기기 전의 저장 파일 — 가득 찬 채로 시작한다.
+    pub(crate) mp: Option<u32>,
     /// 저장할 때 열어 둔 존 파일 (`zones/village.zone.ron`). 없으면 빈 문자열.
     pub(crate) zone: String,
     /// 저장할 때의 위치. **다른 존에서 이어 하면 `None` 으로 지우고** 스폰 지점에서 시작한다.
@@ -57,6 +59,9 @@ struct SaveFile {
     level: u32,
     exp: u32,
     hp: u32,
+    /// 현재 MP. 이 필드가 없는 예전 파일도 읽힌다 (그때는 가득 찬 채로 시작).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mp: Option<u32>,
     /// 마지막으로 플레이한 존 파일. 새 씬이면 빈 문자열.
     #[serde(default)]
     zone: String,
@@ -83,6 +88,7 @@ pub(crate) fn to_ron(save: &SaveData) -> String {
         level: save.level,
         exp: save.exp,
         hp: save.hp,
+        mp: save.mp,
         zone: save.zone.clone(),
         pos: save.pos.unwrap_or(Vec2::ZERO).to_array(),
         bags: save
@@ -134,6 +140,7 @@ pub(crate) fn from_ron(text: &str) -> Result<SaveData, String> {
         level: file.level,
         exp: file.exp,
         hp: file.hp,
+        mp: file.mp,
         zone: file.zone,
         pos: Some(Vec2::from_array(file.pos)),
         bags: file
@@ -194,6 +201,7 @@ mod tests {
             level: 3,
             exp: 240,
             hp: 180,
+            mp: Some(25),
             zone: String::from("zones/village.zone.ron"),
             pos: Some(Vec2::new(-4.5, 7.25)),
             bags: vec![(0, ItemId(501), 3), (7, ItemId(909), 12)],
@@ -211,6 +219,18 @@ mod tests {
             text,
             "두 번 써도 같은 바이트"
         );
+    }
+
+    #[test]
+    fn a_save_from_before_mp_still_opens_and_starts_full() {
+        let old = SaveData {
+            mp: None,
+            ..sample()
+        };
+        let text = to_ron(&old);
+        assert!(!text.contains("mp:"), "없는 값은 적지 않는다: {text}");
+        assert_eq!(from_ron(&text).unwrap().mp, None);
+        assert!(to_ron(&sample()).contains("mp: Some(25)"));
     }
 
     #[test]

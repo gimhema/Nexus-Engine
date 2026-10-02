@@ -35,6 +35,10 @@ pub struct UnitDef {
     pub move_speed: f32,
     /// 최대 HP. 0 은 1 로 본다 — 태어나자마자 죽은 유닛은 만들지 않는다.
     pub max_hp: u32,
+    /// 최대 MP. 0 이면 MP 를 쓰지 않는 유닛이다 (MP 가 드는 스킬은 쓸 수 없다).
+    pub max_mp: u32,
+    /// 초당 MP 회복량. 살아 있는 동안 tick 마다 조금씩 차오른다.
+    pub mp_regen: u32,
     pub attack: u32,
     pub defense: u32,
     /// 피해를 받지 않는다 (서버 `NpcEntityData::isImmortal`). 공격 대상이 되면 거절된다.
@@ -62,6 +66,8 @@ impl Default for UnitDef {
         Self {
             move_speed: 0.0,
             max_hp: 1,
+            max_mp: 0,
+            mp_regen: 0,
             attack: 0,
             defense: 0,
             immortal: false,
@@ -125,6 +131,10 @@ pub struct Unit {
     pub(crate) waypoints: VecDeque<Vec2>,
     /// 현재 HP. 0 이면 죽은 것이다.
     pub(crate) hp: u32,
+    /// 현재 MP.
+    pub(crate) mp: u32,
+    /// MP 회복의 자투리 (천분의 1 MP 단위). 정수로 모아야 tick 길이와 무관하게 결정적이다.
+    pub(crate) mp_carry: u64,
     /// 스킬별 다시 쓸 수 있는 시각 (시뮬레이션 시계 기준).
     pub(crate) cooldowns: HashMap<SkillId, Duration>,
     /// 스폰 지점. AI 의 추격 한계(leash)와 귀환 기준.
@@ -148,6 +158,8 @@ impl Unit {
             heading,
             waypoints: VecDeque::new(),
             hp: def.max_hp,
+            mp: def.max_mp,
+            mp_carry: 0,
             cooldowns: HashMap::new(),
             home: pos,
             ai: AiState::default(),
@@ -190,6 +202,42 @@ impl Unit {
             .max_hp
             .saturating_add(self.grown(self.def.growth.max_hp))
             .max(1)
+    }
+
+    #[must_use]
+    pub fn mp(&self) -> u32 {
+        self.mp
+    }
+
+    /// 레벨 성장이 반영된 최대 MP. **`def().max_mp` 대신 이것을 쓴다.** 0 이면 MP 가 없는 유닛.
+    #[must_use]
+    pub fn max_mp(&self) -> u32 {
+        self.def
+            .max_mp
+            .saturating_add(self.grown(self.def.growth.max_mp))
+    }
+
+    /// MP `cost` 를 낼 수 있는가.
+    #[must_use]
+    pub fn has_mp(&self, cost: u32) -> bool {
+        self.mp >= cost
+    }
+
+    /// MP 를 `dt` 만큼 회복한다. 가득 차 있으면 자투리도 버린다 — 쓰자마자 한 번에 튀어 오르지 않게.
+    pub(crate) fn regen_mp(&mut self, dt: Duration) {
+        let cap = self.max_mp();
+        if self.mp >= cap || self.def.mp_regen == 0 {
+            self.mp = self.mp.min(cap);
+            self.mp_carry = 0;
+            return;
+        }
+        let millis = u64::try_from(dt.as_millis()).unwrap_or(u64::MAX);
+        self.mp_carry = self
+            .mp_carry
+            .saturating_add(u64::from(self.def.mp_regen).saturating_mul(millis));
+        let gained = u32::try_from(self.mp_carry / 1000).unwrap_or(u32::MAX);
+        self.mp_carry %= 1000;
+        self.mp = self.mp.saturating_add(gained).min(cap);
     }
 
     /// 레벨·경험치.

@@ -902,16 +902,16 @@ mod tests {
         let sb = Sandbox::new("tables");
         let tables = || table_forms(&sb.read(RULES_PATH), &sb.read(DISPLAY_PATH)).unwrap();
         // 아이템 — 두 반쪽에 들어가고, 이름에 "복사본".
-        let dup = op(OpKind::Duplicate, AssetKind::Item, "item:501", "502");
+        let dup = op(OpKind::Duplicate, AssetKind::Item, "item:501", "503");
         apply(&sb.0, &plan(&sb.0, &dup).unwrap()).unwrap();
         let t = tables();
-        assert_eq!(t.items[&502].name, format!("{} 복사본", t.items[&501].name));
-        assert_eq!(t.items[&502].kind, t.items[&501].kind);
-        let del = op(OpKind::Delete, AssetKind::Item, "item:502", "");
+        assert_eq!(t.items[&503].name, format!("{} 복사본", t.items[&501].name));
+        assert_eq!(t.items[&503].kind, t.items[&501].kind);
+        let del = op(OpKind::Delete, AssetKind::Item, "item:503", "");
         let bin = apply(&sb.0, &plan(&sb.0, &del).unwrap()).unwrap().unwrap();
-        assert!(!tables().items.contains_key(&502));
-        let note = std::fs::read_to_string(sb.0.join(&bin).join("items-502.ron")).unwrap();
-        assert!(note.contains("502:") && note.contains("복사본"), "{note}");
+        assert!(!tables().items.contains_key(&503));
+        let note = std::fs::read_to_string(sb.0.join(&bin).join("items-503.ron")).unwrap();
+        assert!(note.contains("503:") && note.contains("복사본"), "{note}");
 
         // 드롭 표 — 규칙에만 있다. 표시 파일은 건드리지 않는다.
         let display_before = sb.read(DISPLAY_PATH);

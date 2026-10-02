@@ -99,8 +99,16 @@ const BIAS_SELECT: f32 = 5.0;
 const MAX_DRAWN: usize = 400;
 
 /// 글자 문구에 쓸 수 있는 값 이름 — 여기 없는 이름은 파일을 읽을 때 거부한다.
-pub(crate) const PLACEHOLDERS: &[&str] =
-    &["hp", "max_hp", "level", "exp", "exp_to_next", "loading"];
+pub(crate) const PLACEHOLDERS: &[&str] = &[
+    "hp",
+    "max_hp",
+    "mp",
+    "max_mp",
+    "level",
+    "exp",
+    "exp_to_next",
+    "loading",
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 테마 파일
@@ -410,17 +418,20 @@ impl WidgetKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum BarSource {
     Hp,
+    /// MP — 최대 MP 가 0 인 액터면 빈 막대.
+    Mp,
     Exp,
     /// 로딩 화면의 진행 (레벨을 여는 중).
     Loading,
 }
 
 impl BarSource {
-    pub(crate) const ALL: [Self; 3] = [Self::Hp, Self::Exp, Self::Loading];
+    pub(crate) const ALL: [Self; 4] = [Self::Hp, Self::Mp, Self::Exp, Self::Loading];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Hp => "HP",
+            Self::Mp => "MP",
             Self::Exp => "경험치",
             Self::Loading => "로딩 진행",
         }
@@ -429,6 +440,7 @@ impl BarSource {
     fn values(self, v: &Values) -> (u32, u32) {
         match self {
             Self::Hp => (v.hp, v.max_hp),
+            Self::Mp => (v.mp, v.max_mp),
             Self::Exp => (v.exp, v.exp_to_next),
             Self::Loading => v.loading,
         }
@@ -481,6 +493,8 @@ impl Action {
 pub(crate) struct Values {
     pub(crate) hp: u32,
     pub(crate) max_hp: u32,
+    pub(crate) mp: u32,
+    pub(crate) max_mp: u32,
     pub(crate) level: u32,
     pub(crate) exp: u32,
     pub(crate) exp_to_next: u32,
@@ -499,6 +513,8 @@ impl Values {
         Some(Self {
             hp: u.hp(),
             max_hp: u.max_hp(),
+            mp: u.mp(),
+            max_mp: u.max_mp(),
             level: p.level(),
             exp: p.exp(),
             exp_to_next: p.exp_to_next(),
@@ -513,6 +529,8 @@ impl Values {
         Self {
             hp: 161,
             max_hp: 200,
+            mp: 42,
+            max_mp: 80,
             level: 2,
             exp: 20,
             exp_to_next: 400,
@@ -1433,7 +1451,7 @@ pub(crate) fn to_ron(screen: &ScreenFile) -> String {
 // 메뉴 UI → 위젯 편집기. 저장하면 이 파일이 통째로 다시 쓰이므로 주석은 남지 않는다.
 //
 // pos·size 는 UI 픽셀(테마의 scale 을 곱하기 전)이고, anchor 기준점에서 오른쪽·아래가 +다.
-// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {level} {exp} {exp_to_next} {loading}(로딩 %)
+// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {mp} {max_mp} {level} {exp} {exp_to_next} {loading}(로딩 %)
 // Image 위젯의 path 는 작업 디렉터리 기준 PNG (소문자·'/'), region 은 그림의 픽셀 사각형이다.
 ";
     format!("{header}{body}\n")
@@ -1467,6 +1485,8 @@ fn fill(format: &str, v: &Values) -> String {
     for (name, value) in [
         ("hp", v.hp),
         ("max_hp", v.max_hp),
+        ("mp", v.mp),
+        ("max_mp", v.max_mp),
         ("level", v.level),
         ("exp", v.exp),
         ("exp_to_next", v.exp_to_next),

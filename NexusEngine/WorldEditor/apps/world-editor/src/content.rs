@@ -1701,9 +1701,16 @@ fn details(root: &Path, asset: &Asset, assets: &[Asset], forms: &Forms) -> Detai
                 row(
                     "종류",
                     match f.kind {
-                        ItemKindForm::Consumable { heal, max_stack } => {
-                            format!("소모품 · 회복 {heal} · 최대 {max_stack}개")
+                        ItemKindForm::Consumable {
+                            heal,
+                            mana,
+                            max_stack,
+                        } if mana > 0 => {
+                            format!("소모품 · HP {heal} · MP {mana} · 최대 {max_stack}개")
                         }
+                        ItemKindForm::Consumable {
+                            heal, max_stack, ..
+                        } => format!("소모품 · 회복 {heal} · 최대 {max_stack}개"),
                         ItemKindForm::Equipment {
                             slot,
                             attack,
@@ -1720,6 +1727,9 @@ fn details(root: &Path, asset: &Asset, assets: &[Asset], forms: &Forms) -> Detai
                     "사거리 · 쿨타임 · 배율",
                     format!("{}m · {}ms · ×{}", f.range, f.cooldown_ms, f.damage_mult),
                 );
+                if f.mp_cost > 0 {
+                    row("MP", f.mp_cost.to_string());
+                }
             }
         }
         AssetKind::Loot => {

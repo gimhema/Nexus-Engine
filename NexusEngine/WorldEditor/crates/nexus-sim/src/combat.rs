@@ -3,8 +3,8 @@
 //! **C++ 서버 `CombatProcessor::ProcessSingleTarget` 과 같은 규칙이다.** 단계 2 에서
 //! 둘을 대조할 수 있도록 판정 순서와 공식을 그대로 옮겼다:
 //!
-//! 1. 공격자 생존 → 2. 대상 생존 → 3. 쿨타임 → (MP — 아직 없음) → 4. 사거리
-//! 5. 쿨타임 등록 → 6. 데미지 `max(1, trunc(attack × damage_mult) − defense)` → 7. 적용
+//! 1. 공격자 생존 → 2. 대상 생존 → 3. 쿨타임 → 3-1. MP → 4. 사거리
+//! 5. 쿨타임 등록·MP 차감 → 6. 데미지 `max(1, trunc(attack × damage_mult) − defense)` → 7. 적용
 //!
 //! 서버와 다른 점 (의도적):
 //! - 사거리를 **지면(XY) 거리**로 잰다. 지형이 평지이고 높이는 이산 레벨이라 Z 는 0 이다.
@@ -30,6 +30,8 @@ pub struct SkillDef {
     pub cooldown_ms: u32,
     /// 데미지 배율.
     pub damage_mult: f32,
+    /// 쓸 때 드는 MP. 0 이면 MP 를 보지 않는다. 거절된 공격은 MP 를 쓰지 않는다 (쿨타임과 같다).
+    pub mp_cost: u32,
 }
 
 impl SkillDef {
@@ -113,6 +115,7 @@ mod flow_tests {
                 range: 3.0,
                 cooldown_ms: 1000,
                 damage_mult: 1.0,
+                mp_cost: 0,
             },
         );
         world.define_skill(
@@ -121,6 +124,7 @@ mod flow_tests {
                 range: 20.0,
                 cooldown_ms: 2000,
                 damage_mult: 0.5,
+                mp_cost: 0,
             },
         );
         let a = world.spawn_unit(Vec2::new(1.5, 1.5), 0.0, fighter());
@@ -391,6 +395,7 @@ mod flow_tests {
             UnitDef {
                 growth: crate::Growth {
                     max_hp: 50,
+                    max_mp: 0,
                     attack: 5,
                     defense: 0,
                 },
@@ -477,6 +482,129 @@ mod flow_tests {
             events
                 .iter()
                 .any(|e| matches!(e, Event::Damaged { amount, .. } if *amount == 30))
+        );
+    }
+
+    // ── MP ───────────────────────────────────────────────────────────────────
+
+    /// MP 30 이 드는 원거리 주문. 쿨타임이 없어 MP 만이 제약이다.
+    const BOLT: SkillId = SkillId(3);
+
+    /// 최대 MP 50 · 초당 회복 `regen` 인 시전자를 공격자 자리에 하나 더 세운다.
+    fn caster_arena(regen: u32) -> (LocalAuthority, Entity, Entity) {
+        let (mut auth, _, t) = arena();
+        let world = auth.world_mut();
+        world.define_skill(
+            BOLT,
+            SkillDef {
+                range: 20.0,
+                cooldown_ms: 0,
+                damage_mult: 1.0,
+                mp_cost: 30,
+            },
+        );
+        let caster = world.spawn_unit(
+            Vec2::new(1.5, 2.5),
+            0.0,
+            UnitDef {
+                max_mp: 50,
+                mp_regen: regen,
+                ..fighter()
+            },
+        );
+        (auth, caster, t)
+    }
+
+    fn mp(auth: &LocalAuthority, unit: Entity) -> u32 {
+        auth.world().unit(unit).unwrap().mp()
+    }
+
+    #[test]
+    fn a_skill_spends_mp_and_is_refused_when_short() {
+        let (mut auth, c, t) = caster_arena(0);
+        assert_eq!(mp(&auth, c), 50, "가득 찬 채로 태어난다");
+        assert!(rejected(&attack(&mut auth, c, t, BOLT)).is_none());
+        assert_eq!(mp(&auth, c), 20);
+
+        let before = hp(&auth, t);
+        assert_eq!(
+            rejected(&attack(&mut auth, c, t, BOLT)),
+            Some(Rejection::NotEnoughMp)
+        );
+        assert_eq!(
+            (mp(&auth, c), hp(&auth, t)),
+            (20, before),
+            "거절된 공격은 MP 도 피해도 없다"
+        );
+        // MP 를 보지 않는 스킬은 그대로 쓸 수 있다.
+        assert!(rejected(&attack(&mut auth, c, t, MELEE)).is_none());
+    }
+
+    #[test]
+    fn mp_check_comes_after_cooldown_like_the_server_slot() {
+        // 쿨타임과 MP 가 둘 다 모자라면 쿨타임이 먼저 보고된다 (3 → 3-1 순서).
+        let (mut auth, c, t) = caster_arena(0);
+        auth.world_mut().define_skill(
+            BOLT,
+            SkillDef {
+                range: 20.0,
+                cooldown_ms: 5000,
+                damage_mult: 1.0,
+                mp_cost: 30,
+            },
+        );
+        attack(&mut auth, c, t, BOLT);
+        assert_eq!(
+            rejected(&attack(&mut auth, c, t, BOLT)),
+            Some(Rejection::OnCooldown)
+        );
+    }
+
+    #[test]
+    fn mp_regenerates_in_whole_points_and_stops_at_max() {
+        // 초당 3 — tick(50ms) 마다 0.15 씩 모였다가 정수로 넘어간다.
+        let (mut auth, c, t) = caster_arena(3);
+        attack(&mut auth, c, t, BOLT); // tick 1: 50 → 20, 자투리 0.15
+        for _ in 2..=19 {
+            auth.tick(DT);
+        }
+        assert_eq!(mp(&auth, c), 22, "0.95초 — 2.85 가 모였다");
+        auth.tick(DT);
+        assert_eq!(mp(&auth, c), 23, "1초 — 정확히 3");
+        for _ in 0..400 {
+            auth.tick(DT);
+        }
+        assert_eq!(mp(&auth, c), 50, "상한에서 멈춘다");
+    }
+
+    #[test]
+    fn dead_units_do_not_regenerate() {
+        let (mut auth, c, _) = caster_arena(100);
+        auth.world_mut().set_mp(c, 0);
+        auth.world_mut().unit_mut(c).unwrap().hp = 0;
+        for _ in 0..40 {
+            auth.tick(DT);
+        }
+        assert_eq!(mp(&auth, c), 0);
+    }
+
+    #[test]
+    fn levelling_up_grows_and_refills_mp() {
+        let (mut auth, a, t) = exp_arena();
+        auth.world_mut().unit_mut(a).unwrap().def.growth.max_mp = 10;
+        auth.world_mut().unit_mut(a).unwrap().def.max_mp = 40;
+        auth.world_mut().set_mp(a, 5);
+        attack(&mut auth, a, t, MELEE);
+        for _ in 0..20 {
+            auth.tick(DT);
+        }
+        attack(&mut auth, a, t, MELEE); // 120 경험치 → 레벨 2
+        let u = auth.world().unit(a).unwrap();
+        assert_eq!(u.progress().level(), 2);
+        assert_eq!(
+            (u.max_mp(), u.mp()),
+            (50, 50),
+            "성장치만큼 오르고 가득 찬다"
         );
     }
 }

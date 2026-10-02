@@ -104,6 +104,7 @@ impl SimWorld {
             u.progress = progress;
             let cap = u.max_hp();
             u.hp = u.hp.min(cap);
+            u.mp = u.mp.min(u.max_mp());
         }
     }
 
@@ -123,6 +124,14 @@ impl SimWorld {
         if let Some(u) = self.unit_mut(unit) {
             let cap = u.max_hp();
             u.hp = hp.clamp(1, cap);
+        }
+    }
+
+    /// 현재 MP 를 그대로 심는다 (설정 작업). 상한으로 자른다.
+    pub fn set_mp(&mut self, unit: Entity, mp: u32) {
+        if let Some(u) = self.unit_mut(unit) {
+            u.mp = mp.min(u.max_mp());
+            u.mp_carry = 0;
         }
     }
 
@@ -376,6 +385,9 @@ impl SimWorld {
         if !a.is_ready(skill, self.now) {
             return Err(Rejection::OnCooldown);
         }
+        if !a.has_mp(def.mp_cost) {
+            return Err(Rejection::NotEnoughMp);
+        }
         if a.pos.distance_squared(t.pos) > def.range * def.range {
             return Err(Rejection::OutOfRange);
         }
@@ -393,6 +405,7 @@ impl SimWorld {
         let now = self.now;
         let a = self.unit_mut(attacker).ok_or(Rejection::UnknownEntity)?;
         a.cooldowns.insert(skill, now + def.cooldown());
+        a.mp -= def.mp_cost;
         if facing.length_squared() > ARRIVE_EPSILON * ARRIVE_EPSILON {
             a.heading = dir_to_heading(facing);
         }
@@ -428,7 +441,7 @@ impl SimWorld {
         Ok(())
     }
 
-    /// 죽인 쪽에 경험치를 준다 (P3). 레벨이 오르면 **HP 가 가득 찬다** — 상한이 올라가므로.
+    /// 죽인 쪽에 경험치를 준다 (P3). 레벨이 오르면 **HP·MP 가 가득 찬다** — 상한이 올라가므로.
     fn grant_exp(&mut self, unit: Entity, amount: u32, events: &mut Vec<Event>) {
         if amount == 0 {
             return;
@@ -446,6 +459,8 @@ impl SimWorld {
         if levels > 0 {
             let full = u.max_hp();
             u.hp = full;
+            u.mp = u.max_mp();
+            u.mp_carry = 0;
             events.push(Event::LeveledUp {
                 unit,
                 level: progress.level(),
@@ -541,7 +556,10 @@ impl SimWorld {
         Ok(())
     }
 
-    /// 소모품 가방의 `slot` 에서 하나를 쓴다. HP 가 가득이어도 쓰인다 (RO 와 같다).
+    /// 소모품 가방의 `slot` 에서 하나를 쓴다. HP·MP 가 가득이어도 쓰인다 (RO 와 같다).
+    ///
+    /// 회복하는 쪽마다 이벤트를 낸다 — MP 만 채우는 물약은 [`Event::ManaRestored`] 만,
+    /// 아무것도 채우지 않는 소모품은 [`Event::Healed`] (양 0) 를 낸다.
     pub(crate) fn use_item(
         &mut self,
         unit: Entity,
@@ -556,20 +574,32 @@ impl SimWorld {
             .get(slot)
             .ok_or(Rejection::EmptySlot)?;
         let def = self.items.get(&stack.item).ok_or(Rejection::UnknownItem)?;
-        let ItemKind::Consumable { heal } = def.kind else {
+        let ItemKind::Consumable { heal, mana } = def.kind else {
             return Err(Rejection::NotUsable);
         };
 
         let u = self.unit_mut(unit).ok_or(Rejection::UnknownEntity)?;
         u.inventory.consumables.take_one(slot);
-        let before = u.hp;
-        let cap = u.max_hp();
-        u.hp = u.hp.saturating_add(heal).min(cap);
-        events.push(Event::Healed {
-            unit,
-            amount: u.hp - before,
-            remaining_hp: u.hp,
-        });
+        if heal > 0 || mana == 0 {
+            let before = u.hp;
+            let cap = u.max_hp();
+            u.hp = u.hp.saturating_add(heal).min(cap);
+            events.push(Event::Healed {
+                unit,
+                amount: u.hp - before,
+                remaining_hp: u.hp,
+            });
+        }
+        if mana > 0 {
+            let before = u.mp;
+            let cap = u.max_mp();
+            u.mp = u.mp.saturating_add(mana).min(cap);
+            events.push(Event::ManaRestored {
+                unit,
+                amount: u.mp - before,
+                remaining_mp: u.mp,
+            });
+        }
         Ok(())
     }
 
@@ -649,10 +679,14 @@ impl SimWorld {
     /// 한 tick 진행.
     pub(crate) fn step(&mut self, dt: Duration, events: &mut Vec<Event>) {
         self.now += dt;
+        let tick = dt;
         let dt = dt.as_secs_f32();
         let tiles = &self.tiles;
         for (entity, unit) in self.units.iter_mut().flatten() {
             unit.prev_pos = unit.pos;
+            if unit.is_alive() {
+                unit.regen_mp(tick);
+            }
             if unit.waypoints.is_empty() || !unit.is_alive() {
                 continue;
             }

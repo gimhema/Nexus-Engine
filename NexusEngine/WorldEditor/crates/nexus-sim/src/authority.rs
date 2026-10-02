@@ -87,6 +87,8 @@ pub enum Rejection {
     UnknownSkill,
     /// 스킬 쿨타임 중.
     OnCooldown,
+    /// 스킬에 드는 MP 가 모자란다.
+    NotEnoughMp,
     /// 대상이 스킬 사거리 밖.
     OutOfRange,
     /// 자기 자신은 대상이 될 수 없다.
@@ -146,6 +148,12 @@ pub enum Event {
         amount: u32,
         remaining_hp: u32,
     },
+    /// 소모품으로 MP 가 올랐다. `amount` 는 실제로 오른 양 (가득이면 0).
+    ManaRestored {
+        unit: Entity,
+        amount: u32,
+        remaining_mp: u32,
+    },
     /// 장착 상태가 바뀌었다. 공격력·방어력이 달라졌을 수 있다.
     EquipmentChanged { unit: Entity, slot: EquipSlot },
     /// 경험치를 얻었다 (P3). `progress` 는 더한 뒤의 상태다.
@@ -154,7 +162,7 @@ pub enum Event {
         amount: u32,
         progress: Progress,
     },
-    /// 레벨이 올랐다 — HP 가 가득 찬다.
+    /// 레벨이 올랐다 — HP·MP 가 가득 찬다.
     LeveledUp { unit: Entity, level: u32 },
 }
 

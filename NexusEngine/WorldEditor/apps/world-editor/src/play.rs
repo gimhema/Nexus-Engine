@@ -253,6 +253,7 @@ impl PlaySession {
             exp: progress.exp(),
             // 쓰러진 채로 저장하면 이어 할 수 없다 — 최소 1 로 둔다.
             hp: u.map_or(1, |u| u.hp().max(1)),
+            mp: u.map(Unit::mp),
             zone,
             pos: u.map(Unit::pos),
             bags,
@@ -496,6 +497,11 @@ impl PlaySession {
             } => {
                 format!("HP +{amount} (HP {remaining_hp})")
             }
+            Event::ManaRestored {
+                amount,
+                remaining_mp,
+                ..
+            } => format!("MP +{amount} (MP {remaining_mp})"),
             Event::EquipmentChanged { unit, slot } => {
                 let now = self
                     .world()
@@ -789,6 +795,7 @@ mod text {
             Rejection::TargetDead => "대상이 이미 쓰러졌습니다",
             Rejection::UnknownSkill => "모르는 스킬입니다",
             Rejection::OnCooldown => "아직 쓸 수 없습니다",
+            Rejection::NotEnoughMp => "MP 가 부족합니다",
             Rejection::OutOfRange => "너무 멉니다",
             Rejection::InvalidTarget => "그 대상은 고를 수 없습니다",
             Rejection::Invulnerable => "공격할 수 없는 대상입니다",
@@ -802,7 +809,7 @@ mod text {
 
 /// 저장 데이터를 스폰한 플레이어에 얹는다 (P3).
 ///
-/// **수치는 되살리지 않는다** — HP 상한·공격력은 `rules.ron` 의 지금 값에서 다시 계산된다.
+/// **수치는 되살리지 않는다** — HP·MP 상한·공격력은 `rules.ron` 의 지금 값에서 다시 계산된다.
 /// 데이터에서 사라진 아이템은 조용히 버린다 (규칙이 바뀌었다고 이어 하기가 막히면 곤란하다).
 fn restore(world: &mut SimWorld, player: Entity, save: &SaveData) {
     world.set_progress(player, Progress::new(save.level, save.exp));
@@ -817,6 +824,9 @@ fn restore(world: &mut SimWorld, player: Entity, save: &SaveData) {
         world.set_position(player, pos);
     }
     world.set_hp(player, save.hp);
+    if let Some(mp) = save.mp {
+        world.set_mp(player, mp);
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -983,6 +993,43 @@ mod tests {
                 .map(|(_, _, n)| n)
                 .sum::<u32>()
         );
+    }
+
+    #[test]
+    fn the_player_has_mp_that_a_blue_potion_restores_and_a_save_keeps() {
+        const BLUE_POTION: ItemId = ItemId(502);
+        let mut s = session();
+        let me = s.player();
+        let u = s.world().unit(me).unwrap();
+        assert_eq!((u.mp(), u.max_mp()), (60, 60), "rules.ron: max_mp 60");
+        let slot = u
+            .inventory()
+            .bag(BagKind::Consumable)
+            .iter()
+            .find(|(_, st)| st.item == BLUE_POTION)
+            .map(|(slot, _)| u16::try_from(slot).unwrap())
+            .expect("시작 소지품에 파란 포션");
+
+        s.auth.world_mut().set_mp(me, 5);
+        s.inventory(InventoryAction::Use(slot));
+        s.tick(DT, None);
+        // 5 + 40. 초당 2 회복은 50ms 로는 아직 1 이 되지 않는다.
+        assert_eq!(s.world().unit(me).unwrap().mp(), 45);
+        assert!(s.log.iter().any(|l| l == "MP +40 (MP 45)"), "{:?}", s.log);
+
+        let save = s.save_data(String::new());
+        assert_eq!(save.mp, Some(45));
+        let s = PlaySession::start(
+            &Scene::server_default(),
+            Camera2d::default(),
+            GameData::embedded(),
+            PlayOptions {
+                spawn: None,
+                save: Some(save),
+            },
+        )
+        .unwrap();
+        assert_eq!(s.world().unit(s.player()).unwrap().mp(), 45, "이어 하기");
     }
 
     #[test]

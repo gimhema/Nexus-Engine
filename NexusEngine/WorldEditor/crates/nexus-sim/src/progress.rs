@@ -3,7 +3,7 @@
 //! 서버 `CharacterEntityData` 와 같은 의미다 — 필요 경험치는 **`level² × 100`**,
 //! 한 번에 여러 레벨이 오를 수 있다.
 //!
-//! 레벨이 오르면 **성장치**(`UnitDef::growth`)만큼 최대 HP·공격·방어가 늘어난다. 수치는 코드가
+//! 레벨이 오르면 **성장치**(`UnitDef::growth`)만큼 최대 HP·MP·공격·방어가 늘어난다. 수치는 코드가
 //! 아니라 데이터다 — 성장치를 적지 않은 액터(대부분의 몬스터)는 레벨이 올라도 수치가 그대로다.
 
 /// 레벨 하나를 더 올리는 데 필요한 경험치. 서버와 같은 공식.
@@ -16,6 +16,7 @@ pub fn exp_to_next(level: u32) -> u32 {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Growth {
     pub max_hp: u32,
+    pub max_mp: u32,
     pub attack: u32,
     pub defense: u32,
 }

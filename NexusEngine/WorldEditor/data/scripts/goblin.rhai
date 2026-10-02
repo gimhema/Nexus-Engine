@@ -1,4 +1,4 @@
-// 고블린 — 3초마다 주변을 둘러보고, 적이 있으면 돌진해서 문다.
+// 고블린 — 3초마다 주변을 둘러보고, 적이 있으면 돌진해서 문다. MP 가 모이면 강타.
 //
 // 액터 스크립트 예시 (data/rules.ron 의 actors.102.script 가 이 파일을 가리킨다).
 // 고친 뒤 에디터에서 F5 만 다시 누르면 적용된다 — 빌드할 필요 없다.
@@ -13,13 +13,20 @@
 fn look_every() { 3.0 }
 fn look_range() { 10.0 }
 
+// 강타 — MP 를 써서 세게 친다 (data/rules.ron 의 skills.4). MP 는 초당 조금씩 차오른다.
+fn smash_skill() { 4 }
+fn smash_mp() { 20 }
+fn smash_every() { 3.0 }
+
 fn on_spawn(me) {
     this.timer = look_every();   // 태어나자마자 한 번 둘러본다
     this.target = ();
+    this.smash_wait = 0.0;
 }
 
 fn on_tick(me, dt) {
     this.timer += dt;
+    this.smash_wait -= dt;
     if this.timer >= look_every() {
         this.timer = 0.0;
         let found = nearest_enemy(me, look_range());
@@ -38,7 +45,14 @@ fn on_tick(me, dt) {
 
     if distance(me, this.target) <= attack_range(me) {
         stop(me);
-        attack(me, this.target);   // 쿨타임 중이면 조용히 거절된다
+        if me.mp >= smash_mp() && this.smash_wait <= 0.0 {
+            // MP 가 모이면 강타. 모자라면 엔진이 거절한다 — 여기서 먼저 보는 것은 기본 공격을 쉬지 않으려고.
+            attack(me, this.target, smash_skill());
+            this.smash_wait = smash_every();
+            print("강타!");
+        } else {
+            attack(me, this.target);   // 쿨타임 중이면 조용히 거절된다
+        }
     } else {
         move_to(me, this.target);
     }

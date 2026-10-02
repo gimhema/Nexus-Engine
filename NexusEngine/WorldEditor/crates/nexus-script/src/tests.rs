@@ -41,6 +41,7 @@ fn arena(source: &str, seed: u64, hero_at: Vec2) -> (LocalAuthority, Entity, Ent
             range: 1.5,
             cooldown_ms: 1000,
             damage_mult: 1.0,
+            mp_cost: 0,
         },
     );
     world.set_relation(HEROES, GOBLINS, Relation::Hostile);
@@ -89,6 +90,18 @@ fn spawn_runs_once_before_tick_and_state_survives_between_ticks() {
         ["goblin.rhai: spawn", "goblin.rhai: tick 3 dt 0.05"],
         "on_spawn 은 한 번, this 는 tick 사이에 남는다"
     );
+}
+
+#[test]
+fn scripts_read_mp_with_level_growth() {
+    // MP 가 없는 액터는 0/0 — 스크립트가 "MP 가 모이면" 을 판단하는 재료.
+    let src = r#"
+        fn on_spawn(me) { print(`mp ${me.mp}/${me.max_mp} hp ${me.hp}/${me.max_hp}`); }
+    "#;
+    let (mut auth, _, _) = arena(src, 1, Vec2::new(15.0, 0.0));
+    run(&mut auth, 1);
+    let lines: Vec<String> = log(&mut auth).into_iter().map(|(_, m)| m).collect();
+    assert_eq!(lines, ["goblin.rhai: mp 0/0 hp 100/100"]);
 }
 
 #[test]

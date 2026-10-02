@@ -2,7 +2,7 @@
 // 메뉴 UI → 위젯 편집기. 저장하면 이 파일이 통째로 다시 쓰이므로 주석은 남지 않는다.
 //
 // pos·size 는 UI 픽셀(테마의 scale 을 곱하기 전)이고, anchor 기준점에서 오른쪽·아래가 +다.
-// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {level} {exp} {exp_to_next} {loading}(로딩 %)
+// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {mp} {max_mp} {level} {exp} {exp_to_next} {loading}(로딩 %)
 // Image 위젯의 path 는 작업 디렉터리 기준 PNG (소문자·'/'), region 은 그림의 픽셀 사각형이다.
 (
     version: 1,
@@ -11,19 +11,29 @@
         (
             id: "hp_text",
             anchor: BottomLeft,
-            pos: (12, -46),
+            pos: (12, -58),
             kind: Text(
-                format: "체력 {hp}",
+                format: "체력 {hp}   마나 {mp}",
             ),
         ),
         (
             id: "hp_bar",
             anchor: BottomLeft,
-            pos: (12, -26),
+            pos: (12, -38),
             size: Some((110, 9)),
             kind: Bar(
                 source: Hp,
                 color: (0.85, 0.25, 0.25),
+            ),
+        ),
+        (
+            id: "mp_bar",
+            anchor: BottomLeft,
+            pos: (12, -26),
+            size: Some((110, 7)),
+            kind: Bar(
+                source: Mp,
+                color: (0.3, 0.45, 0.95),
             ),
         ),
         (

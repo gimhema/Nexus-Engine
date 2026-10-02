@@ -499,6 +499,7 @@ fn item_form(ui: &mut egui::Ui, f: &mut ItemForm) {
             if ui.selectable_label(consumable, "소모품").clicked() && !consumable {
                 f.kind = ItemKindForm::Consumable {
                     heal: 10,
+                    mana: 0,
                     max_stack: 20,
                 };
             }
@@ -513,9 +514,16 @@ fn item_form(ui: &mut egui::Ui, f: &mut ItemForm) {
         ui.end_row();
 
         match &mut f.kind {
-            ItemKindForm::Consumable { heal, max_stack } => {
-                ui.label("회복");
+            ItemKindForm::Consumable {
+                heal,
+                mana,
+                max_stack,
+            } => {
+                ui.label("HP 회복");
                 ui.add(egui::DragValue::new(heal).range(0..=1_000_000));
+                ui.end_row();
+                ui.label("MP 회복");
+                ui.add(egui::DragValue::new(mana).range(0..=1_000_000));
                 ui.end_row();
                 ui.label("최대 겹침");
                 ui.add(egui::DragValue::new(max_stack).range(1..=9_999));
@@ -573,8 +581,12 @@ fn skill_form(ui: &mut egui::Ui, f: &mut SkillForm) {
                 .range(0.0..=100.0),
         );
         ui.end_row();
+        ui.label("MP 소모");
+        ui.add(egui::DragValue::new(&mut f.mp_cost).range(0..=100_000));
+        ui.end_row();
     });
     ui.weak("피해 = max(1, 공격 × 배율 − 방어) — 서버 CombatProcessor 와 같은 식.");
+    ui.weak("MP 소모가 0 이면 MP 를 보지 않는다. MP 가 모자라면 거절되고 쿨타임도 걸리지 않는다.");
 }
 
 fn loot_form(ui: &mut egui::Ui, rows: &mut Vec<LootRow>, items: &[(u32, String)]) {
@@ -659,22 +671,26 @@ mod tests {
     #[test]
     fn a_new_item_and_skill_land_in_both_halves() {
         let (rules, display) = repo_texts();
-        let mut item = ItemForm::new("파란 포션");
+        let mut item = ItemForm::new("보라 포션");
         item.kind = ItemKindForm::Consumable {
             heal: 30,
+            mana: 15,
             max_stack: 10,
         };
-        let (r, d) = patch(&rules, &display, 502, &Edit::Item(item.clone())).unwrap();
+        let (r, d) = patch(&rules, &display, 503, &Edit::Item(item.clone())).unwrap();
+        assert!(r.contains("503: Consumable(heal: 30, mana: 15, max_stack: 10),"));
         let skill = SkillForm {
             range: 6.0,
             cooldown_ms: 2000,
             damage_mult: 1.5,
+            mp_cost: 10,
             name: String::from("화살"),
         };
-        let (r, d) = patch(&r, &d, 4, &Edit::Skill(skill.clone())).unwrap();
+        let (r, d) = patch(&r, &d, 5, &Edit::Skill(skill.clone())).unwrap();
+        assert!(r.contains("5: (range: 6.0, cooldown_ms: 2000, damage_mult: 1.5, mp_cost: 10),"));
         let forms = table_forms(&r, &d).unwrap();
-        assert_eq!(forms.items[&502], item);
-        assert_eq!(forms.skills[&4], skill);
+        assert_eq!(forms.items[&503], item);
+        assert_eq!(forms.skills[&5], skill);
         // 이름은 표시 파일에만 — 규칙 파일에 이름이 들어가지 않는다.
         assert!(!r.contains("화살") && d.contains("화살"));
     }
