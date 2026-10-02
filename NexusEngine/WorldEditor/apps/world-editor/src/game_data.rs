@@ -38,6 +38,8 @@ const FORMAT_VERSION: u32 = 1;
 
 pub(crate) const RULES_PATH: &str = "data/rules.ron";
 pub(crate) const DISPLAY_PATH: &str = "data/display.ron";
+/// 단축키 칸 수 — 숫자키 1~9.
+pub(crate) const MAX_HOTBAR: usize = 9;
 
 const EMBEDDED_RULES: &str = include_str!("../../../data/rules.ron");
 const EMBEDDED_DISPLAY: &str = include_str!("../../../data/display.ron");
@@ -178,6 +180,9 @@ struct UnitFile {
     leash_range: f32,
     #[serde(default)]
     basic_attack: Option<u32>,
+    /// 단축키 스킬 (조작하는 액터만 쓴다) — 1번 키가 첫 스킬. 최대 [`MAX_HOTBAR`] 개.
+    #[serde(default)]
+    skills: Vec<u32>,
     #[serde(default)]
     loot: Option<u32>,
     /// 액터 스크립트 (P2) — `data/` 기준 경로. 예: `scripts/goblin.rhai`.
@@ -319,6 +324,10 @@ pub(crate) struct GameData {
     actor_looks: BTreeMap<ActorId, ActorLook>,
     /// 액터 타입별 스크립트 경로 (`data/` 기준).
     actor_scripts: BTreeMap<ActorId, String>,
+    /// 액터 타입별 단축키 스킬 — 비어 있는 타입은 빠진다.
+    actor_skills: BTreeMap<ActorId, Vec<SkillId>>,
+    /// 스킬의 표시 이름 (`display.ron`).
+    skill_names: BTreeMap<SkillId, String>,
     /// 경로 → 스크립트 본문. 컴파일은 플레이를 시작할 때 한다.
     script_sources: BTreeMap<String, String>,
 }
@@ -401,6 +410,32 @@ impl GameData {
                         ),
                     );
                 }
+            }
+            check(
+                u.skills.len() <= MAX_HOTBAR,
+                format!("액터 {id}: 단축키 스킬은 {MAX_HOTBAR}개까지 (숫자키 1~9)"),
+            );
+            for (i, skill) in u.skills.iter().enumerate() {
+                match r.skills.get(skill) {
+                    None => check(
+                        false,
+                        format!("액터 {id}: 단축키 {}: 없는 스킬 {skill}", i + 1),
+                    ),
+                    // 기본 공격과 같은 이유 — 영영 못 쓰는 칸은 저작 실수다.
+                    Some(s) => check(
+                        s.mp_cost <= u.max_mp || u.growth.max_mp > 0,
+                        format!(
+                            "액터 {id}: 단축키 {} 스킬 {skill} 의 MP {} 이(가) 최대 MP {} 보다 커서 쓸 수 없음",
+                            i + 1,
+                            s.mp_cost,
+                            u.max_mp
+                        ),
+                    ),
+                }
+                check(
+                    !u.skills[..i].contains(skill),
+                    format!("액터 {id}: 단축키에 스킬 {skill} 이(가) 두 번 있음"),
+                );
             }
             if let Some(table) = u.loot {
                 check(
@@ -581,6 +616,22 @@ impl GameData {
                 .iter()
                 .filter_map(|(id, u)| Some((ActorId::new(*id), u.script.clone()?)))
                 .collect(),
+            actor_skills: r
+                .actors
+                .iter()
+                .filter(|(_, u)| !u.skills.is_empty())
+                .map(|(id, u)| {
+                    (
+                        ActorId::new(*id),
+                        u.skills.iter().copied().map(SkillId).collect(),
+                    )
+                })
+                .collect(),
+            skill_names: d
+                .skills
+                .iter()
+                .map(|(id, l)| (SkillId(*id), l.name.clone()))
+                .collect(),
             script_sources: BTreeMap::new(),
         })
     }
@@ -697,6 +748,19 @@ impl GameData {
 
     pub(crate) fn player_attack(&self) -> SkillId {
         self.player_attack
+    }
+
+    /// 액터 타입의 단축키 스킬 — 1번 키가 맨 앞. 없으면 빈 목록.
+    pub(crate) fn actor_skills(&self, actor: ActorId) -> &[SkillId] {
+        self.actor_skills.get(&actor).map_or(&[], Vec::as_slice)
+    }
+
+    /// 스킬 이름. 표시 파일에 없으면 번호로.
+    pub(crate) fn skill_name(&self, id: SkillId) -> String {
+        self.skill_names
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| format!("스킬 #{}", id.0))
     }
 
     /// 난수 시드 — 드롭과 스크립트 난수가 같은 값에서 출발한다 (흐름은 따로).
@@ -861,6 +925,8 @@ pub(crate) struct ActorForm {
     pub(crate) aggro_range: f32,
     pub(crate) leash_range: f32,
     pub(crate) basic_attack: Option<u32>,
+    /// 단축키 스킬 — 1번 키가 맨 앞.
+    pub(crate) skills: Vec<u32>,
     pub(crate) loot: Option<u32>,
     pub(crate) script: Option<String>,
     pub(crate) exp_reward: u32,
@@ -929,6 +995,7 @@ impl ActorForm {
             aggro_range: 0.0,
             leash_range: 0.0,
             basic_attack: None,
+            skills: Vec::new(),
             loot: None,
             script: None,
             exp_reward: 0,
@@ -976,6 +1043,10 @@ impl ActorForm {
         }
         if let Some(skill) = self.basic_attack {
             line(format!("basic_attack: Some({skill})"));
+        }
+        if !self.skills.is_empty() {
+            let list: Vec<String> = self.skills.iter().map(u32::to_string).collect();
+            line(format!("skills: [{}]", list.join(", ")));
         }
         if let Some(table) = self.loot {
             line(format!("loot: Some({table})"));
@@ -1049,6 +1120,7 @@ pub(crate) fn actor_forms(rules: &str, display: &str) -> Result<BTreeMap<u32, Ac
                 aggro_range: u.aggro_range,
                 leash_range: u.leash_range,
                 basic_attack: u.basic_attack,
+                skills: u.skills.clone(),
                 loot: u.loot,
                 script: u.script.clone(),
                 exp_reward: u.exp_reward,
@@ -1670,6 +1742,31 @@ mod tests {
         );
         let err = GameData::parse(&rules, EMBEDDED_DISPLAY).unwrap_err();
         assert!(err.contains("액터 100") && err.contains("MP 5"), "{err}");
+    }
+
+    #[test]
+    fn hotbar_skills_must_exist_fit_and_not_repeat() {
+        let data = GameData::embedded();
+        assert_eq!(data.actor_skills(ActorId::new(1)), [SkillId(5), SkillId(6)]);
+        assert!(data.actor_skills(ActorId::new(100)).is_empty());
+        assert_eq!(data.skill_name(SkillId(5)), "강베기");
+        assert_eq!(data.skill_name(SkillId(999)), "스킬 #999");
+
+        for (bad, expect) in [
+            ("skills: [5, 6],", "없는 스킬 77"),
+            ("skills: [5, 6],", "두 번"),
+            ("skills: [5, 6],", "9개까지"),
+        ] {
+            let replacement = match expect {
+                "없는 스킬 77" => "skills: [5, 77],",
+                "두 번" => "skills: [5, 5],",
+                _ => "skills: [1, 2, 3, 4, 5, 6, 1, 2, 3, 4],",
+            };
+            let rules = EMBEDDED_RULES.replacen(bad, replacement, 1);
+            assert_ne!(rules, EMBEDDED_RULES, "시험 전제");
+            let err = GameData::parse(&rules, EMBEDDED_DISPLAY).unwrap_err();
+            assert!(err.contains(expect), "'{expect}' 기대: {err}");
+        }
     }
 
     #[test]

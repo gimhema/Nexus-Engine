@@ -428,6 +428,7 @@ impl ScreenEditor {
                         format: String::from("HP {hp}"),
                     },
                 ),
+                ("+ 스킬 칸", WidgetKind::Skills),
                 (
                     "+ 버튼",
                     WidgetKind::Button {
@@ -925,6 +926,10 @@ fn kind_fields(ui: &mut egui::Ui, kind: &mut WidgetKind, images: &[String]) {
                 ui.label("칸 수");
                 ui.add(egui::DragValue::new(columns).speed(1.0).range(1..=20));
             });
+        }
+        WidgetKind::Skills => {
+            ui.weak("조작하는 액터의 단축키 스킬(액터 편집기의 \"단축키 스킬\")을 1번 키부터 가로로 그립니다.");
+            ui.weak("쿨타임이 남은 만큼 어둡게 덮이고, MP 가 모자라면 흐려집니다.");
         }
         WidgetKind::Button { label, action } => {
             ui.horizontal(|ui| {

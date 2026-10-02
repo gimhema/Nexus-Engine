@@ -146,6 +146,8 @@ pub(crate) struct UiActions {
     pub(crate) delete_save: bool,
     /// HUD 인벤토리 창 열고 닫기 (I).
     pub(crate) toggle_items: bool,
+    /// 단축키 스킬 (숫자키 1~9, 플레이 중) — 1부터 센다.
+    pub(crate) skill_key: Option<usize>,
     /// 에디터 패널 숨기기 (F9) — HUD 만으로 플레이되는지 보는 용도.
     pub(crate) toggle_panels: bool,
     /// 위젯 편집기 창 열고 닫기 (P7).
@@ -920,6 +922,22 @@ fn shortcuts(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
 
         actions.toggle_play |= i.key_pressed(Key::F5);
         actions.toggle_items |= i.key_pressed(Key::I);
+        if model.play.is_some() {
+            const DIGITS: [Key; 9] = [
+                Key::Num1,
+                Key::Num2,
+                Key::Num3,
+                Key::Num4,
+                Key::Num5,
+                Key::Num6,
+                Key::Num7,
+                Key::Num8,
+                Key::Num9,
+            ];
+            if let Some(n) = DIGITS.iter().position(|k| i.key_pressed(*k)) {
+                actions.skill_key = Some(n + 1);
+            }
+        }
         actions.toggle_panels |= i.key_pressed(Key::F9);
         actions.open_screen_editor |= i.key_pressed(Key::F7);
         actions.toggle_content |=

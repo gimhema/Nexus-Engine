@@ -75,6 +75,13 @@ const TEXT: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const TEXT_DIM: [f32; 4] = [0.62, 0.64, 0.70, 1.0];
 const PANEL_TINT: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const SLOT_BACK: [f32; 4] = [0.12, 0.12, 0.16, 0.9];
+/// 스킬 칸 채움 — 쓸 수 있을 때 / MP 가 모자랄 때.
+const SKILL_FILL: [f32; 4] = [0.30, 0.42, 0.78, 1.0];
+const SKILL_FILL_DIM: [f32; 4] = [0.22, 0.22, 0.28, 1.0];
+/// 쿨타임이 남은 만큼 위에서부터 덮는 그늘.
+const COOLDOWN_SHADE: [f32; 4] = [0.0, 0.0, 0.0, 0.62];
+/// 스킬 칸 한 변 (UI 픽셀).
+const SKILL_CELL: f32 = 22.0;
 const BUTTON_BACK: [f32; 4] = [0.10, 0.11, 0.15, 0.92];
 const BUTTON_HOVER: [f32; 4] = [0.20, 0.24, 0.34, 0.95];
 const BUTTON_PRESS: [f32; 4] = [0.30, 0.36, 0.50, 0.97];
@@ -93,6 +100,8 @@ const BIAS_SLOTS: f32 = 6.0;
 const BIAS_EDGE: f32 = 1.0;
 const BIAS_BACK: f32 = 2.0;
 const BIAS_FILL: f32 = 3.0;
+/// 스킬 칸의 쿨타임 그늘 — 채움 위, 글자 아래.
+const BIAS_SHADE: f32 = 3.5;
 const BIAS_TEXT: f32 = 4.0;
 const BIAS_SELECT: f32 = 5.0;
 /// 깊이 구간을 넘지 않도록 위젯 수를 제한한다 (Overlay 구간 0.32 / 1e-4 = 3200 칸).
@@ -361,6 +370,9 @@ pub(crate) enum WidgetKind {
     },
     /// 인벤토리 칸 격자. `size` 가 없으면 칸 수와 내용에 맞춘다.
     Items { columns: u32 },
+    /// 단축키 스킬 칸 — 숫자키 번호·쿨타임·MP 부족을 보여 준다. 가로 한 줄.
+    /// `size` 가 없으면 칸 수에 맞춘다 (스킬이 없으면 칸 하나 자리).
+    Skills,
     /// 누를 수 있는 버튼 — 눌리면 [`Action`] 을 낸다.
     /// `size` 가 없으면 글자 + 여백에 맞춘다.
     Button { label: String, action: Action },
@@ -399,6 +411,7 @@ impl WidgetKind {
             Self::Text { .. } => "글자",
             Self::Bar { .. } => "막대",
             Self::Items { .. } => "아이템 칸",
+            Self::Skills => "스킬 칸",
             Self::Button { .. } => "버튼",
             Self::Image { .. } => "그림",
         }
@@ -485,6 +498,17 @@ impl Action {
 // 그릴 때 쓰는 값 — 플레이 중이 아니어도 화면을 그릴 수 있어야 한다
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// 단축키 스킬 칸 하나의 상태.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SkillSlot {
+    /// 숫자키 (1부터).
+    pub(crate) key: u8,
+    /// 남은 쿨타임 비율 — 0 = 쓸 수 있음, 1 = 막 썼음.
+    pub(crate) cooldown: f32,
+    /// MP 가 충분한가 (쿨타임과 별개).
+    pub(crate) usable: bool,
+}
+
 /// 화면이 읽는 값 모음. 플레이 중이면 시뮬레이션에서, 편집 중이면 [`Values::preview`] 에서 온다.
 ///
 /// **화면 그리기가 `PlaySession` 을 직접 보지 않는 이유**: 메인 화면·설정 화면은 플레이 중이
@@ -500,6 +524,8 @@ pub(crate) struct Values {
     pub(crate) exp_to_next: u32,
     /// 인벤토리 칸 — `(색, 개수)`.
     pub(crate) items: Vec<([f32; 4], u32)>,
+    /// 단축키 스킬 칸 — 1번 키부터.
+    pub(crate) skills: Vec<SkillSlot>,
     pub(crate) show_items: bool,
     /// 로딩 진행 `(지난 ms, 전체 ms)` — 레벨을 여는 동안만 0 이 아니다.
     pub(crate) loading: (u32, u32),
@@ -519,6 +545,7 @@ impl Values {
             exp: p.exp(),
             exp_to_next: p.exp_to_next(),
             items: play.hud_slots(),
+            skills: play.skill_slots(),
             show_items,
             loading: (0, 0),
         })
@@ -538,6 +565,23 @@ impl Values {
                 ([0.85, 0.25, 0.25, 1.0], 3),
                 ([0.85, 0.80, 0.35, 1.0], 1),
                 ([0.45, 0.65, 0.95, 1.0], 12),
+            ],
+            skills: vec![
+                SkillSlot {
+                    key: 1,
+                    cooldown: 0.0,
+                    usable: true,
+                },
+                SkillSlot {
+                    key: 2,
+                    cooldown: 0.6,
+                    usable: true,
+                },
+                SkillSlot {
+                    key: 3,
+                    cooldown: 0.0,
+                    usable: false,
+                },
             ],
             show_items: true,
             loading: (60, 100),
@@ -940,6 +984,7 @@ impl Screens {
                 (w + 16.0 * s, h + 8.0 * s)
             }
             (None, WidgetKind::Items { columns }) => self.items_size(*columns, values),
+            (None, WidgetKind::Skills) => self.skills_size(values),
             (None, WidgetKind::Bar { .. }) => (110.0 * s, 9.0 * s),
             (None, WidgetKind::Image { path, region, .. }) => {
                 let (w, h) = self.image_size(path, *region);
@@ -1092,6 +1137,9 @@ impl Screens {
                     WidgetKind::Items { columns } => {
                         self.items(values, *columns, r, &bias, out);
                     }
+                    WidgetKind::Skills => {
+                        self.skills(values, r, &bias, out);
+                    }
                     WidgetKind::Button { label, .. } => {
                         let id = laid.widget.id.as_str();
                         let back = if pressed == Some(id) {
@@ -1203,6 +1251,48 @@ impl Screens {
                 let at = Rect::new(cx, cy + cell - 8.0 * s, cell, 8.0 * s);
                 self.text(&format!("x{count}"), at, TEXT, bias(BIAS_TEXT), out);
             }
+        }
+    }
+
+    /// 스킬 칸 한 줄의 크기 — 칸 수에 맞춘다. 스킬이 없어도 칸 하나 자리는 잡는다
+    /// (편집기에서 고를 수 있게).
+    fn skills_size(&self, values: &Values) -> (f32, f32) {
+        let s = self.scale();
+        let (cell, gap) = (SKILL_CELL * s, 3.0 * s);
+        let n = values.skills.len().max(1);
+        (n as f32 * (cell + gap) - gap, cell)
+    }
+
+    /// 단축키 스킬 칸 — 숫자키 번호, MP 가 모자라면 흐리게, 쿨타임이 남은 만큼 위에서부터 그늘.
+    fn skills(
+        &self,
+        values: &Values,
+        r: Rect,
+        bias: &dyn Fn(f32) -> f32,
+        out: &mut Vec<RenderCommand>,
+    ) {
+        let s = self.scale();
+        let (cell, gap) = (SKILL_CELL * s, 3.0 * s);
+        for (i, slot) in values.skills.iter().enumerate() {
+            let cell_rect = Rect::new(r.x + i as f32 * (cell + gap), r.y, cell, cell);
+            rect(cell_rect, SLOT_BACK, bias(BIAS_BACK), out);
+            let inner = cell_rect.grow(-2.0 * s);
+            let fill = if slot.usable {
+                SKILL_FILL
+            } else {
+                SKILL_FILL_DIM
+            };
+            rect(inner, fill, bias(BIAS_FILL), out);
+            let shade = slot.cooldown.clamp(0.0, 1.0);
+            if shade > 0.0 {
+                let covered = Rect::new(inner.x, inner.y, inner.w, inner.h * shade);
+                rect(covered, COOLDOWN_SHADE, bias(BIAS_SHADE), out);
+            }
+            let color = if slot.usable { TEXT } else { TEXT_DIM };
+            let label = slot.key.to_string();
+            let (_, th) = self.text_size(&label);
+            let at = Rect::new(inner.x + 2.0 * s, inner.y + 1.0 * s, inner.w, th);
+            self.text(&label, at, color, bias(BIAS_TEXT), out);
         }
     }
 
@@ -1555,7 +1645,7 @@ fn check_widgets<'a>(
                     return Err(format!("'{}': tint 는 0~1", w.id));
                 }
             }
-            WidgetKind::Panel { .. } => {}
+            WidgetKind::Panel { .. } | WidgetKind::Skills => {}
         }
         check_widgets(&w.children, depth + 1, seen)?;
     }

@@ -26,6 +26,7 @@
 //! compile                      스크립트 편집기의 "컴파일" 버튼
 //! savegame | deletesave       진행 상황 저장 / 저장 데이터 삭제 (P3)
 //! items | panels              HUD 인벤토리 창 / 에디터 패널 숨기기 (P5)
+//! skill 번호                  단축키 스킬 (숫자키 1~9 와 같다, 플레이 중)
 //! uiedit | uiscreen 번호      위젯 편집기 열고 닫기 / 편집할 화면 바꾸기 (P7)
 //! uipick 이름 | uidrag dx dy  위젯 고르기 / 고른 위젯 옮기기
 //! uisave                      화면 파일(ui/<번호>.ui.ron) 저장
@@ -106,6 +107,8 @@ pub(crate) enum Step {
     DeleteSave,
     /// HUD 인벤토리 창 열고 닫기 (I).
     ToggleItems,
+    /// 단축키 스킬 (숫자키) — 1부터.
+    Skill(usize),
     /// 에디터 패널 숨기기 (F9).
     TogglePanels,
     /// 위젯 편집기 열고 닫기 (P7).
@@ -231,6 +234,14 @@ fn parse_step(text: &str) -> Result<Step, String> {
         "savegame" => return Ok(Step::SaveGame),
         "deletesave" => return Ok(Step::DeleteSave),
         "items" => return Ok(Step::ToggleItems),
+        "skill" => {
+            let n = words
+                .get(1)
+                .and_then(|w| w.parse::<usize>().ok())
+                .filter(|n| (1..=9).contains(n))
+                .ok_or_else(|| format!("'{text}': skill 1~9"))?;
+            return Ok(Step::Skill(n));
+        }
         "panels" => return Ok(Step::TogglePanels),
         "uiedit" => return Ok(Step::UiEdit),
         "startlevel" => return Ok(Step::StartLevel),
@@ -450,6 +461,8 @@ mod tests {
         assert!(parse("tool hammer").is_err());
         assert!(parse("brush circle").is_err());
         assert!(parse("brush rect -1").is_err());
+        assert!(parse("skill 0").is_err() && parse("skill 10").is_err() && parse("skill").is_err());
+        assert_eq!(parse("skill 2").unwrap(), [Step::Skill(2)]);
     }
 
     #[test]

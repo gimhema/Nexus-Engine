@@ -22,7 +22,7 @@ use nexus_render::{DEPTH_LAYER, RenderCommand, SpriteAnchor, TextureId, UvRect};
 use nexus_script::RhaiHost;
 use nexus_sim::{
     Authority, BagKind, EquipSlot, Event, Intent, ItemStack, LocalAuthority, Progress, Rejection,
-    Relation, SimWorld, Unit,
+    Relation, SimWorld, SkillId, Unit,
 };
 
 use crate::game_data::{ActorLook, GameData};
@@ -32,6 +32,8 @@ use crate::sprites::{Look, NO_TINT, SpriteLibrary};
 
 /// 쫓는 대상이 마지막 경로 지점에서 이만큼(m) 벗어나야 다시 경로를 잡는다 (AI 와 같은 값).
 const REPATH_DISTANCE: f32 = 0.5;
+/// 단축키 스킬을 대상 없이 눌렀을 때 적을 찾는 거리 (m).
+const SKILL_SEARCH_RANGE: f32 = 10.0;
 /// 이벤트 기록을 몇 줄까지 보관하나.
 const LOG_LINES: usize = 10;
 
@@ -59,7 +61,12 @@ enum Order {
     /// 할 일 없음 (이동은 `MoveTo` 한 번으로 끝나므로 주문으로 남기지 않는다).
     Idle,
     /// 다가가서 친다. 대상이 죽거나 거절되면 끝.
-    Attack(Entity),
+    ///
+    /// `skill` 은 단축키로 예약한 스킬이다 — 그 스킬이 한 번 맞으면 비우고 기본 공격으로 이어 간다.
+    Attack {
+        target: Entity,
+        skill: Option<SkillId>,
+    },
     /// 다가가서 줍는다.
     PickUp(Entity),
 }
@@ -104,6 +111,8 @@ pub(crate) struct PlaySession {
     /// 맞은 유닛의 붉은 깜빡임 — 남은 tick.
     hit_flash: HashMap<Entity, u8>,
     order: Order,
+    /// 단축키 스킬 — 조작하는 액터 타입의 `skills`. 1번 키가 맨 앞.
+    hotbar: Vec<SkillId>,
     /// 주문을 위해 마지막으로 경로를 잡은 지점.
     chase_goal: Option<Vec2>,
     log: VecDeque<String>,
@@ -192,6 +201,10 @@ impl PlaySession {
             }
         }
         let player = player.ok_or("플레이어 스폰이 없어 플레이할 수 없습니다")?;
+        let hotbar = labels
+            .get(&player)
+            .map(|l: &Label| data.actor_skills(l.actor).to_vec())
+            .unwrap_or_default();
 
         let mut auth = LocalAuthority::new(world);
         auth.set_script_host(Box::new(scripts));
@@ -203,6 +216,7 @@ impl PlaySession {
             animators: HashMap::new(),
             hit_flash: HashMap::new(),
             order: Order::Idle,
+            hotbar,
             chase_goal: None,
             log: VecDeque::new(),
             alerts: Vec::new(),
@@ -210,7 +224,7 @@ impl PlaySession {
             data,
         };
         session.note(String::from(
-            "플레이 시작 — 클릭: 이동 · 적 클릭: 공격 · 아이템 클릭: 줍기",
+            "플레이 시작 — 클릭: 이동 · 적 클릭: 공격 · 아이템 클릭: 줍기 · 숫자키: 스킬",
         ));
         Ok(session)
     }
@@ -316,7 +330,10 @@ impl PlaySession {
                 .unit(target)
                 .is_some_and(|t| world.relation(my_faction, t.def().faction) != Relation::Friendly)
         {
-            self.order = Order::Attack(target);
+            self.order = Order::Attack {
+                target,
+                skill: None,
+            };
         } else if let Some((item, _)) = nearest_item {
             self.order = Order::PickUp(item);
         } else {
@@ -326,6 +343,108 @@ impl PlaySession {
                 target: at,
             });
         }
+    }
+
+    /// 지금 치고 있는 대상.
+    pub(crate) fn attack_target(&self) -> Option<Entity> {
+        match self.order {
+            Order::Attack { target, .. } => Some(target),
+            _ => None,
+        }
+    }
+
+    /// HUD 단축키 칸 — 키 번호·남은 쿨타임 비율·MP 충분 여부.
+    pub(crate) fn skill_slots(&self) -> Vec<crate::screen::SkillSlot> {
+        let world = self.world();
+        let me = world.unit(self.player);
+        let now = world.now();
+        self.hotbar
+            .iter()
+            .enumerate()
+            .map(|(i, &skill)| {
+                let def = world.skill(skill);
+                let total = def.map_or(0.0, |d| d.cooldown().as_secs_f32());
+                let left = me.map_or(0.0, |u| u.cooldown_left(skill, now).as_secs_f32());
+                crate::screen::SkillSlot {
+                    key: u8::try_from(i + 1).unwrap_or(u8::MAX),
+                    cooldown: if total > 0.0 { left / total } else { 0.0 },
+                    usable: me
+                        .is_some_and(|u| u.is_alive() && def.is_some_and(|d| u.has_mp(d.mp_cost))),
+                }
+            })
+            .collect()
+    }
+
+    /// 숫자키 `key`(1부터)의 스킬을 쓴다 — 지금 치는 대상에게, 없으면 가까운 적에게.
+    /// 사거리 밖이면 다가가서 쓴다. 한 번 맞으면 기본 공격으로 이어 간다.
+    ///
+    /// 쿨타임·MP 는 **누르는 순간** 확인해 이유를 기록에 남긴다 — 예약해 두고 조용히 기다리면
+    /// 눌렀는데 왜 안 나가는지 알 수 없다. 이때 하던 주문은 그대로 둔다.
+    pub(crate) fn use_skill(&mut self, key: usize) {
+        match self.plan_skill(key) {
+            Ok((target, skill)) => {
+                let line = format!("{} → {}", self.data.skill_name(skill), self.name(target));
+                self.order = Order::Attack {
+                    target,
+                    skill: Some(skill),
+                };
+                self.chase_goal = None;
+                self.note(line);
+            }
+            Err(why) => self.note(why),
+        }
+    }
+
+    fn plan_skill(&self, key: usize) -> Result<(Entity, SkillId), String> {
+        let skill = *key
+            .checked_sub(1)
+            .and_then(|i| self.hotbar.get(i))
+            .ok_or_else(|| format!("단축키 {key} 에 스킬이 없습니다"))?;
+        let name = self.data.skill_name(skill);
+        let world = self.auth.world();
+        let me = world
+            .unit(self.player)
+            .filter(|u| u.is_alive())
+            .ok_or_else(|| String::from("쓰러진 상태입니다"))?;
+        let def = world
+            .skill(skill)
+            .ok_or_else(|| format!("{name}: 모르는 스킬입니다"))?;
+        let now = world.now();
+        if !me.is_ready(skill, now) {
+            return Err(format!(
+                "{name}: 아직 쓸 수 없습니다 ({:.1}초)",
+                me.cooldown_left(skill, now).as_secs_f32()
+            ));
+        }
+        if !me.has_mp(def.mp_cost) {
+            return Err(format!(
+                "{name}: MP 가 부족합니다 ({}/{})",
+                me.mp(),
+                def.mp_cost
+            ));
+        }
+        let current = self
+            .attack_target()
+            .filter(|t| world.unit(*t).is_some_and(Unit::is_alive));
+        let target = current
+            .or_else(|| {
+                // 클릭으로 고른 대상이 없으면 가까운 적 — 우호·중립·불사는 고르지 않는다.
+                let faction = me.def().faction;
+                world
+                    .units()
+                    .filter(|(e, u)| {
+                        *e != self.player
+                            && u.is_alive()
+                            && !u.def().immortal
+                            && world.relation(faction, u.def().faction) == Relation::Hostile
+                    })
+                    .map(|(e, u)| (e, u.pos().distance(me.pos())))
+                    .filter(|&(_, d)| d <= SKILL_SEARCH_RANGE)
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(e, _)| e)
+            })
+            .ok_or_else(|| format!("{name}: 주변에 적이 없습니다"))?;
+        Ok((target, skill))
     }
 
     /// 인벤토리 패널 조작.
@@ -408,12 +527,15 @@ impl PlaySession {
 
         let (goal, reach) = match self.order {
             Order::Idle => return Vec::new(),
-            Order::Attack(target) => {
+            Order::Attack { target, skill } => {
                 let Some(t) = world.unit(target).filter(|t| t.is_alive()) else {
                     self.order = Order::Idle;
                     return Vec::new();
                 };
-                let range = world.skill(attack_skill).map_or(0.0, |s| s.range);
+                // 예약한 스킬이 있으면 그 스킬의 사거리까지 다가간다.
+                let range = world
+                    .skill(skill.unwrap_or(attack_skill))
+                    .map_or(0.0, |s| s.range);
                 (t.pos(), range)
             }
             Order::PickUp(item) => {
@@ -432,12 +554,15 @@ impl PlaySession {
             }
             self.chase_goal = None;
             match self.order {
-                Order::Attack(target) if u.is_ready(attack_skill, world.now()) => {
-                    out.push(Intent::Attack {
-                        unit: me,
-                        target,
-                        skill: attack_skill,
-                    });
+                Order::Attack { target, skill } => {
+                    let skill = skill.unwrap_or(attack_skill);
+                    if u.is_ready(skill, world.now()) {
+                        out.push(Intent::Attack {
+                            unit: me,
+                            target,
+                            skill,
+                        });
+                    }
                 }
                 Order::PickUp(item) => {
                     out.push(Intent::PickUp { unit: me, item });
@@ -463,23 +588,48 @@ impl PlaySession {
         // 노리던 대상이 쓰러지면 그 tick 안에 주문을 끝낸다 — 다음 tick 까지 남겨 두면
         // 쓰러진 대상 쪽으로 한 걸음 더 내디딘다.
         if let Event::Died { unit, .. } = event
-            && self.order == Order::Attack(unit)
+            && self.attack_target() == Some(unit)
         {
             self.order = Order::Idle;
             self.chase_goal = None;
+        }
+        // 예약한 스킬이 맞았으면 비운다 — 이후로는 기본 공격으로 이어 간다.
+        if let Event::Damaged {
+            attacker, skill, ..
+        } = event
+            && attacker == self.player
+            && let Order::Attack { skill: queued, .. } = &mut self.order
+            && *queued == Some(skill)
+        {
+            *queued = None;
         }
         let line = match event {
             Event::Damaged {
                 attacker,
                 target,
+                skill,
                 amount,
                 remaining_hp,
-                ..
-            } => format!(
-                "{} → {} {amount} 피해 (HP {remaining_hp})",
-                self.name(attacker),
-                self.name(target)
-            ),
+            } => {
+                // 기본 공격이 아니면 스킬 이름을 붙인다 — 단축키 스킬·스크립트 스킬이 기록에서 보이게.
+                let basic = if attacker == self.player {
+                    Some(self.data.player_attack())
+                } else {
+                    self.world()
+                        .unit(attacker)
+                        .and_then(|u| u.def().basic_attack)
+                };
+                let what = if basic == Some(skill) {
+                    String::new()
+                } else {
+                    format!(" {}", self.data.skill_name(skill))
+                };
+                format!(
+                    "{} →{what} {} {amount} 피해 (HP {remaining_hp})",
+                    self.name(attacker),
+                    self.name(target)
+                )
+            }
             Event::Died { unit, .. } if unit == self.player => {
                 String::from("플레이어가 쓰러졌습니다")
             }
@@ -658,7 +808,7 @@ impl PlaySession {
             }
         }
 
-        if let Order::Attack(target) = self.order
+        if let Order::Attack { target, .. } = self.order
             && let Some(t) = world.unit(target)
         {
             let half = Vec2::splat((12.0 * px).max(0.5));
@@ -1096,6 +1246,118 @@ mod tests {
         );
     }
 
+    // ── 단축키 스킬 ──────────────────────────────────────────────────────────
+
+    const SMASH: SkillId = SkillId(5);
+
+    fn last_log(s: &PlaySession) -> String {
+        s.log.back().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn the_hotbar_comes_from_the_controlled_actor() {
+        let s = session();
+        assert_eq!(
+            s.hotbar,
+            [SkillId(5), SkillId(6)],
+            "rules.ron: actors.1.skills"
+        );
+        let slots = s.skill_slots();
+        assert_eq!(slots.len(), 2);
+        assert!(slots.iter().all(|x| x.usable && x.cooldown == 0.0));
+    }
+
+    #[test]
+    fn a_skill_key_casts_once_on_the_target_then_basic_attacks_resume() {
+        let mut s = session();
+        let slime = find(&s, "슬라임");
+        s.click(s.world().unit(slime).unwrap().pos(), 0.01);
+        s.use_skill(1);
+        assert_eq!(
+            s.order,
+            Order::Attack {
+                target: slime,
+                skill: Some(SMASH)
+            }
+        );
+        let mut cast = false;
+        for _ in 0..400 {
+            s.tick(DT, None);
+            if s.log.iter().any(|l| l.contains("강베기 슬라임")) {
+                cast = true;
+                break;
+            }
+        }
+        assert!(cast, "{:?}", s.log);
+        assert_eq!(
+            s.order,
+            Order::Attack {
+                target: slime,
+                skill: None
+            },
+            "한 번 맞으면 기본 공격으로"
+        );
+        let me = s.world().unit(s.player()).unwrap();
+        assert!(me.mp() < 60, "MP 15 를 썼다 (지금 {})", me.mp());
+        assert!(s.skill_slots()[0].cooldown > 0.0, "칸에 쿨타임이 보인다");
+
+        // 쿨타임 중에 다시 누르면 이유를 알리고 주문은 그대로.
+        s.use_skill(1);
+        assert!(
+            last_log(&s).contains("아직 쓸 수 없습니다"),
+            "{}",
+            last_log(&s)
+        );
+        assert_eq!(s.attack_target(), Some(slime));
+    }
+
+    #[test]
+    fn a_skill_key_without_a_target_picks_the_nearest_enemy() {
+        let mut s = session();
+        let slime = find(&s, "슬라임");
+        let near = s.world().unit(slime).unwrap().pos() + Vec2::new(3.0, 0.0);
+        let me = s.player();
+        s.auth.world_mut().set_position(me, near);
+        s.use_skill(2);
+        assert_eq!(s.attack_target(), Some(slime), "{:?}", s.log);
+        assert_eq!(last_log(&s), "돌 던지기 → 슬라임");
+
+        // 아무도 없으면 알린다.
+        let mut far = session();
+        let me = far.player();
+        far.auth
+            .world_mut()
+            .set_position(me, Vec2::new(-30.0, 30.0));
+        far.use_skill(2);
+        assert!(
+            last_log(&far).contains("주변에 적이 없습니다"),
+            "{:?}",
+            far.log
+        );
+    }
+
+    #[test]
+    fn short_mp_and_empty_keys_are_reported_at_once() {
+        let mut s = session();
+        let me = s.player();
+        s.auth.world_mut().set_mp(me, 3);
+        let slime = find(&s, "슬라임");
+        s.click(s.world().unit(slime).unwrap().pos(), 0.01);
+        s.use_skill(1);
+        assert_eq!(last_log(&s), "강베기: MP 가 부족합니다 (3/15)");
+        assert!(!s.skill_slots()[0].usable, "칸이 흐려진다");
+        assert_eq!(
+            s.order,
+            Order::Attack {
+                target: slime,
+                skill: None
+            },
+            "하던 주문은 그대로"
+        );
+        s.use_skill(7);
+        assert_eq!(last_log(&s), "단축키 7 에 스킬이 없습니다");
+    }
+
     // ── 전투 동작 ────────────────────────────────────────────────────────────
 
     const PLAYER_SHEET: &str = "assets/third_party/zelda-like-armm1998/player.sheet.ron";
@@ -1361,7 +1623,7 @@ mod tests {
         let slime = find(&s, "슬라임");
         let at = s.world().unit(slime).unwrap().pos();
         s.click(at, 0.01);
-        assert_eq!(s.order, Order::Attack(slime));
+        assert_eq!(s.attack_target(), Some(slime));
 
         let mut dead = false;
         for _ in 0..(20 * 60) {

@@ -55,6 +55,12 @@
             ),
         ),
         (
+            id: "skills",
+            anchor: BottomRight,
+            pos: (-12, -12),
+            kind: Skills,
+        ),
+        (
             id: "items_window",
             anchor: TopRight,
             pos: (-12, 12),

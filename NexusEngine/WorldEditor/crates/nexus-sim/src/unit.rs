@@ -290,6 +290,14 @@ impl Unit {
         self.cooldowns.get(&skill).is_none_or(|&ready| now >= ready)
     }
 
+    /// `skill` 을 다시 쓸 수 있을 때까지 남은 시간 — 쓸 수 있으면 0. 단축키 칸 표시용.
+    #[must_use]
+    pub fn cooldown_left(&self, skill: SkillId, now: Duration) -> Duration {
+        self.cooldowns
+            .get(&skill)
+            .map_or(Duration::ZERO, |&ready| ready.saturating_sub(now))
+    }
+
     /// 현재 tick 의 위치 (m).
     #[must_use]
     pub fn pos(&self) -> Vec2 {

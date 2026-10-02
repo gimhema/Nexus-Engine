@@ -1001,6 +1001,9 @@ impl Editor {
         if let Some(action) = actions.inventory {
             session.inventory(action);
         }
+        if let Some(key) = actions.skill_key {
+            session.use_skill(key);
+        }
         if !grabbed
             && let Some(p) = pointer
             && p.pressed
@@ -1387,6 +1390,11 @@ impl Editor {
                 }
             }
             Step::ToggleItems => self.show_items = !self.show_items,
+            Step::Skill(key) => {
+                if let Some(play) = self.play.as_mut() {
+                    play.use_skill(key);
+                }
+            }
             Step::TogglePanels => self.hide_panels = !self.hide_panels,
             Step::UiEdit => self.screen_editor.toggle(&self.screens),
             Step::UiScreen(id) => self.screen_editor.switch(&self.screens, &id),

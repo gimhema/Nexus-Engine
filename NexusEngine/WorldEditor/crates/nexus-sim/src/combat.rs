@@ -218,6 +218,29 @@ mod flow_tests {
     }
 
     #[test]
+    fn cooldown_left_counts_down_to_zero() {
+        let (mut auth, a, t) = arena();
+        let left = |auth: &LocalAuthority| {
+            let w = auth.world();
+            w.unit(a).unwrap().cooldown_left(MELEE, w.now())
+        };
+        assert_eq!(left(&auth), Duration::ZERO, "쓴 적 없으면 0");
+        attack(&mut auth, a, t, MELEE); // 시계 0 에 써서 1000ms 에 풀린다. 지금 시계 50ms.
+        assert_eq!(left(&auth), Duration::from_millis(950));
+        for _ in 0..19 {
+            auth.tick(DT);
+        }
+        assert_eq!(left(&auth), Duration::ZERO);
+        assert_eq!(
+            auth.world()
+                .unit(a)
+                .unwrap()
+                .cooldown_left(ARROW, Duration::ZERO),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
     fn range_is_checked_on_the_ground_and_inclusive() {
         let (mut auth, a, _) = arena();
         // 정확히 3m — 경계는 포함.

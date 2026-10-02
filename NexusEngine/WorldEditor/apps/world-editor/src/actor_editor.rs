@@ -355,6 +355,10 @@ impl ActorEditor {
                 ui.label("기본 공격 스킬");
                 optional_number(ui, &mut f.basic_attack, "actor-skill");
                 ui.end_row();
+                ui.label("단축키 스킬")
+                    .on_hover_text("조작하는 액터가 숫자키 1~9 로 쓰는 스킬. 맨 앞이 1번 키");
+                hotbar(ui, &mut f.skills);
+                ui.end_row();
                 ui.label("드롭 표");
                 optional_number(ui, &mut f.loot, "actor-loot");
                 ui.end_row();
@@ -451,6 +455,31 @@ fn optional_number(ui: &mut egui::Ui, value: &mut Option<u32>, id: &str) {
             if let Some(v) = value.as_mut() {
                 ui.add(egui::DragValue::new(v).range(1..=99_999));
             } else {
+                ui.weak("없음");
+            }
+        });
+    });
+}
+
+/// 단축키 스킬 목록 — 칸마다 번호, 빼기 버튼. 맨 끝에 더하기.
+fn hotbar(ui: &mut egui::Ui, skills: &mut Vec<u32>) {
+    ui.push_id("actor-hotbar", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            let mut remove = None;
+            for (i, skill) in skills.iter_mut().enumerate() {
+                ui.label(format!("{}:", i + 1));
+                ui.add(egui::DragValue::new(skill).range(1..=99_999));
+                if ui.small_button("×").on_hover_text("이 칸 빼기").clicked() {
+                    remove = Some(i);
+                }
+            }
+            if let Some(i) = remove {
+                skills.remove(i);
+            }
+            if skills.len() < crate::game_data::MAX_HOTBAR && ui.small_button("+").clicked() {
+                skills.push(1);
+            }
+            if skills.is_empty() {
                 ui.weak("없음");
             }
         });

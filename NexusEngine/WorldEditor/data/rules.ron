@@ -21,6 +21,8 @@
         2: (range: 1.5, cooldown_ms: 1200, damage_mult: 1.0),  // 슬라임 물기
         3: (range: 2.0, cooldown_ms: 1000, damage_mult: 1.2),  // 경비병 일격
         4: (range: 2.0, cooldown_ms: 3000, damage_mult: 2.0, mp_cost: 20),  // 고블린 강타
+        5: (range: 2.0, cooldown_ms: 3000, damage_mult: 1.8, mp_cost: 15),  // 플레이어 강베기 (단축키 1)
+        6: (range: 6.0, cooldown_ms: 2000, damage_mult: 0.8, mp_cost: 10),  // 플레이어 돌 던지기 (단축키 2)
     },
 
     items: {
@@ -57,6 +59,8 @@
             defense: 5,
             faction: 1,
             basic_attack: Some(1),
+            // 단축키 스킬 — 조작할 때 숫자키 1·2·… 로 쓴다 (맨 앞이 1번 키).
+            skills: [5, 6],
             // 레벨이 오를 때마다 더해지는 수치 (P3). 필요 경험치는 level² × 100.
             growth: (max_hp: 40, max_mp: 10, attack: 4, defense: 2),
         ),
