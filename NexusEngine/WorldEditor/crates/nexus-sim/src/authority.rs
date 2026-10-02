@@ -51,6 +51,15 @@ pub enum Intent {
     Equip { unit: Entity, slot: u16 },
     /// `slot` 자리의 장비를 벗는다.
     Unequip { unit: Entity, slot: EquipSlot },
+    /// 쓰러진 유닛을 `at` 에서 일으킨다 — HP·MP 를 최대치의 `hp_per_mille`(천분율)만큼 채우고,
+    /// 지금 레벨에서 모은 경험치의 `exp_loss_per_mille` 를 잃는다 (레벨은 내려가지 않는다).
+    /// 기본 부활은 입력 쪽(플레이)이, 맞춤 부활은 액터 스크립트(`on_dead`)가 낸다.
+    Revive {
+        unit: Entity,
+        at: Vec2,
+        hp_per_mille: u32,
+        exp_loss_per_mille: u32,
+    },
 }
 
 impl Intent {
@@ -65,7 +74,8 @@ impl Intent {
             | Self::DropItem { unit, .. }
             | Self::UseItem { unit, .. }
             | Self::Equip { unit, .. }
-            | Self::Unequip { unit, .. } => unit,
+            | Self::Unequip { unit, .. }
+            | Self::Revive { unit, .. } => unit,
         }
     }
 }
@@ -105,6 +115,8 @@ pub enum Rejection {
     InventoryFull,
     /// 그 방식으로 쓸 수 없는 아이템 (장비를 "사용" 등).
     NotUsable,
+    /// 살아 있는 유닛은 부활할 수 없다.
+    NotDead,
 }
 
 /// tick 동안 일어난 일.
@@ -167,6 +179,13 @@ pub enum Event {
     },
     /// 레벨이 올랐다 — HP·MP 가 가득 찬다.
     LeveledUp { unit: Entity, level: u32 },
+    /// 쓰러진 유닛이 일어났다 (`Intent::Revive`). 핸들은 그대로다 — 리스폰과 다르다.
+    Revived {
+        unit: Entity,
+        pos: Vec2,
+        hp: u32,
+        exp_lost: u32,
+    },
 }
 
 /// 게임플레이 상태의 권한자.
@@ -285,6 +304,12 @@ fn apply(world: &mut SimWorld, intent: Intent, events: &mut Vec<Event>) -> Resul
         Intent::UseItem { unit, slot } => world.use_item(unit, slot, events),
         Intent::Equip { unit, slot } => world.equip(unit, slot, events),
         Intent::Unequip { unit, slot } => world.unequip(unit, slot, events),
+        Intent::Revive {
+            unit,
+            at,
+            hp_per_mille,
+            exp_loss_per_mille,
+        } => world.revive(unit, at, hp_per_mille, exp_loss_per_mille, events),
     }
 }
 

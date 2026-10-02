@@ -23,6 +23,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::time::Duration;
 
 use nexus_core::Entity;
 use nexus_sim::{
@@ -78,6 +79,48 @@ struct RulesFile {
     player_attack: u32,
     #[serde(default)]
     starting_kit: Vec<StackFile>,
+    /// 플레이어 기본 부활 — 적지 않으면 3초 뒤 저장 지점에서 HP 가득, 패널티 없음.
+    /// 액터 스크립트가 `on_dead` 를 정의하면 그 액터에는 쓰이지 않는다 (스크립트가 맡는다).
+    #[serde(default)]
+    revive: ReviveFile,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviveFile {
+    #[serde(default = "default_revive_delay")]
+    delay_ms: u32,
+    #[serde(default = "default_revive_hp")]
+    hp_percent: u32,
+    #[serde(default)]
+    exp_loss_percent: u32,
+}
+
+impl Default for ReviveFile {
+    fn default() -> Self {
+        Self {
+            delay_ms: default_revive_delay(),
+            hp_percent: default_revive_hp(),
+            exp_loss_percent: 0,
+        }
+    }
+}
+
+fn default_revive_delay() -> u32 {
+    3000
+}
+
+fn default_revive_hp() -> u32 {
+    100
+}
+
+/// 플레이어 기본 부활 규칙 (`rules.ron` 의 `revive`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RevivePolicy {
+    /// 쓰러진 뒤 일어나기까지.
+    pub(crate) delay: Duration,
+    pub(crate) hp_per_mille: u32,
+    pub(crate) exp_loss_per_mille: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -333,6 +376,7 @@ pub(crate) struct GameData {
     actor_skills: BTreeMap<ActorId, Vec<SkillId>>,
     /// 스킬의 표시 이름 (`display.ron`).
     skill_names: BTreeMap<SkillId, String>,
+    revive: RevivePolicy,
     /// 경로 → 스크립트 본문. 컴파일은 플레이를 시작할 때 한다.
     script_sources: BTreeMap<String, String>,
 }
@@ -351,6 +395,28 @@ impl GameData {
                 Err(e) => Err(format!("{DATA_DIR}/{path}: {e}")),
             }
         })
+    }
+
+    /// 시험용 — 규칙 텍스트를 고치고 스크립트 본문을 직접 넘긴다 (`(data/ 기준 경로, 본문)`).
+    /// 목록에 없는 경로는 내장본에서 찾는다.
+    #[cfg(test)]
+    pub(crate) fn parse_with_scripts(
+        rules: &str,
+        scripts: &[(&str, &str)],
+    ) -> Result<Self, String> {
+        Self::parse(rules, EMBEDDED_DISPLAY)?.with_scripts(|path| {
+            Ok(scripts
+                .iter()
+                .find(|(p, _)| *p == path)
+                .map(|(_, s)| (*s).to_owned())
+                .or_else(|| embedded_script(path).map(str::to_owned)))
+        })
+    }
+
+    /// 시험용 — 내장 규칙 텍스트.
+    #[cfg(test)]
+    pub(crate) fn embedded_rules() -> &'static str {
+        EMBEDDED_RULES
     }
 
     /// 실행 파일에 든 데이터 — 테스트와 비교 기준.
@@ -527,6 +593,14 @@ impl GameData {
                 format!("표시 스킬 {id}: 이름이 비어 있음"),
             );
         }
+        check(
+            (1..=100).contains(&r.revive.hp_percent)
+                && r.revive.exp_loss_percent <= 100
+                && r.revive.delay_ms <= MAX_RESPAWN_MS,
+            String::from(
+                "revive: hp_percent 는 1~100, exp_loss_percent 는 0~100, delay_ms 는 1시간 이하",
+            ),
+        );
         if !errors.is_empty() {
             return Err(format!("게임 데이터 오류 — {}", errors.join(" / ")));
         }
@@ -641,6 +715,11 @@ impl GameData {
                 .iter()
                 .map(|(id, l)| (SkillId(*id), l.name.clone()))
                 .collect(),
+            revive: RevivePolicy {
+                delay: Duration::from_millis(u64::from(r.revive.delay_ms)),
+                hp_per_mille: r.revive.hp_percent * 10,
+                exp_loss_per_mille: r.revive.exp_loss_percent * 10,
+            },
             script_sources: BTreeMap::new(),
         })
     }
@@ -762,6 +841,19 @@ impl GameData {
     /// 액터 타입의 단축키 스킬 — 1번 키가 맨 앞. 없으면 빈 목록.
     pub(crate) fn actor_skills(&self, actor: ActorId) -> &[SkillId] {
         self.actor_skills.get(&actor).map_or(&[], Vec::as_slice)
+    }
+
+    /// 플레이어 기본 부활 규칙.
+    pub(crate) fn revive(&self) -> RevivePolicy {
+        self.revive
+    }
+
+    /// 이 액터 타입이 부활을 스크립트로 맡는가 — 스크립트가 `on_dead` 를 정의했으면.
+    pub(crate) fn scripted_revive(&self, actor: ActorId) -> bool {
+        self.actor_script(actor)
+            .and_then(|path| self.script_sources.get(path))
+            .and_then(|src| nexus_script::check(src).ok())
+            .is_some_and(|c| c.hooks.contains(&nexus_script::DEAD_HOOK))
     }
 
     /// 스킬 이름. 표시 파일에 없으면 번호로.
@@ -1511,6 +1603,8 @@ pub(crate) struct SettingsForm {
     pub(crate) relations: Vec<RelationRow>,
     /// `(아이템, 개수)`.
     pub(crate) starting_kit: Vec<(u32, u32)>,
+    /// 기본 부활 — `(대기 ms, HP %, 경험치 손실 %)`.
+    pub(crate) revive: (u32, u32, u32),
 }
 
 pub(crate) fn settings_form(rules: &str) -> Result<SettingsForm, String> {
@@ -1538,6 +1632,11 @@ pub(crate) fn settings_form(rules: &str) -> Result<SettingsForm, String> {
             })
             .collect(),
         starting_kit: r.starting_kit.iter().map(|s| (s.item, s.count)).collect(),
+        revive: (
+            r.revive.delay_ms,
+            r.revive.hp_percent,
+            r.revive.exp_loss_percent,
+        ),
     })
 }
 
@@ -1571,6 +1670,21 @@ pub(crate) fn patch_settings(
         .map(|(item, count)| format!("(item: {item}, count: {count}),"))
         .collect();
     text = replace_block(&text, "starting_kit", '[', &kit)?;
+    let (delay, hp, loss) = f.revive;
+    let revive = format!("(delay_ms: {delay}, hp_percent: {hp}, exp_loss_percent: {loss})");
+    text = match replace_field(&text, "revive", &revive) {
+        Ok(t) => t,
+        // 예전 파일 — 줄이 없으면 맨 끝 `)` 앞에 넣는다.
+        Err(_) => match text.rfind(')') {
+            Some(end) => format!(
+                "{}    revive: {revive},
+{}",
+                &text[..end],
+                &text[end..]
+            ),
+            None => return Err(String::from("rules.ron 의 끝 `)` 을 찾지 못함")),
+        },
+    };
     GameData::parse(&text, display)?;
     Ok(text)
 }
@@ -1803,6 +1917,46 @@ mod tests {
         assert_ne!(rules, EMBEDDED_RULES, "시험 전제");
         let err = GameData::parse(&rules, EMBEDDED_DISPLAY).unwrap_err();
         assert!(err.contains("respawn_ms"), "{err}");
+    }
+
+    #[test]
+    fn the_revive_rule_is_checked_written_and_defaulted() {
+        const LINE: &str = "revive: (delay_ms: 3000, hp_percent: 100, exp_loss_percent: 0),";
+        let data = GameData::embedded();
+        assert_eq!(
+            data.revive(),
+            RevivePolicy {
+                delay: Duration::from_millis(3000),
+                hp_per_mille: 1000,
+                exp_loss_per_mille: 0
+            }
+        );
+        let bad = EMBEDDED_RULES.replacen("hp_percent: 100", "hp_percent: 0", 1);
+        assert!(
+            GameData::parse(&bad, EMBEDDED_DISPLAY)
+                .unwrap_err()
+                .contains("revive")
+        );
+
+        // 줄이 없는 예전 파일도 읽히고(기본값), 설정 창이 저장하면 줄이 생긴다.
+        let old = EMBEDDED_RULES.replacen(LINE, "", 1);
+        assert_ne!(old, EMBEDDED_RULES, "시험 전제");
+        assert_eq!(
+            GameData::parse(&old, EMBEDDED_DISPLAY).unwrap().revive(),
+            data.revive()
+        );
+        let mut form = settings_form(&old).unwrap();
+        form.revive = (500, 40, 10);
+        let text = patch_settings(&old, EMBEDDED_DISPLAY, &form).unwrap();
+        let back = GameData::parse(&text, EMBEDDED_DISPLAY).unwrap().revive();
+        assert_eq!((back.hp_per_mille, back.exp_loss_per_mille), (400, 100));
+        // 줄이 있으면 그 줄만 바뀐다.
+        let text = patch_settings(EMBEDDED_RULES, EMBEDDED_DISPLAY, &form).unwrap();
+        assert!(text.contains("revive: (delay_ms: 500, hp_percent: 40, exp_loss_percent: 10),"));
+        assert_eq!(
+            text.matches("revive:").count(),
+            EMBEDDED_RULES.matches("revive:").count()
+        );
     }
 
     #[test]

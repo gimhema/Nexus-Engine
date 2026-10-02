@@ -257,6 +257,83 @@ mod flow_tests {
     }
 
     #[test]
+    fn revive_stands_the_same_unit_up_with_part_hp_and_an_exp_penalty() {
+        let (mut auth, a, _) = arena();
+        let t = auth.world_mut().spawn_unit(
+            Vec2::new(3.5, 2.5),
+            0.0,
+            UnitDef {
+                max_hp: 20,
+                max_mp: 40,
+                ..fighter()
+            },
+        );
+        auth.world_mut()
+            .set_progress(t, crate::Progress::new(2, 300));
+        let revive = |auth: &mut LocalAuthority| {
+            auth.submit(Intent::Revive {
+                unit: t,
+                at: Vec2::new(10.5, 10.5),
+                hp_per_mille: 500,
+                exp_loss_per_mille: 100,
+            });
+            auth.tick(DT)
+        };
+        assert_eq!(
+            rejected(&revive(&mut auth)),
+            Some(Rejection::NotDead),
+            "살아 있으면 거절"
+        );
+
+        attack(&mut auth, a, t, MELEE); // 한 방에 쓰러진다 — 쿨타임이 남는다
+        let events = revive(&mut auth);
+        assert!(events.contains(&Event::Revived {
+            unit: t,
+            pos: Vec2::new(10.5, 10.5),
+            hp: 10,
+            exp_lost: 30,
+        }));
+        let u = auth.world().unit(t).unwrap();
+        assert!(u.is_alive(), "같은 핸들");
+        assert_eq!((u.hp(), u.mp(), u.pos()), (10, 20, Vec2::new(10.5, 10.5)));
+        assert_eq!(
+            (u.progress().level(), u.progress().exp()),
+            (2, 270),
+            "레벨은 그대로"
+        );
+    }
+
+    #[test]
+    fn a_revived_unit_does_not_also_respawn() {
+        let (mut auth, a, _) = arena();
+        let t = auth.world_mut().spawn_unit(
+            Vec2::new(3.5, 2.5),
+            0.0,
+            UnitDef {
+                max_hp: 20,
+                respawn_ms: 1000,
+                ..fighter()
+            },
+        );
+        attack(&mut auth, a, t, MELEE);
+        auth.submit(Intent::Revive {
+            unit: t,
+            at: Vec2::new(3.5, 2.5),
+            hp_per_mille: 1000,
+            exp_loss_per_mille: 0,
+        });
+        for _ in 0..60 {
+            assert!(
+                !auth
+                    .tick(DT)
+                    .iter()
+                    .any(|e| matches!(e, Event::Respawned { .. })),
+                "부활하면 리스폰 예약이 지워진다"
+            );
+        }
+    }
+
+    #[test]
     fn units_without_respawn_stay_as_corpses() {
         let (mut auth, a, _) = arena();
         let t = auth.world_mut().spawn_unit(

@@ -33,10 +33,21 @@ fn template() -> String {
          // 상태는 this 에 둔다 (액터마다 따로). 행동은 move_to / attack / stop 으로 요청한다.\n\n",
     );
     for sig in nexus_script::hook_signatures() {
+        // on_dead 는 틀에 넣지 않는다 — 빈 on_dead 가 있으면 기본 부활이 꺼져 영영 일어나지 못한다.
+        if sig.contains(nexus_script::DEAD_HOOK) {
+            continue;
+        }
         s.push_str(&sig);
         s.push_str(" {\n}\n\n");
     }
-    s.pop();
+    s.push_str(
+        "// 부활을 직접 정하려면 (정의하면 기본 부활이 꺼진다):\n\
+         // fn on_death(me, killer) { this.down = 0.0; }   ← 위의 on_death 에 넣는다\n\
+         // fn on_dead(me, dt) {\n\
+         //     this.down += dt;\n\
+         //     if this.down >= 3.0 { revive(me, me.spawn_x, me.spawn_y, 50); }\n\
+         // }\n",
+    );
     s
 }
 
@@ -373,11 +384,13 @@ impl ScriptEditor {
 }
 
 const HELP: &[&str] = &[
-    "읽기   u.x  u.y  u.hp  u.max_hp  u.mp  u.max_mp  u.alive  u.moving  u.id",
+    "읽기   u.x  u.y  u.hp  u.max_hp  u.mp  u.max_mp  u.alive  u.moving  u.id  u.spawn_x  u.spawn_y",
     "       distance(a, b)          nearest_enemy(me, 거리)   enemies(me, 거리)",
     "       can_see(me, u)          attack_range(me)          time()",
     "       rand(n)  rand_float()   — 시드 있는 난수",
     "행동   move_to(me, x, y)  move_to(me, u)  stop(me)  attack(me, u)  attack(me, u, 스킬)",
+    "부활   revive(me, x, y, hp%)  revive(me, x, y, hp%, 경험치손실%)  — on_dead 에서. spawn_x/y = 저장 지점",
+    "       on_dead 를 정의하면 그 액터의 기본 부활(rules.ron 의 revive)이 꺼진다",
     "기타   print(\"…\")  — 플레이 패널의 기록에 뜬다",
     "주의   정수·실수를 섞지 않는다: move_to(me, 1.0, 2.0) · 정수는 .to_float()",
 ];
@@ -479,6 +492,7 @@ const API: &[&str] = &[
     "on_attack",
     "on_damaged",
     "on_death",
+    "on_dead",
     "distance",
     "nearest_enemy",
     "enemies",
@@ -490,6 +504,7 @@ const API: &[&str] = &[
     "move_to",
     "stop",
     "attack",
+    "revive",
     "print",
 ];
 

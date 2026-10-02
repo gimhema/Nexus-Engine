@@ -62,6 +62,15 @@ impl Progress {
         exp_to_next(self.level)
     }
 
+    /// 지금 레벨에서 모은 경험치의 `per_mille`(천분율)을 잃는다 — 사망 패널티. **레벨은 내려가지 않는다**
+    /// (RO 와 같다). 잃은 양을 돌려준다.
+    pub fn lose(&mut self, per_mille: u32) -> u32 {
+        let lost = u64::from(self.exp) * u64::from(per_mille.min(1000)) / 1000;
+        let lost = u32::try_from(lost).unwrap_or(self.exp);
+        self.exp -= lost;
+        lost
+    }
+
     /// 경험치를 더한다. **오른 레벨 수**를 돌려준다 (0 이면 그대로).
     pub fn add(&mut self, amount: u32) -> u32 {
         self.exp = self.exp.saturating_add(amount);

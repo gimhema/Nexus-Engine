@@ -198,6 +198,28 @@ impl RulesEditor {
             f.starting_kit.push((first, 1));
         }
         ui.weak("저장 파일로 이어 할 때는 쓰지 않는다 — 새로 시작할 때만.");
+
+        ui.add_space(6.0);
+        ui.strong("플레이어 기본 부활");
+        let (delay, hp, loss) = &mut f.revive;
+        egui::Grid::new("rules-revive")
+            .num_columns(2)
+            .show(ui, |ui| {
+                ui.label("대기 (ms)");
+                ui.add(egui::DragValue::new(delay).speed(100).range(0..=3_600_000));
+                ui.end_row();
+                ui.label("부활 HP·MP (%)");
+                ui.add(egui::DragValue::new(hp).range(1..=100));
+                ui.end_row();
+                ui.label("경험치 손실 (%)");
+                ui.add(egui::DragValue::new(loss).range(0..=100))
+                    .on_hover_text("지금 레벨에서 모은 경험치에서 잃는다. 레벨은 내려가지 않는다");
+                ui.end_row();
+            });
+        ui.weak("저장 지점(처음 선 자리, 이어 하기면 저장한 자리)에서 일어난다.");
+        ui.weak(
+            "액터 스크립트에 on_dead 를 정의하면 그 액터는 이 규칙 대신 스크립트가 부활시킨다.",
+        );
     }
 
     fn footer(&mut self, ui: &mut egui::Ui) {

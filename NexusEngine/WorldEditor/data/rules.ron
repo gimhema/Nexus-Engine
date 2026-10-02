@@ -147,4 +147,8 @@
         (item: 502, count: 2),
         (item: 1101, count: 1),
     ],
+    // 플레이어 기본 부활 — 쓰러지면 delay_ms 뒤 저장 지점(처음 선 자리, 이어 하기면 저장한 자리)에서
+    // 최대치의 hp_percent 로 일어나고, 지금 레벨의 경험치를 exp_loss_percent 만큼 잃는다.
+    // 액터 스크립트에 on_dead 를 정의하면 그 액터는 이 규칙 대신 스크립트가 부활시킨다 (revive 함수).
+    revive: (delay_ms: 3000, hp_percent: 100, exp_loss_percent: 0),
 )

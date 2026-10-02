@@ -678,6 +678,49 @@ impl SimWorld {
         }
     }
 
+    /// 쓰러진 유닛을 `at` 에서 일으킨다 ([`Intent::Revive`](crate::Intent::Revive)).
+    ///
+    /// 핸들은 그대로다(리스폰은 새 핸들) — 레벨·소지품·장비가 남는다. HP·MP 는 최대치의 천분율,
+    /// 최소 1. 걷던 길·AI 상대·쿨타임·리스폰 예약은 지운다. 자리는 검사하지 않는다 —
+    /// 막힌 칸이면 움직일 때 [`Event::Blocked`] 로 멈출 뿐이다 (스크립트의 책임).
+    pub(crate) fn revive(
+        &mut self,
+        unit: Entity,
+        at: Vec2,
+        hp_per_mille: u32,
+        exp_loss_per_mille: u32,
+        events: &mut Vec<Event>,
+    ) -> Result<(), Rejection> {
+        if !at.is_finite() {
+            return Err(Rejection::NoPath);
+        }
+        let u = self.unit_mut(unit).ok_or(Rejection::UnknownEntity)?;
+        if u.is_alive() {
+            return Err(Rejection::NotDead);
+        }
+        let ratio = u64::from(hp_per_mille.min(1000));
+        let part = |max: u32| u32::try_from(u64::from(max) * ratio / 1000).unwrap_or(max);
+        u.hp = part(u.max_hp()).max(1);
+        u.mp = part(u.max_mp());
+        u.mp_carry = 0;
+        u.pos = at;
+        u.prev_pos = at;
+        u.home = at;
+        u.waypoints.clear();
+        u.ai = AiState::default();
+        u.cooldowns.clear();
+        u.died_at = None;
+        let exp_lost = u.progress.lose(exp_loss_per_mille);
+        let hp = u.hp;
+        events.push(Event::Revived {
+            unit,
+            pos: at,
+            hp,
+            exp_lost,
+        });
+        Ok(())
+    }
+
     /// 리스폰 시각이 된 시체를 치우고 스폰 지점에 새로 세운다 — 슬롯 순서대로 (결정적).
     ///
     /// 새 유닛은 **처음 스폰과 같은 수치**(마커별 덮어쓰기가 얹힌 `UnitDef`)로 가득 찬 채 나타나고,

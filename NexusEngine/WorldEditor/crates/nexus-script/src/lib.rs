@@ -6,7 +6,7 @@
 //! # 스크립트가 할 수 있는 것
 //!
 //! 스크립트는 **함수만 정의한다.** 맨 위의 문장은 실행하지 않는다. 엔진이 이름으로 찾아 부르는
-//! 훅은 다섯 개이고, 없는 훅은 부르지 않는다.
+//! 훅은 여섯 개이고, 없는 훅은 부르지 않는다.
 //!
 //! ```text
 //! fn on_spawn(me)                   처음 한 번 — 상태를 여기서 초기화한다
@@ -14,6 +14,8 @@
 //! fn on_attack(me, target, amount)  내 공격이 맞았다
 //! fn on_damaged(me, attacker, amount) 내가 맞았다
 //! fn on_death(me, killer)           내가 죽었다
+//! fn on_dead(me, dt)                쓰러져 있는 동안 매 tick — **정의하면 부활을 스크립트가 맡는다**
+//!                                   (엔진의 기본 부활이 꺼진다. 일으키려면 revive)
 //! ```
 //!
 //! **상태는 `this` 에 둔다** — 액터마다 따로인 맵이다 (`this.timer = 0.0;`).
@@ -25,6 +27,7 @@
 //! | 읽기 | |
 //! |---|---|
 //! | `u.x` `u.y` `u.hp` `u.max_hp` `u.mp` `u.max_mp` `u.alive` `u.moving` `u.id` | 유닛 속성 |
+//! | `u.spawn_x` `u.spawn_y` | 처음 선 자리 = 기본 부활 지점 (이어 하기면 저장한 자리) |
 //! | `distance(a, b)` | 지면 거리 (m) |
 //! | `nearest_enemy(me, 거리)` | 가장 가까운 **보이는 적대** 유닛, 없으면 `()` |
 //! | `enemies(me, 거리)` | 그 목록 (가까운 순) |
@@ -38,6 +41,7 @@
 //! | `move_to(me, x, y)` / `move_to(me, u)` | 걸어가기 |
 //! | `stop(me)` | 멈추기 |
 //! | `attack(me, u)` / `attack(me, u, 스킬번호)` | 공격 (기본 공격 / 지정 스킬) |
+//! | `revive(me, x, y, hp%)` / `revive(me, x, y, hp%, 경험치손실%)` | 쓰러진 자기 유닛을 일으킨다 (`on_dead` 에서) |
 //!
 //! `print(...)` 는 호출한 쪽의 로그로 간다.
 //!
@@ -67,13 +71,20 @@ pub const MAX_OPERATIONS: u64 = 50_000;
 pub struct ScriptId(usize);
 
 /// 훅 이름과 인자 수. 인자 수가 다르면 컴파일할 때 알려 준다.
-const HOOKS: [(&str, usize); 5] = [
+const HOOKS: [(&str, usize); HOOK_COUNT] = [
     ("on_spawn", 1),
     ("on_tick", 2),
     ("on_attack", 3),
     ("on_damaged", 3),
     ("on_death", 2),
+    // 쓰러져 있는 동안 매 tick. **정의하면 그 액터의 부활을 스크립트가 맡는다** — 엔진의 기본 부활이 꺼진다.
+    ("on_dead", 2),
 ];
+const HOOK_COUNT: usize = 6;
+/// `HOOKS` 안의 `on_dead` 자리.
+const ON_DEAD: usize = 5;
+/// 정의하면 기본 부활이 꺼지는 훅 이름. 플레이 쪽이 [`check`] 의 `hooks` 에서 찾는다.
+pub const DEAD_HOOK: &str = HOOKS[ON_DEAD].0;
 
 /// Rhai 로 액터 스크립트를 돌린다.
 pub struct RhaiHost {
@@ -97,7 +108,7 @@ struct Script {
     name: String,
     ast: AST,
     /// 정의된 훅 — [`HOOKS`] 순서.
-    has: [bool; 5],
+    has: [bool; HOOK_COUNT],
     /// 오류가 나서 꺼졌다.
     disabled: bool,
 }
@@ -107,6 +118,9 @@ struct Attached {
     /// 스크립트의 `this` — 액터마다 따로.
     state: Dynamic,
     spawned: bool,
+    /// 쓰러짐(`on_death`)을 전했다 — 그 뒤에만 `on_dead` 를 부른다. 호스트는 **이전 tick** 의
+    /// 이벤트를 받으므로, 쓰러진 바로 그 tick 에는 월드가 이미 시체인데 `on_death` 는 아직이다.
+    down: bool,
 }
 
 /// 스크립트가 보는 한 tick 의 월드 요약 + 스크립트가 낸 것.
@@ -132,6 +146,8 @@ struct Ctx {
 struct UnitInfo {
     entity: Entity,
     pos: Vec2,
+    /// 처음 선 자리 — 기본 부활 지점 (이어 하기면 저장한 자리).
+    spawn: Vec2,
     hp: u32,
     max_hp: u32,
     mp: u32,
@@ -236,6 +252,7 @@ impl RhaiHost {
                 script: script.0,
                 state: Dynamic::from_map(Map::new()),
                 spawned: false,
+                down: false,
             },
         );
     }
@@ -259,6 +276,7 @@ impl RhaiHost {
             ctx.units.push(UnitInfo {
                 entity,
                 pos: u.pos(),
+                spawn: u.spawn_pos(),
                 hp: u.hp(),
                 max_hp: u.max_hp(),
                 mp: u.mp(),
@@ -345,6 +363,9 @@ impl ScriptHost for RhaiHost {
                     }
                 }
                 Event::Died { unit: dead, killer } => {
+                    if let Some(a) = self.attached.get_mut(&dead) {
+                        a.down = true;
+                    }
                     self.call(dead, 4, vec![unit(dead), unit(killer)]);
                 }
                 // 리스폰 — 스크립트를 새 핸들로 옮긴다. 상태(this)는 비우고 on_spawn 부터 다시
@@ -360,6 +381,7 @@ impl ScriptHost for RhaiHost {
                                 script: old.script,
                                 state: Dynamic::from_map(Map::new()),
                                 spawned: false,
+                                down: false,
                             },
                         );
                     }
@@ -376,6 +398,9 @@ impl ScriptHost for RhaiHost {
             .map(|(e, _)| e)
             .collect();
         for e in alive {
+            if let Some(a) = self.attached.get_mut(&e) {
+                a.down = false; // 일어났다 (부활)
+            }
             let first = self
                 .attached
                 .get_mut(&e)
@@ -384,6 +409,16 @@ impl ScriptHost for RhaiHost {
                 self.call(e, 0, vec![unit(e)]);
             }
             self.call(e, 1, vec![unit(e), dt.clone()]);
+        }
+
+        // 쓰러져 있는 유닛 — on_dead 가 부활 시점을 정한다 (`revive`).
+        let dead: Vec<Entity> = world
+            .units()
+            .filter(|(e, u)| !u.is_alive() && self.attached.get(e).is_some_and(|a| a.down))
+            .map(|(e, _)| e)
+            .collect();
+        for e in dead {
+            self.call(e, ON_DEAD, vec![unit(e), dt.clone()]);
         }
 
         out.append(&mut self.ctx.borrow_mut().out);
@@ -440,12 +475,13 @@ pub fn check(source: &str) -> Result<Compiled, Diagnostic> {
 /// 훅 이름과 인자 목록 — 편집기의 도움말·새 스크립트 틀에 쓴다.
 #[must_use]
 pub fn hook_signatures() -> Vec<String> {
-    const PARAMS: [&str; 5] = [
+    const PARAMS: [&str; HOOK_COUNT] = [
         "me",
         "me, dt",
         "me, target, amount",
         "me, attacker, amount",
         "me, killer",
+        "me, dt",
     ];
     HOOKS
         .iter()
@@ -455,7 +491,7 @@ pub fn hook_signatures() -> Vec<String> {
 }
 
 /// 컴파일과 훅 검사. 실행 엔진과 검사 엔진이 **같은 함수**를 거친다 — 둘이 다르게 판정하지 않게.
-fn compile(engine: &Engine, source: &str) -> Result<(AST, [bool; 5]), Diagnostic> {
+fn compile(engine: &Engine, source: &str) -> Result<(AST, [bool; HOOK_COUNT]), Diagnostic> {
     let ast = engine.compile(source).map_err(|e| {
         let pos = e.position();
         Diagnostic {
@@ -464,7 +500,7 @@ fn compile(engine: &Engine, source: &str) -> Result<(AST, [bool; 5]), Diagnostic
             message: e.err_type().to_string(),
         }
     })?;
-    let mut has = [false; 5];
+    let mut has = [false; HOOK_COUNT];
     for f in ast.iter_functions() {
         if let Some(i) = HOOKS.iter().position(|(hook, _)| *hook == f.name) {
             let want = HOOKS[i].1;
@@ -533,6 +569,8 @@ fn build_engine(ctx: &Rc<RefCell<Ctx>>) -> Engine {
     }
     getter!("x", FLOAT, 0.0, |u| u.pos.x);
     getter!("y", FLOAT, 0.0, |u| u.pos.y);
+    getter!("spawn_x", FLOAT, 0.0, |u| u.spawn.x);
+    getter!("spawn_y", FLOAT, 0.0, |u| u.spawn.y);
     getter!("hp", INT, 0, |u| INT::from(u.hp));
     getter!("max_hp", INT, 0, |u| INT::from(u.max_hp));
     getter!("mp", INT, 0, |u| INT::from(u.mp));
@@ -696,6 +734,46 @@ fn build_engine(ctx: &Rc<RefCell<Ctx>>) -> Engine {
                     skill: SkillId(skill),
                 });
                 Ok(true)
+            },
+        );
+    }
+
+    // ── 부활 (on_dead 에서) ──────────────────────────────────────────────
+    // revive(me, x, y, hp%) / revive(me, x, y, hp%, 경험치 손실%) — 비율은 0~100 으로 자른다.
+    fn revive_intent(
+        ctx: &Rc<RefCell<Ctx>>,
+        me: UnitRef,
+        x: FLOAT,
+        y: FLOAT,
+        hp_percent: INT,
+        loss_percent: INT,
+    ) -> Result<bool, Box<EvalAltResult>> {
+        let mut c = ctx.borrow_mut();
+        c.check_self(me.0)?;
+        if !(x.is_finite() && y.is_finite()) {
+            return Err("revive — 자리가 수가 아님".into());
+        }
+        let per_mille = |p: INT| u32::try_from(p.clamp(0, 100)).unwrap_or(0) * 10;
+        c.out.push(Intent::Revive {
+            unit: me.0,
+            at: Vec2::new(x, y),
+            hp_per_mille: per_mille(hp_percent),
+            exp_loss_per_mille: per_mille(loss_percent),
+        });
+        Ok(true)
+    }
+    {
+        let ctx = ctx.clone();
+        engine.register_fn("revive", move |me: UnitRef, x: FLOAT, y: FLOAT, hp: INT| {
+            revive_intent(&ctx, me, x, y, hp, 0)
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        engine.register_fn(
+            "revive",
+            move |me: UnitRef, x: FLOAT, y: FLOAT, hp: INT, loss: INT| {
+                revive_intent(&ctx, me, x, y, hp, loss)
             },
         );
     }

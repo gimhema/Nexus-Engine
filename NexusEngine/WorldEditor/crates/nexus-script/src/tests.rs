@@ -251,6 +251,54 @@ fn a_respawned_actor_keeps_its_script_and_starts_over() {
 }
 
 #[test]
+fn on_dead_runs_while_down_and_revive_stands_the_actor_up() {
+    // 2초 쓰러져 있다가 저장 지점(스폰 자리)에서 반만 채워 일어난다.
+    let src = r#"
+        fn on_death(me, killer) { this.down = 0.0; print("쓰러짐"); }
+        fn on_dead(me, dt) {
+            this.down += dt;
+            if this.down >= 2.0 {
+                revive(me, me.spawn_x, me.spawn_y, 50, 10);
+            }
+        }
+    "#;
+    let (mut auth, goblin, hero) = arena(src, 1, Vec2::new(1.0, 0.0));
+    // 고블린을 옮겨 두고 쓰러뜨린다 — 일어나는 곳은 쓰러진 자리가 아니라 처음 선 자리다.
+    for _ in 0..5 {
+        auth.submit(nexus_sim::Intent::Attack {
+            unit: hero,
+            target: goblin,
+            skill: BITE,
+        });
+        run(&mut auth, 20);
+    }
+    assert!(!auth.world().unit(goblin).unwrap().is_alive());
+    let events = run(&mut auth, 45);
+    let revived = events.iter().find_map(|e| match *e {
+        Event::Revived { unit, pos, hp, .. } if unit == goblin => Some((pos, hp)),
+        _ => None,
+    });
+    assert_eq!(
+        revived,
+        Some((Vec2::ZERO, 50)),
+        "같은 핸들, 스폰 자리, HP 50%"
+    );
+    assert!(auth.world().unit(goblin).unwrap().is_alive());
+}
+
+#[test]
+fn a_script_cannot_revive_another_unit() {
+    let src = r#"
+        fn on_tick(me, dt) { revive(me, 0.0, 0.0, 100); }
+    "#;
+    // 살아 있는 자신에게는 거절될 뿐(조용히) — 오류가 아니다.
+    let (mut auth, goblin, _) = arena(src, 1, Vec2::new(15.0, 0.0));
+    run(&mut auth, 3);
+    assert!(log(&mut auth).iter().all(|(error, _)| !error));
+    assert!(auth.world().unit(goblin).unwrap().is_alive());
+}
+
+#[test]
 fn a_script_cannot_drive_another_unit_and_is_switched_off_once() {
     let src = r#"
         fn on_tick(me, dt) {
@@ -397,8 +445,8 @@ fn undeclared_variables_are_caught_before_play() {
 #[test]
 fn hook_signatures_match_what_the_engine_calls() {
     let sigs = super::hook_signatures();
-    assert_eq!(sigs.len(), 5);
+    assert_eq!(sigs.len(), 6);
     // 목록의 시그니처를 그대로 쓴 스크립트는 인자 수 검사를 통과해야 한다.
     let src: String = sigs.iter().map(|s| format!("{s} {{ }}\n")).collect();
-    assert_eq!(super::check(&src).unwrap().hooks.len(), 5);
+    assert_eq!(super::check(&src).unwrap().hooks.len(), 6);
 }

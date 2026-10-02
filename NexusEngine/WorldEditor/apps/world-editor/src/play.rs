@@ -113,6 +113,10 @@ pub(crate) struct PlaySession {
     order: Order,
     /// 단축키 스킬 — 조작하는 액터 타입의 `skills`. 1번 키가 맨 앞.
     hotbar: Vec<SkillId>,
+    /// 플레이어가 기본 부활할 시각 (시뮬레이션 시계). 쓰러져 있는 동안만 있다.
+    revive_at: Option<Duration>,
+    /// 조작하는 액터의 스크립트가 `on_dead` 를 정의했다 — 부활은 스크립트가 맡고 기본 부활은 하지 않는다.
+    scripted_revive: bool,
     /// 주문을 위해 마지막으로 경로를 잡은 지점.
     chase_goal: Option<Vec2>,
     log: VecDeque<String>,
@@ -205,6 +209,9 @@ impl PlaySession {
             .get(&player)
             .map(|l: &Label| data.actor_skills(l.actor).to_vec())
             .unwrap_or_default();
+        let scripted_revive = labels
+            .get(&player)
+            .is_some_and(|l: &Label| data.scripted_revive(l.actor));
 
         let mut auth = LocalAuthority::new(world);
         auth.set_script_host(Box::new(scripts));
@@ -217,6 +224,8 @@ impl PlaySession {
             hit_flash: HashMap::new(),
             order: Order::Idle,
             hotbar,
+            revive_at: None,
+            scripted_revive,
             chase_goal: None,
             log: VecDeque::new(),
             alerts: Vec::new(),
@@ -461,6 +470,23 @@ impl PlaySession {
 
     /// 한 tick. **고정 timestep 에서만** 부른다 — 애니메이션도 여기서 진행한다.
     pub(crate) fn tick(&mut self, dt: Duration, sprites: Option<&SpriteLibrary>) {
+        // 기본 부활 — 시각이 되면 저장 지점(처음 선 자리, 이어 하기면 저장한 자리)에서 일으킨다.
+        // 부활도 Intent 다: 단계 3 에서는 서버가 받아들일지 정한다.
+        if let Some(at) = self.revive_at
+            && self.world().now() >= at
+        {
+            self.revive_at = None;
+            if let Some(u) = self.world().unit(self.player).filter(|u| !u.is_alive()) {
+                let policy = self.data.revive();
+                let intent = Intent::Revive {
+                    unit: self.player,
+                    at: u.spawn_pos(),
+                    hp_per_mille: policy.hp_per_mille,
+                    exp_loss_per_mille: policy.exp_loss_per_mille,
+                };
+                self.auth.submit(intent);
+            }
+        }
         for intent in self.follow_order() {
             self.auth.submit(intent);
         }
@@ -643,9 +669,31 @@ impl PlaySession {
                 )
             }
             Event::Died { unit, .. } if unit == self.player => {
-                String::from("플레이어가 쓰러졌습니다")
+                self.order = Order::Idle;
+                self.chase_goal = None;
+                if self.scripted_revive {
+                    String::from(
+                        "플레이어가 쓰러졌습니다 — 부활은 액터 스크립트(on_dead)가 정합니다",
+                    )
+                } else {
+                    let delay = self.data.revive().delay;
+                    self.revive_at = Some(self.world().now() + delay);
+                    format!(
+                        "플레이어가 쓰러졌습니다 — {:.1}초 뒤 저장 지점에서 일어납니다",
+                        delay.as_secs_f32()
+                    )
+                }
             }
             Event::Died { unit, .. } => format!("{} 쓰러짐", self.name(unit)),
+            Event::Revived {
+                unit, hp, exp_lost, ..
+            } => {
+                let mut line = format!("{} 부활 — HP {hp}", self.name(unit));
+                if exp_lost > 0 {
+                    line.push_str(&format!(" · 경험치 -{exp_lost}"));
+                }
+                line
+            }
             Event::Respawned { unit, .. } => format!("{} 다시 나타남", self.name(unit)),
             Event::ItemSpawned { stack, .. } => {
                 format!(
@@ -1067,6 +1115,7 @@ mod text {
             Rejection::EmptySlot => "빈 칸입니다",
             Rejection::InventoryFull => "가방이 가득 찼습니다",
             Rejection::NotUsable => "쓸 수 없는 아이템입니다",
+            Rejection::NotDead => "쓰러진 상태가 아닙니다",
         }
     }
 }
@@ -1260,6 +1309,132 @@ mod tests {
                 .filter(|(_, item, _)| *item == ItemId(501))
                 .map(|(_, _, n)| n)
                 .sum::<u32>()
+        );
+    }
+
+    // ── 부활 ─────────────────────────────────────────────────────────────────
+
+    fn start_with(data: GameData) -> PlaySession {
+        PlaySession::start(
+            &Scene::server_default(),
+            Camera2d::default(),
+            data,
+            PlayOptions::default(),
+        )
+        .unwrap()
+    }
+
+    /// 슬라임을 플레이어 옆으로 옮기고 HP 를 1 로 — 한 번 물리면 쓰러진다. 쓰러질 때까지 돌린다.
+    fn knock_out(s: &mut PlaySession) {
+        let me = s.player();
+        let slime = find(s, "슬라임");
+        let at = s.world().unit(me).unwrap().pos() + Vec2::new(1.0, 0.0);
+        s.auth.world_mut().set_position(slime, at);
+        s.auth.world_mut().set_hp(me, 1);
+        for _ in 0..200 {
+            s.tick(DT, None);
+            if !s.world().unit(me).unwrap().is_alive() {
+                return;
+            }
+        }
+        panic!("쓰러지지 않았다: {:?}", s.log);
+    }
+
+    #[test]
+    fn the_player_gets_up_at_the_save_point_after_the_default_delay() {
+        // rules.ron: revive (delay_ms: 3000, hp_percent: 100, exp_loss_percent: 0).
+        let mut s = session();
+        let me = s.player();
+        let save_point = s.world().unit(me).unwrap().spawn_pos();
+        knock_out(&mut s);
+        assert_eq!(
+            last_log(&s),
+            "플레이어가 쓰러졌습니다 — 3.0초 뒤 저장 지점에서 일어납니다"
+        );
+        for _ in 0..55 {
+            s.tick(DT, None);
+        }
+        assert!(
+            !s.world().unit(me).unwrap().is_alive(),
+            "3초 전에는 쓰러져 있다"
+        );
+        for _ in 0..10 {
+            s.tick(DT, None);
+        }
+        let u = s.world().unit(me).expect("같은 핸들 — 리스폰이 아니다");
+        assert!(u.is_alive());
+        assert_eq!(u.pos(), save_point);
+        assert!(
+            s.log.iter().any(|l| l.starts_with("플레이어 부활 — HP")),
+            "{:?}",
+            s.log
+        );
+        // 소지품은 그대로 — 새 유닛이 아니다.
+        assert!(!s.bag_lines(BagKind::Consumable).is_empty());
+    }
+
+    #[test]
+    fn the_default_revive_takes_its_numbers_from_the_rules() {
+        let rules = GameData::embedded_rules().replacen(
+            "revive: (delay_ms: 3000, hp_percent: 100, exp_loss_percent: 0)",
+            "revive: (delay_ms: 500, hp_percent: 25, exp_loss_percent: 50)",
+            1,
+        );
+        assert_ne!(rules, GameData::embedded_rules(), "시험 전제");
+        let mut s = start_with(GameData::parse_with_scripts(&rules, &[]).unwrap());
+        let me = s.player();
+        s.auth.world_mut().set_progress(me, Progress::new(1, 80));
+        knock_out(&mut s);
+        for _ in 0..15 {
+            s.tick(DT, None);
+        }
+        let u = s.world().unit(me).unwrap();
+        assert!(u.is_alive(), "0.5초 뒤");
+        assert_eq!(u.progress().exp(), 40, "경험치 절반");
+        assert!(
+            s.log.iter().any(|l| l.contains("경험치 -40")),
+            "{:?}",
+            s.log
+        );
+    }
+
+    #[test]
+    fn an_on_dead_script_replaces_the_default_revive() {
+        // 플레이어 액터에 스크립트를 붙인다 — 1초 뒤 쓰러진 그 자리에서 HP 30% 로.
+        const HERO: &str = r#"
+            fn on_death(me, killer) { this.down = 0.0; }
+            fn on_dead(me, dt) {
+                this.down += dt;
+                if this.down >= 1.0 { revive(me, me.x, me.y, 30); }
+            }
+        "#;
+        let rules = GameData::embedded_rules().replacen(
+            "            skills: [5, 6],\n",
+            "            skills: [5, 6],\n            script: Some(\"scripts/hero.rhai\"),\n",
+            1,
+        );
+        assert_ne!(rules, GameData::embedded_rules(), "시험 전제");
+        let data = GameData::parse_with_scripts(&rules, &[("scripts/hero.rhai", HERO)]).unwrap();
+        let mut s = start_with(data);
+        let me = s.player();
+        assert!(s.scripted_revive);
+        knock_out(&mut s);
+        let fell_at = s.world().unit(me).unwrap().pos();
+        assert!(
+            last_log(&s).contains("액터 스크립트(on_dead)"),
+            "{}",
+            last_log(&s)
+        );
+        assert_eq!(s.revive_at, None, "기본 부활은 예약하지 않는다");
+        for _ in 0..30 {
+            s.tick(DT, None);
+        }
+        let u = s.world().unit(me).unwrap();
+        assert!(u.is_alive(), "{:?}", s.log);
+        assert_eq!(u.pos(), fell_at, "그 자리에서");
+        assert!(
+            u.hp() <= u.max_hp() * 3 / 10,
+            "HP 30% (그 뒤 맞았을 수도 있다)"
         );
     }
 

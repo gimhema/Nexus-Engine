@@ -192,10 +192,17 @@ impl Unit {
         self.hp
     }
 
-    /// 스폰 지점.
+    /// 스폰 지점 (AI 귀환 기준).
     #[must_use]
     pub fn home(&self) -> Vec2 {
         self.home
+    }
+
+    /// 처음 선 자리 — 리스폰과 기본 부활이 여기서 일어난다. 이어 하기면 저장한 자리다
+    /// ([`SimWorld::set_position`](crate::SimWorld::set_position)).
+    #[must_use]
+    pub fn spawn_pos(&self) -> Vec2 {
+        self.spawn_pos
     }
 
     /// 레벨 성장 + 장비가 더해진 공격력 — 전투는 이 값을 쓴다.
