@@ -1,0 +1,22 @@
+[package]
+name         = "worldcanvas"
+version      = "0.1.0"
+edition      = "2024"
+rust-version = "1.95"
+license      = "MIT"
+description  = "WorldEditor 용 픽셀 스프라이트 저작 도구 — 텍스트 원본(.canvas)에서 시트 PNG 와 정의(.sheet.ron)를 만든다"
+
+[[bin]]
+name = "worldcanvas"
+path = "src/main.rs"
+
+[dependencies]
+png = "0.18"
+
+# WorldEditor 와 같은 린트. clippy 는 -D warnings 로 돌린다.
+[lints.rust]
+unsafe_code                   = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
