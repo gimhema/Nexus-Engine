@@ -1,3 +1,4 @@
 /target/
 # 미리보기 출력 — 검증용이라 커밋하지 않는다
 /preview/
+/reference/
