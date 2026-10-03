@@ -61,6 +61,14 @@ impl Rgba8 {
     }
 }
 
+/// 비트맵 하나를 RGBA 로 — 뷰어가 그림마다 텍스처를 만들 때.
+#[must_use]
+pub fn bitmap_rgba(bm: &Bitmap, pal: &Palette) -> Rgba8 {
+    let mut out = Rgba8::new(bm.width(), bm.height());
+    out.draw(bm, pal, 0, 0);
+    out
+}
+
 /// 시트 한 장을 그린다.
 pub fn build_sheet(doc: &Document) -> Result<Rgba8> {
     let sheet = doc

@@ -12,7 +12,8 @@
     actors: {
         1: (
             name: "플레이어",
-            sheet: "assets/third_party/zelda-like-armm1998/player.sheet.ron",
+            // WorldCanvas 원본: WorldCanvas/sprites/player.canvas
+            sheet: "assets/worldcanvas/player.sheet.ron",
         ),
         10: (
             name: "마을 사람",
@@ -34,9 +35,8 @@
         ),
         102: (
             name: "고블린",
-            // 고블린 그림이 아직 없어 사람 시트를 초록으로 물들인 임시 모습이다.
-            sheet: "assets/third_party/zelda-like-armm1998/player.sheet.ron",
-            tint: (0.55, 0.9, 0.45),
+            // WorldCanvas 원본: WorldCanvas/sprites/goblin.canvas
+            sheet: "assets/worldcanvas/goblin.sheet.ron",
         ),
         103: (
             name: "테스트액터",

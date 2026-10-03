@@ -16,7 +16,36 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-툴체인은 WorldEditor 와 같은 1.95.0 으로 고정 (`rust-toolchain.toml`). 외부 의존은 `png` 하나다.
+툴체인은 WorldEditor 와 같은 1.95.0 으로 고정 (`rust-toolchain.toml`).
+의존은 `png`, 그리고 뷰어용 `eframe` 0.36 (WorldEditor 와 같은 egui 0.36 + wgpu 계열).
+뷰어는 `view` 기능(기본 켜짐)이다 — CLI 만 필요하면 `cargo build --no-default-features`.
+
+## 뷰어 (`worldcanvas-view`)
+
+```bash
+cargo run --bin worldcanvas-view            # sprites/ 의 원본 전부
+cargo run --bin worldcanvas-view -- 경로    # 다른 폴더 또는 .canvas 파일 하나
+```
+
+보기 전용이다 (편집 없음). 원본 목록 / **애니메이션**(클립마다 모든 방향을 동시에 재생) /
+**시트·아틀라스**(결과 그림, 아틀라스는 그림 경계와 `px` 목록) / **그림**(프레임·부품 전부, 이름 표시).
+배율 1~16, 배경 어두움·밝음·체커, 재생/멈춤.
+
+원본을 0.4초마다 확인해서 **바뀌면 다시 읽는다** — 사용자가 열어 두면 Claude 가 고치는 결과가 바로 보인다.
+읽기에 실패하면 마지막으로 성공한 그림을 유지하고 오류(줄 번호 포함)를 빨갛게 띄운다.
+
+자동 확인용 환경 변수 (WorldEditor 의 `NEXUS_SCREENSHOT` 방식):
+
+| 변수 | 뜻 |
+|---|---|
+| `WORLDCANVAS_SELECT=player` | 시작 원본 (파일 이름, 확장자 없이) |
+| `WORLDCANVAS_TAB=anim\|sheet\|images` | 시작 탭 (생략하면 문서에 맞춤) |
+| `WORLDCANVAS_ZOOM=4` | 시작 배율 |
+| `WORLDCANVAS_SCREENSHOT=out.png` | 캡처 후 자동 종료 |
+| `WORLDCANVAS_SCREENSHOT_FRAME=15` | 캡처 프레임. 실행 중 파일 변경을 확인할 때 늘린다 |
+| `WORLDCANVAS_FONT=/path/font.ttc` | 한글 폰트 직접 지정 |
+
+Linux 에서 띄울 때는 WorldEditor 와 같이 `env -u WAYLAND_DISPLAY DISPLAY=:0` 를 붙인다.
 
 ## 명령
 
@@ -145,6 +174,7 @@ end
 | `preview.rs` | 확대 미리보기 (배경·틈·격자) |
 | `import.rs` | PNG → 원본. 같은 칸·좌우 반전 칸은 `= base` 로 줄인다 |
 | `main.rs` | CLI |
+| `view/main.rs` | 뷰어 (`view` 기능) |
 
 ## 지켜야 할 것
 
@@ -176,8 +206,12 @@ end
 | `player.canvas` | `WorldEditor/assets/worldcanvas/player.png` + `.sheet.ron` | 모험가. 24×32, 16px/m, 4방향, Idle 2 + Walk 4 |
 | `goblin.canvas` | `WorldEditor/assets/worldcanvas/goblin.png` + `.sheet.ron` | 고블린(액터 102 자리). 몽둥이 부품, 구성 동일 |
 | `props.canvas` | `WorldEditor/assets/worldcanvas/props.png` (atlas) | 집 64×64, 참나무 32×48, 소나무 24×48, 바위 16×12, 덤불 20×13 |
+
+**WorldEditor 연결:** `data/display.ron` 의 액터 1(플레이어)·102(고블린)가 위 시트를 쓴다.
+`data/terrain.ron` 에 타일셋 `worldcanvas` 와 props 104 기와집·105 참나무·106 소나무·107 바위·108 덤불.
+props 의 `px` 는 `build` 출력값을 손으로 옮긴 것이다 — **아틀라스 배치를 바꾸면 terrain.ron 도 고친다.**
 | `markers.canvas` | `WorldEditor/assets/sprites/markers.png` (+ `.sheet.ron`) | 에디터 내장 플레이스홀더. `import` 로 가져옴 — 픽셀 일치 확인됨. `build` 하면 손으로 쓴 `markers.sheet.ron` 주석이 생성 주석으로 바뀐다 |
 
 ## 다음 단계 (미구현)
 
-- 애니메이션 미리보기 (GIF 또는 프레임 스트립).
+- 공격·피격·사망 클립 (지금은 Idle·Walk 만). 엔진은 없는 클립을 Idle 로 대체한다.

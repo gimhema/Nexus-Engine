@@ -22,6 +22,12 @@
             image: "assets/third_party/zelda-like-armm1998/gfx/overworld.png",
             pixels_per_meter: 16.0,
         ),
+        // WorldCanvas 로 그린 오브젝트 — 원본 WorldCanvas/sprites/props.canvas.
+        // px 는 `worldcanvas build` 가 출력한 값이다. 원본을 고쳐 배치가 바뀌면 여기도 바꾼다.
+        "worldcanvas": (
+            image: "assets/worldcanvas/props.png",
+            pixels_per_meter: 16.0,
+        ),
     },
 
     // 지면에 눕는 그림. 칸 크기(기본 1m)에 맞춰 늘어난다.
@@ -37,5 +43,10 @@
         101: (name: "초가집", tileset: "overworld", px: (48, 352, 48, 80)),
         102: (name: "노점", tileset: "overworld", px: (288, 352, 80, 96)),
         103: (name: "석탑", tileset: "overworld", px: (0, 336, 48, 96)),
+        104: (name: "기와집", tileset: "worldcanvas", px: (0, 0, 64, 64)),
+        105: (name: "참나무", tileset: "worldcanvas", px: (64, 0, 32, 48)),
+        106: (name: "소나무", tileset: "worldcanvas", px: (96, 0, 24, 48)),
+        107: (name: "바위", tileset: "worldcanvas", px: (0, 64, 16, 12)),
+        108: (name: "덤불", tileset: "worldcanvas", px: (16, 64, 20, 13)),
     },
 )

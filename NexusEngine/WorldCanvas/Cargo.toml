@@ -10,8 +10,20 @@ description  = "WorldEditor 용 픽셀 스프라이트 저작 도구 — 텍스�
 name = "worldcanvas"
 path = "src/main.rs"
 
+[[bin]]
+name              = "worldcanvas-view"
+path              = "src/view/main.rs"
+required-features = ["view"]
+
+[features]
+default = ["view"]
+# 뷰어(GUI). CLI 만 쓸 때는 --no-default-features 로 빌드 시간을 줄인다.
+view = ["dep:eframe"]
+
 [dependencies]
 png = "0.18"
+# WorldEditor 와 같은 egui 0.36 + wgpu 계열.
+eframe = { version = "0.36", optional = true, default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11"] }
 
 # WorldEditor 와 같은 린트. clippy 는 -D warnings 로 돌린다.
 [lints.rust]
