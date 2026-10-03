@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use worldcanvas::export::{build_sheet, decode_png};
+use worldcanvas::export::{build_image, decode_png};
 use worldcanvas::parse::parse;
 
 fn normalized(data: &[u8]) -> Vec<[u8; 4]> {
@@ -34,7 +34,7 @@ fn built_sheets_match_the_shipped_pictures() {
             .unwrap_or_else(|e| panic!("{name}:{e}"));
         let Some(output) = &doc.output else { continue };
 
-        let built = build_sheet(&doc).unwrap_or_else(|e| panic!("{name}:{e}"));
+        let built = build_image(&doc).unwrap_or_else(|e| panic!("{name}:{e}"));
         let shipped_path = dir.join(&output.image);
         let shipped = std::fs::read(&shipped_path)
             .unwrap_or_else(|e| panic!("{name}: {} — {e}", shipped_path.display()));

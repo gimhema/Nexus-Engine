@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::bitmap::Bitmap;
 use crate::color::Palette;
-use crate::doc::{Document, SheetDef};
+use crate::doc::{AtlasDef, Document, Placed, SheetDef};
 use crate::error::{Error, Result};
 use crate::resolve::Resolver;
 
@@ -80,6 +80,25 @@ pub fn build_sheet(doc: &Document) -> Result<Rgba8> {
         }
     }
     Ok(out)
+}
+
+/// 아틀라스 한 장과 그림별 자리.
+pub fn build_atlas(doc: &Document, atlas: &AtlasDef) -> Result<(Rgba8, Vec<Placed>)> {
+    let (placed, w, h) = atlas.place(doc);
+    let mut out = Rgba8::new(w, h);
+    let mut r = Resolver::new(doc);
+    for p in &placed {
+        out.draw(&r.get(&p.name)?, &doc.palette, p.x, p.y);
+    }
+    Ok((out, placed))
+}
+
+/// 결과 그림 — 시트든 아틀라스든.
+pub fn build_image(doc: &Document) -> Result<Rgba8> {
+    match &doc.atlas {
+        Some(atlas) => Ok(build_atlas(doc, atlas)?.0),
+        None => build_sheet(doc),
+    }
 }
 
 /// 모든 그림을 한 번씩 계산해 본다 — `check` 용.
@@ -281,6 +300,35 @@ end
         assert!(ron.contains("direction_rows: [1, 0]"));
         assert!(ron.contains("pixels_per_meter: 16.0"));
         assert!(ron.contains("(state: Die, row: 2, frames: 3, frame_ms: 80, looping: false)"));
+    }
+
+    #[test]
+    fn atlas_packs_rows_left_to_right() {
+        let doc = parse(
+            "canvas 1
+palette
+  A #ff0000
+end
+part big 3 2
+  rect 0 0 3 2 A
+end
+part small 1 1
+  px 0 0 A
+end
+atlas
+  row small big
+  row big
+end
+",
+        )
+        .unwrap();
+        let (img, placed) = build_atlas(&doc, doc.atlas.as_ref().unwrap()).unwrap();
+        assert_eq!((img.width, img.height), (4, 4));
+        let rect = |i: usize| (placed[i].x, placed[i].y, placed[i].w, placed[i].h);
+        assert_eq!(rect(0), (0, 0, 1, 1));
+        assert_eq!(rect(1), (1, 0, 3, 2));
+        assert_eq!(rect(2), (0, 2, 3, 2), "행 높이는 그 행의 가장 큰 그림");
+        assert_eq!(img.at(0, 1), [0, 0, 0, 0]);
     }
 
     #[test]

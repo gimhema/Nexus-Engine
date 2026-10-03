@@ -77,8 +77,12 @@ impl<'a> Resolver<'a> {
             Op::FlipV => bm.flip_v(),
             Op::Shift { dx, dy } => bm.shift(*dx, *dy),
             Op::Move { x, y, w, h, dx, dy } => bm.move_region(*x, *y, *w, *h, *dx, *dy),
-            Op::Swap { from, to } => bm.swap(*from, *to),
+            Op::Swap { from, to, region } => match region {
+                Some((x, y, w, h)) => bm.swap_in(*from, *to, *x, *y, *w, *h),
+                None => bm.swap(*from, *to),
+            },
             Op::Outline { c } => bm.outline(*c),
+            Op::Mirror => bm.mirror(),
             Op::Stamp { name, x, y } => {
                 let src = self.get(name)?;
                 bm.stamp(&src, *x, *y);

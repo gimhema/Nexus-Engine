@@ -1,0 +1,234 @@
+// 플레이어 — 갈색 머리, 파란 튜닉, 빨간 스카프의 모험가.
+//
+// 16px = 1m (WorldEditor 의 받아온 팩과 같은 축척). 칸 24×32 = 1.5×2m.
+// 방향 순서는 엔진 규약(0=동, 반시계): 동·북·서·남. 서는 동의 좌우 반전.
+// 정면·뒷면은 왼쪽 절반(12열)만 그리고 mirror 로 대칭을 만든다.
+canvas 1
+cell 24 32
+
+palette
+    o #2b1d1f   // 외곽선
+    h #7a4a2c   // 머리
+    H #a8693e   // 머리 하이라이트
+    s #f4c9a0   // 피부
+    S #d9a07a   // 피부 그늘
+    c #ec9a8c   // 볼
+    w #ffffff
+    b #3d6cb8   // 튜닉
+    B #6593db   // 튜닉 밝은 면
+    n #2a4b85   // 튜닉 그늘
+    r #c9433b   // 스카프
+    R #8f2b2b   // 스카프 그늘
+    l #5b3a24   // 허리띠
+    y #e9c440   // 버클
+    p #5a4d66   // 바지
+    P #3d3448   // 바지 (먼 다리)
+    k #7a4b2b   // 장화
+    K #4f2f1c   // 장화 (먼 다리·그늘)
+end
+
+// ── 남 (정면) ──────────────────────────────────────────────────────────────
+frame idle_s_0
+    patch 0 4
+        .......ooooo
+        .....oohhhhh
+        ....ohhHHhhh
+        ...ohhHHhhhh
+        ...ohHhhhhhh
+        ...ohhhhhhhh
+        ...ohhhshhss
+        ...ohhssssss
+        ...ohhsoosss
+        ...ohhsoosss
+        ...ohscsssss
+        ....ossssssS
+        .....oSsssss
+        ......ooooSS
+        .....oorrrrr
+        ....obbrrrrr
+        ...onbBbRrrr
+        ...onbBbbbRr
+        ...onbBbbbbb
+        ...onbbbbbbb
+        ...osollllly
+        ...oSonnnnnn
+        ....oonnnnnn
+        .....oppppo.
+        .....oppppo.
+        .....okkkko.
+        ....okkkKKo.
+        ....ooooooo.
+    end
+    mirror
+    // 눈 하이라이트는 두 눈 모두 오른쪽 위 — 대칭이면 사시처럼 보인다.
+    px 8 12 w
+    px 16 12 w
+end
+
+// 숨쉬기 — 상체가 1px 내려앉는다.
+frame idle_s_1 = idle_s_0
+    move 0 0 24 27 0 1
+end
+
+// 걷기: 0·2 는 상체가 내려앉고 한 발을 든다, 1·3 은 지나가는 자세.
+frame walk_s_0 = idle_s_0
+    move 0 0 24 27 0 1
+    move 4 28 8 4 0 -1
+end
+frame walk_s_1 = idle_s_0
+end
+frame walk_s_2 = idle_s_0
+    move 0 0 24 27 0 1
+    move 12 28 8 4 0 -1
+end
+frame walk_s_3 = idle_s_0
+end
+
+// ── 북 (뒷면) ──────────────────────────────────────────────────────────────
+frame idle_n_0 = idle_s_0
+    patch 0 9
+        ...ohhhhhhhh
+        ...ohhhhhhhh
+        ...ohhhhhhhh
+        ...ohHhhhhhh
+        ...ohhHhhhhh
+        ...ohhhhhhhh
+        ....ohhhhhhh
+        .....ohhhhhh
+    end
+    patch 0 20
+        ...onbBbbbbb
+        ...onbBbbbbb
+    end
+    patch 0 24
+        ...osollllll
+    end
+    mirror
+end
+frame idle_n_1 = idle_n_0
+    move 0 0 24 27 0 1
+end
+frame walk_n_0 = idle_n_0
+    move 0 0 24 27 0 1
+    move 4 28 8 4 0 -1
+end
+frame walk_n_1 = idle_n_0
+end
+frame walk_n_2 = idle_n_0
+    move 0 0 24 27 0 1
+    move 12 28 8 4 0 -1
+end
+frame walk_n_3 = idle_n_0
+end
+
+// ── 동 (옆모습, 오른쪽을 본다) ─────────────────────────────────────────────
+frame idle_e_0
+    patch 0 4
+        ........oooooo..........
+        ......oohhhhhhoo........
+        .....ohhhHHHhhhho.......
+        ....ohhhhhHHhhhhho......
+        ....ohhhhhhhhhhhhho.....
+        ....ohhhhhhhhhhhhho.....
+        ....ohhhhhhhhshhsso.....
+        ....ohhhhhhhsssssso.....
+        ....ohhhhhhsssssoso.....
+        ....ohhhhhhsssssosso....
+        ....ohhhhhssssscsso.....
+        .....ohhhhsssssssSo.....
+        ......ohhhSsssssso......
+        .......oooSSSoooo.......
+        .......oorrrrroo........
+        ......obbrrrrrbo........
+        ......obBbnnbbbbo.......
+        ......obBbnnbbbbo.......
+        ......obBbnnbbbbo.......
+        ......obbbnnbbbbo.......
+        ......olllnnllllyo......
+        ......onnnssnnnno.......
+        .......onnSSnnno........
+        ........oppppo..........
+        ........oppppo..........
+        ........okkkko..........
+        ........okkkkKko........
+        ........oooooooo........
+    end
+    // 스카프 꼬리가 뒤로 날린다.
+    patch 4 17
+        ~oo
+        oRR
+        oR~
+        ~o~
+    end
+    px 16 12 w
+end
+frame idle_e_1 = idle_e_0
+    move 0 0 24 27 0 1
+end
+
+// 보폭 — 가까운 다리는 밝게, 먼 다리는 어둡게. 0 과 2 는 앞뒤 다리가 바뀐다.
+frame walk_e_0 = idle_e_0
+    move 0 0 24 27 0 1
+    patch 0 28
+        ......oPPPppppo.........
+        .....oPPo...oppo........
+        ....oKKKo....okkKo......
+        ....ooooo....ooooo......
+    end
+end
+frame walk_e_1 = idle_e_0
+end
+frame walk_e_2 = idle_e_0
+    move 0 0 24 27 0 1
+    patch 0 28
+        ......opppPPPPo.........
+        .....oppo...oPPo........
+        ....okkko....oKKKo......
+        ....ooooo....ooooo......
+    end
+end
+frame walk_e_3 = idle_e_0
+end
+
+// ── 서 = 동의 좌우 반전 ────────────────────────────────────────────────────
+frame idle_w_0 = idle_e_0
+    flip_h
+end
+frame idle_w_1 = idle_e_1
+    flip_h
+end
+frame walk_w_0 = walk_e_0
+    flip_h
+end
+frame walk_w_1 = walk_e_1
+    flip_h
+end
+frame walk_w_2 = walk_e_2
+    flip_h
+end
+frame walk_w_3 = walk_e_3
+    flip_h
+end
+
+sheet
+    directions 4
+    pixels_per_meter 16
+    tinted false
+    clip Idle 500 loop
+        row idle_e_0 idle_e_1
+        row idle_n_0 idle_n_1
+        row idle_w_0 idle_w_1
+        row idle_s_0 idle_s_1
+    end
+    clip Walk 150 loop
+        row walk_e_0 walk_e_1 walk_e_2 walk_e_3
+        row walk_n_0 walk_n_1 walk_n_2 walk_n_3
+        row walk_w_0 walk_w_1 walk_w_2 walk_w_3
+        row walk_s_0 walk_s_1 walk_s_2 walk_s_3
+    end
+end
+
+output
+    image ../../WorldEditor/assets/worldcanvas/player.png
+    sheet ../../WorldEditor/assets/worldcanvas/player.sheet.ron
+end

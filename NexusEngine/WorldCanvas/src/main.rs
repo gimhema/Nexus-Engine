@@ -235,6 +235,12 @@ fn cmd_preview(a: &Args) -> Result<()> {
         vec![list.split(',').map(|s| Some(s.trim().to_owned())).collect()]
     } else if a.has("--all") {
         preview::all_layout(&doc, 8)
+    } else if let Some(atlas) = &doc.atlas {
+        atlas
+            .rows
+            .iter()
+            .map(|r| r.iter().cloned().map(Some).collect())
+            .collect()
     } else {
         preview::sheet_layout(&doc).unwrap_or_else(|| preview::all_layout(&doc, 8))
     };
@@ -274,34 +280,36 @@ fn cmd_build(a: &Args) -> Result<()> {
         .output
         .as_ref()
         .ok_or_else(|| Error::new(format!("{path}: output 블록이 없어 어디에 쓸지 모름")))?;
-    let sheet_def = doc
-        .sheet
-        .as_ref()
-        .ok_or_else(|| Error::new(format!("{path}: sheet 블록이 없음")))?;
 
+    // `--out` 은 시험 출력 — 파일 이름만 따와 다른 폴더에 쓴다.
     let dir = Path::new(path).parent().unwrap_or(Path::new(""));
-    let (image_path, sheet_path) = match a.flag(&["--out"]) {
-        // 시험 출력 — 파일 이름만 따와 다른 폴더에 쓴다.
-        Some(out) => {
-            let name = |p: &str| {
-                Path::new(p)
-                    .file_name()
-                    .map(PathBuf::from)
-                    .unwrap_or_default()
-            };
-            (
-                Path::new(out).join(name(&output.image)),
-                Path::new(out).join(name(&output.sheet)),
-            )
-        }
-        None => (dir.join(&output.image), dir.join(&output.sheet)),
+    let place = |p: &str| match a.flag(&["--out"]) {
+        Some(out) => Path::new(out).join(Path::new(p).file_name().unwrap_or_default()),
+        None => dir.join(p),
     };
+    let image_path = place(&output.image);
+    let tag = |e: Error| Error::new(format!("{path}:{e}"));
+
+    if let Some(atlas) = &doc.atlas {
+        let (img, placed) = export::build_atlas(&doc, atlas).map_err(tag)?;
+        write(&image_path, &export::encode_png(&img)?)?;
+        println!("{} ({}x{})", image_path.display(), img.width, img.height);
+        println!("\n// 그림 안 픽셀 사각형 (x, y, 폭, 높이) — terrain.ron 의 px 에 쓴다");
+        for p in placed {
+            println!("{}: ({}, {}, {}, {})", p.name, p.x, p.y, p.w, p.h);
+        }
+        return Ok(());
+    }
+
+    let (Some(sheet_def), Some(sheet_out)) = (&doc.sheet, &output.sheet) else {
+        return Err(Error::new(format!("{path}: sheet 블록이 없음")));
+    };
+    let sheet_path = place(sheet_out);
     let image_ref = match &output.image_ref {
         Some(r) => r.clone(),
         None => export::relative(&image_path, sheet_path.parent().unwrap_or(Path::new(""))),
     };
-
-    let img: Rgba8 = export::build_sheet(&doc).map_err(|e| Error::new(format!("{path}:{e}")))?;
+    let img: Rgba8 = export::build_sheet(&doc).map_err(tag)?;
     let source = Path::new(path)
         .file_name()
         .unwrap_or_default()

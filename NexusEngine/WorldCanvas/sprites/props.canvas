@@ -1,0 +1,301 @@
+// 필드 오브젝트 — 집, 참나무, 소나무, 바위, 덤불.
+//
+// 애니메이션이 없으므로 sheet 가 아니라 atlas 로 한 장에 모은다. `build` 가 그림마다
+// 픽셀 사각형을 출력하고, 그 값을 WorldEditor `data/terrain.ron` 의 props `px` 에 넣는다.
+// 16px = 1m — 집 64×64 = 4×4m, 참나무 32×48 = 2×3m.
+//
+// 빛은 왼쪽 위에서 온다. 밝은 면은 왼쪽·위, 그늘은 오른쪽·아래.
+canvas 1
+
+palette
+    o #1f1a17   // 외곽선
+    // 잎
+    V #a6d96a   // 하이라이트
+    F #6fb24a   // 밝은 잎
+    f #4a8f3c   // 잎
+    v #326b31   // 그늘 잎
+    u #1f4a28   // 잎 덩어리 경계
+    // 침엽
+    Q #4f9a64
+    q #2f6e46
+    U #1c4a32
+    // 나무 줄기
+    j #9a6c44
+    k #7a5232
+    K #553823
+    // 돌
+    A #c3c7cf
+    a #8f949e
+    z #626772
+    // 집
+    x #ece0c4   // 회벽
+    X #c8b690   // 회벽 그늘
+    b #6b4a2e   // 목재 들보
+    B #4a321f   // 목재 그늘
+    W #e2735c   // 지붕 하이라이트
+    r #b8473a   // 지붕
+    R #86302a   // 지붕 기와 줄
+    i #6fa8d6   // 유리
+    I #c4e4f7   // 유리 반사
+    y #e9c440   // 문고리
+end
+
+// ── 잎 덩어리 — 참나무·덤불이 겹쳐 찍어 쓴다 ───────────────────────────────
+part clump 12 10
+    grid
+        ...uuuuuu...
+        .uuFFFFffuu.
+        uFFVVFFfffvu
+        uFVVFFffffvu
+        uFFFFfffffvu
+        uffffffffvvu
+        ufffffffvvvu
+        .uvffffvvvu.
+        ..uuvvvvuu..
+        ....uuuu....
+    end
+end
+
+part clump_s 8 7
+    grid
+        ..uuuu..
+        .uFVFfu.
+        uFVFfffu
+        uFffffvu
+        ufffvvvu
+        .uvvvvu.
+        ..uuuu..
+    end
+end
+
+// ── 참나무 ─────────────────────────────────────────────────────────────────
+part oak_canopy 32 31
+    // 위에서 아래로 — 아래(앞) 덩어리가 위(뒤) 덩어리를 덮는다.
+    stamp clump 10 1
+    stamp clump 3 6
+    stamp clump 17 6
+    stamp clump 1 13
+    stamp clump 19 13
+    stamp clump 10 11
+    stamp clump 4 19
+    stamp clump 16 19
+    stamp clump 10 20
+    outline o
+end
+
+part oak_trunk 10 19
+    grid
+        ..ojkkKo..
+        ..ojkkKo..
+        ..ojkKKo..
+        ..ojkkKo..
+        ..okjkKo..
+        ..ojkkKo..
+        ..ojkKKo..
+        ..ojkkKo..
+        ..ojkkKo..
+        ..okjkKo..
+        ..ojkkKo..
+        ..ojkKKo..
+        ..ojkkKo..
+        ..ojkkKo..
+        ..ojkkKo..
+        .ojjkkKKo.
+        .ojkkkKKo.
+        ojkkokkKKo
+        oooo.ooooo
+    end
+end
+
+part tree_oak 32 48
+    stamp oak_trunk 11 29
+    stamp oak_canopy 0 0
+end
+
+// ── 소나무 ─────────────────────────────────────────────────────────────────
+// 대칭으로 그린 뒤 오른쪽 절반을 그늘지게 한다.
+part tree_pine 24 48
+    patch 0 9
+        ...........o
+        ..........oQ
+        ..........oQ
+        .........oQq
+        .........oQq
+        ........oQqq
+        ........oQqq
+        .......oQqqq
+        ......oQqqqq
+        .....ooqUqqU
+        .......oQqUU
+        ......oQQqqq
+        ......oQqqqq
+        .....oQqqqqq
+        .....oQqqqqq
+        ....oQQqqqqq
+        ...oQqqqqqqq
+        ..oQqqqqqqqq
+        ..ooqUqqqUqq
+        .....oQqUUUU
+        ....oQQqqqqq
+        ....oQqqqqqq
+        ...oQqqqqqqq
+        ...oQqqqqqqq
+        ..oQQqqqqqqq
+        .oQqqqqqqqqq
+        oQqqqqqqqqqq
+        oooqUqqUqqqU
+        ...oUUUUUUUU
+        .....oooooKk
+        .........oKk
+        .........oKk
+        .........oKk
+        .........oKk
+        .........oKk
+        .........oKk
+        .........oKk
+        ........oKkk
+        .......ooooo
+    end
+    mirror
+    // 오른쪽 그늘 — 밝은 잎을 보통 잎으로, 보통 잎을 그늘로 (한 줄씩 건너 섞어 결을 남긴다).
+    swap Q q 12 0 12 48
+    swap q U 17 0 7 48
+    swap k K 12 38 2 10
+end
+
+// ── 바위 ───────────────────────────────────────────────────────────────────
+part rock 16 12
+    grid
+        .....oooooo.....
+        ...ooAAAAaaoo...
+        ..oAAAAaaaaaao..
+        .oAAAaaaaaaazzo.
+        .oAAaaaaaaazzzo.
+        oAAaaaaaaaazzzzo
+        oAaaaaaaaazzzzzo
+        oaaaaaaaazzzzzzo
+        ozaaaaaazzzzzzzo
+        .ozzaaazzzzzzzo.
+        ..oozzzzzzzzoo..
+        ....oooooooo....
+    end
+    // 금
+    line 9 2 7 5 z
+    px 8 5 z
+end
+
+// ── 덤불 ───────────────────────────────────────────────────────────────────
+part bush 20 13
+    stamp clump_s 6 1
+    stamp clump_s 1 4
+    stamp clump_s 11 4
+    stamp clump_s 6 5
+    outline o
+end
+
+// ── 집 ─────────────────────────────────────────────────────────────────────
+part house 64 64
+    // 벽 (회벽 + 목재 기둥·보)
+    rect 6 30 52 30 x
+    rect 6 31 52 2 X
+    rect 6 30 3 30 b
+    rect 55 30 3 30 b
+    rect 30 31 4 7 b
+    rect 6 57 52 3 b
+    rect 55 30 3 30 B
+    line 6 59 57 59 B
+
+    // 기단
+    rect 3 60 58 3 a
+    line 3 62 60 62 z
+    px 10 61 z
+    px 22 61 z
+    px 41 61 z
+    px 53 61 z
+
+    // 문
+    rect 26 40 12 20 b
+    rect 28 42 8 18 k
+    line 32 42 32 59 K
+    rect 28 42 8 1 j
+    px 34 51 y
+    px 29 51 y
+    // 문 위 처마 그늘
+    line 26 40 37 40 B
+
+    // 창문 (왼쪽을 그리고 오른쪽에 복사)
+    rect 11 38 12 10 b
+    rect 12 39 10 8 i
+    line 16 39 16 46 b
+    line 12 42 21 42 b
+    px 13 40 I
+    px 14 40 I
+    px 13 41 I
+    px 18 43 I
+    rect 10 48 14 1 X
+    rect 10 48 14 1 b
+
+    // 지붕 — 양옆이 기울어진 사다리꼴. 윤곽을 긋고 안을 칠한 뒤 영역 교체로 기와 줄을 넣는다.
+    line 10 6 2 31 o
+    line 53 6 61 31 o
+    line 10 6 53 6 o
+    line 1 31 62 31 o
+    line 1 32 62 32 B
+    fill 32 18 r
+    swap r W 0 7 64 2
+    swap r R 0 12 64 1
+    swap r R 0 17 64 1
+    swap r R 0 22 64 1
+    swap r R 0 27 64 1
+    swap r R 0 30 64 1
+    // 기와 세로 이음 — 줄마다 엇갈린다.
+    swap r R 16 13 1 4
+    swap r R 32 13 1 4
+    swap r R 48 13 1 4
+    swap r R 24 18 1 4
+    swap r R 40 18 1 4
+    swap r R 8 23 1 4
+    swap r R 16 23 1 4
+    swap r R 32 23 1 4
+    swap r R 48 23 1 4
+    swap r R 56 23 1 4
+    swap r R 24 28 1 2
+    swap r R 40 28 1 2
+
+    // 굴뚝 — 지붕 위로 솟는다. 아래 외곽선이 지붕에 드리운 그늘이 된다.
+    rect 42 0 11 4 o
+    rect 43 1 9 2 z
+    rect 43 4 9 12 o
+    rect 44 4 7 11 a
+    rect 48 4 3 11 z
+    px 45 7 z
+    px 46 11 z
+
+    outline o
+end
+
+// 오른쪽 창문은 왼쪽 창문을 그대로 옮겨 찍는다 — 같은 그림을 두 번 적지 않는다.
+part window 14 11
+    rect 1 0 12 10 b
+    rect 2 1 10 8 i
+    line 6 1 6 8 b
+    line 2 4 11 4 b
+    px 3 2 I
+    px 4 2 I
+    px 3 3 I
+    px 8 5 I
+    rect 0 10 14 1 b
+end
+
+part house_done 64 64 = house
+    stamp window 40 38
+end
+
+atlas
+    row house_done tree_oak tree_pine
+    row rock bush
+end
+
+output
+    image ../../WorldEditor/assets/worldcanvas/props.png
+end

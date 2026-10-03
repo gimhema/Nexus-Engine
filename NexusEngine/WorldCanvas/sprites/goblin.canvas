@@ -1,0 +1,254 @@
+// 고블린 — 초록 피부, 긴 귀, 가죽 누더기, 몽둥이.
+//
+// WorldEditor 의 고블린(액터 102)은 그림이 없어 사람 시트를 초록으로 물들여 쓰고 있다 — 그 자리용.
+// 16px = 1m, 칸 24×32. 플레이어보다 작고 머리가 크다 (머리 꼭대기 8행).
+//
+// 구성: 몸(body_*) 과 몽둥이(part) 를 따로 그리고, 몽둥이를 먼저 찍은 뒤 몸을 얹는다 —
+// 손이 손잡이를 덮어 쥐고 있는 것처럼 보인다.
+canvas 1
+cell 24 32
+
+palette
+    o #1f2418   // 외곽선
+    g #6fae4a   // 피부
+    G #93cf62   // 피부 밝은 면
+    d #4a7d33   // 피부 그늘
+    e #e0402e   // 눈
+    w #f4f0dc   // 송곳니
+    m #3a1e1e   // 입 속
+    t #8a6a43   // 가죽
+    T #6b4f30   // 가죽 그늘
+    L #a88456   // 가죽 밝은 면
+    c #9b6b3f   // 몽둥이
+    C #6e4a2a   // 몽둥이 그늘
+    n #c9b48a   // 몽둥이 옹이 (밝은 나뭇결)
+end
+
+// ── 몽둥이 ────────────────────────────────────────────────────────────────
+// 세워 든 모습 (정면·뒷면). 아래 끝이 손에 들어간다.
+part club_up 6 12
+    grid
+        .oooo.
+        occnco
+        occcCo
+        ocncco
+        occcCo
+        .occo.
+        ..oCo.
+        ..oCo.
+        ..oCo.
+        ..oCo.
+        ..oCo.
+        ..oo..
+    end
+end
+
+// 앞으로 내려 든 모습 (옆모습). 왼쪽 위 끝이 손에 들어간다.
+part club_fwd 10 8
+    grid
+        oo........
+        oCo.......
+        .oCooo....
+        ..occnco..
+        ..occcccCo
+        ...occnCco
+        ....oCcCo.
+        .....ooo..
+    end
+end
+
+// ── 남 (정면) ──────────────────────────────────────────────────────────────
+frame body_s
+    patch 0 8
+        ........oooo
+        ......ooGGgg
+        .....oGGgggg
+        oo..oGgggggg
+        oGooogoogggg
+        .oGGggggoogg
+        ..oodggeeggg
+        ....odgggggd
+        ....odmmmmmm
+        .....odwgggg
+        ......oooooo
+        .....oddtttt
+        ....ogdotttt
+        ....ogdoLttt
+        ....ogdotttt
+        ....ogdoTTTT
+        ....ogdotttt
+        ...ogGgotTtT
+        ....ooo.oTtT
+        .......odgo.
+        .......odgo.
+        ......oddgo.
+        .....odddgo.
+        .....oooooo.
+    end
+    mirror
+end
+
+frame idle_s_0
+    stamp club_up 1 15
+    stamp body_s 0 0
+end
+frame idle_s_1 = idle_s_0
+    move 0 0 24 27 0 1
+end
+frame walk_s_0 = idle_s_0
+    move 0 0 24 27 0 1
+    move 5 28 7 4 0 -1
+end
+frame walk_s_1 = idle_s_0
+end
+frame walk_s_2 = idle_s_0
+    move 0 0 24 27 0 1
+    move 12 28 7 4 0 -1
+end
+frame walk_s_3 = idle_s_0
+end
+
+// ── 북 (뒷면) — 얼굴을 지우고, 몽둥이는 반대쪽 손 ─────────────────────────
+part club_up_back 6 12 = club_up
+    flip_h
+end
+
+frame body_n = body_s
+    patch 0 11
+        oo..oGgggggg
+        oGooogggggGg
+        .oGGgggggggg
+        ..oodggggggg
+        ....odgggggg
+        ....oddggggg
+        .....oddgggg
+    end
+    mirror
+end
+
+frame idle_n_0
+    stamp club_up_back 17 15
+    stamp body_n 0 0
+end
+frame idle_n_1 = idle_n_0
+    move 0 0 24 27 0 1
+end
+frame walk_n_0 = idle_n_0
+    move 0 0 24 27 0 1
+    move 5 28 7 4 0 -1
+end
+frame walk_n_1 = idle_n_0
+end
+frame walk_n_2 = idle_n_0
+    move 0 0 24 27 0 1
+    move 12 28 7 4 0 -1
+end
+frame walk_n_3 = idle_n_0
+end
+
+// ── 동 (옆모습) — 긴 코, 뒤로 뻗은 귀 ──────────────────────────────────────
+frame body_e
+    patch 0 8
+        ..........oooooo........
+        ........ooGGgggoo.......
+        .......oGGgggggggo......
+        ..oo..oGggggggggggo.....
+        ..oGoooggggggooggggo....
+        ...oGGdgggggggeegggoo...
+        ....oodgggggggggggggggo.
+        ......odgggggggggggddo..
+        ......odggggggmmmmmmo...
+        .......odggggggwgggo....
+        ........ooooooooooo.....
+        .........odttttto.......
+        ........otttgdttto......
+        ........oLttgdttto......
+        ........otttgdttto......
+        ........oTTTgdTTTo......
+        ........otTtgdtTto......
+        ........otTogGgotTo.....
+        .........otTooootTo.....
+        ..........oddgo.........
+        ..........oddgo.........
+        ..........oddggo........
+        .........oddgggggo......
+        .........ooooooooo......
+    end
+end
+
+frame idle_e_0
+    stamp club_fwd 13 24
+    stamp body_e 0 0
+end
+frame idle_e_1 = idle_e_0
+    move 0 0 24 27 0 1
+end
+
+// 보폭 — 먼 다리는 그늘색. 다리 칸만 지우고 다시 그린다 (몽둥이 끝은 남긴다).
+frame walk_e_0 = idle_e_0
+    move 0 0 24 27 0 1
+    rect 8 28 10 4 .
+    patch 8 28
+        ~~oddgo~~~
+        ~odo~ogo~~
+        oddo~~oggo
+        oooo~~oooo
+    end
+end
+frame walk_e_1 = idle_e_0
+end
+frame walk_e_2 = idle_e_0
+    move 0 0 24 27 0 1
+    rect 8 28 10 4 .
+    patch 8 28
+        ~~oggdo~~~
+        ~ogo~odo~~
+        oggo~~oddo
+        oooo~~oooo
+    end
+end
+frame walk_e_3 = idle_e_0
+end
+
+// ── 서 = 동의 좌우 반전 ────────────────────────────────────────────────────
+frame idle_w_0 = idle_e_0
+    flip_h
+end
+frame idle_w_1 = idle_e_1
+    flip_h
+end
+frame walk_w_0 = walk_e_0
+    flip_h
+end
+frame walk_w_1 = walk_e_1
+    flip_h
+end
+frame walk_w_2 = walk_e_2
+    flip_h
+end
+frame walk_w_3 = walk_e_3
+    flip_h
+end
+
+sheet
+    directions 4
+    pixels_per_meter 16
+    tinted false
+    clip Idle 500 loop
+        row idle_e_0 idle_e_1
+        row idle_n_0 idle_n_1
+        row idle_w_0 idle_w_1
+        row idle_s_0 idle_s_1
+    end
+    clip Walk 160 loop
+        row walk_e_0 walk_e_1 walk_e_2 walk_e_3
+        row walk_n_0 walk_n_1 walk_n_2 walk_n_3
+        row walk_w_0 walk_w_1 walk_w_2 walk_w_3
+        row walk_s_0 walk_s_1 walk_s_2 walk_s_3
+    end
+end
+
+output
+    image ../../WorldEditor/assets/worldcanvas/goblin.png
+    sheet ../../WorldEditor/assets/worldcanvas/goblin.sheet.ron
+end

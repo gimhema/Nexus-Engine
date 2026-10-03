@@ -197,12 +197,35 @@ impl Bitmap {
         }
     }
 
+    /// 사각형 안에서만 `from` 을 `to` 로.
+    pub fn swap_in(&mut self, from: u8, to: u8, x: i32, y: i32, w: u32, h: u32) {
+        for yy in y..y + h as i32 {
+            for xx in x..x + w as i32 {
+                if self.get(xx, yy) == Some(from) {
+                    self.set(xx, yy, to);
+                }
+            }
+        }
+    }
+
     /// 다른 비트맵을 `(x, y)` 에 올린다. 투명 픽셀은 밑그림을 남긴다.
     pub fn stamp(&mut self, src: &Self, x: i32, y: i32) {
         for sy in 0..src.h as i32 {
             for sx in 0..src.w as i32 {
                 if let Some(c) = src.get(sx, sy).filter(|&c| c != TRANSPARENT) {
                     self.set(x + sx, y + sy, c);
+                }
+            }
+        }
+    }
+
+    /// 왼쪽 절반을 오른쪽에 좌우 대칭으로 복사한다.
+    pub fn mirror(&mut self) {
+        let w = self.w as i32;
+        for y in 0..self.h as i32 {
+            for x in 0..w / 2 {
+                if let Some(c) = self.get(x, y) {
+                    self.set(w - 1 - x, y, c);
                 }
             }
         }
@@ -307,6 +330,20 @@ mod tests {
         let mut b = bm(&["AAA"]);
         b.stamp(&bm(&["B.B"]), 0, 0);
         assert_eq!(text(&b), ["BAB"]);
+    }
+
+    #[test]
+    fn swap_in_stays_inside_the_region() {
+        let mut b = bm(&["AAA", "AAA"]);
+        b.swap_in(b'A', b'B', 1, 0, 5, 1);
+        assert_eq!(text(&b), ["ABB", "AAA"]);
+    }
+
+    #[test]
+    fn mirror_copies_the_left_half() {
+        let mut b = bm(&["AB...", "C...."]);
+        b.mirror();
+        assert_eq!(text(&b), ["AB.BA", "C...C"]);
     }
 
     #[test]

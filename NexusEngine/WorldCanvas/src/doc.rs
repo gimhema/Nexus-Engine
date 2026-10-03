@@ -22,6 +22,7 @@ pub struct Document {
     /// 프레임과 부품. 적은 순서를 유지한다.
     pub images: Vec<ImageDef>,
     pub sheet: Option<SheetDef>,
+    pub atlas: Option<AtlasDef>,
     pub output: Option<OutputDef>,
 }
 
@@ -115,13 +116,17 @@ pub enum Op {
         dx: i32,
         dy: i32,
     },
+    /// 색 교체. `region` 이 있으면 그 사각형 `(x, y, 가로, 세로)` 안에서만 — 한쪽 그늘, 모양 안 줄무늬.
     Swap {
         from: u8,
         to: u8,
+        region: Option<(i32, i32, u32, u32)>,
     },
     Outline {
         c: u8,
     },
+    /// 왼쪽 절반을 오른쪽에 좌우 대칭으로 복사한다. 가로가 홀수면 가운데 열은 그대로.
+    Mirror,
     Stamp {
         name: String,
         x: i32,
@@ -141,11 +146,12 @@ impl Op {
             | Self::Line { c, .. }
             | Self::Fill { c, .. }
             | Self::Outline { c } => vec![*c],
-            Self::Swap { from, to } => vec![*from, *to],
+            Self::Swap { from, to, .. } => vec![*from, *to],
             Self::FlipH
             | Self::FlipV
             | Self::Shift { .. }
             | Self::Move { .. }
+            | Self::Mirror
             | Self::Stamp { .. } => Vec::new(),
         }
     }
@@ -174,8 +180,15 @@ impl fmt::Display for Op {
             Self::FlipV => write!(f, "flip_v"),
             Self::Shift { dx, dy } => write!(f, "shift {dx} {dy}"),
             Self::Move { x, y, w, h, dx, dy } => write!(f, "move {x} {y} {w} {h} {dx} {dy}"),
-            Self::Swap { from, to } => write!(f, "swap {} {}", ch(from), ch(to)),
+            Self::Swap { from, to, region } => {
+                write!(f, "swap {} {}", ch(from), ch(to))?;
+                match region {
+                    Some((x, y, w, h)) => write!(f, " {x} {y} {w} {h}"),
+                    None => Ok(()),
+                }
+            }
             Self::Outline { c } => write!(f, "outline {}", ch(c)),
+            Self::Mirror => write!(f, "mirror"),
             Self::Stamp { name, x, y } => write!(f, "stamp {name} {x} {y}"),
         }
     }
@@ -229,11 +242,60 @@ impl ClipDef {
     }
 }
 
+/// 크기가 제각각인 그림(건물·나무 같은 정적 오브젝트)을 한 장에 모은다.
+///
+/// 행마다 왼쪽부터 붙이고, 행 높이는 그 행에서 가장 큰 그림을 따른다. 애니메이션 시트가 아니므로
+/// `.sheet.ron` 은 없고, 대신 `build` 가 그림마다 픽셀 사각형을 출력한다 (WorldEditor `terrain.ron`
+/// 의 `px` 에 그대로 넣는다).
+#[derive(Clone, Debug)]
+pub struct AtlasDef {
+    pub rows: Vec<Vec<String>>,
+    pub line: usize,
+}
+
+/// 아틀라스 안 그림 하나의 자리.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Placed {
+    pub name: String,
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl AtlasDef {
+    /// 배치 계산 — 그림 크기만 보면 되므로 픽셀을 계산하기 전에 할 수 있다.
+    #[must_use]
+    pub fn place(&self, doc: &Document) -> (Vec<Placed>, u32, u32) {
+        let mut out = Vec::new();
+        let (mut y, mut width) = (0, 0);
+        for row in &self.rows {
+            let (mut x, mut row_h) = (0, 0);
+            for name in row {
+                let (w, h) = doc.image(name).map_or((0, 0), |i| i.size);
+                out.push(Placed {
+                    name: name.clone(),
+                    x,
+                    y,
+                    w,
+                    h,
+                });
+                x += w;
+                row_h = row_h.max(h);
+            }
+            width = width.max(x);
+            y += row_h;
+        }
+        (out, width, y)
+    }
+}
+
 /// 결과물 경로. `.canvas` 파일 폴더 기준.
 #[derive(Clone, Debug)]
 pub struct OutputDef {
     pub image: String,
-    pub sheet: String,
+    /// 시트 정의 경로 — `sheet` 블록이 있을 때만.
+    pub sheet: Option<String>,
     /// `.sheet.ron` 의 `image` 필드에 쓸 값. 없으면 정의 파일 기준 상대 경로를 계산한다.
     /// 빈 문자열이면 에디터 내장 그림을 뜻한다.
     pub image_ref: Option<String>,

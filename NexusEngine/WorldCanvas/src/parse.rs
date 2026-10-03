@@ -10,7 +10,8 @@ use std::collections::HashSet;
 
 use crate::color::{KEEP, Palette, Rgba};
 use crate::doc::{
-    ClipDef, Document, ImageDef, ImageKind, Op, OpAt, OutputDef, STATES, SheetDef, VERSION,
+    AtlasDef, ClipDef, Document, ImageDef, ImageKind, Op, OpAt, OutputDef, STATES, SheetDef,
+    VERSION,
 };
 use crate::error::{Error, Result};
 
@@ -168,6 +169,12 @@ pub fn parse(src: &str) -> Result<Document> {
                 }
                 doc.sheet = Some(parse_sheet(&mut p, l)?);
             }
+            "atlas" => {
+                if doc.atlas.is_some() {
+                    return Err(l.err("atlas 블록이 두 번 나옴"));
+                }
+                doc.atlas = Some(parse_atlas(&mut p, l)?);
+            }
             "output" => {
                 if doc.output.is_some() {
                     return Err(l.err("output 블록이 두 번 나옴"));
@@ -178,7 +185,8 @@ pub fn parse(src: &str) -> Result<Document> {
         }
     }
 
-    doc.cell = cell.ok_or_else(|| Error::new("`cell <가로> <세로>` 가 없음"))?;
+    // frame 이 없는 문서(부품만 모은 아틀라스)는 cell 이 필요 없다.
+    doc.cell = cell.unwrap_or((0, 0));
     doc.palette = palette.unwrap_or_default();
     validate(&doc)?;
     Ok(doc)
@@ -335,10 +343,20 @@ fn parse_op(p: &mut Parser<'_>, l: Line<'_>) -> Result<Op> {
             }
         }
         "swap" => {
-            arity(&l, &w, 3, "swap <원래 색> <바꿀 색>")?;
+            let region = match w.len() {
+                3 => None,
+                7 => Some((
+                    int(&l, w[3])?,
+                    int(&l, w[4])?,
+                    positive(&l, w[5])?,
+                    positive(&l, w[6])?,
+                )),
+                _ => return Err(l.err("형식: swap <원래 색> <바꿀 색> [<x> <y> <가로> <세로>]")),
+            };
             Op::Swap {
                 from: color(&l, w[1])?,
                 to: color(&l, w[2])?,
+                region,
             }
         }
         "outline" => {
@@ -346,6 +364,10 @@ fn parse_op(p: &mut Parser<'_>, l: Line<'_>) -> Result<Op> {
             Op::Outline {
                 c: color(&l, w[1])?,
             }
+        }
+        "mirror" => {
+            arity(&l, &w, 1, "mirror")?;
+            Op::Mirror
         }
         "stamp" => {
             arity(&l, &w, 4, "stamp <이름> <x> <y>")?;
@@ -427,6 +449,21 @@ fn parse_clip(p: &mut Parser<'_>, opened: Line<'_>, w: &[&str]) -> Result<ClipDe
     })
 }
 
+fn parse_atlas(p: &mut Parser<'_>, opened: Line<'_>) -> Result<AtlasDef> {
+    let mut rows = Vec::new();
+    while let Some(l) = p.block_line(opened, "atlas")? {
+        let w = l.words();
+        if w[0] != "row" || w.len() < 2 {
+            return Err(l.err("atlas 안에는 `row <그림> <그림> …` 만"));
+        }
+        rows.push(w[1..].iter().map(|s| (*s).to_owned()).collect());
+    }
+    Ok(AtlasDef {
+        rows,
+        line: opened.no,
+    })
+}
+
 fn parse_output(p: &mut Parser<'_>, opened: Line<'_>) -> Result<OutputDef> {
     let (mut image, mut sheet, mut image_ref) = (None, None, None);
     while let Some(l) = p.block_line(opened, "output")? {
@@ -454,7 +491,7 @@ fn parse_output(p: &mut Parser<'_>, opened: Line<'_>) -> Result<OutputDef> {
     };
     Ok(OutputDef {
         image: need(image, "image")?,
-        sheet: need(sheet, "sheet")?,
+        sheet: sheet.filter(|s| !s.is_empty()),
         image_ref,
     })
 }
@@ -497,6 +534,42 @@ pub fn validate(doc: &Document) -> Result<()> {
     if let Some(sheet) = &doc.sheet {
         check_sheet(doc, sheet)?;
     }
+    if let Some(atlas) = &doc.atlas {
+        if doc.sheet.is_some() {
+            return Err(Error::at(
+                atlas.line,
+                "sheet 와 atlas 는 한 문서에 함께 둘 수 없음 — 결과 그림이 하나다",
+            ));
+        }
+        if atlas.rows.is_empty() {
+            return Err(Error::at(atlas.line, "atlas 에 row 가 없음"));
+        }
+        for name in atlas.rows.iter().flatten() {
+            if doc.image(name).is_none() {
+                return Err(Error::at(
+                    atlas.line,
+                    format!("atlas: `{name}` 이(가) 없음"),
+                ));
+            }
+        }
+    }
+    if let Some(out) = &doc.output {
+        match (&out.sheet, &doc.sheet, &doc.atlas) {
+            (None, Some(s), _) => {
+                return Err(Error::at(
+                    s.line,
+                    "sheet 블록이 있으면 output 에 `sheet <경로>` 가 필요함",
+                ));
+            }
+            (Some(_), None, _) => {
+                return Err(Error::new(
+                    "output 의 sheet 경로가 있는데 sheet 블록이 없음",
+                ));
+            }
+            (_, None, None) => return Err(Error::new("output 이 있는데 sheet 도 atlas 도 없음")),
+            _ => {}
+        }
+    }
     Ok(())
 }
 
@@ -532,6 +605,12 @@ fn check_op(doc: &Document, img: &ImageDef, at: &OpAt) -> Result<()> {
 
 fn check_sheet(doc: &Document, sheet: &SheetDef) -> Result<()> {
     let err = |line, msg: String| Error::at(line, msg);
+    if doc.cell.0 == 0 {
+        return Err(err(
+            sheet.line,
+            String::from("sheet 를 쓰려면 `cell <가로> <세로>` 가 필요함"),
+        ));
+    }
     if sheet.directions == 0 {
         return Err(err(
             sheet.line,
