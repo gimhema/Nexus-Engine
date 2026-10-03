@@ -1,0 +1,272 @@
+// 궁궐 정문 — reference/castle.webp (광화문)의 구성: 2층 팔작지붕, 흰 용마루와 위로 휜 처마 끝,
+// 녹색 단청과 붉은 기둥, 현판, 장식 띠를 두른 석축, 홍예문 세 개.
+//
+// 16px = 1m, 128×96 = 8×6m. 완전한 좌우 대칭이라 왼쪽 절반(0~63열)만 그리고 mirror.
+// 기와 골처럼 반복되는 선이 많아 줄 수가 길다 — 지붕 블록마다 주석으로 나눴다.
+canvas 1
+
+palette
+    o #1d1a1f   // 외곽선
+    T #8f95a0   // 기와 밝은 면
+    t #646a75   // 기와
+    u #444952   // 기와 골
+    U #2a2e35   // 기와 깊은 그늘 / 잡상
+    W #efeee9   // 용마루 회반죽
+    V #c9c7c0   // 용마루 그늘
+    G #3f9a78   // 단청 녹색
+    g #276b55   // 단청 녹색 그늘
+    q #2f7f9a   // 단청 청록
+    R #b8402f   // 기둥
+    r #7e2620   // 기둥 그늘
+    Y #f0b54a   // 단청 점무늬
+    S #ece6d8   // 석재 밝은 면
+    s #d3cab6   // 석재
+    z #ada28d   // 석재 줄눈
+    Z #81786a   // 석재 그늘
+    k #26232c   // 문 안 어둠
+    K #3c3742   // 문 안
+    N #3a2c22   // 현판 테
+end
+
+part gate 128 96
+    // ── 석축 ──
+    rect 4 56 60 40 s
+    rect 4 56 60 3 Z
+    line 4 59 63 59 S
+    rect 4 60 2 36 S
+    line 6 66 63 66 z
+    line 6 73 63 73 z
+    line 6 80 63 80 z
+    line 6 87 63 87 z
+    line 6 94 63 94 z
+    line 10 60 10 65 z
+    line 22 60 22 65 z
+    line 34 60 34 65 z
+    line 46 60 46 65 z
+    line 58 60 58 65 z
+    line 16 67 16 72 z
+    line 28 67 28 72 z
+    line 40 67 40 72 z
+    line 52 67 52 72 z
+    line 10 74 10 79 z
+    line 22 74 22 79 z
+    line 34 74 34 79 z
+    line 46 74 46 79 z
+    line 58 74 58 79 z
+    line 16 81 16 86 z
+    line 28 81 28 86 z
+    line 40 81 40 86 z
+    line 52 81 52 86 z
+    line 10 88 10 93 z
+    line 22 88 22 93 z
+    line 34 88 34 93 z
+    line 46 88 46 93 z
+    line 58 88 58 93 z
+    line 16 95 16 95 z
+    line 28 95 28 95 z
+    line 40 95 40 95 z
+    line 52 95 52 95 z
+    // 홍예문 — 테두리 돌(짙게) → 안쪽 어둠, 가운데는 크고 양옆은 작다
+    ellipse 49 61 30 26 Z
+    ellipse 50 62 28 24 z
+    rect 50 74 14 22 z
+    ellipse 52 64 24 20 k
+    rect 52 74 12 22 k
+    rect 52 76 3 20 R
+    line 54 76 54 95 r
+    rect 56 82 8 14 K
+    ellipse 17 69 24 22 Z
+    ellipse 18 70 22 20 z
+    rect 18 80 22 16 z
+    ellipse 20 72 18 16 k
+    rect 20 80 18 16 k
+    rect 20 82 2 14 R
+    rect 24 86 12 10 K
+    // 쐐기돌
+    rect 62 61 2 3 S
+    rect 28 69 2 3 S
+    // 석축 위 장식 띠 — 짙은 바탕에 흰 꽃담 판
+    rect 4 50 60 6 u
+    line 4 50 63 50 U
+    rect 8 51 5 4 W
+    px 10 52 U
+    px 10 53 V
+    rect 18 51 5 4 W
+    px 20 52 U
+    px 20 53 V
+    rect 28 51 5 4 W
+    px 30 52 U
+    px 30 53 V
+    rect 38 51 5 4 W
+    px 40 52 U
+    px 40 53 V
+    rect 48 51 5 4 W
+    px 50 52 U
+    px 50 53 V
+    rect 58 51 5 4 W
+    px 60 52 U
+    px 60 53 V
+    // ── 아래층 누각 — 녹색 단청 벽, 붉은 기둥 ──
+    rect 14 40 50 10 G
+    line 14 45 63 45 g
+    line 14 49 63 49 g
+    rect 14 40 3 10 R
+    line 16 40 16 49 r
+    rect 26 40 3 10 R
+    line 28 40 28 49 r
+    rect 38 40 3 10 R
+    line 40 40 40 49 r
+    rect 50 40 3 10 R
+    line 52 40 52 49 r
+    rect 62 40 3 10 R
+    line 64 40 64 49 r
+    px 21 42 Y
+    px 24 42 Y
+    rect 20 46 6 2 q
+    px 33 42 Y
+    px 36 42 Y
+    rect 32 46 6 2 q
+    px 45 42 Y
+    px 48 42 Y
+    rect 44 46 6 2 q
+    px 57 42 Y
+    px 60 42 Y
+    rect 56 46 6 2 q
+    // ── 아래 지붕 — 처마 끝이 위로 휜다 ──
+    // 처마선은 가운데가 낮고 모서리로 갈수록 휘어 오른다
+    poly t 16 26 63 26 63 38 26 38 14 37 7 35 2 32 0 29 4 30
+    swap t u 3 26 1 13
+    swap t u 6 26 1 13
+    swap t u 9 26 1 13
+    swap t u 12 26 1 13
+    swap t u 15 26 1 13
+    swap t u 18 26 1 13
+    swap t u 21 26 1 13
+    swap t u 24 26 1 13
+    swap t u 27 26 1 13
+    swap t u 30 26 1 13
+    swap t u 33 26 1 13
+    swap t u 36 26 1 13
+    swap t u 39 26 1 13
+    swap t u 42 26 1 13
+    swap t u 45 26 1 13
+    swap t u 48 26 1 13
+    swap t u 51 26 1 13
+    swap t u 54 26 1 13
+    swap t u 57 26 1 13
+    swap t u 60 26 1 13
+    swap t u 63 26 1 13
+    swap t T 0 27 64 2
+    line 63 37 26 37 U
+    line 26 37 14 36 U
+    line 14 36 7 34 U
+    line 7 34 2 31 U
+    // 용마루와 내림마루
+    line 16 26 63 26 W
+    line 16 27 63 27 V
+    line 16 26 4 31 W
+    line 4 31 1 29 W
+    line 16 27 4 32 V
+    // 잡상 — 내림마루 위 작은 토우들
+    px 12 28 U
+    px 9 30 U
+    px 6 31 U
+    // 처마 밑 단청
+    rect 5 38 59 2 g
+    line 6 39 63 39 G
+    px 7 39 Y
+    px 11 39 Y
+    px 15 39 Y
+    px 19 39 Y
+    px 23 39 Y
+    px 27 39 Y
+    px 31 39 Y
+    px 35 39 Y
+    px 39 39 Y
+    px 43 39 Y
+    px 47 39 Y
+    px 51 39 Y
+    px 55 39 Y
+    px 59 39 Y
+    px 63 39 Y
+    // ── 위층 누각과 현판 ──
+    rect 26 16 38 10 G
+    line 26 21 63 21 g
+    rect 26 16 3 10 R
+    line 28 16 28 25 r
+    rect 38 16 3 10 R
+    line 40 16 40 25 r
+    rect 50 16 3 10 R
+    line 52 16 52 25 r
+    rect 62 16 3 10 R
+    line 64 16 64 25 r
+    px 32 18 Y
+    rect 31 23 6 1 q
+    px 44 18 Y
+    rect 43 23 6 1 q
+    px 56 18 Y
+    rect 55 23 6 1 q
+    rect 55 16 9 8 N
+    rect 56 17 8 6 W
+    px 58 18 U
+    px 58 19 U
+    px 59 20 U
+    px 61 18 U
+    px 61 20 U
+    px 62 21 U
+    px 63 19 U
+    // ── 위 지붕 ──
+    poly t 24 4 63 4 63 16 30 16 19 15 12 13 7 9 6 7 10 8
+    swap t u 8 4 1 13
+    swap t u 11 4 1 13
+    swap t u 14 4 1 13
+    swap t u 17 4 1 13
+    swap t u 20 4 1 13
+    swap t u 23 4 1 13
+    swap t u 26 4 1 13
+    swap t u 29 4 1 13
+    swap t u 32 4 1 13
+    swap t u 35 4 1 13
+    swap t u 38 4 1 13
+    swap t u 41 4 1 13
+    swap t u 44 4 1 13
+    swap t u 47 4 1 13
+    swap t u 50 4 1 13
+    swap t u 53 4 1 13
+    swap t u 56 4 1 13
+    swap t u 59 4 1 13
+    swap t u 62 4 1 13
+    swap t T 0 5 64 2
+    line 63 15 30 15 U
+    line 30 15 19 14 U
+    line 19 14 12 12 U
+    line 12 12 8 9 U
+    line 24 4 63 4 W
+    line 24 5 63 5 V
+    line 24 4 10 9 W
+    line 10 9 6 7 W
+    line 24 5 10 10 V
+    // 용마루 끝 장식(취두)과 잡상
+    rect 23 0 4 5 U
+    px 24 1 t
+    px 20 6 U
+    px 17 7 U
+    px 14 9 U
+    // 처마 밑 단청
+    rect 12 16 14 2 g
+    line 12 17 25 17 G
+    px 13 17 Y
+    px 17 17 Y
+    px 21 17 Y
+    px 25 17 Y
+    mirror
+    outline o
+end
+
+atlas
+    row gate
+end
+
+output
+    image ../../WorldEditor/assets/worldcanvas/palace_gate.png
+end

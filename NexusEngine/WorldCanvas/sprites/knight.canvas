@@ -1,0 +1,456 @@
+// 성기사 — reference/kinght.webp 의 분위기: 금 장식 은빛 판금, 큰 견갑, 푸른 망토,
+// 흰 머리·수염, 빛나는 눈, 번개 두른 푸른 수정 망치.
+//
+// 16px = 1m, 칸 32×40 = 2×2.5m (중갑이라 플레이어보다 크다).
+// 회화풍 레퍼런스를 따라 명암 단계를 많이 두고(금속 5, 금 4, 망토 4), 그늘은 보라 쪽으로 옮긴다.
+// 도형(ellipse·poly)으로 덩어리를 만들고 작은 도형을 겹쳐 빛을 넣은 뒤 마지막에 outline 으로 윤곽.
+canvas 1
+cell 32 40
+
+palette
+    o #1a1622   // 외곽선
+    1 #f4f6fb   // 강철 반사광
+    2 #c3cad8   // 강철 밝은 면
+    3 #8892a8   // 강철
+    4 #525a72   // 강철 그늘
+    5 #33384d   // 강철 깊은 그늘
+    Y #fff3b0   // 금 반사광
+    y #e8b94a   // 금
+    g #b07a2a   // 금 그늘
+    G #6e4320   // 금 깊은 그늘
+    B #6f9cf0   // 망토 밝은 면
+    b #3463c4   // 망토
+    n #22408a   // 망토 그늘
+    N #172a5c   // 망토 깊은 그늘
+    s #f0c7a0   // 피부
+    S #c48868   // 피부 그늘
+    w #f6f3ea   // 머리·수염
+    W #cfc8bb   // 머리 그늘
+    X #9b9284   // 머리 깊은 그늘
+    e #8ff0ff   // 눈빛
+    k #4a3324   // 가죽 손잡이
+    c #e6fbff   // 수정 반사광
+    C #8fdcf7   // 수정 밝은 면
+    d #3f9ad8   // 수정
+    D #24569c   // 수정 그늘
+    L #fff7b8   // 번개
+end
+
+// ── 수정 망치 머리 (정면에서 본 모습) ──────────────────────────────────────
+part hammer_head 11 9
+    rect 1 0 9 2 C
+    rect 0 2 11 5 d
+    rect 1 7 9 2 C
+    rect 2 3 7 3 D
+    line 3 4 7 4 d
+    line 1 0 9 0 c
+    line 0 2 0 6 C
+    px 1 2 c
+    px 1 7 c
+    line 10 2 10 6 D
+    outline o
+end
+
+// 번개 — 망치 둘레에 튀는 불꽃. 프레임마다 다른 모양을 써서 지직거리게 한다.
+part spark_a 15 12
+    px 0 3 L
+    px 1 2 L
+    px 1 4 L
+    px 13 1 L
+    px 14 0 L
+    px 12 2 L
+    px 2 11 L
+    px 3 10 L
+    px 12 10 L
+    px 13 11 L
+end
+
+part spark_b 15 12
+    px 0 7 L
+    px 1 8 L
+    px 0 9 L
+    px 14 5 L
+    px 13 6 L
+    px 14 7 L
+    px 6 0 L
+    px 7 1 L
+    px 8 11 L
+end
+
+// ── 남 (정면) — 왼쪽 절반을 그리고 mirror ──────────────────────────────────
+frame body_s
+    // 망토 (몸 뒤로 양옆에 보인다)
+    poly n 8 13 2 35 10 36 12 16
+    line 3 33 9 35 N
+    poly b 7 14 4 26 6 26 9 15
+    // 다리 — 정강이 갑옷과 철 장화
+    rect 10 30 5 7 3
+    rect 10 30 2 7 2
+    line 14 30 14 36 4
+    rect 9 36 6 3 4
+    rect 9 36 6 1 3
+    px 10 36 2
+    // 허리 아래 갑옷 치마 (판 두 장)
+    poly 3 8 24 15 24 15 29 6 29
+    poly 2 8 24 11 24 10 29 6 29
+    line 7 26 15 26 4
+    line 6 29 15 29 y
+    // 흉갑 — 왼쪽(빛 쪽)을 밝게, 가운데 능선
+    poly 3 9 14 15 14 15 24 10 24 8 18
+    poly 2 10 15 13 15 13 22 11 22
+    line 15 15 15 23 1
+    line 14 16 14 22 2
+    // 흉갑 금 문장 (가운데 걸친 반쪽 — mirror 로 완성)
+    rect 13 18 3 3 y
+    px 14 18 Y
+    px 13 20 g
+    // 금 테두리 목선
+    line 9 14 15 14 y
+    // 허리띠와 버클
+    rect 8 24 8 2 g
+    line 8 24 15 24 y
+    rect 14 24 2 2 Y
+    // 팔 (위팔·아래팔) 과 금 건틀릿
+    rect 4 19 5 8 3
+    line 4 19 4 26 2
+    line 8 19 8 26 4
+    line 4 23 8 23 4
+    line 9 19 9 26 5
+    rect 3 27 6 4 3
+    rect 3 28 2 3 2
+    line 8 28 8 30 4
+    line 3 27 8 27 y
+    px 3 27 Y
+    // 견갑 — 큰 타원에 빛을 겹쳐 둥근 판처럼
+    ellipse 1 11 11 9 5
+    ellipse 1 11 10 8 3
+    ellipse 2 11 8 6 2
+    ellipse 3 12 4 3 1
+    swap 3 g 0 18 8 2
+    swap 2 y 0 18 8 2
+    swap 3 g 0 16 2 3
+    rect 3 19 7 2 4
+    line 3 19 9 19 3
+    px 6 15 y
+    px 6 14 Y
+    // 목 둘레 푸른 천
+    ellipse 8 11 8 5 b
+    line 9 12 11 12 B
+    line 9 15 12 15 n
+    // 머리 — 머리카락 덩어리, 어깨까지 내려오는 옆머리, 그 위에 얼굴
+    ellipse 11 2 10 7 w
+    poly w 11 6 10 13 11 14 12 7
+    line 11 7 10 12 W
+    ellipse 12 5 8 8 s
+    line 13 5 15 5 w
+    px 12 5 w
+    px 12 6 W
+    px 12 9 S
+    // 눈썹·눈·코
+    line 13 7 14 7 S
+    px 14 8 e
+    px 13 8 S
+    px 15 10 S
+    // 수염 — 콧수염에서 턱 아래로 뾰족하게
+    poly w 12 10 15 10 15 15 14 15 12 12
+    line 13 10 15 10 W
+    px 13 12 W
+    px 15 14 W
+    // 정수리 반사광
+    px 13 3 1
+    px 14 3 1
+    mirror
+    // 오른쪽(그늘 쪽) — 망토·머리·강철을 한 단계 어둡게
+    swap B b 16 0 16 40
+    swap b n 20 0 12 40
+    swap w W 20 0 12 16
+    swap 1 2 18 0 14 40
+    swap 2 3 19 0 13 40
+    swap y g 22 0 10 40
+    outline o
+end
+
+// 몸통 변형 — 숨쉬기(상체 1px 내려앉음), 한 발 들기.
+frame body_s_bob = body_s
+    move 0 0 32 30 0 1
+end
+frame body_s_step_l = body_s_bob
+    move 8 31 8 9 0 -1
+end
+frame body_s_step_r = body_s_bob
+    move 16 31 8 9 0 -1
+end
+
+frame idle_s_0
+    stamp body_s 0 0
+    line 5 30 5 31 k
+    stamp hammer_head 0 31
+    stamp spark_a 0 27
+end
+frame idle_s_1
+    stamp body_s_bob 0 0
+    stamp hammer_head 0 32
+    stamp spark_b 0 28
+end
+frame walk_s_0
+    stamp body_s_step_l 0 0
+    stamp hammer_head 0 32
+    stamp spark_a 0 28
+end
+frame walk_s_1 = idle_s_0
+    stamp spark_b 0 27
+end
+frame walk_s_2
+    stamp body_s_step_r 0 0
+    stamp hammer_head 0 32
+    stamp spark_b 0 28
+end
+frame walk_s_3 = idle_s_0
+end
+
+// ── 북 (뒷면) — 망토가 등을 덮고, 망치는 반대쪽 손 ──────────────────────────
+frame body_n = body_s
+    // 망토 — 어깨 아래에서 발목까지
+    poly b 7 13 15 13 15 36 4 35
+    poly B 8 14 11 14 9 32 6 33
+    line 10 18 8 34 n
+    line 13 16 13 35 n
+    line 5 35 15 36 N
+    // 견갑은 망토 위
+    ellipse 1 11 11 9 5
+    ellipse 1 11 10 8 3
+    ellipse 2 11 8 6 2
+    ellipse 3 12 4 3 1
+    swap 3 g 0 18 8 2
+    swap 2 y 0 18 8 2
+    // 뒤통수 — 얼굴 없이 머리카락만
+    ellipse 11 2 10 9 w
+    poly w 11 6 10 14 15 15 15 6
+    line 13 4 12 13 W
+    px 13 3 1
+    px 14 3 1
+    mirror
+    swap B b 16 0 16 40
+    swap b n 20 0 12 40
+    swap w W 20 0 12 16
+    swap 1 2 18 0 14 40
+    swap 2 3 19 0 13 40
+    swap y g 22 0 10 40
+    outline o
+end
+part hammer_head_back 11 9 = hammer_head
+    flip_h
+end
+frame body_n_bob = body_n
+    move 0 0 32 30 0 1
+end
+frame body_n_step_l = body_n_bob
+    move 8 31 8 9 0 -1
+end
+frame body_n_step_r = body_n_bob
+    move 16 31 8 9 0 -1
+end
+
+frame idle_n_0
+    stamp body_n 0 0
+    stamp hammer_head_back 21 31
+    stamp spark_a 17 27
+end
+frame idle_n_1
+    stamp body_n_bob 0 0
+    stamp hammer_head_back 21 32
+    stamp spark_b 17 28
+end
+frame walk_n_0
+    stamp body_n_step_l 0 0
+    stamp hammer_head_back 21 32
+    stamp spark_a 17 28
+end
+frame walk_n_1 = idle_n_0
+    stamp spark_b 17 27
+end
+frame walk_n_2
+    stamp body_n_step_r 0 0
+    stamp hammer_head_back 21 32
+    stamp spark_b 17 28
+end
+frame walk_n_3 = idle_n_0
+end
+
+// ── 동 (옆모습, 오른쪽을 본다) ─────────────────────────────────────────────
+// 다리는 따로 — 보폭 프레임이 다리만 바꿔 끼운다.
+part legs_e_stand 16 9
+    // 먼 다리 (어둡게)
+    rect 5 0 4 6 4
+    rect 4 5 5 3 5
+    // 가까운 다리
+    rect 7 0 5 6 3
+    line 7 0 7 5 2
+    rect 7 5 7 3 4
+    line 7 5 13 5 3
+    outline o
+end
+part legs_e_stride_a 16 9
+    // 먼 다리 뒤로, 가까운 다리 앞으로
+    poly 4 5 0 8 0 4 5 1 5
+    rect 0 5 5 3 5
+    poly 3 7 0 11 0 13 5 9 5
+    line 7 0 9 5 2
+    rect 9 5 7 3 4
+    line 9 5 15 5 3
+    outline o
+end
+part legs_e_stride_b 16 9
+    // 가까운 다리 뒤로, 먼 다리 앞으로
+    poly 4 8 0 11 0 13 5 9 5
+    rect 10 5 5 3 5
+    poly 3 5 0 9 0 5 5 1 5
+    line 5 0 2 5 2
+    rect 0 5 6 3 4
+    line 0 5 5 5 3
+    outline o
+end
+
+frame body_e
+    // 망토 — 뒤로 날린다
+    poly n 12 13 3 36 12 36 15 16
+    poly b 12 14 6 30 9 31 14 16
+    line 5 34 11 36 N
+    // 갑옷 치마
+    poly 3 11 24 21 24 22 29 10 29
+    poly 2 11 24 14 24 13 29 10 29
+    line 10 26 22 26 4
+    line 10 29 22 29 y
+    // 몸통
+    poly 3 12 14 21 14 22 24 12 24
+    poly 2 13 15 16 15 16 23 13 23
+    line 21 15 21 23 4
+    rect 18 17 3 3 y
+    px 18 17 Y
+    line 12 14 21 14 y
+    // 허리띠
+    rect 12 24 11 2 g
+    line 12 24 22 24 y
+    rect 20 24 2 2 Y
+    // 머리 — 뒤로 넘긴 머리카락, 옆얼굴, 수염
+    ellipse 11 2 10 8 w
+    poly w 12 5 10 14 14 15 15 6
+    line 12 5 11 13 W
+    ellipse 15 4 7 8 s
+    line 15 4 18 4 w
+    px 15 5 w
+    px 15 6 W
+    px 22 8 s
+    px 22 9 S
+    line 18 6 20 6 S
+    px 19 7 e
+    px 18 7 S
+    poly w 16 10 21 10 21 13 19 15 17 13
+    line 18 10 21 10 W
+    px 18 13 W
+    // 목 둘레 천
+    line 15 13 20 13 b
+    line 16 14 19 14 n
+    // 가까운 견갑
+    ellipse 10 11 11 9 5
+    ellipse 10 11 10 8 3
+    ellipse 11 11 8 6 2
+    ellipse 12 12 4 3 1
+    swap 3 g 9 18 13 2
+    swap 2 y 9 18 13 2
+    // 가까운 팔 — 앞으로 내려 망치를 쥔다
+    rect 14 19 5 8 3
+    line 14 19 14 26 2
+    line 18 19 18 26 4
+    line 14 23 18 23 4
+    rect 14 27 6 4 3
+    line 14 27 19 27 y
+    px 14 27 Y
+    line 19 28 19 30 4
+    outline o
+end
+frame body_e_bob = body_e
+    move 0 0 32 30 0 1
+end
+
+// 망치 — 손에서 앞쪽 아래로. 손잡이를 먼저 긋고 머리를 얹는다.
+part hammer_e 14 11
+    line 1 0 5 3 k
+    line 1 1 5 4 G
+    stamp hammer_head 3 2
+end
+
+frame idle_e_0
+    stamp body_e 0 0
+    stamp legs_e_stand 8 31
+    stamp hammer_e 17 29
+    stamp spark_a 17 27
+end
+frame idle_e_1
+    stamp body_e_bob 0 0
+    stamp legs_e_stand 8 31
+    stamp hammer_e 17 30
+    stamp spark_b 17 28
+end
+frame walk_e_0
+    stamp body_e_bob 0 0
+    rect 8 31 16 9 .
+    stamp legs_e_stride_a 8 31
+    stamp hammer_e 17 30
+    stamp spark_a 17 28
+end
+frame walk_e_1 = idle_e_0
+    stamp spark_b 17 27
+end
+frame walk_e_2
+    stamp body_e_bob 0 0
+    rect 8 31 16 9 .
+    stamp legs_e_stride_b 8 31
+    stamp hammer_e 17 30
+    stamp spark_b 17 28
+end
+frame walk_e_3 = idle_e_0
+end
+
+// ── 서 = 동의 좌우 반전 ────────────────────────────────────────────────────
+frame idle_w_0 = idle_e_0
+    flip_h
+end
+frame idle_w_1 = idle_e_1
+    flip_h
+end
+frame walk_w_0 = walk_e_0
+    flip_h
+end
+frame walk_w_1 = walk_e_1
+    flip_h
+end
+frame walk_w_2 = walk_e_2
+    flip_h
+end
+frame walk_w_3 = walk_e_3
+    flip_h
+end
+
+sheet
+    directions 4
+    pixels_per_meter 16
+    tinted false
+    clip Idle 450 loop
+        row idle_e_0 idle_e_1
+        row idle_n_0 idle_n_1
+        row idle_w_0 idle_w_1
+        row idle_s_0 idle_s_1
+    end
+    clip Walk 170 loop
+        row walk_e_0 walk_e_1 walk_e_2 walk_e_3
+        row walk_n_0 walk_n_1 walk_n_2 walk_n_3
+        row walk_w_0 walk_w_1 walk_w_2 walk_w_3
+        row walk_s_0 walk_s_1 walk_s_2 walk_s_3
+    end
+end
+
+output
+    image ../../WorldEditor/assets/worldcanvas/knight.png
+    sheet ../../WorldEditor/assets/worldcanvas/knight.sheet.ron
+end

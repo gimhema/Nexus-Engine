@@ -1,0 +1,551 @@
+// 붉은 드래곤 — reference/dragon.webp 의 분위기: 붉은 비늘, 뼈대가 드러난 큰 날개, 굽은 뿔,
+// 노란 배 비늘, 벌린 입.
+//
+// 16px = 1m, 칸 64×64 = 4×4m. 날 수 있는 몬스터라 Walk 는 날갯짓이다.
+// 날개는 위·가운데·아래 세 자세를 부품으로 그리고 몸에 갈아 끼운다 (왼쪽 날개만 그리고 mirror).
+// 빛은 왼쪽 위 — 오른쪽 절반을 한 단계씩 어둡게 한다.
+canvas 1
+cell 64 64
+
+palette
+    o #1e0f12   // 외곽선
+    H #ff9a6a   // 비늘 반사광
+    L #f2553a   // 비늘 밝은 면
+    r #c8302a   // 비늘
+    d #8a1c24   // 비늘 그늘
+    D #561226   // 비늘 깊은 그늘 / 날개 뼈
+    M #d9503a   // 날개막 밝은 면
+    m #b5342e   // 날개막
+    w #7a1e2c   // 날개막 그늘
+    Y #ffd27a   // 배 비늘 밝은 면
+    y #e8a24a   // 배 비늘
+    g #b8702e   // 배 비늘 줄
+    W #fff4dc   // 뿔·발톱·이빨 반사광
+    b #d8c6a0   // 뿔
+    B #8f7a5a   // 뿔 그늘
+    e #fff35a   // 눈
+    k #4a0e16   // 입 속
+end
+
+// ── 정면 날개 (왼쪽) — 세 자세 ─────────────────────────────────────────────
+part wing_s_up 32 64
+    poly m 27 26 17 12 10 6 3 12 0 30 6 28 5 40 11 35 14 45 19 39 24 44
+    poly M 26 26 17 12 10 6 6 12 12 22 22 30
+    swap m w 0 36 32 12
+    line 26 27 17 13 d
+    line 27 28 18 14 d
+    line 17 12 10 6 d
+    line 18 13 11 7 D
+    line 10 6 0 30 D
+    line 10 6 5 40 D
+    line 10 6 14 45 D
+    px 10 5 W
+    px 9 4 b
+end
+
+part wing_s_mid 32 64
+    poly m 27 28 14 20 5 20 0 24 1 36 7 33 8 44 13 38 17 47 21 40 25 45
+    poly M 26 28 14 21 5 21 8 26 20 32
+    swap m w 0 40 32 10
+    line 27 29 14 21 d
+    line 27 30 14 22 d
+    line 14 21 5 20 D
+    line 5 20 1 36 D
+    line 5 20 8 44 D
+    line 5 20 17 47 D
+    px 5 19 W
+    px 4 18 b
+end
+
+part wing_s_down 32 64
+    poly m 27 30 16 34 8 36 2 42 3 54 8 50 11 58 15 52 19 58 22 50 26 52
+    poly M 26 30 16 35 9 37 14 42 22 40
+    swap m w 0 50 32 10
+    line 27 31 16 35 d
+    line 27 32 16 36 d
+    line 16 35 8 36 D
+    line 8 36 3 54 D
+    line 8 36 11 58 D
+    line 8 36 19 58 D
+    px 8 35 W
+    px 7 35 b
+end
+
+// ── 정면 몸 (왼쪽 절반을 그리고 mirror) ─────────────────────────────────────
+part body_s_half 64 64
+    // 뒷다리
+    ellipse 14 41 16 15 D
+    ellipse 15 42 14 13 r
+    ellipse 16 43 8 7 L
+    rect 13 53 12 4 d
+    line 13 53 24 53 r
+    px 13 57 W
+    px 17 57 W
+    px 21 57 W
+    // 몸통 — 한 치수 큰 짙은 타원을 먼저 깔아 날개와 갈라 놓는다
+    ellipse 19 25 26 28 D
+    ellipse 20 26 24 26 r
+    ellipse 21 28 8 10 L
+    // 배 비늘
+    ellipse 26 30 12 22 y
+    ellipse 27 31 5 8 Y
+    swap y g 24 34 16 1
+    swap y g 24 38 16 1
+    swap y g 24 42 16 1
+    swap y g 24 46 16 1
+    swap Y g 24 34 16 1
+    swap Y g 24 38 16 1
+    // 앞발
+    ellipse 19 37 9 13 D
+    ellipse 20 38 7 11 r
+    line 21 39 21 46 L
+    px 20 49 W
+    px 23 49 W
+    px 25 48 W
+    // 목
+    rect 26 14 12 16 D
+    rect 27 14 10 16 r
+    rect 29 16 6 14 y
+    swap y g 28 19 8 1
+    swap y g 28 23 8 1
+    swap y g 28 27 8 1
+    line 27 14 27 29 L
+    // 머리
+    ellipse 23 3 18 15 D
+    ellipse 25 12 14 11 D
+    ellipse 24 4 16 13 r
+    ellipse 25 5 8 6 L
+    px 27 6 H
+    px 28 6 H
+    ellipse 26 13 12 9 r
+    // 뿔
+    poly b 26 7 28 5 19 0 18 1
+    line 26 6 19 0 W
+    px 27 7 B
+    // 볼 지느러미
+    poly m 24 10 17 8 20 12 17 15 24 14
+    line 24 11 18 9 d
+    // 눈썹·눈 (세로 동공)
+    line 25 9 29 11 d
+    px 27 11 e
+    px 28 11 o
+    // 콧구멍
+    px 30 15 D
+    // 벌린 입과 송곳니
+    rect 28 18 8 3 k
+    px 29 18 W
+    px 31 18 W
+    px 30 20 W
+    rect 28 21 8 1 r
+    line 27 21 29 21 d
+end
+
+// 날개 자세별 정면 — 날개를 먼저 찍고 몸을 얹은 뒤 대칭, 그늘, 꼬리, 윤곽.
+part front_up 64 64
+    stamp wing_s_up 1 0
+    stamp body_s_half 0 0
+    mirror
+end
+part front_mid 64 64
+    stamp wing_s_mid 1 0
+    stamp body_s_half 0 0
+    mirror
+end
+part front_down 64 64
+    stamp wing_s_down 1 0
+    stamp body_s_half 0 0
+    mirror
+end
+
+// 그늘과 꼬리는 자세와 무관하게 같다.
+part shade_tail_s 64 64
+    // 몸 오른쪽 아래에서 나와 발을 감아 도는 꼬리, 끝은 화살촉
+    poly D 39 44 50 46 57 50 61 56 58 62 50 63 45 61 49 58 54 58 56 55 52 51 39 50
+    poly r 40 45 50 47 56 51 59 56 57 60 51 61 47 61 50 59 54 59 57 55 52 50 40 49
+    line 41 46 51 48 L
+    poly d 47 59 41 58 43 62 47 62
+end
+
+frame idle_s_0
+    stamp front_mid 0 0
+    stamp shade_tail_s 0 0
+    swap H L 33 0 31 64
+    swap L r 36 0 28 64
+    swap r d 46 0 18 64
+    swap M m 33 0 31 64
+    swap m w 44 0 20 64
+    swap Y y 34 0 30 64
+    outline o
+end
+frame idle_s_1
+    stamp front_up 0 0
+    stamp shade_tail_s 0 0
+    swap H L 33 0 31 64
+    swap L r 36 0 28 64
+    swap r d 46 0 18 64
+    swap M m 33 0 31 64
+    swap m w 44 0 20 64
+    swap Y y 34 0 30 64
+    outline o
+end
+frame walk_s_0
+    stamp front_up 0 0
+    stamp shade_tail_s 0 0
+    swap H L 33 0 31 64
+    swap L r 36 0 28 64
+    swap r d 46 0 18 64
+    swap M m 33 0 31 64
+    swap m w 44 0 20 64
+    swap Y y 34 0 30 64
+    outline o
+end
+frame walk_s_1
+    stamp front_mid 0 0
+    stamp shade_tail_s 0 0
+    swap H L 33 0 31 64
+    swap L r 36 0 28 64
+    swap r d 46 0 18 64
+    swap M m 33 0 31 64
+    swap m w 44 0 20 64
+    swap Y y 34 0 30 64
+    outline o
+end
+frame walk_s_2
+    stamp front_down 0 0
+    stamp shade_tail_s 0 0
+    swap H L 33 0 31 64
+    swap L r 36 0 28 64
+    swap r d 46 0 18 64
+    swap M m 33 0 31 64
+    swap m w 44 0 20 64
+    swap Y y 34 0 30 64
+    outline o
+end
+frame walk_s_3
+    stamp front_mid 0 0
+    stamp shade_tail_s 0 0
+    swap H L 33 0 31 64
+    swap L r 36 0 28 64
+    swap r d 46 0 18 64
+    swap M m 33 0 31 64
+    swap m w 44 0 20 64
+    swap Y y 34 0 30 64
+    outline o
+end
+
+// ── 북 (뒷면) — 등뼈 가시, 아래로 늘어진 꼬리 ─────────────────────────────
+part body_n_half 64 64
+    // 뒷다리
+    ellipse 14 41 16 15 D
+    ellipse 15 42 14 13 r
+    ellipse 16 43 8 7 L
+    rect 13 53 12 4 d
+    // 몸통
+    ellipse 19 25 26 28 D
+    ellipse 20 26 24 26 r
+    ellipse 21 28 8 10 L
+    // 목과 뒤통수
+    rect 26 14 12 16 D
+    rect 27 14 10 16 r
+    line 27 14 27 29 L
+    ellipse 23 3 18 15 D
+    ellipse 24 4 16 13 r
+    ellipse 25 5 8 6 L
+    poly b 26 7 28 5 19 0 18 1
+    line 26 6 19 0 W
+    poly m 24 10 17 8 20 12 17 15 24 14
+    line 24 11 18 9 d
+    // 꼬리 — 가운데로 늘어져 끝이 화살촉
+    poly D 25 45 31 45 31 63 27 59
+    poly r 26 46 31 46 31 62 28 58
+    line 27 47 28 57 L
+    poly d 31 56 25 60 31 63
+    // 등뼈 가시 — 가운데 줄, 왼쪽 면만 밝다
+    poly d 31 15 29 19 31 19
+    poly d 31 21 29 25 31 25
+    poly d 31 28 28 33 31 33
+    poly d 31 35 28 40 31 40
+    poly d 31 42 29 46 31 46
+    line 31 16 30 18 L
+    line 31 29 29 32 L
+    line 31 36 29 39 L
+end
+part back_up 64 64
+    stamp wing_s_up 1 0
+    stamp body_n_half 0 0
+    mirror
+end
+part back_mid 64 64
+    stamp wing_s_mid 1 0
+    stamp body_n_half 0 0
+    mirror
+end
+part back_down 64 64
+    stamp wing_s_down 1 0
+    stamp body_n_half 0 0
+    mirror
+end
+frame idle_n_0
+    stamp back_mid 0 0
+    swap H L 33 0 31 64
+    swap L r 36 0 28 64
+    swap r d 46 0 18 64
+    swap M m 33 0 31 64
+    swap m w 44 0 20 64
+    swap Y y 34 0 30 64
+    outline o
+end
+frame idle_n_1
+    stamp back_up 0 0
+    swap H L 33 0 31 64
+    swap L r 36 0 28 64
+    swap r d 46 0 18 64
+    swap M m 33 0 31 64
+    swap m w 44 0 20 64
+    swap Y y 34 0 30 64
+    outline o
+end
+frame walk_n_0
+    stamp back_up 0 0
+    swap H L 33 0 31 64
+    swap L r 36 0 28 64
+    swap r d 46 0 18 64
+    swap M m 33 0 31 64
+    swap m w 44 0 20 64
+    swap Y y 34 0 30 64
+    outline o
+end
+frame walk_n_1
+    stamp back_mid 0 0
+    swap H L 33 0 31 64
+    swap L r 36 0 28 64
+    swap r d 46 0 18 64
+    swap M m 33 0 31 64
+    swap m w 44 0 20 64
+    swap Y y 34 0 30 64
+    outline o
+end
+frame walk_n_2
+    stamp back_down 0 0
+    swap H L 33 0 31 64
+    swap L r 36 0 28 64
+    swap r d 46 0 18 64
+    swap M m 33 0 31 64
+    swap m w 44 0 20 64
+    swap Y y 34 0 30 64
+    outline o
+end
+frame walk_n_3
+    stamp back_mid 0 0
+    swap H L 33 0 31 64
+    swap L r 36 0 28 64
+    swap r d 46 0 18 64
+    swap M m 33 0 31 64
+    swap m w 44 0 20 64
+    swap Y y 34 0 30 64
+    outline o
+end
+
+// ── 동 (옆모습, 오른쪽을 본다) ─────────────────────────────────────────────
+// 가까운 날개 세 자세. 먼 날개는 같은 모양을 어둡게 해서 오른쪽 위로 비켜 놓는다.
+part wing_e_up 64 64
+    poly m 36 29 28 14 22 6 12 8 4 14 8 18 6 24 14 24 14 30 22 28 26 33
+    poly M 35 29 28 14 22 7 18 12 26 22
+    line 35 29 22 6 d
+    line 36 30 23 7 d
+    line 22 6 4 14 D
+    line 22 6 6 24 D
+    line 22 6 14 30 D
+    px 22 5 W
+end
+part wing_e_mid 64 64
+    poly m 36 29 24 20 12 16 2 22 6 26 2 32 12 32 12 38 20 35 28 34
+    poly M 35 29 24 20 13 17 18 24 28 28
+    line 35 29 12 16 d
+    line 36 30 13 17 d
+    line 12 16 2 22 D
+    line 12 16 2 32 D
+    line 12 16 12 38 D
+    px 12 15 W
+end
+part wing_e_down 64 64
+    poly m 36 30 26 36 18 40 10 48 16 48 14 56 22 52 24 58 28 50 32 40
+    poly M 35 30 26 36 19 40 26 40 32 34
+    line 35 30 18 40 d
+    line 36 31 19 41 d
+    line 18 40 10 48 D
+    line 18 40 14 56 D
+    line 18 40 24 58 D
+    px 18 39 W
+end
+part wing_e_up_far 64 64 = wing_e_up
+    swap M m
+    swap m w
+    swap d D
+    shift 8 -3
+end
+part wing_e_mid_far 64 64 = wing_e_mid
+    swap M m
+    swap m w
+    swap d D
+    shift 8 -3
+end
+part wing_e_down_far 64 64 = wing_e_down
+    swap M m
+    swap m w
+    swap d D
+    shift 8 -6
+end
+
+part body_e 64 64
+    // 먼 다리 (어둡게)
+    ellipse 36 40 8 12 d
+    rect 37 51 7 3 D
+    ellipse 22 40 12 12 d
+    rect 24 52 9 3 D
+    // 꼬리 — 몸 뒤에서 아래로 감긴다
+    poly D 16 33 6 39 1 48 3 56 10 61 19 62 19 58 11 56 7 50 9 43 17 40
+    poly r 16 34 7 40 2 48 4 55 10 60 18 61 18 59 11 57 8 50 10 44 17 41
+    line 15 35 7 41 L
+    poly d 18 58 25 57 23 62 17 62
+    // 몸통
+    ellipse 13 27 34 23 D
+    ellipse 14 28 32 21 r
+    ellipse 16 29 18 8 L
+    ellipse 19 30 8 3 H
+    // 배 — 몸 아래쪽을 따라 휘는 띠
+    poly y 24 46 36 44 44 40 46 43 40 48 26 50
+    line 26 47 43 41 Y
+    swap y g 22 0 1 64
+    swap y g 26 0 1 64
+    swap y g 30 0 1 64
+    swap y g 34 0 1 64
+    swap y g 38 0 1 64
+    // 가까운 뒷다리
+    ellipse 14 37 16 16 D
+    ellipse 15 38 14 14 r
+    ellipse 16 39 7 7 L
+    rect 18 52 12 4 d
+    line 18 52 29 52 r
+    px 30 54 W
+    px 30 55 W
+    px 27 56 W
+    // 가까운 앞다리
+    rect 39 40 7 13 D
+    rect 40 40 5 12 r
+    line 40 40 40 51 L
+    rect 40 52 8 3 d
+    px 48 53 W
+    px 48 54 W
+    // 목 — 몸 앞에서 위로 휘어 머리로
+    poly D 34 25 42 25 49 15 55 13 53 8 46 11 38 21 32 30
+    poly r 35 26 42 26 48 16 54 13 52 9 46 12 38 22 33 30
+    line 43 25 50 15 y
+    line 44 25 51 15 y
+    line 42 26 49 16 g
+    line 36 26 46 12 L
+    // 머리 — 정수리, 긴 주둥이, 벌린 아래턱
+    ellipse 43 3 14 12 D
+    ellipse 44 4 12 10 r
+    ellipse 45 4 6 4 L
+    poly D 52 5 63 10 63 16 52 18
+    poly r 53 6 62 10 62 15 53 17
+    line 53 7 61 10 L
+    poly D 50 17 62 19 61 23 50 21
+    poly r 51 18 61 20 60 22 51 20
+    poly k 52 17 62 16 61 19 52 19
+    px 55 17 W
+    px 58 17 W
+    px 57 19 W
+    px 60 18 W
+    // 뿔·지느러미·눈·콧구멍
+    poly b 47 6 49 4 37 0 36 1
+    line 47 5 37 0 W
+    px 48 6 B
+    poly m 45 10 39 11 42 13 39 16 46 14
+    line 45 11 40 12 d
+    line 50 7 54 8 d
+    px 52 9 e
+    px 53 9 o
+    px 61 12 D
+end
+
+frame idle_e_0
+    stamp wing_e_mid_far 0 0
+    stamp body_e 0 0
+    stamp wing_e_mid 0 0
+    outline o
+end
+frame idle_e_1
+    stamp wing_e_up_far 0 0
+    stamp body_e 0 0
+    stamp wing_e_up 0 0
+    outline o
+end
+frame walk_e_0
+    stamp wing_e_up_far 0 0
+    stamp body_e 0 0
+    stamp wing_e_up 0 0
+    outline o
+end
+frame walk_e_1
+    stamp wing_e_mid_far 0 0
+    stamp body_e 0 0
+    stamp wing_e_mid 0 0
+    outline o
+end
+frame walk_e_2
+    stamp wing_e_down_far 0 0
+    stamp body_e 0 0
+    stamp wing_e_down 0 0
+    outline o
+end
+frame walk_e_3
+    stamp wing_e_mid_far 0 0
+    stamp body_e 0 0
+    stamp wing_e_mid 0 0
+    outline o
+end
+
+// ── 서 = 동의 좌우 반전 ────────────────────────────────────────────────────
+frame idle_w_0 = idle_e_0
+    flip_h
+end
+frame idle_w_1 = idle_e_1
+    flip_h
+end
+frame walk_w_0 = walk_e_0
+    flip_h
+end
+frame walk_w_1 = walk_e_1
+    flip_h
+end
+frame walk_w_2 = walk_e_2
+    flip_h
+end
+frame walk_w_3 = walk_e_3
+    flip_h
+end
+
+sheet
+    directions 4
+    pixels_per_meter 16
+    tinted false
+    clip Idle 600 loop
+        row idle_e_0 idle_e_1
+        row idle_n_0 idle_n_1
+        row idle_w_0 idle_w_1
+        row idle_s_0 idle_s_1
+    end
+    clip Walk 140 loop
+        row walk_e_0 walk_e_1 walk_e_2 walk_e_3
+        row walk_n_0 walk_n_1 walk_n_2 walk_n_3
+        row walk_w_0 walk_w_1 walk_w_2 walk_w_3
+        row walk_s_0 walk_s_1 walk_s_2 walk_s_3
+    end
+end
+
+output
+    image ../../WorldEditor/assets/worldcanvas/dragon.png
+    sheet ../../WorldEditor/assets/worldcanvas/dragon.sheet.ron
+end
