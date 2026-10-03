@@ -127,6 +127,19 @@ pub enum Op {
     },
     /// 왼쪽 절반을 오른쪽에 좌우 대칭으로 복사한다. 가로가 홀수면 가운데 열은 그대로.
     Mirror,
+    /// `(x, y, 가로, 세로)` 사각형에 내접하는 채운 타원.
+    Ellipse {
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        c: u8,
+    },
+    /// 채운 다각형. 꼭짓점은 픽셀 좌표 — 픽셀 중심이 안에 들면 칠한다.
+    Poly {
+        c: u8,
+        points: Vec<(i32, i32)>,
+    },
     Stamp {
         name: String,
         x: i32,
@@ -145,6 +158,8 @@ impl Op {
             | Self::Box { c, .. }
             | Self::Line { c, .. }
             | Self::Fill { c, .. }
+            | Self::Ellipse { c, .. }
+            | Self::Poly { c, .. }
             | Self::Outline { c } => vec![*c],
             Self::Swap { from, to, .. } => vec![*from, *to],
             Self::FlipH
@@ -189,6 +204,14 @@ impl fmt::Display for Op {
             }
             Self::Outline { c } => write!(f, "outline {}", ch(c)),
             Self::Mirror => write!(f, "mirror"),
+            Self::Ellipse { x, y, w, h, c } => write!(f, "ellipse {x} {y} {w} {h} {}", ch(c)),
+            Self::Poly { c, points } => {
+                write!(f, "poly {}", ch(c))?;
+                for (x, y) in points {
+                    write!(f, " {x} {y}")?;
+                }
+                Ok(())
+            }
             Self::Stamp { name, x, y } => write!(f, "stamp {name} {x} {y}"),
         }
     }

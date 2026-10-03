@@ -369,6 +369,30 @@ fn parse_op(p: &mut Parser<'_>, l: Line<'_>) -> Result<Op> {
             arity(&l, &w, 1, "mirror")?;
             Op::Mirror
         }
+        "ellipse" => {
+            arity(&l, &w, 6, "ellipse <x> <y> <가로> <세로> <색>")?;
+            Op::Ellipse {
+                x: int(&l, w[1])?,
+                y: int(&l, w[2])?,
+                w: positive(&l, w[3])?,
+                h: positive(&l, w[4])?,
+                c: color(&l, w[5])?,
+            }
+        }
+        "poly" => {
+            let usage = "poly <색> <x1> <y1> <x2> <y2> <x3> <y3> …";
+            if w.len() < 8 || !w.len().is_multiple_of(2) {
+                return Err(l.err(format!("형식: {usage} (꼭짓점 3개 이상)")));
+            }
+            let points = w[2..]
+                .chunks(2)
+                .map(|p| Ok((int(&l, p[0])?, int(&l, p[1])?)))
+                .collect::<Result<_>>()?;
+            Op::Poly {
+                c: color(&l, w[1])?,
+                points,
+            }
+        }
         "stamp" => {
             arity(&l, &w, 4, "stamp <이름> <x> <y>")?;
             Op::Stamp {

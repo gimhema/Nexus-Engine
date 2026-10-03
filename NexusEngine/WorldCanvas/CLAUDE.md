@@ -7,6 +7,28 @@ WorldEditor 용 픽셀 스프라이트 저작 도구. **원본은 텍스트(`.ca
 git diff 로 어느 픽셀이 바뀌었는지 보인다. 프레임은 다른 프레임에 연산을 쌓아 **파생**시킬 수 있어서
 (방향 반전, 걷기 프레임의 다리 이동, 색 변종) 바탕을 고치면 파생 프레임이 함께 바뀐다.
 
+## 그린 그림 확인하기 — 뷰어 실행
+
+`WorldCanvas/` 폴더에서:
+
+```bash
+cargo run --release --bin worldcanvas-view
+```
+
+창 왼쪽에 `sprites/` 의 원본 목록이 뜬다. 하나를 고르면:
+
+- **애니메이션** 탭 — 클립(Idle·Walk)마다 동·북·서·남 네 방향을 동시에 재생
+- **시트 / 아틀라스** 탭 — 게임이 읽는 결과 그림 한 장 (오브젝트는 그림 경계와 `px` 목록)
+- **그림** 탭 — 프레임·부품 전부를 이름과 함께
+
+위쪽 막대에서 배율(1~16배), 배경(어두움·밝음·체커), 재생/멈춤을 바꾼다.
+**창을 열어 둔 채로 원본이 바뀌면 0.4초 안에 다시 그린다** — Claude 가 그리는 동안 켜 두면 된다.
+
+- 첫 실행은 그래픽 의존성(eframe·wgpu)을 빌드하느라 몇 분 걸린다. 이후는 바로 뜬다.
+- 다른 폴더나 파일 하나만 보려면 `cargo run --release --bin worldcanvas-view -- 경로`.
+- Linux 에서 창이 안 뜨거나 Wayland 오류가 나면 X11 로: `env -u WAYLAND_DISPLAY DISPLAY=:0 cargo run --release --bin worldcanvas-view`
+- 한글이 네모로 나오면 폰트를 지정: `WORLDCANVAS_FONT=/경로/폰트.ttf cargo run …`
+
 ## 빌드·검사
 
 ```bash
@@ -158,6 +180,8 @@ end
 | `mirror` | 왼쪽 절반을 오른쪽에 대칭 복사 — 정면·뒷면·건물은 반만 그린다 |
 | `outline C` | 불투명 픽셀에 상하좌우로 닿은 투명 픽셀을 C 로 — 외곽선 |
 | `stamp NAME X Y` | 다른 그림(부품·프레임)을 투명 부분 빼고 얹음 |
+| `ellipse X Y W H C` | 사각형에 내접하는 채운 타원 — 머리·견갑·몸통 같은 둥근 덩어리 |
+| `poly C x1 y1 x2 y2 …` | 채운 다각형 (꼭짓점 3개 이상, 픽셀 중심 좌표) — 날개막·망토·지붕·꼬리 |
 
 바탕(`= base`)과 `stamp` 의 순환은 `순환 참조: a → b → a` 로 보고된다.
 
@@ -197,6 +221,16 @@ end
 - **`patch` 의 `.` 는 지운다.** 남겨야 할 자리는 `~`.
 - **도형 안 줄무늬는 영역 swap.** 지붕처럼 윤곽을 긋고 `fill` 한 뒤 `swap r R 0 Y 64 1` 로 한 줄씩 —
   윤곽 밖으로 새지 않는다.
+- **큰 그림은 도형으로 쌓는다.** 덩어리를 `ellipse`/`poly` 로 깔고, 같은 도형을 한 치수 크게
+  짙은 색으로 **먼저** 깔면 덩어리 사이에 윤곽이 생긴다 (드래곤 몸통과 날개가 섞이지 않게).
+  작은 밝은 도형을 왼쪽 위로 비켜 겹치면 둥근 입체감이 난다 (기사 견갑).
+- **대칭으로 그린 뒤 그늘 쪽만 어둡게** — `mirror` 다음에 오른쪽 영역에 `swap 밝은색 어두운색 X Y W H`
+  를 단계별로 (반사광→밝은 면, 밝은 면→중간, 중간→그늘).
+- **바뀌는 부위는 부품으로 갈아 끼운다.** 드래곤 날개 세 자세(위·가운데·아래), 기사 옆모습 다리
+  세 자세를 부품으로 두고 프레임마다 다른 부품을 `stamp`. 옆모습 외곽선이 두 겹이 되지 않도록
+  부품마다 자기 `outline` 을 갖는다.
+- **반복 선이 많으면 생성한다.** 기와 골·석재 줄눈처럼 규칙적인 선은 짧은 스크립트로 연산 줄을
+  만들어 원본에 넣는다 (`palace_gate.canvas`). 원본은 여전히 평범한 연산 목록이다.
 - 빛은 왼쪽 위. 밝은 면 왼쪽·위, 그늘 오른쪽·아래. 외곽선은 순흑 대신 아주 짙은 갈색·녹색.
 
 ## 원본 목록 (`sprites/`)
@@ -206,6 +240,13 @@ end
 | `player.canvas` | `WorldEditor/assets/worldcanvas/player.png` + `.sheet.ron` | 모험가. 24×32, 16px/m, 4방향, Idle 2 + Walk 4 |
 | `goblin.canvas` | `WorldEditor/assets/worldcanvas/goblin.png` + `.sheet.ron` | 고블린(액터 102 자리). 몽둥이 부품, 구성 동일 |
 | `props.canvas` | `WorldEditor/assets/worldcanvas/props.png` (atlas) | 집 64×64, 참나무 32×48, 소나무 24×48, 바위 16×12, 덤불 20×13 |
+| `knight.canvas` | `WorldEditor/assets/worldcanvas/knight.png` + `.sheet.ron` | 성기사 (`reference/kinght.webp` 풍). 32×40, 4방향, Idle 2 + Walk 4, 망치 번개가 프레임마다 바뀐다 |
+| `dragon.canvas` | `WorldEditor/assets/worldcanvas/dragon.png` + `.sheet.ron` | 붉은 드래곤 (`reference/dragon.webp` 풍). 64×64, 4방향, Idle 2 + Walk 4(날갯짓) |
+| `palace_gate.canvas` | `WorldEditor/assets/worldcanvas/palace_gate.png` (atlas) | 궁궐 정문 (`reference/castle.webp` 광화문 풍). 128×96 = 8×6m |
+
+`reference/` 는 화풍 참고용 원화다 (WebP). 그대로 베끼지 않고 구성·색·분위기만 가져온다.
+knight·dragon·palace_gate 는 **아직 WorldEditor 데이터에 연결하지 않았다** — 기사·드래곤은
+`data/rules.ron` 에 액터가 있어야 `display.ron` 에 걸 수 있고, 정문은 `terrain.ron` props 에 추가하면 된다.
 
 **WorldEditor 연결:** `data/display.ron` 의 액터 1(플레이어)·102(고블린)가 위 시트를 쓴다.
 `data/terrain.ron` 에 타일셋 `worldcanvas` 와 props 104 기와집·105 참나무·106 소나무·107 바위·108 덤불.

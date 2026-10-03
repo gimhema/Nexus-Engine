@@ -219,6 +219,68 @@ impl Bitmap {
         }
     }
 
+    /// `(x, y, w, h)` 에 내접하는 채운 타원. 픽셀 중심으로 안팎을 가린다.
+    pub fn ellipse(&mut self, x: i32, y: i32, w: u32, h: u32, c: u8) {
+        let (rx, ry) = (w as f32 / 2.0, h as f32 / 2.0);
+        let (cx, cy) = (x as f32 + rx, y as f32 + ry);
+        for py in y..y + h as i32 {
+            for px in x..x + w as i32 {
+                let dx = (px as f32 + 0.5 - cx) / rx;
+                let dy = (py as f32 + 0.5 - cy) / ry;
+                if dx * dx + dy * dy <= 1.0 {
+                    self.set(px, py, c);
+                }
+            }
+        }
+    }
+
+    /// 채운 다각형. 꼭짓점은 픽셀의 **중심** 좌표로 본다 (`(3, 4)` 는 3열 4행 픽셀의 한가운데) —
+    /// 그래서 꼭짓점 픽셀이 칠해지고, 가장자리가 `line` 과 같은 자리에 온다.
+    /// 픽셀 중심이 다각형 안(짝홀 규칙)이거나 가장자리 위면 칠한다.
+    pub fn poly(&mut self, points: &[(i32, i32)], c: u8) {
+        if points.len() < 3 {
+            return;
+        }
+        let min_x = points.iter().map(|p| p.0).min().unwrap_or(0);
+        let max_x = points.iter().map(|p| p.0).max().unwrap_or(0);
+        let min_y = points.iter().map(|p| p.1).min().unwrap_or(0);
+        let max_y = points.iter().map(|p| p.1).max().unwrap_or(0);
+        let edges: Vec<((f32, f32), (f32, f32))> = points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .map(|(a, b)| ((a.0 as f32, a.1 as f32), (b.0 as f32, b.1 as f32)))
+            .collect();
+        for py in min_y..=max_y {
+            for px in min_x..=max_x {
+                let (x, y) = (px as f32, py as f32);
+                let mut inside = false;
+                let mut on_edge = false;
+                for &((x0, y0), (x1, y1)) in &edges {
+                    // 가장자리 위 — 선분과의 거리가 반 픽셀 이하이고 선분 범위 안.
+                    let (dx, dy) = (x1 - x0, y1 - y0);
+                    let len2 = dx * dx + dy * dy;
+                    let t = if len2 > 0.0 {
+                        ((x - x0) * dx + (y - y0) * dy) / len2
+                    } else {
+                        0.0
+                    };
+                    if (0.0..=1.0).contains(&t) {
+                        let (qx, qy) = (x0 + t * dx - x, y0 + t * dy - y);
+                        if qx.abs() <= 0.5 && qy.abs() <= 0.5 && (qx * qx + qy * qy) <= 0.3 {
+                            on_edge = true;
+                        }
+                    }
+                    if (y0 > y) != (y1 > y) && x < x0 + (y - y0) * dx / dy {
+                        inside = !inside;
+                    }
+                }
+                if inside || on_edge {
+                    self.set(px, py, c);
+                }
+            }
+        }
+    }
+
     /// 왼쪽 절반을 오른쪽에 좌우 대칭으로 복사한다.
     pub fn mirror(&mut self) {
         let w = self.w as i32;
@@ -337,6 +399,20 @@ mod tests {
         let mut b = bm(&["AAA", "AAA"]);
         b.swap_in(b'A', b'B', 1, 0, 5, 1);
         assert_eq!(text(&b), ["ABB", "AAA"]);
+    }
+
+    #[test]
+    fn ellipse_fills_its_box() {
+        let mut b = Bitmap::new(5, 3);
+        b.ellipse(0, 0, 5, 3, b'O');
+        assert_eq!(text(&b), [".OOO.", "OOOOO", ".OOO."]);
+    }
+
+    #[test]
+    fn poly_fills_a_triangle_including_its_corners() {
+        let mut b = Bitmap::new(5, 3);
+        b.poly(&[(0, 2), (4, 2), (2, 0)], b'T');
+        assert_eq!(text(&b), ["..T..", ".TTT.", "TTTTT"]);
     }
 
     #[test]

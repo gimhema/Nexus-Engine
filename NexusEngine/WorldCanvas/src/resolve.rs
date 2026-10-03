@@ -83,6 +83,8 @@ impl<'a> Resolver<'a> {
             },
             Op::Outline { c } => bm.outline(*c),
             Op::Mirror => bm.mirror(),
+            Op::Ellipse { x, y, w, h, c } => bm.ellipse(*x, *y, *w, *h, *c),
+            Op::Poly { c, points } => bm.poly(points, *c),
             Op::Stamp { name, x, y } => {
                 let src = self.get(name)?;
                 bm.stamp(&src, *x, *y);
