@@ -49,6 +49,8 @@ pub(crate) struct ActorEditor {
     status: Option<(bool, String)>,
     new_id: u32,
     new_name: String,
+    /// 진영 이름 (`display.ron` 의 `factions`) — 진영 번호 옆에 보여 준다.
+    faction_names: BTreeMap<u32, String>,
     /// 고를 수 있는 스크립트(`data/` 기준)·시트 경로.
     scripts: Vec<String>,
     sheets: Vec<String>,
@@ -134,6 +136,7 @@ impl ActorEditor {
     fn reload(&mut self) -> Result<(), String> {
         let (rules, display) = crate::game_data::data_texts()?;
         self.saved = crate::game_data::actor_forms(&rules, &display)?;
+        self.faction_names = crate::game_data::faction_names(&display)?;
         let root = Path::new(".");
         self.scripts = crate::content::scan_files(root, "data/scripts", ".rhai")
             .into_iter()
@@ -251,7 +254,7 @@ impl ActorEditor {
             ui.weak("콘텐츠 브라우저의 '액터' 에서 두 번 누르거나 위에서 고르세요.");
             return;
         };
-        let (scripts, sheets) = (&self.scripts, &self.sheets);
+        let (scripts, sheets, faction_names) = (&self.scripts, &self.sheets, &self.faction_names);
 
         ui.strong("표시 (display.ron)");
         egui::Grid::new("actor-look").num_columns(2).show(ui, |ui| {
@@ -324,7 +327,14 @@ impl ActorEditor {
                 ui.checkbox(&mut f.immortal, "공격을 받지 않음");
                 ui.end_row();
                 ui.label("진영");
-                ui.add(egui::DragValue::new(&mut f.faction).range(0..=65_535));
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut f.faction).range(0..=65_535));
+                    match faction_names.get(&f.faction) {
+                        Some(name) => ui.label(name),
+                        None if f.faction == 0 => ui.weak("진영 없음"),
+                        None => ui.weak("(이름 없음 — 게임 규칙 설정에서 붙인다)"),
+                    };
+                });
                 ui.end_row();
 
                 ui.label("AI");

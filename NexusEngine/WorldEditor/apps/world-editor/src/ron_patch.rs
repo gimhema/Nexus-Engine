@@ -280,6 +280,50 @@ fn indent_of(line: &str) -> usize {
     line.len() - line.trim_start().len()
 }
 
+/// [`remove_entry`] 가 돌려준 항목 텍스트를 [`upsert_entry`] 에 다시 넣을 모양으로 — 공통 들여쓰기를 걷고
+/// 앞뒤 빈 줄을 뗀다. 휴지통 되살리기(P20)·번호 바꾸기(P21)가 쓴다.
+pub(crate) fn dedent(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let pad = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| indent_of(l))
+        .min()
+        .unwrap_or(0);
+    let body: Vec<&str> = lines
+        .iter()
+        .map(|l| {
+            if l.len() >= pad {
+                &l[pad..]
+            } else {
+                l.trim_start()
+            }
+        })
+        .collect();
+    body.join("\n").trim_matches('\n').to_owned()
+}
+
+/// 항목 텍스트의 번호만 바꾼다 — 주석이 아닌 첫 줄의 `옛번호:` 를 `새번호:` 로. 나머지(주석·값)는 그대로.
+pub(crate) fn renumber_entry(entry: &str, from: u32, to: u32) -> Option<String> {
+    let mut done = false;
+    let lines: Vec<String> = entry
+        .lines()
+        .map(|l| {
+            let trimmed = l.trim_start();
+            if !done && !trimmed.starts_with("//") && !trimmed.is_empty() {
+                done = true;
+                let pad = &l[..l.len() - trimmed.len()];
+                if let Some(rest) = trimmed.strip_prefix(&format!("{from}:")) {
+                    return format!("{pad}{to}:{rest}");
+                }
+            }
+            l.to_owned()
+        })
+        .collect();
+    let out = lines.join("\n");
+    (out != entry).then_some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

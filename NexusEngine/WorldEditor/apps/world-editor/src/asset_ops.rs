@@ -45,6 +45,14 @@ impl OpKind {
             Self::Rename => "이름 바꾸기",
         }
     }
+
+    /// 메뉴·확인 창의 이름 — 표 항목(액터)은 이름이 아니라 **번호**를 바꾼다.
+    pub(crate) fn label_for(self, kind: AssetKind) -> &'static str {
+        match self {
+            Self::Rename if kind.is_virtual() => "번호 바꾸기",
+            other => other.label(),
+        }
+    }
 }
 
 /// 사람이 고른 작업 — 확인 창이 이것으로 계획을 세운다.
@@ -78,10 +86,10 @@ impl From<&Asset> for AssetRef {
 pub(crate) fn supports(kind: AssetKind, op: OpKind) -> bool {
     match kind {
         AssetKind::Level | AssetKind::Zone | AssetKind::Screen | AssetKind::Script => true,
-        // 표의 항목 — 번호는 바꾸지 않는다 (이름은 각 편집기에서 바꾼다).
-        AssetKind::Actor | AssetKind::Item | AssetKind::Skill | AssetKind::Loot => {
-            op != OpKind::Rename
-        }
+        // 액터는 번호 바꾸기까지 (P21) — 존·저장 파일의 참조를 고쳐 쓴다.
+        AssetKind::Actor => true,
+        // 아이템·스킬·드롭 표 — 번호는 바꾸지 않는다 (이름은 데이터 표 편집기에서 바꾼다).
+        AssetKind::Item | AssetKind::Skill | AssetKind::Loot => op != OpKind::Rename,
         AssetKind::Sheet | AssetKind::Image | AssetKind::Data => false,
     }
 }
@@ -112,15 +120,14 @@ pub(crate) struct Touched {
     /// 이름 바꾸기로 옮겨진 파일 `(원래, 새)` — 에디터가 열어 둔 존이면 경로를 따라가고,
     /// 브라우저는 새 자리를 고른다.
     pub(crate) moved: Option<(String, String)>,
+    /// 고쳐 쓴 존 파일 — 에디터가 열어 둔 존이면 다시 연다 (액터 번호 바꾸기, P21).
+    pub(crate) zones: Vec<String>,
 }
 
 /// 할 일을 계산하고 검증한다. 할 수 없으면 이유를 돌려준다 (아무것도 쓰지 않는다).
 pub(crate) fn plan(root: &Path, op: &FileOp) -> Result<Plan, String> {
     if !supports(op.asset.kind, op.kind) {
         return Err(match op.asset.kind {
-            AssetKind::Actor => {
-                String::from("액터의 이름은 액터 편집기에서 바꿉니다 (번호는 바꾸지 않습니다)")
-            }
             AssetKind::Item | AssetKind::Skill | AssetKind::Loot => String::from(
                 "표 항목의 이름은 데이터 표 편집기에서 바꿉니다 (번호는 바꾸지 않습니다)",
             ),
@@ -303,7 +310,74 @@ fn plan_actor(root: &Path, op: &FileOp) -> Result<Plan, String> {
             p.writes.push((RULES_PATH.to_owned(), rules2));
             p.writes.push((DISPLAY_PATH.to_owned(), display2));
         }
-        OpKind::Rename => unreachable!("supports() 가 막는다"),
+        // 번호 바꾸기 (P21) — 두 표의 항목을 옮기고, 그 번호를 가리키는 곳을 전부 고쳐 쓴다:
+        // 존 파일의 마커(`actor: N,`) · 마커 종류의 기본 액터 · 저장 파일의 조작 액터.
+        OpKind::Rename => {
+            let new_id: u32 = op
+                .target
+                .trim()
+                .parse()
+                .map_err(|_| String::from("새 번호를 숫자로 적으세요"))?;
+            if new_id == 0 {
+                return Err(String::from("0 은 '종류 기본값' 예약 번호입니다"));
+            }
+            if new_id == id {
+                return Err(String::from("지금과 같은 번호입니다"));
+            }
+            if actor_forms(&rules, &display)?.contains_key(&new_id) {
+                return Err(format!("#{new_id} 은(는) 이미 있습니다"));
+            }
+            // 항목은 파일에 적힌 그대로(위 주석 포함) 옮긴다 — 번호만 바꾼다.
+            let mut rules2 = rules.clone();
+            let mut display2 = display.clone();
+            for (text, file) in [(&mut rules2, RULES_PATH), (&mut display2, DISPLAY_PATH)] {
+                let (rest, gone) = crate::ron_patch::remove_entry(text, "actors", id)
+                    .map_err(|e| format!("{file}: {e}"))?;
+                let entry =
+                    crate::ron_patch::renumber_entry(&crate::ron_patch::dedent(&gone), id, new_id)
+                        .ok_or_else(|| format!("{file}: #{id} 항목의 번호를 찾지 못함"))?;
+                *text = crate::ron_patch::upsert_entry(&rest, "actors", new_id, &entry)?;
+            }
+            p.steps
+                .push(format!("#{id} {} → #{new_id} (두 표)", op.asset.name));
+            // 마커 종류의 기본 액터.
+            let mut settings = crate::game_data::settings_form(&rules2)?;
+            if settings.default_actors.contains(&id) {
+                for slot in &mut settings.default_actors {
+                    if *slot == id {
+                        *slot = new_id;
+                    }
+                }
+                rules2 = crate::game_data::patch_settings(&rules2, &display2, &settings)?;
+                p.steps
+                    .push(String::from("고쳐 씀: 마커 종류의 기본 액터 (rules.ron)"));
+            }
+            GameData::parse(&rules2, &display2)?;
+            p.writes.push((RULES_PATH.to_owned(), rules2));
+            p.writes.push((DISPLAY_PATH.to_owned(), display2));
+            // 존 파일의 마커와 저장 파일 — 같은 모양(`actor: N,`)이다.
+            let (from, to) = (format!("actor: {id},"), format!("actor: {new_id},"));
+            let mut files = scan_files(root, "zones", ".zone.ron");
+            files.extend(scan_files(root, "saves", ".save.ron"));
+            for file in files {
+                let text = read(root, &file)?;
+                if !text.contains(&from) {
+                    continue;
+                }
+                let text = text.replace(&from, &to);
+                let ok = if file.ends_with(".zone.ron") {
+                    crate::zone_file::from_ron(&text).map(|_| ())
+                } else {
+                    crate::save_file::from_ron(&text).map(|_| ())
+                };
+                ok.map_err(|e| format!("{file} 을 고치면 읽을 수 없게 됨 — {e}"))?;
+                p.steps.push(format!("고쳐 씀: {file}"));
+                if file.ends_with(".zone.ron") {
+                    p.touched.zones.push(file.clone());
+                }
+                p.writes.push((file, text));
+            }
+        }
     }
     Ok(p)
 }
@@ -776,6 +850,133 @@ mod tests {
                 String::from("zones/town.zone.ron")
             ))
         );
+    }
+
+    #[test]
+    fn renumbering_an_actor_rewrites_zones_defaults_and_saves() {
+        let sb = Sandbox::new("renumber");
+        let rename = |from: &str, to: &str| op(OpKind::Rename, AssetKind::Actor, from, to);
+
+        // 늪 슬라임 101 → 105 — 마을 존의 마커가 따라간다. 항목 위 주석도 함께 옮겨진다.
+        assert!(sb.read("zones/village.zone.ron").contains("actor: 101,"));
+        let p = plan(&sb.0, &rename("actor:101", "105")).unwrap();
+        assert!(
+            p.steps.iter().any(|s| s.contains("zones/village.zone.ron")),
+            "{:?}",
+            p.steps
+        );
+        apply(&sb.0, &p).unwrap();
+        let zone = sb.read("zones/village.zone.ron");
+        assert!(!zone.contains("actor: 101,") && zone.contains("actor: 105,"));
+        crate::zone_file::from_ron(&zone).unwrap();
+        let rules = sb.read(RULES_PATH);
+        let forms = actor_forms(&rules, &sb.read(DISPLAY_PATH)).unwrap();
+        assert!(!forms.contains_key(&101));
+        assert_eq!(forms[&105].name, "늪 슬라임");
+        let at = rules.find("        105: (").unwrap();
+        assert!(
+            rules[..at].trim_end().ends_with("액터 타입의 요점."),
+            "항목 위 주석이 함께 온다"
+        );
+
+        // 마커 종류의 기본 액터 (슬라임 100 = Monster 기본) → default_actors 가 따라간다.
+        apply(&sb.0, &plan(&sb.0, &rename("actor:100", "110")).unwrap()).unwrap();
+        assert!(sb.read(RULES_PATH).contains("Monster: 110,"));
+
+        // 플레이어 1 → 2 — 저장 파일의 조작 액터와 Player 기본값.
+        std::fs::create_dir_all(sb.0.join("saves")).unwrap();
+        std::fs::write(
+            sb.0.join("saves/player.save.ron"),
+            "(version: 1, actor: 1, level: 1, exp: 0, hp: 10, pos: (0.0, 0.0))\n",
+        )
+        .unwrap();
+        apply(&sb.0, &plan(&sb.0, &rename("actor:1", "2")).unwrap()).unwrap();
+        let save = crate::save_file::from_ron(&sb.read("saves/player.save.ron")).unwrap();
+        assert_eq!(save.actor, crate::scene::ActorId::new(2));
+        assert!(sb.read(RULES_PATH).contains("Player: 2,"));
+        GameData::parse(&sb.read(RULES_PATH), &sb.read(DISPLAY_PATH)).unwrap();
+
+        // 거부 — 있는 번호, 0, 같은 번호, 숫자 아님.
+        for (to, why) in [("102", "이미"), ("0", "예약"), ("2", "같은"), ("x", "숫자")] {
+            let err = plan(&sb.0, &rename("actor:2", to)).unwrap_err();
+            assert!(err.contains(why), "{to}: {err}");
+        }
+    }
+
+    #[test]
+    fn the_trash_gives_back_files_and_table_entries() {
+        use crate::trash::{Entry, purge, restore, scan};
+        let sb = Sandbox::new("trash-restore");
+        // 레벨 하나와 액터 하나를 만들어 지운다 — 각각 다른 휴지통 칸.
+        let dup = op(
+            OpKind::Duplicate,
+            AssetKind::Level,
+            "levels/village.level.ron",
+            "town",
+        );
+        apply(&sb.0, &plan(&sb.0, &dup).unwrap()).unwrap();
+        let del = op(
+            OpKind::Delete,
+            AssetKind::Level,
+            "levels/town.level.ron",
+            "",
+        );
+        apply(&sb.0, &plan(&sb.0, &del).unwrap()).unwrap();
+        let dup = op(OpKind::Duplicate, AssetKind::Actor, "actor:100", "150");
+        apply(&sb.0, &plan(&sb.0, &dup).unwrap()).unwrap();
+        // 휴지통 칸 이름은 초 단위 시각이다 — 같은 초에 두 번 지우면 한 칸에 모인다 (그래도 된다).
+        let del = op(OpKind::Delete, AssetKind::Actor, "actor:150", "");
+        apply(&sb.0, &plan(&sb.0, &del).unwrap()).unwrap();
+
+        let bins = scan(&sb.0);
+        let find = |want: &Entry| {
+            scan(&sb.0)
+                .into_iter()
+                .find(|b| b.entries.contains(want))
+                .expect("휴지통에 있다")
+        };
+        let level = Entry::File(String::from("levels/town.level.ron"));
+        let actor = Entry::Table(String::from("actor-150.ron"));
+        assert!(bins.iter().any(|b| b.entries.contains(&level)));
+        assert!(bins.iter().any(|b| b.entries.contains(&actor)));
+
+        // 파일 — 같은 자리에 파일이 있으면 거부, 비우면 원래 자리로.
+        std::fs::write(sb.0.join("levels/town.level.ron"), "막는 파일").unwrap();
+        let bin = find(&level);
+        assert!(
+            restore(&sb.0, &bin, &level)
+                .unwrap_err()
+                .contains("이미 파일")
+        );
+        std::fs::remove_file(sb.0.join("levels/town.level.ron")).unwrap();
+        let done = restore(&sb.0, &bin, &level).unwrap();
+        assert!(done.levels);
+        crate::level::read_level(&sb.read("levels/town.level.ron")).expect("되살린 레벨");
+
+        // 표 항목 — 두 표에 다시 들어간다.
+        let bin = find(&actor);
+        let done = restore(&sb.0, &bin, &actor).unwrap();
+        assert!(done.data);
+        let forms = actor_forms(&sb.read(RULES_PATH), &sb.read(DISPLAY_PATH)).unwrap();
+        assert_eq!(forms[&150].name, "슬라임 복사본");
+        GameData::parse(&sb.read(RULES_PATH), &sb.read(DISPLAY_PATH)).unwrap();
+        assert!(scan(&sb.0).is_empty(), "다 되살리면 칸 폴더도 사라진다");
+
+        // 이미 같은 번호가 있으면 거부 — 다시 지우고, 같은 번호를 새로 만든 뒤 되살려 본다.
+        let del = op(OpKind::Delete, AssetKind::Actor, "actor:150", "");
+        apply(&sb.0, &plan(&sb.0, &del).unwrap()).unwrap();
+        let dup = op(OpKind::Duplicate, AssetKind::Actor, "actor:100", "150");
+        apply(&sb.0, &plan(&sb.0, &dup).unwrap()).unwrap();
+        let bin = find(&actor);
+        assert!(
+            restore(&sb.0, &bin, &actor)
+                .unwrap_err()
+                .contains("이미 있습니다")
+        );
+
+        // 비우기 — 되돌릴 수 없다.
+        purge(&sb.0, None).unwrap();
+        assert!(scan(&sb.0).is_empty());
     }
 
     #[test]

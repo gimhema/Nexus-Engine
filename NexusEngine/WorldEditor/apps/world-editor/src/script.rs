@@ -37,6 +37,7 @@
 //! contentopen                 고른 항목 열기 (두 번 누르기와 같다)
 //! contentfolder 경로 | contentview icons|list   브라우저 폴더로 가기 (`/` = 맨 위) / 보기 방식
 //! contentmenu                 브라우저 빈 곳 오른쪽 클릭 메뉴 열기 (새로 만들기)
+//! trash                       휴지통 창 열기 (P20)
 //! contentop delete|duplicate|rename [새이름]  고른 항목에 파일 작업 확인 창 (P9)
 //! contentconfirm              확인 창의 "실행"
 //! ```
@@ -134,6 +135,8 @@ pub(crate) enum Step {
     Escape,
     /// 콘텐츠 브라우저 열고 닫기 (P8).
     ContentToggle,
+    /// 휴지통 창 열기 (P20).
+    Trash,
     /// 콘텐츠 브라우저에서 항목 고르기 — 경로 또는 `actor:번호`.
     ContentPick(String),
     /// 고른 항목 열기 (두 번 누르기).
@@ -250,6 +253,7 @@ fn parse_step(text: &str) -> Result<Step, String> {
         "startlevel" => return Ok(Step::StartLevel),
         "esc" => return Ok(Step::Escape),
         "content" => return Ok(Step::ContentToggle),
+        "trash" => return Ok(Step::Trash),
         "contentopen" => return Ok(Step::ContentOpen),
         "contentmenu" => return Ok(Step::ContentMenu),
         "contentconfirm" => return Ok(Step::ContentConfirm),

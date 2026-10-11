@@ -123,7 +123,7 @@ impl AssetKind {
     }
 
     /// 파일이 아니라 표 안의 항목인가.
-    fn is_virtual(self) -> bool {
+    pub(crate) fn is_virtual(self) -> bool {
         matches!(self, Self::Actor | Self::Item | Self::Skill | Self::Loot)
     }
 }
@@ -250,6 +250,8 @@ pub(crate) enum ContentAction {
     Notice(String),
     /// 파일 작업 — 확인 창에서 '실행' 을 눌렀다 (P9). 에디터가 다시 계획을 세워 실행한다.
     FileOp(FileOp),
+    /// 휴지통 창 (P20).
+    OpenTrash,
 }
 
 /// 브라우저 상태. 창이 닫혀 있어도 고른 항목·검색어는 남는다.
@@ -550,7 +552,7 @@ impl ContentBrowser {
         let mut open = true;
         let mut run = false;
         let mut cancel = false;
-        egui::Window::new(format!("{} — {}", dialog.kind.label(), dialog.asset.name))
+        egui::Window::new(format!("{} — {}", dialog.kind.label_for(dialog.asset.kind), dialog.asset.name))
             .id(egui::Id::new("content_op"))
             .open(&mut open)
             .collapsible(false)
@@ -665,6 +667,13 @@ impl ContentBrowser {
             ui.menu_button("새로 만들기", |ui| {
                 action = create_menu(ui, &self.folder);
             });
+            if ui
+                .button("휴지통")
+                .on_hover_text("지운 리소스 — 되살리기·비우기")
+                .clicked()
+            {
+                action = Some(ContentAction::OpenTrash);
+            }
             if ui.button("새로 고침").clicked() {
                 self.refresh();
             }
@@ -1118,7 +1127,7 @@ impl ContentBrowser {
                         if ui
                             .add_enabled(
                                 supports(asset.kind, kind),
-                                egui::Button::new(format!("{}…", kind.label())),
+                                egui::Button::new(format!("{}…", kind.label_for(asset.kind))),
                             )
                             .clicked()
                         {
@@ -1179,7 +1188,7 @@ impl ContentBrowser {
                         if ui
                             .add_enabled(
                                 supports(asset.kind, kind),
-                                egui::Button::new(kind.label()),
+                                egui::Button::new(kind.label_for(asset.kind)),
                             )
                             .clicked()
                         {
@@ -1205,7 +1214,7 @@ fn create_items() -> [(&'static str, ContentAction); 5] {
 }
 
 /// 창 안에 "새로 만들기" 가 있는 편집기들 — 창을 열어 그 안에서 만든다.
-fn editor_items() -> [(&'static str, ContentAction); 4] {
+fn editor_items() -> [(&'static str, ContentAction); 5] {
     [
         (
             "게임 규칙 설정 (진영·기본 액터·시작 소지품)",
@@ -1220,6 +1229,7 @@ fn editor_items() -> [(&'static str, ContentAction); 4] {
             "지형 팔레트 (타일·건물 조각)",
             ContentAction::OpenPalette(String::new()),
         ),
+        ("휴지통 (되살리기·비우기)", ContentAction::OpenTrash),
     ]
 }
 

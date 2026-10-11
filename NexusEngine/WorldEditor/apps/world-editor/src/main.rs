@@ -38,6 +38,7 @@ mod sprites;
 mod table_editor;
 mod terrain;
 mod tiles;
+mod trash;
 mod ui;
 mod ui_script;
 mod zone_file;
@@ -418,6 +419,11 @@ impl Editor {
                 .as_ref()
                 .map(GameData::actor_catalog)
                 .unwrap_or_default(),
+            faction_names: self
+                .data
+                .as_ref()
+                .map(GameData::faction_list)
+                .unwrap_or_default(),
             actor_defaults: scene::ItemKind::ALL.map(|kind| {
                 self.data
                     .as_ref()
@@ -791,6 +797,11 @@ impl Editor {
                 self.notify(w, true);
             }
         }
+        if actions.reload_screens {
+            for w in self.screens.reload_files() {
+                self.notify(w, true);
+            }
+        }
         if let Some(text) = &actions.notice {
             self.notify(text.clone(), false);
         }
@@ -813,6 +824,17 @@ impl Editor {
             .zone_path
             .as_deref()
             .map(|p| p.to_string_lossy().replace('\\', "/"));
+        // 액터 번호 바꾸기는 존 파일의 마커를 고쳐 쓴다 — 열린 존에 저장 안 한 편집이 있으면 옛 번호로 되돌려 쓰게 된다.
+        if op.asset.kind == AssetKind::Actor
+            && op.kind == asset_ops::OpKind::Rename
+            && self.is_dirty()
+        {
+            self.notify(
+                refuse(String::from("저장하지 않은 편집이 있습니다 — 존의 마커 번호도 고쳐 써야 하므로 먼저 저장하세요")),
+                true,
+            );
+            return;
+        }
         if op.asset.kind == AssetKind::Zone && open_zone.as_deref() == Some(key) {
             if op.kind == asset_ops::OpKind::Delete {
                 self.notify(refuse(String::from("지금 열려 있는 존입니다")), true);
@@ -883,6 +905,12 @@ impl Editor {
                 Ok(data) => self.data = Some(data),
                 Err(e) => self.notify(format!("게임 데이터를 다시 읽지 못했습니다 — {e}"), true),
             }
+        }
+        // 열어 둔 존을 고쳐 썼으면(액터 번호 바꾸기) 디스크에서 다시 연다 — 씬이 옛 번호를 들고 있지 않게.
+        if let Some(open) = open_zone.as_deref()
+            && plan.touched.zones.iter().any(|z| z == open)
+        {
+            self.open_zone(PathBuf::from(open));
         }
         // 열어 둔 존이 옮겨졌으면 경로를 따라간다 — 다음 Ctrl+S 가 옛 경로에 쓰지 않게.
         let moved_to = plan.touched.moved.as_ref().map(|(_, to)| to.clone());
@@ -1551,6 +1579,12 @@ impl Editor {
                 }
             }
             // 두 번 누르기와 같은 경로 — UI 창은 UI 가 열고, 나머지는 에디터가 맡는다.
+            Step::Trash => {
+                let dirty = self.is_dirty();
+                if let Some(ui) = self.ui.as_mut() {
+                    ui.open_content(content::ContentAction::OpenTrash, dirty);
+                }
+            }
             Step::ContentOpen => {
                 let dirty = self.is_dirty();
                 let acts = self.ui.as_mut().and_then(|ui| {

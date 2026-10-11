@@ -86,6 +86,8 @@ pub(crate) struct UiModel<'a> {
     pub(crate) brush: Tile,
     /// 고를 수 있는 액터 타입 `(번호, 이름, 수치)`. 데이터를 못 읽었으면 빈 목록.
     pub(crate) actor_catalog: Vec<(ActorId, &'a str, UnitDef)>,
+    /// 진영 이름 `(번호, 이름)` — 인스펙터가 번호 옆에 보여 준다 (P19).
+    pub(crate) faction_names: Vec<(u32, &'a str)>,
     /// 마커 종류별 기본 액터 — [`ItemKind::ALL`] 순서.
     pub(crate) actor_defaults: [ActorId; 3],
     /// `(스크립트 경로, "액터 이름 (#번호)")` — 스크립트 편집기가 "쓰는 액터" 를 보여 준다.
@@ -198,6 +200,8 @@ pub(crate) struct UiActions {
     pub(crate) reload_data: bool,
     /// 레벨 편집기가 저장했다 — 레벨 목록을 다시 읽는다.
     pub(crate) reload_levels: bool,
+    /// 화면 파일이 바뀌었다 (휴지통에서 되살림) — 화면을 다시 읽는다.
+    pub(crate) reload_screens: bool,
     /// 상태 바에 띄울 알림 (오류 아님).
     pub(crate) notice: Option<String>,
     /// 뷰포트 포인터 — 뷰포트가 그려진 프레임에만 있다.
@@ -228,6 +232,8 @@ pub(crate) struct EditorUi {
     /// 데이터 표 편집기 — 아이템·스킬·드롭 표 (P10).
     tables: TableEditor,
     rules: RulesEditor,
+    /// 휴지통 (P20).
+    trash: crate::trash::TrashWindow,
 }
 
 /// 존 열기 / 다른 이름으로 저장 창.
@@ -297,6 +303,7 @@ impl EditorUi {
             sheets: SheetViewer::default(),
             tables: TableEditor::default(),
             rules: RulesEditor::default(),
+            trash: crate::trash::TrashWindow::default(),
         }
     }
 
@@ -387,6 +394,7 @@ impl EditorUi {
             sheets: &mut self.sheets,
             tables: &mut self.tables,
             rules: &mut self.rules,
+            trash: &mut self.trash,
         };
         dispatch(action, &mut editors, dirty, &mut actions);
         actions
@@ -436,6 +444,7 @@ impl EditorUi {
         let sheets = &mut self.sheets;
         let tables = &mut self.tables;
         let rules = &mut self.rules;
+        let trash = &mut self.trash;
 
         let output = self.ctx.run_ui(raw, |ui| {
             menu_bar(ui, model, &mut actions);
@@ -464,6 +473,7 @@ impl EditorUi {
             sheets.show(ui);
             tables.show(ui);
             rules.show(ui);
+            trash.show(ui.ctx());
             if actions.toggle_content {
                 content.toggle();
             }
@@ -480,6 +490,7 @@ impl EditorUi {
                         sheets,
                         tables,
                         rules,
+                        trash,
                     };
                     dispatch(action, &mut editors, model.dirty, &mut actions);
                 }
@@ -509,6 +520,13 @@ impl EditorUi {
             }
             if levels.take_saved() {
                 actions.reload_levels = true;
+                content.refresh();
+            }
+            // 휴지통에서 되살렸으면 그것이 속한 것을 다시 읽는다.
+            if let Some(done) = trash.take_changed() {
+                actions.reload_data |= done.data;
+                actions.reload_levels |= done.levels;
+                actions.reload_screens |= done.screens;
                 content.refresh();
             }
             if let Some(id) = levels.take_play() {
@@ -564,6 +582,7 @@ struct Editors<'a> {
     sheets: &'a mut SheetViewer,
     tables: &'a mut TableEditor,
     rules: &'a mut RulesEditor,
+    trash: &'a mut crate::trash::TrashWindow,
 }
 
 /// 브라우저가 연 리소스를 맞는 편집기로 보낸다.
@@ -592,6 +611,7 @@ fn dispatch(action: ContentAction, e: &mut Editors<'_>, dirty: bool, actions: &m
         ContentAction::EditTable(tab, id) => e.tables.open_entry(tab, id),
         ContentAction::NewTable(tab) => e.tables.open_new(tab),
         ContentAction::EditRules => e.rules.open(),
+        ContentAction::OpenTrash => e.trash.open(),
         ContentAction::Notice(text) => actions.notice = Some(text),
         other @ (ContentAction::EditScreen(_)
         | ContentAction::NewScreen
@@ -1613,7 +1633,7 @@ fn actor_section(ui: &mut egui::Ui, model: &UiModel<'_>, items: &[&Item], action
             row.number(
                 ui,
                 "진영",
-                shown(base.faction.0.to_string()),
+                shown(faction_text(&model.faction_names, base.faction.0)),
                 base.faction.0,
                 |o| o.faction,
                 OverrideEdit::Faction,
@@ -1658,6 +1678,15 @@ fn actor_section(ui: &mut egui::Ui, model: &UiModel<'_>, items: &[&Item], action
         });
     }
     ui.weak("타입 값은 data/rules.ron 에서 고칩니다 (F5 로 적용).\n오른쪽 칸을 켜면 이 마커에만 다른 값을 줍니다.");
+}
+
+/// 진영 번호를 `100 마을` 처럼 — 이름이 없으면 번호만, 0 은 "없음".
+fn faction_text(names: &[(u32, &str)], id: u32) -> String {
+    match names.iter().find(|(n, _)| *n == id) {
+        Some((_, name)) => format!("{id} {name}"),
+        None if id == 0 => String::from("없음"),
+        None => id.to_string(),
+    }
 }
 
 fn ai_label(ai: AiKind) -> &'static str {

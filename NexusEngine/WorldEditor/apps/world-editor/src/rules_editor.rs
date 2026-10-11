@@ -45,6 +45,9 @@ pub(crate) struct RulesEditor {
     skills: Vec<(u32, String)>,
     /// 진영 번호 → 그 진영을 쓰는 액터 이름들.
     factions: BTreeMap<u32, Vec<String>>,
+    /// 진영 이름 표 (`display.ron` 의 `factions`, P19) — 디스크 값 / 고치는 값. `(번호, 이름)`, 번호 순.
+    names_saved: Vec<(u32, String)>,
+    names_edit: Vec<(u32, String)>,
     status: Option<(bool, String)>,
     saved_now: bool,
 }
@@ -66,7 +69,7 @@ impl RulesEditor {
     }
 
     fn is_dirty(&self) -> bool {
-        self.edit.is_some() && self.edit != self.saved
+        (self.edit.is_some() && self.edit != self.saved) || self.names_edit != self.names_saved
     }
 
     fn reload(&mut self) -> Result<(), String> {
@@ -94,6 +97,10 @@ impl RulesEditor {
             .collect();
         self.saved = Some(form.clone());
         self.edit = Some(form);
+        self.names_saved = crate::game_data::faction_names(&display)?
+            .into_iter()
+            .collect();
+        self.names_edit = self.names_saved.clone();
         Ok(())
     }
 
@@ -124,6 +131,7 @@ impl RulesEditor {
         };
         let (actors, items, skills, factions) =
             (&self.actors, &self.items, &self.skills, &self.factions);
+        let names = &mut self.names_edit;
 
         egui::Grid::new("rules-top").num_columns(2).show(ui, |ui| {
             ui.label("난수 시드");
@@ -154,9 +162,9 @@ impl RulesEditor {
         let mut remove = None;
         for (i, r) in f.relations.iter_mut().enumerate() {
             ui.horizontal(|ui| {
-                faction(ui, &mut r.a, factions);
+                faction(ui, &mut r.a, factions, names);
                 ui.label("↔");
-                faction(ui, &mut r.b, factions);
+                faction(ui, &mut r.b, factions, names);
                 egui::ComboBox::from_id_salt(("rules-rel", i))
                     .width(70.0)
                     .selected_text(r.relation.label())
@@ -175,6 +183,34 @@ impl RulesEditor {
         }
         if ui.button("+ 관계").clicked() {
             f.relations.push(RelationRow::default());
+        }
+
+        ui.add_space(6.0);
+        ui.strong("진영 이름");
+        ui.weak("번호는 서버 진영 번호(EFactionId)와 같은 공간이다. 이름은 표시용 — display.ron 에 저장된다.");
+        let mut remove = None;
+        for (i, (id, name)) in names.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(id).range(1..=99_999))
+                    .on_hover_text(users_hint(factions, *id));
+                ui.add(egui::TextEdit::singleline(name).desired_width(140.0));
+                if ui.small_button("×").on_hover_text("이 이름 빼기").clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            names.remove(i);
+        }
+        if ui.button("+ 진영").clicked() {
+            // 쓰이는데 이름이 없는 진영부터, 없으면 다음 번호.
+            let unnamed = factions
+                .keys()
+                .copied()
+                .find(|id| *id != 0 && names.iter().all(|(n, _)| n != id));
+            let next =
+                unnamed.unwrap_or_else(|| names.iter().map(|(id, _)| *id).max().unwrap_or(0) + 1);
+            names.push((next, String::from("새 진영")));
         }
 
         ui.add_space(6.0);
@@ -234,6 +270,7 @@ impl RulesEditor {
                 .clicked()
             {
                 self.edit = self.saved.clone();
+                self.names_edit = self.names_saved.clone();
                 self.status = None;
             }
         });
@@ -252,9 +289,10 @@ impl RulesEditor {
         let Some(form) = self.edit.clone() else {
             return;
         };
-        match save_settings(Path::new("."), &form) {
+        match save_settings(Path::new("."), &form, &self.names_edit) {
             Ok(()) => {
                 self.saved = Some(form);
+                self.names_saved = self.names_edit.clone();
                 self.saved_now = true;
                 self.status = Some((
                     false,
@@ -266,13 +304,27 @@ impl RulesEditor {
     }
 }
 
-/// `root` 아래의 규칙 파일에 설정을 쓴다 (표시 파일은 그대로).
-fn save_settings(root: &Path, form: &SettingsForm) -> Result<(), String> {
+/// `root` 아래의 두 파일에 설정을 쓴다 — 규칙 반쪽(`rules.ron`)과 진영 이름(`display.ron` 의 `factions`).
+/// 두 파일을 **함께 다시 검증**한 뒤에만 쓴다.
+fn save_settings(root: &Path, form: &SettingsForm, names: &[(u32, String)]) -> Result<(), String> {
     let read = |p: &str| std::fs::read_to_string(root.join(p)).map_err(|e| format!("{p}: {e}"));
     let rules = read(crate::game_data::RULES_PATH)?;
     let display = read(crate::game_data::DISPLAY_PATH)?;
-    let text = patch_settings(&rules, &display, form)?;
-    write_tables(root, &text, &display)
+    let rules = patch_settings(&rules, &display, form)?;
+    let display = patch_names(&display, names)?;
+    crate::game_data::GameData::parse(&rules, &display)?;
+    write_tables(root, &rules, &display)
+}
+
+/// 진영 이름 표를 표시 파일에 끼운다. 같은 번호가 두 번이면 거부한다.
+fn patch_names(display: &str, names: &[(u32, String)]) -> Result<String, String> {
+    let mut map = BTreeMap::new();
+    for (id, name) in names {
+        if map.insert(*id, name.trim().to_owned()).is_some() {
+            return Err(format!("진영 이름: 번호 {id} 가 두 번 있음"));
+        }
+    }
+    crate::game_data::patch_faction_names(display, &map)
 }
 
 /// 번호 고르기 — `(번호, 이름)` 목록에서. 목록에 없는 번호면 "(없음 #번호)" 로 보인다.
@@ -299,13 +351,31 @@ fn pick(
         });
 }
 
-/// 진영 번호 칸 — 옆에 그 진영을 쓰는 액터를 알려 준다 (이름 표가 없으므로).
-fn faction(ui: &mut egui::Ui, value: &mut u32, factions: &BTreeMap<u32, Vec<String>>) {
-    let hint = factions
-        .get(value)
-        .map_or_else(|| String::from("쓰는 액터 없음"), |who| who.join(", "));
+/// 진영 번호 칸 — 옆에 이름(진영 이름 표)을, 마우스를 올리면 그 진영을 쓰는 액터를 보여 준다.
+fn faction(
+    ui: &mut egui::Ui,
+    value: &mut u32,
+    factions: &BTreeMap<u32, Vec<String>>,
+    names: &[(u32, String)],
+) {
+    let hint = users_hint(factions, *value);
     ui.add(egui::DragValue::new(value).range(0..=99_999))
-        .on_hover_text(hint);
+        .on_hover_text(&hint);
+    match names.iter().find(|(id, _)| id == value) {
+        Some((_, name)) => {
+            ui.label(name).on_hover_text(hint);
+        }
+        None => {
+            ui.weak("(이름 없음)").on_hover_text(hint);
+        }
+    }
+}
+
+fn users_hint(factions: &BTreeMap<u32, Vec<String>>, id: u32) -> String {
+    factions.get(&id).map_or_else(
+        || String::from("쓰는 액터 없음"),
+        |who| format!("쓰는 액터: {}", who.join(", ")),
+    )
 }
 
 #[cfg(test)]
@@ -355,6 +425,46 @@ mod tests {
         form.relations.clear();
         let text = patch_settings(&rules, &display, &form).unwrap();
         assert!(text.contains("starting_kit: [],") && text.contains("relations: [],"));
+    }
+
+    #[test]
+    fn faction_names_round_trip_through_the_display_file() {
+        let (rules, display) = repo_texts();
+        let names: Vec<(u32, String)> = crate::game_data::faction_names(&display)
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(
+            names.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [1, 100, 201],
+            "저장소의 진영 이름 표"
+        );
+        // 이름을 바꾸고 하나 더하면 그 블록만 바뀐다.
+        let mut edited = names.clone();
+        edited[1].1 = String::from("스톰윈드");
+        edited.push((300, String::from("해적")));
+        let text = patch_names(&display, &edited).unwrap();
+        let back = crate::game_data::faction_names(&text).unwrap();
+        assert_eq!(back[&100], "스톰윈드");
+        assert_eq!(back[&300], "해적");
+        assert!(
+            text.contains("// 진영의 표시 이름"),
+            "블록 위 주석은 남는다"
+        );
+        crate::game_data::GameData::parse(&rules, &text).unwrap();
+
+        // 블록이 없는 예전 표시 파일 — 끝에 새로 생긴다.
+        let start = display.find("    // 진영의 표시 이름").unwrap();
+        let end = display[start..].find("    },\n").unwrap() + start + "    },\n".len();
+        let old = format!("{}{}", &display[..start], &display[end..]);
+        assert!(crate::game_data::faction_names(&old).unwrap().is_empty());
+        let text = patch_names(&old, &edited).unwrap();
+        assert_eq!(crate::game_data::faction_names(&text).unwrap().len(), 4);
+
+        // 같은 번호 두 번은 거부.
+        let mut twice = names;
+        twice.push((1, String::from("또")));
+        assert!(patch_names(&display, &twice).unwrap_err().contains("두 번"));
     }
 
     #[test]

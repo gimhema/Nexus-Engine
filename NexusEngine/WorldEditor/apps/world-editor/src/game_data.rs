@@ -290,6 +290,9 @@ struct DisplayFile {
     /// 스킬의 표시 이름 (P10). 없으면 번호로 보인다.
     #[serde(default)]
     skills: BTreeMap<u32, SkillLookFile>,
+    /// 진영의 표시 이름 (P19). 번호는 `rules.ron` 의 진영 번호(서버 `EFactionId`)와 같다. 없으면 번호로 보인다.
+    #[serde(default)]
+    factions: BTreeMap<u32, SkillLookFile>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -383,6 +386,8 @@ pub(crate) struct GameData {
     actor_skills: BTreeMap<ActorId, Vec<SkillId>>,
     /// 스킬의 표시 이름 (`display.ron`).
     skill_names: BTreeMap<SkillId, String>,
+    /// 진영의 표시 이름 (`display.ron`).
+    faction_names: BTreeMap<u32, String>,
     revive: RevivePolicy,
     /// 경로 → 스크립트 본문. 컴파일은 플레이를 시작할 때 한다.
     script_sources: BTreeMap<String, String>,
@@ -600,6 +605,14 @@ impl GameData {
                 format!("표시 스킬 {id}: 이름이 비어 있음"),
             );
         }
+        for (id, look) in &d.factions {
+            // 0 은 "진영 없음"(`FactionId::NONE`) — 이름을 붙이면 헷갈린다.
+            check(*id != 0, String::from("표시 진영 0: '진영 없음' 예약 번호"));
+            check(
+                !look.name.trim().is_empty(),
+                format!("표시 진영 {id}: 이름이 비어 있음"),
+            );
+        }
         check(
             (1..=100).contains(&r.revive.hp_percent)
                 && r.revive.exp_loss_percent <= 100
@@ -721,6 +734,11 @@ impl GameData {
                 .skills
                 .iter()
                 .map(|(id, l)| (SkillId(*id), l.name.clone()))
+                .collect(),
+            faction_names: d
+                .factions
+                .iter()
+                .map(|(id, l)| (*id, l.name.clone()))
                 .collect(),
             revive: RevivePolicy {
                 delay: Duration::from_millis(u64::from(r.revive.delay_ms)),
@@ -861,6 +879,14 @@ impl GameData {
             .and_then(|path| self.script_sources.get(path))
             .and_then(|src| nexus_script::check(src).ok())
             .is_some_and(|c| c.hooks.contains(&nexus_script::DEAD_HOOK))
+    }
+
+    /// 진영 이름 `(번호, 이름)` — 번호 순. 인스펙터가 번호 옆에 보여 준다.
+    pub(crate) fn faction_list(&self) -> Vec<(u32, &str)> {
+        self.faction_names
+            .iter()
+            .map(|(id, name)| (*id, name.as_str()))
+            .collect()
     }
 
     /// 스킬 이름. 표시 파일에 없으면 번호로.
@@ -1708,6 +1734,27 @@ pub(crate) fn patch_settings(
     Ok(text)
 }
 
+/// 진영 이름 표 — `display.ron` 의 `factions` (P19). 블록이 없으면 빈 표.
+pub(crate) fn faction_names(display: &str) -> Result<BTreeMap<u32, String>, String> {
+    let d: DisplayFile = ron::from_str(display).map_err(|e| format!("{DISPLAY_PATH}: {e}"))?;
+    Ok(d.factions.into_iter().map(|(id, l)| (id, l.name)).collect())
+}
+
+/// 진영 이름 표를 `display.ron` 에 끼운다 — `factions` 블록만 통째로 바꾸고 나머지 주석은 둔다.
+/// 블록이 없으면 끝 `)` 앞에 새로 넣는다. 검증은 부르는 쪽이 두 파일을 함께 한다.
+///
+/// ⚠ 블록 **안**의 주석은 남지 않는다 (블록 위 주석은 남는다).
+pub(crate) fn patch_faction_names(
+    display: &str,
+    names: &BTreeMap<u32, String>,
+) -> Result<String, String> {
+    let entries: Vec<String> = names
+        .iter()
+        .map(|(id, name)| format!("{id}: (name: {}),", crate::ron_patch::quote(name)))
+        .collect();
+    crate::ron_patch::replace_block(display, "factions", '{', &entries)
+}
+
 /// 규칙·표시 두 파일을 쓴다 — **둘 다 임시 파일에 먼저** 쓴 뒤 이름을 바꾼다 (한쪽만 바뀐 채
 /// 멈추는 창을 좁힌다). 부르는 쪽이 `GameData::parse` 로 검증을 마친 텍스트를 넘긴다.
 pub(crate) fn write_tables(root: &Path, rules: &str, display: &str) -> Result<(), String> {
@@ -1976,6 +2023,35 @@ mod tests {
             text.matches("revive:").count(),
             EMBEDDED_RULES.matches("revive:").count()
         );
+    }
+
+    #[test]
+    fn faction_names_are_display_data_and_checked() {
+        let data = GameData::embedded();
+        assert_eq!(
+            data.faction_list(),
+            [(1, "플레이어"), (100, "마을"), (201, "야생 몬스터")]
+        );
+        let zero = EMBEDDED_DISPLAY.replacen(
+            "1: (name: \"플레이어\"),\n        100",
+            "0: (name: \"없음\"),\n        100",
+            1,
+        );
+        assert_ne!(zero, EMBEDDED_DISPLAY, "시험 전제");
+        assert!(
+            GameData::parse(EMBEDDED_RULES, &zero)
+                .unwrap_err()
+                .contains("표시 진영 0")
+        );
+        let empty =
+            EMBEDDED_DISPLAY.replacen("201: (name: \"야생 몬스터\")", "201: (name: \" \")", 1);
+        assert!(
+            GameData::parse(EMBEDDED_RULES, &empty)
+                .unwrap_err()
+                .contains("이름이 비어")
+        );
+        // 규칙 파일에는 이름이 들어가지 않는다 — 반으로 나눈 표 규칙.
+        assert!(!EMBEDDED_RULES.contains("야생 몬스터\")"));
     }
 
     #[test]
