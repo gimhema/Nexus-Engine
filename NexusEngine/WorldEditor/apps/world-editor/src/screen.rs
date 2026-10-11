@@ -476,6 +476,9 @@ pub(crate) enum Action {
     Resume,
     /// 엔진을 닫는다. 에디터에서는 플레이를 멈춘다.
     Quit,
+    /// 스크립트 함수를 부른다 — 고정 동작으로 안 되는 특별한 일 (P17).
+    /// `path` 는 `data/` 기준 `.rhai`, `call` 은 그 안의 **인자 없는** 함수 이름.
+    Script { path: String, call: String },
     /// 아무것도 하지 않는다 — 배치만 해 두는 버튼.
     None,
 }
@@ -489,6 +492,7 @@ impl Action {
             Self::OpenStartLevel => "시작 레벨로",
             Self::Resume => "계속하기",
             Self::Quit => "종료",
+            Self::Script { .. } => "스크립트",
             Self::None => "없음",
         }
     }
@@ -1625,6 +1629,20 @@ fn check_widgets<'a>(
                 {
                     return Err(format!("'{}': {} 대상이 비어 있음", w.id, action.label()));
                 }
+                if let Action::Script { path, call } = action {
+                    if !crate::game_data::script_path_ok(path) {
+                        return Err(format!(
+                            "'{}': 스크립트 경로 '{path}' — data/ 기준, 소문자, '/' 구분, .rhai",
+                            w.id
+                        ));
+                    }
+                    if !is_identifier(call) {
+                        return Err(format!(
+                            "'{}': 스크립트 함수 이름 '{call}' 이 올바르지 않음",
+                            w.id
+                        ));
+                    }
+                }
             }
             WidgetKind::Items { columns } => {
                 if *columns == 0 {
@@ -1650,6 +1668,15 @@ fn check_widgets<'a>(
         check_widgets(&w.children, depth + 1, seen)?;
     }
     Ok(())
+}
+
+/// 스크립트 함수 이름 — 영문·숫자·`_`, 숫자로 시작하지 않는다 (Rhai 식별자의 안전한 부분집합).
+fn is_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn check_format(id: &str, format: &str) -> Result<(), String> {
@@ -1863,6 +1890,14 @@ mod tests {
             (
                 "(version: 1, name: \"x\", widgets: [(id: \"a\", anchor: TopLeft, pos: (0,0), kind: Items(columns: 0))])",
                 "칸 수가 0",
+            ),
+            (
+                "(version: 1, name: \"x\", widgets: [(id: \"a\", anchor: TopLeft, pos: (0,0), kind: Button(label: \"b\", action: Script(path: \"Scripts/UI.rhai\", call: \"go\")))])",
+                "스크립트 경로",
+            ),
+            (
+                "(version: 1, name: \"x\", widgets: [(id: \"a\", anchor: TopLeft, pos: (0,0), kind: Button(label: \"b\", action: Script(path: \"scripts/ui.rhai\", call: \"마시기()\")))])",
+                "함수 이름",
             ),
         ];
         for (text, want) in cases {

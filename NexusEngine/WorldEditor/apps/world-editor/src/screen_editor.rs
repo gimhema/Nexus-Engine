@@ -85,6 +85,8 @@ pub(crate) struct ScreenEditor {
     new_screen: String,
     /// 그림 위젯에 고를 수 있는 PNG (`assets/` 아래) — 창을 열 때 한 번 훑는다.
     images: Vec<String>,
+    /// 버튼 스크립트 후보 — `(data/ 기준 경로, 인자 없는 함수들)`. 창을 열 때 한 번 훑는다.
+    scripts: Vec<(String, Vec<String>)>,
 }
 
 impl ScreenEditor {
@@ -101,6 +103,7 @@ impl ScreenEditor {
     pub(crate) fn open(&mut self, screens: &Screens) {
         self.open = true;
         self.images = crate::content::scan_files(Path::new("."), "assets", ".png");
+        self.scripts = button_scripts();
         self.scale = screens.theme().map_or(2, |t| t.scale.max(1));
         self.saved_scale = self.scale;
         if self.screen.is_none() {
@@ -544,7 +547,7 @@ impl ScreenEditor {
                     }
                 });
 
-            kind_fields(ui, &mut w.kind, &self.images);
+            kind_fields(ui, &mut w.kind, &self.images, &self.scripts);
 
             // 부모 바꾸기 — 자기 자손은 고를 수 없다 (트리가 끊긴다).
             egui::ComboBox::from_label("부모")
@@ -882,7 +885,12 @@ fn image_fields(
 }
 
 /// 종류마다 다른 항목.
-fn kind_fields(ui: &mut egui::Ui, kind: &mut WidgetKind, images: &[String]) {
+fn kind_fields(
+    ui: &mut egui::Ui,
+    kind: &mut WidgetKind,
+    images: &[String],
+    scripts: &[(String, Vec<String>)],
+) {
     match kind {
         WidgetKind::Image {
             path,
@@ -943,6 +951,12 @@ fn kind_fields(ui: &mut egui::Ui, kind: &mut WidgetKind, images: &[String]) {
                 Action::OpenStartLevel,
                 Action::Resume,
                 Action::Quit,
+                Action::Script {
+                    path: scripts
+                        .first()
+                        .map_or_else(|| String::from("scripts/ui/pause.rhai"), |(p, _)| p.clone()),
+                    call: String::new(),
+                },
                 Action::None,
             ];
             egui::ComboBox::from_label("동작")
@@ -969,10 +983,59 @@ fn kind_fields(ui: &mut egui::Ui, kind: &mut WidgetKind, images: &[String]) {
                         ui.add(egui::TextEdit::singleline(target).desired_width(120.0));
                     });
                 }
+                Action::Script { path, call } => {
+                    egui::ComboBox::from_label("스크립트")
+                        .selected_text(path.as_str())
+                        .show_ui(ui, |ui| {
+                            for (p, _) in scripts {
+                                ui.selectable_value(path, p.clone(), p);
+                            }
+                        });
+                    ui.horizontal(|ui| {
+                        ui.label("함수");
+                        ui.add(egui::TextEdit::singleline(call).desired_width(120.0));
+                    });
+                    // 그 스크립트의 인자 없는 함수 — 눌러서 고른다.
+                    match scripts.iter().find(|(p, _)| p == path) {
+                        Some((_, funcs)) if !funcs.is_empty() => {
+                            ui.horizontal_wrapped(|ui| {
+                                for f in funcs {
+                                    if ui.selectable_label(call == f, f).clicked() {
+                                        call.clone_from(f);
+                                    }
+                                }
+                            });
+                        }
+                        _ => {
+                            ui.weak(
+                                "이 스크립트에서 버튼이 부를 함수(인자 없음)를 찾지 못했습니다.",
+                            );
+                        }
+                    }
+                    ui.weak("스크립트는 누를 때마다 다시 읽는다 — 스크립트 편집기에서 저장하면 바로 적용된다.");
+                }
                 _ => {}
             }
         }
     }
+}
+
+/// 버튼이 부를 수 있는 스크립트 — `data/scripts` 의 `.rhai` 와 그 안의 인자 없는 함수.
+/// 컴파일이 안 되는 파일은 함수 목록이 비어 있다 (고를 수는 있다 — 고치는 중일 수 있으므로).
+fn button_scripts() -> Vec<(String, Vec<String>)> {
+    let dir = Path::new(crate::game_data::DATA_DIR).join(crate::script_editor::SCRIPT_DIR);
+    crate::script_editor::list(&dir)
+        .into_iter()
+        .map(|path| {
+            let funcs = crate::game_data::read_script(&path)
+                .ok()
+                .flatten()
+                .and_then(|src| nexus_script::UiScript::compile(&path, &src).ok())
+                .map(|s| s.functions())
+                .unwrap_or_default();
+            (path, funcs)
+        })
+        .collect()
 }
 
 /// 오른쪽 아래 크기 조절 손잡이.

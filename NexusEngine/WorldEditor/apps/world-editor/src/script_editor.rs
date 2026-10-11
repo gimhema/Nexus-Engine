@@ -392,6 +392,9 @@ const HELP: &[&str] = &[
     "부활   revive(me, x, y, hp%)  revive(me, x, y, hp%, 경험치손실%)  — on_dead 에서. spawn_x/y = 저장 지점",
     "       on_dead 를 정의하면 그 액터의 기본 부활(rules.ron 의 revive)이 꺼진다",
     "기타   print(\"…\")  — 플레이 패널의 기록에 뜬다",
+    "버튼   (UI 스크립트 — 위젯 편집기에서 버튼 동작 \"스크립트\" 로 건다. 인자 없는 함수를 부른다)",
+    "       open_screen(이름)  close()  open_level(이름)  open_start_level()  resume()  quit()",
+    "       notify(글)  use_item(번호)  ·  읽기: playing()  hp()  max_hp()  mp()  level()  item_count(번호)  level_id()",
     "주의   정수·실수를 섞지 않는다: move_to(me, 1.0, 2.0) · 정수는 .to_float()",
 ];
 
@@ -505,6 +508,17 @@ const API: &[&str] = &[
     "stop",
     "attack",
     "revive",
+    "open_screen",
+    "close",
+    "open_level",
+    "open_start_level",
+    "resume",
+    "quit",
+    "notify",
+    "use_item",
+    "playing",
+    "item_count",
+    "level_id",
     "print",
 ];
 

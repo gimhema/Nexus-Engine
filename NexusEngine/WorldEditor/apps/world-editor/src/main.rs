@@ -39,6 +39,7 @@ mod table_editor;
 mod terrain;
 mod tiles;
 mod ui;
+mod ui_script;
 mod zone_file;
 
 use std::path::PathBuf;
@@ -210,6 +211,8 @@ struct Editor {
     fixed_zoom: Option<f32>,
     /// 진행 중인 플레이 (F5). 있으면 편집 대신 시뮬레이션을 보여 주고 조작한다.
     play: Option<PlaySession>,
+    /// 버튼이 부르는 UI 스크립트 (P17) — 컴파일·상태 캐시.
+    ui_scripts: ui_script::UiScripts,
     /// 열어 둔 존 파일. 새 씬이면 `None` — 저장할 때 경로를 묻는다.
     zone_path: Option<PathBuf>,
     /// 마지막으로 저장·연 시점의 편집 상태 번호 (`History::state_id`). 다르면 저장 안 됨.
@@ -266,6 +269,7 @@ impl Default for Editor {
             data: None,
             fixed_zoom: None,
             play: None,
+            ui_scripts: ui_script::UiScripts::default(),
             zone_path: None,
             saved_state: 0,
             notice: None,
@@ -576,6 +580,8 @@ impl Editor {
     /// 플레이를 멈추고 에디터로 돌아온다. 진행 상황은 저장한다 (P3-4 정상 종료 경로).
     fn stop_play(&mut self) {
         self.shell = None;
+        // 버튼 스크립트의 상태(this)는 한 판 단위다.
+        self.ui_scripts.reset();
         self.pending_level = None;
         self.ui_hover = None;
         self.ui_press = None;
@@ -942,7 +948,72 @@ impl Editor {
                     false,
                 );
             }
+            Action::Script { path, call } => self.run_ui_script(&path, &call),
             Action::None => {}
+        }
+    }
+
+    /// 버튼의 스크립트 함수를 부르고, 낸 명령을 **고정 동작과 같은 경로로** 실행한다 (P17).
+    /// 오류는 상태 바에 빨갛게 — 그 버튼만 아무 일도 하지 않는다.
+    fn run_ui_script(&mut self, path: &str, call: &str) {
+        use nexus_script::UiCommand;
+        use screen::Action;
+        let view = self.ui_view();
+        let commands = match self.ui_scripts.run(path, call, view) {
+            Ok(commands) => commands,
+            Err(e) => {
+                self.notify(format!("버튼 스크립트 — {e}"), true);
+                return;
+            }
+        };
+        for command in commands {
+            match command {
+                UiCommand::OpenScreen(id) => self.run_action(Action::OpenScreen(id)),
+                UiCommand::Close => self.run_action(Action::Close),
+                UiCommand::OpenLevel(id) => self.run_action(Action::OpenLevel(id)),
+                UiCommand::OpenStartLevel => self.run_action(Action::OpenStartLevel),
+                UiCommand::Resume => self.run_action(Action::Resume),
+                UiCommand::Quit => self.run_action(Action::Quit),
+                UiCommand::Notify(text) => self.notify(text, false),
+                UiCommand::UseItem(item) => {
+                    match self.play.as_mut().map(|p| p.use_item_by_id(item)) {
+                        Some(true) => {}
+                        Some(false) => {
+                            self.notify(format!("아이템 #{item} 이(가) 가방에 없습니다"), true)
+                        }
+                        None => self.notify(
+                            String::from("플레이 중이 아니라 아이템을 쓸 수 없습니다"),
+                            true,
+                        ),
+                    }
+                }
+            }
+        }
+    }
+
+    /// UI 스크립트가 읽는 값 — 플레이 중이 아니면 0 과 빈 가방.
+    fn ui_view(&self) -> nexus_script::UiView {
+        let level_id = self
+            .shell
+            .as_ref()
+            .map(|s| s.level.clone())
+            .unwrap_or_default();
+        let Some(play) = self.play.as_ref() else {
+            return nexus_script::UiView {
+                level_id,
+                ..nexus_script::UiView::default()
+            };
+        };
+        let me = play.world().unit(play.player());
+        nexus_script::UiView {
+            playing: true,
+            hp: me.map_or(0, |u| u.hp()),
+            max_hp: me.map_or(0, |u| u.max_hp()),
+            mp: me.map_or(0, |u| u.mp()),
+            max_mp: me.map_or(0, |u| u.max_mp()),
+            level: me.map_or(0, |u| u.progress().level()),
+            items: play.consumable_counts(),
+            level_id,
         }
     }
 

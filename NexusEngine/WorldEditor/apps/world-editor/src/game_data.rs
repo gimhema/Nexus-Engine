@@ -52,10 +52,17 @@ pub(crate) const DATA_DIR: &str = "data";
 
 /// 내장 스크립트 — 작업 디렉터리 밖에서 실행해도 기본 데이터가 돌게. 경로는 `data/` 기준.
 /// 디스크에 같은 경로의 파일이 있으면 그것이 우선한다 (다른 데이터 파일과 같은 규칙).
-const EMBEDDED_SCRIPTS: &[(&str, &str)] = &[(
-    "scripts/goblin.rhai",
-    include_str!("../../../data/scripts/goblin.rhai"),
-)];
+const EMBEDDED_SCRIPTS: &[(&str, &str)] = &[
+    (
+        "scripts/goblin.rhai",
+        include_str!("../../../data/scripts/goblin.rhai"),
+    ),
+    // 일시정지 화면 버튼 스크립트 (P17).
+    (
+        "scripts/ui/pause.rhai",
+        include_str!("../../../data/scripts/ui/pause.rhai"),
+    ),
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 파일 형식
@@ -898,6 +905,18 @@ fn embedded_script(path: &str) -> Option<&'static str> {
         .iter()
         .find(|(p, _)| *p == path)
         .map(|(_, s)| *s)
+}
+
+/// 스크립트 본문 하나 — `data/` 기준 경로. 디스크가 우선, 없으면 내장본, 그것도 없으면 `None`.
+/// 데이터 파일과 같은 규칙이다: 있는데 못 읽으면 오류 (조용히 내장본으로 넘어가지 않는다).
+pub(crate) fn read_script(path: &str) -> Result<Option<String>, String> {
+    match std::fs::read_to_string(Path::new(DATA_DIR).join(path)) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(embedded_script(path).map(str::to_owned))
+        }
+        Err(e) => Err(format!("{DATA_DIR}/{path}: {e}")),
+    }
 }
 
 /// 스크립트 경로 규칙 — `data/` 기준 상대 경로, 소문자, `/` 구분, `.rhai`.

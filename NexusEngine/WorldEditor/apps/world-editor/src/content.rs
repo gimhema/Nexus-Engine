@@ -1803,6 +1803,8 @@ fn references(root: &Path, asset: &Asset, assets: &[Asset], forms: &Forms) -> Ve
                     out.push(format!("액터 #{id} {}", f.name));
                 }
             }
+            // 화면 버튼의 스크립트 (P17).
+            needles.push((AssetKind::Screen, format!("path: \"{rel}\"")));
         }
         AssetKind::Sheet => {
             for (id, f) in &forms.actors {

@@ -810,6 +810,35 @@ impl PlaySession {
             .collect()
     }
 
+    /// 소모품 가방 — `(아이템 번호, 개수)`, 칸 순서. UI 스크립트의 `item_count` 재료.
+    pub(crate) fn consumable_counts(&self) -> Vec<(u32, u32)> {
+        self.world().unit(self.player).map_or_else(Vec::new, |me| {
+            me.inventory()
+                .bag(BagKind::Consumable)
+                .iter()
+                .map(|(_, s)| (s.item.0, s.count))
+                .collect()
+        })
+    }
+
+    /// 그 소모품을 하나 쓴다 — 앞쪽 칸부터. 가방에 없으면 `false`.
+    pub(crate) fn use_item_by_id(&mut self, item: u32) -> bool {
+        let slot = self.world().unit(self.player).and_then(|me| {
+            me.inventory()
+                .bag(BagKind::Consumable)
+                .iter()
+                .find(|(_, s)| s.item.0 == item)
+                .and_then(|(slot, _)| u16::try_from(slot).ok())
+        });
+        match slot {
+            Some(slot) => {
+                self.inventory(InventoryAction::Use(slot));
+                true
+            }
+            None => false,
+        }
+    }
+
     /// 장착 자리마다 (자리, 자리 이름, 장착한 아이템 이름).
     pub(crate) fn equipped_lines(&self) -> Vec<(EquipSlot, &'static str, Option<String>)> {
         let me = self.world().unit(self.player);

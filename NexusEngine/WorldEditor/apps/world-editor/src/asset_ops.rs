@@ -600,12 +600,21 @@ impl Spec {
                     format!("OpenScreen(\"{new}\")"),
                 ),
             ],
-            AssetKind::Script => vec![(
-                "data",
-                "rules.ron",
-                format!("Some(\"{id}\")"),
-                format!("Some(\"{new}\")"),
-            )],
+            AssetKind::Script => vec![
+                (
+                    "data",
+                    "rules.ron",
+                    format!("Some(\"{id}\")"),
+                    format!("Some(\"{new}\")"),
+                ),
+                // 화면 버튼의 스크립트 (P17).
+                (
+                    "ui",
+                    ".ui.ron",
+                    format!("path: \"{id}\""),
+                    format!("path: \"{new}\""),
+                ),
+            ],
             _ => Vec::new(),
         }
     }
@@ -767,6 +776,50 @@ mod tests {
                 String::from("zones/town.zone.ron")
             ))
         );
+    }
+
+    #[test]
+    fn renaming_a_button_script_rewrites_the_screens_that_call_it() {
+        let sb = Sandbox::new("ui-script");
+        // 내장 스크립트는 옮기지 않는다 — 복제본을 버튼에 걸고 그것을 옮긴다.
+        let builtin = op(
+            OpKind::Rename,
+            AssetKind::Script,
+            "data/scripts/ui/pause.rhai",
+            "x",
+        );
+        assert!(plan(&sb.0, &builtin).is_err(), "내장 버튼 스크립트");
+        let dup = op(
+            OpKind::Duplicate,
+            AssetKind::Script,
+            "data/scripts/ui/pause.rhai",
+            "pause_copy",
+        );
+        let p = plan(&sb.0, &dup).unwrap();
+        apply(&sb.0, &p).unwrap();
+        let copy = scan_files(&sb.0, "data/scripts", ".rhai")
+            .into_iter()
+            .find(|f| f.contains("pause_copy"))
+            .expect("복제본");
+        let copy_id = copy.strip_prefix("data/").unwrap().to_owned();
+        let screen = sb.read("ui/pause.ui.ron").replace(
+            "path: \"scripts/ui/pause.rhai\"",
+            &format!("path: \"{copy_id}\""),
+        );
+        std::fs::write(sb.0.join("ui/pause.ui.ron"), screen).unwrap();
+
+        let rename = op(OpKind::Rename, AssetKind::Script, &copy, "drinks");
+        let p = plan(&sb.0, &rename).unwrap();
+        assert!(
+            p.steps.iter().any(|s| s.contains("ui/pause.ui.ron")),
+            "{:?}",
+            p.steps
+        );
+        apply(&sb.0, &p).unwrap();
+        let screen = sb.read("ui/pause.ui.ron");
+        assert!(!screen.contains(&copy_id));
+        assert!(screen.contains("path: \"scripts/drinks.rhai\""), "{screen}");
+        crate::screen::Screens::read_screen(&screen).expect("고쳐 쓴 화면도 읽힌다");
     }
 
     #[test]
