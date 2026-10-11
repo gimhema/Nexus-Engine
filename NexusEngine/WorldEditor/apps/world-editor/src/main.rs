@@ -1298,6 +1298,15 @@ impl Editor {
         if actions.delete && !self.editing.is_dragging() && !self.editing.is_painting() {
             self.editing.delete_selected(&mut self.scene);
         }
+        if actions.duplicate && !self.editing.is_dragging() && !self.editing.is_painting() {
+            let n = self.editing.duplicate_selected(&mut self.scene);
+            if n > 0 {
+                self.notify(
+                    format!("마커 {n}개를 복제했습니다 — 복사본이 선택돼 있습니다"),
+                    false,
+                );
+            }
+        }
 
         let pointer = match actions.pointer {
             Some(p) if self.script.is_some() => Some(self.scripted_pointer(p, actions)),
@@ -1384,7 +1393,8 @@ impl Editor {
                     Anchor::RotateHandle => self
                         .editing
                         .rotatable()
-                        .and_then(|e| self.scene.item(e))
+                        .first()
+                        .and_then(|e| self.scene.item(*e))
                         .map(|item| scene::rotate_handle_pos(item, real.px)),
                 };
                 self.script_cursor = world.or(self.script_cursor);
@@ -1411,6 +1421,9 @@ impl Editor {
             }
             Step::Delete => {
                 self.editing.delete_selected(&mut self.scene);
+            }
+            Step::Duplicate => {
+                self.editing.duplicate_selected(&mut self.scene);
             }
             Step::Undo => {
                 self.editing.undo(&mut self.scene);
@@ -1811,11 +1824,16 @@ impl Editor {
             .build_commands(&ids, &values, state, size, &mut self.commands);
     }
 
-    /// 단독 선택된 마커의 회전 핸들 — 화살표 끝에서 이어지는 가는 선 + 원 대신 마름모.
+    /// 고른 마커마다 회전 핸들 — 화살표 끝에서 이어지는 가는 선 + 마름모. 아무것이나 끌면 고른 것 전부가 돈다.
     fn draw_rotate_handle(&mut self, px: f32) {
-        let Some(item) = self.editing.rotatable().and_then(|e| self.scene.item(e)) else {
-            return;
-        };
+        for entity in self.editing.rotatable() {
+            if let Some(item) = self.scene.item(entity).cloned() {
+                self.draw_one_rotate_handle(&item, px);
+            }
+        }
+    }
+
+    fn draw_one_rotate_handle(&mut self, item: &scene::Item, px: f32) {
         let tip = scene::arrow_tip(item, px);
         let at = scene::rotate_handle_pos(item, px);
         push_segment(

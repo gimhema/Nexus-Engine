@@ -43,6 +43,8 @@ const PAINT_MAX_STEPS: f32 = 512.0;
 
 /// Ctrl 회전 스냅 간격 — 15°.
 pub(crate) const ROTATE_SNAP: f32 = PI / 12.0;
+/// 복제한 마커를 원본에서 옮기는 거리 (m) — 화면 오른쪽 아래로, 겹쳐 보이지 않게.
+pub(crate) const DUPLICATE_OFFSET: Vec2 = Vec2::new(1.0, -1.0);
 
 /// 되돌릴 수 있는 편집 하나.
 #[derive(Clone, Debug, PartialEq)]
@@ -239,6 +241,18 @@ fn set_overrides(scene: &mut Scene, values: impl Iterator<Item = (Entity, Overri
     }
 }
 
+/// 복제본 번호를 뗀 이름 — `슬라임 (2)` → `슬라임`. 복사본을 또 복제해도 `슬라임 (3)` 이 되게.
+fn base_name(name: &str) -> &str {
+    if let Some(open) = name.rfind(" (")
+        && let Some(num) = name[open + 2..].strip_suffix(')')
+        && !num.is_empty()
+        && num.chars().all(|c| c.is_ascii_digit())
+    {
+        return &name[..open];
+    }
+    name
+}
+
 fn set_headings(scene: &mut Scene, headings: impl Iterator<Item = (Entity, f32)>) {
     for (e, heading) in headings {
         if let Some(item) = scene.item_mut(e) {
@@ -369,9 +383,11 @@ enum Drag {
         start_cursor: Vec2,
         originals: Vec<(Entity, Vec2)>,
     },
+    /// 회전 손잡이 끌기 — `entity` 는 잡은 마커, `originals` 는 고른 마커 전부의 원래 방향.
+    /// 잡은 마커가 커서를 향하고, 나머지는 같은 각도만큼 함께 돈다.
     Rotate {
         entity: Entity,
-        original: f32,
+        originals: Vec<(Entity, f32)>,
     },
     Zone {
         handle: Handle,
@@ -702,12 +718,15 @@ impl Editing {
         self.drag.is_some()
     }
 
-    /// 회전 핸들을 보일 마커 — 마커 하나만 선택됐을 때.
-    pub(crate) fn rotatable(&self) -> Option<Entity> {
-        match self.selection.as_slice() {
-            [Target::Item(e)] => Some(*e),
-            _ => None,
-        }
+    /// 회전 핸들을 보일 마커 — 고른 마커 전부 (여럿이면 함께 돈다).
+    pub(crate) fn rotatable(&self) -> Vec<Entity> {
+        self.selection
+            .iter()
+            .filter_map(|t| match t {
+                Target::Item(e) => Some(*e),
+                Target::Zone => None,
+            })
+            .collect()
     }
 
     /// 진행 중인 박스 선택 사각형 (min, max). 그리기용.
@@ -781,8 +800,8 @@ impl Editing {
                     }
                 }
             }
-            Some(Drag::Rotate { entity, original }) => {
-                set_headings(scene, std::iter::once((entity, original)));
+            Some(Drag::Rotate { originals, .. }) => {
+                set_headings(scene, originals.into_iter());
             }
             Some(Drag::Zone { original, .. }) => scene.zone = original,
             Some(Drag::Box { base, .. }) => self.selection = base,
@@ -838,6 +857,51 @@ impl Editing {
         true
     }
 
+    /// 선택된 마커를 복제해 [`DUPLICATE_OFFSET`] 만큼 옆에 놓고 **복사본을 선택**한다 (Ctrl+D).
+    ///
+    /// 액터 타입·덮어쓰기·방향·크기는 그대로, 이름은 `이름 (2)` 처럼 겹치지 않게. 여러 개여도 언두 한 스텝이다.
+    /// 복사본은 목록 끝에 붙는다 (위에 그려진다 — 겹쳐도 새것이 잡힌다). 복제한 수를 돌려준다.
+    pub(crate) fn duplicate_selected(&mut self, scene: &mut Scene) -> usize {
+        self.cancel_pending(scene);
+        let originals: Vec<Item> = scene
+            .items
+            .iter()
+            .filter(|i| self.is_selected(Target::Item(i.entity)))
+            .cloned()
+            .collect();
+        if originals.is_empty() {
+            return 0;
+        }
+        let mut copies: Vec<(usize, Item)> = Vec::new();
+        for original in originals {
+            let fresh = scene.new_item(original.kind, original.pos + DUPLICATE_OFFSET);
+            let taken = |name: &str| {
+                scene.items.iter().any(|i| i.name == name)
+                    || copies.iter().any(|(_, c)| c.name == name)
+            };
+            let name = (2..)
+                .map(|n| format!("{} ({n})", base_name(&original.name)))
+                .find(|n| !taken(n))
+                .unwrap_or_default();
+            let copy = Item {
+                entity: fresh.entity,
+                name,
+                pos: fresh.pos,
+                ..original
+            };
+            copies.push((scene.items.len() + copies.len(), copy));
+        }
+        let entities: Vec<Entity> = copies.iter().map(|(_, c)| c.entity).collect();
+        let cmd = Command::AddItems(copies);
+        cmd.apply(scene);
+        self.history.record(cmd);
+        self.clear_selection();
+        for e in &entities {
+            self.select(Target::Item(*e), true);
+        }
+        entities.len()
+    }
+
     // ── 뷰포트 포인터 ────────────────────────────────────────────────────
 
     /// 뷰포트 포인터 입력을 처리한다. 반환값은 포인터 아래의 대상(호버 표시용).
@@ -851,7 +915,7 @@ impl Editing {
         let hover = input
             .world
             .filter(|_| input.over_viewport)
-            .and_then(|w| scene.pick(w, input.px, rotatable));
+            .and_then(|w| scene.pick(w, input.px, &rotatable));
 
         if input.pressed
             && let Some(w) = input.world
@@ -892,11 +956,14 @@ impl Editing {
     fn begin_press(&mut self, scene: &Scene, hover: Option<Pick>, cursor: Vec2, additive: bool) {
         match hover {
             Some(Pick::RotateHandle(entity)) => {
-                if let Some(item) = scene.item(entity) {
-                    self.drag = Some(Drag::Rotate {
-                        entity,
-                        original: item.orientation,
-                    });
+                // 손잡이는 고른 마커에만 있다 — 고른 것 전부가 함께 돈다.
+                let originals: Vec<(Entity, f32)> = self
+                    .rotatable()
+                    .into_iter()
+                    .filter_map(|e| scene.item(e).map(|i| (e, i.orientation)))
+                    .collect();
+                if originals.iter().any(|(e, _)| *e == entity) {
+                    self.drag = Some(Drag::Rotate { entity, originals });
                 }
             }
             Some(Pick::Item(entity)) => {
@@ -962,11 +1029,10 @@ impl Editing {
                     .filter_map(|(e, from)| scene.item(e).map(|i| (e, from, i.pos)))
                     .collect(),
             ),
-            Drag::Rotate { entity, original } => Command::RotateItems(
-                scene
-                    .item(entity)
-                    .map(|i| (entity, original, i.orientation))
+            Drag::Rotate { originals, .. } => Command::RotateItems(
+                originals
                     .into_iter()
+                    .filter_map(|(e, from)| scene.item(e).map(|i| (e, from, i.orientation)))
                     .collect(),
             ),
             Drag::Zone { original, .. } => Command::SetZone {
@@ -1121,8 +1187,11 @@ fn update_drag(scene: &mut Scene, drag: &Drag, cursor: Vec2, snap: bool, grid: f
                 }
             }
         }
-        Drag::Rotate { entity, .. } => {
-            let Some(item) = scene.item_mut(*entity) else {
+        Drag::Rotate { entity, originals } => {
+            let Some(&(_, grabbed_from)) = originals.iter().find(|(e, _)| e == entity) else {
+                return;
+            };
+            let Some(item) = scene.item(*entity) else {
                 return;
             };
             let dir = cursor - item.pos;
@@ -1130,11 +1199,19 @@ fn update_drag(scene: &mut Scene, drag: &Drag, cursor: Vec2, snap: bool, grid: f
             if dir.length_squared() <= f32::EPSILON {
                 return;
             }
+            // 잡은 마커가 커서를 향하고(스냅도 이 마커 기준), 나머지는 같은 각도만큼 함께 돈다 —
+            // 마커끼리의 방향 차이가 유지된다.
             let mut heading = units::dir_to_heading(dir);
             if snap {
                 heading = (heading / ROTATE_SNAP).round() * ROTATE_SNAP;
             }
-            item.orientation = units::normalize_heading(heading);
+            let delta = heading - grabbed_from;
+            set_headings(
+                scene,
+                originals
+                    .iter()
+                    .map(|&(e, from)| (e, units::normalize_heading(from + delta))),
+            );
         }
         Drag::Zone { handle, original } => {
             let to = if snap { snap_to(cursor, grid) } else { cursor };
@@ -1991,18 +2068,98 @@ mod tests {
     }
 
     #[test]
-    fn rotate_handle_only_for_single_selection() {
+    fn rotate_handles_only_on_selected_markers() {
         let (mut s, a, b) = scene();
         let mut ed = Editing::default();
         ed.select(Target::Item(a), false);
-        ed.select(Target::Item(b), true);
-        assert_eq!(ed.rotatable(), None);
-
-        let handle = crate::scene::rotate_handle_pos(s.item(a).unwrap(), PX);
+        assert_eq!(ed.rotatable(), [a]);
+        // 고르지 않은 마커에는 손잡이가 없다.
+        let handle_b = crate::scene::rotate_handle_pos(s.item(b).unwrap(), PX);
         assert_ne!(
-            ed.handle_pointer(&mut s, &move_to(handle)),
-            Some(Pick::RotateHandle(a))
+            ed.handle_pointer(&mut s, &move_to(handle_b)),
+            Some(Pick::RotateHandle(b))
         );
+        ed.select(Target::Item(b), true);
+        assert_eq!(ed.rotatable(), [a, b]);
+        assert_eq!(
+            ed.handle_pointer(&mut s, &move_to(handle_b)),
+            Some(Pick::RotateHandle(b))
+        );
+    }
+
+    #[test]
+    fn dragging_one_handle_turns_every_selected_marker_by_the_same_angle() {
+        let (mut s, a, b) = scene();
+        s.item_mut(b).unwrap().orientation = 90f32.to_radians();
+        let mut ed = Editing::default();
+        ed.select(Target::Item(a), false);
+        ed.select(Target::Item(b), true);
+
+        // A(방향 0)의 손잡이를 잡고 45° 쪽으로 — A 는 45°, B 는 90 + 45 = 135°. 차이는 그대로다.
+        let handle = crate::scene::rotate_handle_pos(s.item(a).unwrap(), PX);
+        ed.handle_pointer(&mut s, &press(handle));
+        let at = Vec2::new(100.0, 100.0) + units::heading_to_dir(45f32.to_radians()) * 50.0;
+        ed.handle_pointer(&mut s, &move_to(at));
+        ed.handle_pointer(&mut s, &release_at(at));
+        assert!(close(s.item(a).unwrap().orientation, 45f32.to_radians()));
+        assert!(close(s.item(b).unwrap().orientation, 135f32.to_radians()));
+
+        ed.undo(&mut s);
+        assert!(
+            close(s.item(a).unwrap().orientation, 0.0),
+            "한 스텝으로 둘 다"
+        );
+        assert!(close(s.item(b).unwrap().orientation, 90f32.to_radians()));
+    }
+
+    #[test]
+    fn duplicate_copies_beside_and_selects_the_copies_in_one_step() {
+        let (mut s, a, b) = scene();
+        s.item_mut(b).unwrap().actor = ActorId::new(101);
+        s.item_mut(b).unwrap().overrides.max_hp = Some(333);
+        s.item_mut(b).unwrap().orientation = 1.0;
+        let mut ed = Editing::default();
+        ed.select(Target::Item(a), false);
+        ed.select(Target::Item(b), true);
+        let before = s.items.len();
+
+        assert_eq!(ed.duplicate_selected(&mut s), 2);
+        assert_eq!(s.items.len(), before + 2);
+        let copy_b = s.items.last().unwrap().clone();
+        assert_eq!(copy_b.name, "B (2)");
+        assert_eq!(copy_b.pos, Vec2::new(-300.0, 50.0) + DUPLICATE_OFFSET);
+        assert_eq!(
+            (copy_b.actor, copy_b.overrides.max_hp, copy_b.orientation),
+            (ActorId::new(101), Some(333), 1.0),
+            "타입·덮어쓰기·방향이 따라간다"
+        );
+        assert_ne!(copy_b.entity, b);
+        assert_eq!(ed.rotatable().len(), 2);
+        assert!(
+            ed.is_selected(Target::Item(copy_b.entity)),
+            "복사본이 선택된다"
+        );
+        assert!(!ed.is_selected(Target::Item(b)));
+
+        // 복사본을 또 복제하면 (3) — (2) (2) 가 되지 않는다.
+        ed.select(Target::Item(copy_b.entity), false);
+        ed.duplicate_selected(&mut s);
+        assert_eq!(s.items.last().unwrap().name, "B (3)");
+
+        ed.undo(&mut s);
+        ed.undo(&mut s);
+        assert_eq!(s.items.len(), before, "복제 한 번 = 언두 한 스텝");
+        ed.redo(&mut s);
+        assert_eq!(s.items.last().unwrap().entity, s.items[before + 1].entity);
+    }
+
+    #[test]
+    fn duplicate_with_nothing_selected_records_nothing() {
+        let (mut s, _, _) = scene();
+        let mut ed = Editing::default();
+        ed.select(Target::Zone, false);
+        assert_eq!(ed.duplicate_selected(&mut s), 0);
+        assert!(ed.history().undo_label().is_none());
     }
 
     #[test]

@@ -14,7 +14,7 @@
 //! add npc|monster|player X Y   마커 추가
 //! tool select|paint|art        뷰포트 포인터가 할 일 바꾸기
 //! art 번호 [ground|prop]        지형 그림 붓 (0 = 지우기 — 이때는 층을 적는다)
-//! delete | undo | redo | wait
+//! delete | duplicate | undo | redo | wait
 //! play                         플레이 시작/정지 (F5 와 같다). 플레이 중 press 는 클릭 명령이 된다
 //! save PATH | open PATH         존 파일 저장 / 열기 (경로에 공백 불가)
 //! dialog open|saveas            열기 / 다른 이름으로 저장 창 띄우기
@@ -84,6 +84,8 @@ pub(crate) enum Step {
     /// 층은 번호로 알 수 있으므로 보통 `None` 이다. 지우개는 번호가 없으니 직접 고른다.
     SetArtBrush(ArtId, Option<ArtKind>),
     Delete,
+    /// 선택한 마커 복제 (Ctrl+D).
+    Duplicate,
     Undo,
     Redo,
     /// 플레이 시작 / 정지.
@@ -203,6 +205,7 @@ fn parse_step(text: &str) -> Result<Step, String> {
         "move" => Button::Move,
         "release" => Button::Release,
         "delete" => return Ok(Step::Delete),
+        "duplicate" => return Ok(Step::Duplicate),
         "undo" => return Ok(Step::Undo),
         "redo" => return Ok(Step::Redo),
         "wait" => return Ok(Step::Wait),
@@ -463,6 +466,7 @@ mod tests {
         assert!(parse("brush rect -1").is_err());
         assert!(parse("skill 0").is_err() && parse("skill 10").is_err() && parse("skill").is_err());
         assert_eq!(parse("skill 2").unwrap(), [Step::Skill(2)]);
+        assert_eq!(parse("duplicate").unwrap(), [Step::Duplicate]);
     }
 
     #[test]

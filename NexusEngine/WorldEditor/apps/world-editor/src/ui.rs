@@ -170,6 +170,8 @@ pub(crate) struct UiActions {
     pub(crate) add_item: Option<ItemKind>,
     /// 선택된 마커 삭제.
     pub(crate) delete: bool,
+    /// 선택된 마커 복제 (Ctrl+D).
+    pub(crate) duplicate: bool,
     /// 카메라 pitch 변경 (라디안).
     pub(crate) set_pitch: Option<f32>,
     /// 뷰포트 포인터가 할 일 변경.
@@ -685,6 +687,12 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
                 });
                 let has_items = model.selection.iter().any(|t| matches!(t, Target::Item(_)));
                 if ui
+                    .add_enabled(has_items, egui::Button::new("복제").shortcut_text("Ctrl+D"))
+                    .clicked()
+                {
+                    actions.duplicate = true;
+                }
+                if ui
                     .add_enabled(has_items, egui::Button::new("삭제").shortcut_text("Delete"))
                     .clicked()
                 {
@@ -919,6 +927,7 @@ fn shortcuts(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
         actions.redo |= i.consume_shortcut(&KeyboardShortcut::new(ctrl_shift, Key::Z));
         actions.redo |= i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Y));
         actions.undo |= i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Z));
+        actions.duplicate |= i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::D));
 
         actions.toggle_play |= i.key_pressed(Key::F5);
         actions.toggle_items |= i.key_pressed(Key::I);

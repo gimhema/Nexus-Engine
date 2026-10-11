@@ -535,13 +535,14 @@ impl Scene {
     ///
     /// 우선순위: 회전 핸들 → 마커(위에 그려진 것부터) → 존 모서리 → 존 변.
     /// 존 내부의 빈 곳은 존을 고르지 않는다 — 존은 화면 대부분을 덮기 때문이다.
-    pub(crate) fn pick(&self, p: Vec2, px: f32, rotatable: Option<Entity>) -> Option<Pick> {
+    pub(crate) fn pick(&self, p: Vec2, px: f32, rotatable: &[Entity]) -> Option<Pick> {
         let tolerance = PICK_TOLERANCE_PX * px;
 
-        if let Some(item) = rotatable.and_then(|e| self.item(e))
-            && (p - rotate_handle_pos(item, px)).length() <= HANDLE_SIZE_PX * 0.5 * px + tolerance
-        {
-            return Some(Pick::RotateHandle(item.entity));
+        // 회전 손잡이는 고른 마커마다 있다 — 마커보다 먼저 잡힌다.
+        for item in rotatable.iter().filter_map(|e| self.item(*e)) {
+            if (p - rotate_handle_pos(item, px)).length() <= HANDLE_SIZE_PX * 0.5 * px + tolerance {
+                return Some(Pick::RotateHandle(item.entity));
+            }
         }
 
         for item in self.items.iter().rev() {
@@ -660,11 +661,11 @@ mod tests {
         let top = s.add("위", ItemKind::Npc, Vec2::new(505.0, 500.0), 40.0);
 
         assert_eq!(
-            s.pick(Vec2::new(503.0, 500.0), 1.0, None),
+            s.pick(Vec2::new(503.0, 500.0), 1.0, &[]),
             Some(Pick::Item(top))
         );
         assert_ne!(
-            s.pick(Vec2::new(503.0, 500.0), 1.0, None),
+            s.pick(Vec2::new(503.0, 500.0), 1.0, &[]),
             Some(Pick::Item(bottom))
         );
     }
@@ -674,15 +675,15 @@ mod tests {
         let s = Scene::server_default();
         let px = 1.0; // 허용 오차 6m
         assert_eq!(
-            s.pick(Vec2::new(1000.0, 1000.0), px, None),
+            s.pick(Vec2::new(1000.0, 1000.0), px, &[]),
             Some(Pick::ZoneHandle(Handle::TopRight))
         );
         assert_eq!(
-            s.pick(Vec2::new(-1005.0, 300.0), px, None),
+            s.pick(Vec2::new(-1005.0, 300.0), px, &[]),
             Some(Pick::ZoneHandle(Handle::Left))
         );
         assert_eq!(
-            s.pick(Vec2::new(400.0, 400.0), px, None),
+            s.pick(Vec2::new(400.0, 400.0), px, &[]),
             None,
             "존 내부 빈 곳은 아무것도 고르지 않는다"
         );
@@ -697,7 +698,7 @@ mod tests {
         let px = 3.0;
         // 반폭 = 12px/2 × 3m = 18m, 허용 오차 6px × 3m = 18m → 36m 까지
         assert_eq!(
-            s.pick(Vec2::new(20.0 + 35.0, -5.0), px, None)
+            s.pick(Vec2::new(20.0 + 35.0, -5.0), px, &[])
                 .map(Pick::target),
             Some(slime)
         );
@@ -710,11 +711,11 @@ mod tests {
         let slime = s.find_by_label("슬라임").unwrap();
         let px = 0.01;
         assert_eq!(
-            s.pick(Vec2::new(20.45, -5.0), px, None).map(Pick::target),
+            s.pick(Vec2::new(20.45, -5.0), px, &[]).map(Pick::target),
             Some(slime),
             "반폭 0.4m + 오차 0.06m 안쪽"
         );
-        assert_eq!(s.pick(Vec2::new(20.5, -5.0), px, None), None);
+        assert_eq!(s.pick(Vec2::new(20.5, -5.0), px, &[]), None);
     }
 
     #[test]
