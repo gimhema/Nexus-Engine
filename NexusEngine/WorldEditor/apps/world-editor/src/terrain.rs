@@ -256,13 +256,17 @@ pub(crate) struct Terrain {
     entries: BTreeMap<ArtId, Art>,
     /// 이미 GPU 에 올린 그림 — **경로** → 텍스처.
     ///
-    /// 팔레트 창에서 그림을 고를 때마다 `terrain.ron` 이 바뀌어 다시 읽는다. 텍스처 해제 API 가
-    /// 없으므로 같은 그림을 매번 올리면 쌓이기만 한다 — 그래서 경로로 알아보고 새 그림만 올린다.
-    /// (그림 파일의 **내용**을 바꾼 경우는 알아채지 못한다 — 시트와 같이 재시작해야 한다.)
+    /// 팔레트 창에서 그림을 고를 때마다 `terrain.ron` 이 바뀌어 다시 읽는다 — 그때는 경로로
+    /// 알아보고 새 그림만 올린다. 그림 파일의 **내용**을 바꿨으면 *보기 → 그림 다시 읽기*.
     uploaded: BTreeMap<String, TextureId>,
 }
 
 impl Terrain {
+    /// GPU 에 올린 타일셋 텍스처 — 그림을 다시 읽을 때 옛 것을 풀려고.
+    pub(crate) fn textures(&self) -> Vec<TextureId> {
+        self.uploaded.values().copied().collect()
+    }
+
     /// 지형 데이터를 읽어 타일셋을 GPU 에 올린다.
     ///
     /// # Errors

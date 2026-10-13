@@ -227,6 +227,8 @@ impl Inventory {
 pub struct GroundItem {
     pub pos: Vec2,
     pub stack: ItemStack,
+    /// 떨어진 시각 (시뮬레이션 시계). 소멸 시간(`SimWorld::set_ground_item_lifetime`)의 기준.
+    pub dropped_at: std::time::Duration,
 }
 
 #[cfg(test)]
@@ -341,6 +343,8 @@ mod flow_tests {
                 cooldown_ms: 500,
                 damage_mult: 1.0,
                 mp_cost: 0,
+                radius: 0.0,
+                heal: 0,
             },
         );
         w.define_item(
@@ -853,5 +857,55 @@ mod flow_tests {
         assert!(w.ground_item(h).is_none(), "유닛 핸들로 아이템이 조회됐다");
         assert_eq!(w.unit_count(), 1);
         assert_eq!(w.ground_items().count(), 1);
+    }
+
+    #[test]
+    fn ground_items_vanish_after_their_lifetime() {
+        let mut auth = LocalAuthority::new(world());
+        auth.world_mut()
+            .set_ground_item_lifetime(Some(Duration::from_secs(1)));
+        let stack = ItemStack {
+            item: POTION,
+            count: 1,
+        };
+        let g = auth.world_mut().spawn_ground_item(Vec2::ZERO, stack);
+        let mut gone_at = None;
+        for n in 1..=40 {
+            let events = auth.tick(DT);
+            if events
+                .iter()
+                .any(|e| matches!(e, Event::ItemDespawned { item } if *item == g))
+            {
+                gone_at = Some(n);
+                break;
+            }
+            assert!(
+                auth.world().ground_item(g).is_some(),
+                "{n} tick 에 조용히 사라졌다"
+            );
+        }
+        // 1초 = 20 tick — 그 tick 에 정확히 한 번.
+        assert_eq!(gone_at, Some(20));
+        assert!(auth.world().ground_item(g).is_none());
+        assert_eq!(auth.world().ground_items().count(), 0);
+    }
+
+    #[test]
+    fn ground_items_stay_without_a_lifetime() {
+        let mut auth = LocalAuthority::new(world());
+        // 0 은 "사라지지 않음" 과 같다.
+        auth.world_mut()
+            .set_ground_item_lifetime(Some(Duration::ZERO));
+        let g = auth.world_mut().spawn_ground_item(
+            Vec2::ZERO,
+            ItemStack {
+                item: POTION,
+                count: 1,
+            },
+        );
+        for _ in 0..200 {
+            auth.tick(DT);
+        }
+        assert!(auth.world().ground_item(g).is_some());
     }
 }

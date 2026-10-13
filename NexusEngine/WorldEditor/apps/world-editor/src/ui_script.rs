@@ -83,4 +83,23 @@ mod tests {
                 .contains("없음")
         );
     }
+
+    #[test]
+    fn the_pause_screen_says_when_there_is_no_potion_as_it_opens() {
+        // ui/pause.ui.ron 의 on_open → scripts/ui/pause.rhai 의 opened().
+        let screen =
+            crate::screen::Screens::read_screen(include_str!("../../../ui/pause.ui.ron")).unwrap();
+        let hook = screen.on_open.expect("일시정지 화면에 on_open");
+        let mut ui = UiScripts::default();
+        assert!(
+            ui.run(&hook.path, &hook.call, view(50, 3))
+                .unwrap()
+                .is_empty()
+        );
+        let said = ui.run(&hook.path, &hook.call, view(50, 0)).unwrap();
+        assert!(
+            matches!(said.as_slice(), [UiCommand::Notify(t)] if t.contains("포션이 없습니다")),
+            "{said:?}"
+        );
+    }
 }

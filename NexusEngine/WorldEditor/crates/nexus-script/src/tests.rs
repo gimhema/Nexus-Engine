@@ -42,6 +42,8 @@ fn arena(source: &str, seed: u64, hero_at: Vec2) -> (LocalAuthority, Entity, Ent
             cooldown_ms: 1000,
             damage_mult: 1.0,
             mp_cost: 0,
+            radius: 0.0,
+            heal: 0,
         },
     );
     world.set_relation(HEROES, GOBLINS, Relation::Hostile);
@@ -207,6 +209,8 @@ fn a_respawned_actor_keeps_its_script_and_starts_over() {
             cooldown_ms: 1000,
             damage_mult: 1.0,
             mp_cost: 0,
+            radius: 0.0,
+            heal: 0,
         },
     );
     world.set_relation(HEROES, GOBLINS, Relation::Hostile);
@@ -258,7 +262,7 @@ fn on_dead_runs_while_down_and_revive_stands_the_actor_up() {
         fn on_dead(me, dt) {
             this.down += dt;
             if this.down >= 2.0 {
-                revive(me, me.spawn_x, me.spawn_y, 50, 10);
+                revive(me, me.spawn_x, me.spawn_y, 50, 10, 2000);
             }
         }
     "#;
@@ -284,6 +288,11 @@ fn on_dead_runs_while_down_and_revive_stands_the_actor_up() {
         "같은 핸들, 스폰 자리, HP 50%"
     );
     assert!(auth.world().unit(goblin).unwrap().is_alive());
+    let now = auth.world().now();
+    assert!(
+        auth.world().unit(goblin).unwrap().is_protected(now),
+        "6번째 인자 = 보호 ms"
+    );
 }
 
 #[test]

@@ -52,6 +52,11 @@ const BAR_HP_LOW: [f32; 4] = [0.95, 0.30, 0.25, 1.0];
 const CORPSE_TINT: [f32; 4] = [0.35, 0.35, 0.38, 1.0];
 /// 맞은 유닛을 붉게 깜빡인다 — 피격 그림이 없는 시트에도 맞은 것이 보이게. 곱하는 색이다.
 const HIT_TINT: [f32; 4] = [1.0, 0.35, 0.35, 1.0];
+/// 땅 아이템이 사라지기 전 깜빡이는 구간과 한 번의 켜짐·꺼짐 길이.
+const ITEM_BLINK_BEFORE: Duration = Duration::from_secs(5);
+const ITEM_BLINK_MS: u128 = 250;
+/// 부활 직후 보호 중인 유닛이 깜빡이는 한 번의 길이.
+const PROTECT_BLINK_MS: u128 = 100;
 /// 깜빡임 길이 (tick). 3 tick = 150ms.
 const HIT_FLASH_TICKS: u8 = 3;
 
@@ -172,36 +177,54 @@ impl PlaySession {
             }
             // 마커가 가리키는 액터 타입에서 수치·그림이 나오고, 마커별 덮어쓰기가 그 위에 얹힌다 (P1, P1-4).
             let actor = data.resolve_actor(item.actor, item.kind);
-            let unit = world.spawn_unit(
-                item.pos,
-                item.orientation,
-                item.overrides.apply(data.unit_def(actor)),
-            );
-            let name = if is_player {
-                String::from("플레이어")
+            // 스폰 영역 — 무리는 반경 안에 흩어 세운다. 걸을 수 없는 칸에 떨어진 마리는 마커 자리로.
+            // 마리마다 자기 자리가 리스폰 지점이 된다 (P15).
+            let points = if is_player {
+                vec![item.pos]
             } else {
-                item.name.clone()
+                item.spawn.points(item.pos)
             };
-            labels.insert(
-                unit,
-                Label {
-                    name,
-                    actor,
-                    // 두 색을 따로 들고 간다 — 어느 쪽을 쓸지는 시트가 무채색인지로 정해진다.
-                    tint: data.actor_look(actor).map_or(NO_TINT, ActorLook::tint),
-                    fallback: item.kind.color(),
-                },
-            );
-            if let Some(id) = data.actor_script(actor).and_then(|p| compiled.get(p)) {
-                scripts.attach(unit, *id);
-            }
-            if is_player {
-                // 이어 하기면 저장한 소지품이 들어오므로 시작 소지품은 주지 않는다.
-                match options.save.as_ref() {
-                    Some(save) => restore(&mut world, unit, save),
-                    None => data.give_starting_kit(&mut world, unit),
+            for pos in points {
+                let tiles = world.tiles();
+                let pos = if tiles
+                    .get(tiles.world_to_tile(pos))
+                    .is_some_and(|t| t.walkable)
+                {
+                    pos
+                } else {
+                    item.pos
+                };
+                let unit = world.spawn_unit(
+                    pos,
+                    item.orientation,
+                    item.overrides.apply(data.unit_def(actor)),
+                );
+                let name = if is_player {
+                    String::from("플레이어")
+                } else {
+                    item.name.clone()
+                };
+                labels.insert(
+                    unit,
+                    Label {
+                        name,
+                        actor,
+                        // 두 색을 따로 들고 간다 — 어느 쪽을 쓸지는 시트가 무채색인지로 정해진다.
+                        tint: data.actor_look(actor).map_or(NO_TINT, ActorLook::tint),
+                        fallback: item.kind.color(),
+                    },
+                );
+                if let Some(id) = data.actor_script(actor).and_then(|p| compiled.get(p)) {
+                    scripts.attach(unit, *id);
                 }
-                player = Some(unit);
+                if is_player {
+                    // 이어 하기면 저장한 소지품이 들어오므로 시작 소지품은 주지 않는다.
+                    match options.save.as_ref() {
+                        Some(save) => restore(&mut world, unit, save),
+                        None => data.give_starting_kit(&mut world, unit),
+                    }
+                    player = Some(unit);
+                }
             }
         }
         let player = player.ok_or("플레이어 스폰이 없어 플레이할 수 없습니다")?;
@@ -249,6 +272,12 @@ impl PlaySession {
 
     pub(crate) fn player(&self) -> Entity {
         self.player
+    }
+
+    /// 기본 부활까지 남은 초 — 쓰러져 있고 기본 부활을 기다릴 때만. 스크립트가 맡으면 `None`.
+    pub(crate) fn revive_in(&self) -> Option<f32> {
+        let at = self.revive_at?;
+        Some(at.saturating_sub(self.world().now()).as_secs_f32())
     }
 
     pub(crate) fn ticks(&self) -> u64 {
@@ -391,6 +420,15 @@ impl PlaySession {
     /// 눌렀는데 왜 안 나가는지 알 수 없다. 이때 하던 주문은 그대로 둔다.
     pub(crate) fn use_skill(&mut self, key: usize) {
         match self.plan_skill(key) {
+            // 회복 스킬은 자신에게 곧바로 — 하던 주문(공격·이동)은 그대로 둔다.
+            Ok((target, skill)) if target == self.player => {
+                self.auth.submit(Intent::Attack {
+                    unit: self.player,
+                    target,
+                    skill,
+                });
+                self.note(format!("{} → 자신", self.data.skill_name(skill)));
+            }
             Ok((target, skill)) => {
                 let line = format!("{} → {}", self.data.skill_name(skill), self.name(target));
                 self.order = Order::Attack {
@@ -431,6 +469,9 @@ impl PlaySession {
                 me.mp(),
                 def.mp_cost
             ));
+        }
+        if def.is_heal() {
+            return Ok((self.player, skill));
         }
         let current = self
             .attack_target()
@@ -483,6 +524,7 @@ impl PlaySession {
                     at: u.spawn_pos(),
                     hp_per_mille: policy.hp_per_mille,
                     exp_loss_per_mille: policy.exp_loss_per_mille,
+                    protect_ms: policy.protect_ms,
                 };
                 self.auth.submit(intent);
             }
@@ -692,6 +734,15 @@ impl PlaySession {
                 if exp_lost > 0 {
                     line.push_str(&format!(" · 경험치 -{exp_lost}"));
                 }
+                let now = self.world().now();
+                if let Some(left) = self
+                    .world()
+                    .unit(unit)
+                    .map(|u| u.protection_left(now))
+                    .filter(|d| !d.is_zero())
+                {
+                    line.push_str(&format!(" · {:.1}초 보호", left.as_secs_f32()));
+                }
                 line
             }
             Event::Respawned { unit, .. } => format!("{} 다시 나타남", self.name(unit)),
@@ -718,13 +769,17 @@ impl PlaySession {
             Event::LeveledUp { unit, level } if unit == self.player => {
                 format!("레벨 {level} 달성 — HP 가 가득 찼다")
             }
+            // 플레이어는 이름 없이 (포션·회복 스킬), 다른 유닛은 이름을 붙인다 (범위 회복).
             Event::Healed {
+                unit,
                 amount,
                 remaining_hp,
-                ..
-            } => {
-                format!("HP +{amount} (HP {remaining_hp})")
-            }
+            } if unit == self.player => format!("HP +{amount} (HP {remaining_hp})"),
+            Event::Healed {
+                unit,
+                amount,
+                remaining_hp,
+            } => format!("{} HP +{amount} (HP {remaining_hp})", self.name(unit)),
             Event::ManaRestored {
                 amount,
                 remaining_mp,
@@ -866,6 +921,13 @@ impl PlaySession {
         let world = self.world();
 
         for (_, g) in world.ground_items() {
+            // 사라지기 전 마지막 몇 초는 깜빡인다 — 시뮬레이션 시계 기준이라 fps 와 무관하다.
+            if let Some(left) = world.ground_item_time_left(g)
+                && left < ITEM_BLINK_BEFORE
+                && (left.as_millis() / ITEM_BLINK_MS) % 2 == 1
+            {
+                continue;
+            }
             let size = (10.0 * px).max(0.4);
             let diamond = std::f32::consts::FRAC_PI_4;
             for (grow, bias, color) in [
@@ -924,7 +986,14 @@ impl PlaySession {
         out: &mut Vec<RenderCommand>,
     ) {
         let idle_animator = SpriteAnimator::default();
+        let now = self.world().now();
         for (unit, u) in self.world().units() {
+            // 부활 직후 보호 중이면 깜빡인다 — 스프라이트는 컷아웃이라 반투명 대신 껐다 켠다.
+            if u.is_protected(now)
+                && (u.protection_left(now).as_millis() / PROTECT_BLINK_MS) % 2 == 1
+            {
+                continue;
+            }
             let actor = self.actor_of(unit);
             // 시체는 어떤 시트든 회색 — 명시한 색으로 넘겨 컬러 아트에도 곱해지게 한다.
             let (tint, fallback) = match self.labels.get(&unit) {
@@ -1380,6 +1449,13 @@ mod tests {
             last_log(&s),
             "플레이어가 쓰러졌습니다 — 3.0초 뒤 저장 지점에서 일어납니다"
         );
+        // 쓰러져 있는 동안 화면 값 — 어둡게 덮기와 남은 초 (`{revive}`).
+        let v = crate::screen::Values::from_play(&s, false).unwrap();
+        assert!(v.down);
+        assert!(
+            v.revive_in.is_some_and(|t| (2.9..=3.0).contains(&t)),
+            "{v:?}"
+        );
         for _ in 0..55 {
             s.tick(DT, None);
         }
@@ -1400,12 +1476,17 @@ mod tests {
         );
         // 소지품은 그대로 — 새 유닛이 아니다.
         assert!(!s.bag_lines(BagKind::Consumable).is_empty());
+        // 일어난 뒤 3초 보호 (protect_ms) — 화면 값도 "쓰러짐" 이 풀린다.
+        assert!(u.is_protected(s.world().now()));
+        assert!(s.log.iter().any(|l| l.ends_with("초 보호")), "{:?}", s.log);
+        let v = crate::screen::Values::from_play(&s, false).unwrap();
+        assert!(!v.down && v.revive_in.is_none());
     }
 
     #[test]
     fn the_default_revive_takes_its_numbers_from_the_rules() {
         let rules = GameData::embedded_rules().replacen(
-            "revive: (delay_ms: 3000, hp_percent: 100, exp_loss_percent: 0)",
+            "revive: (delay_ms: 3000, hp_percent: 100, exp_loss_percent: 0, protect_ms: 3000)",
             "revive: (delay_ms: 500, hp_percent: 25, exp_loss_percent: 50)",
             1,
         );
@@ -1438,8 +1519,8 @@ mod tests {
             }
         "#;
         let rules = GameData::embedded_rules().replacen(
-            "            skills: [5, 6],\n",
-            "            skills: [5, 6],\n            script: Some(\"scripts/hero.rhai\"),\n",
+            "            skills: [5, 6, 7, 8],\n",
+            "            skills: [5, 6, 7, 8],\n            script: Some(\"scripts/hero.rhai\"),\n",
             1,
         );
         assert_ne!(rules, GameData::embedded_rules(), "시험 전제");
@@ -1518,12 +1599,35 @@ mod tests {
         let s = session();
         assert_eq!(
             s.hotbar,
-            [SkillId(5), SkillId(6)],
+            [SkillId(5), SkillId(6), SkillId(7), SkillId(8)],
             "rules.ron: actors.1.skills"
         );
         let slots = s.skill_slots();
-        assert_eq!(slots.len(), 2);
+        assert_eq!(slots.len(), 4);
         assert!(slots.iter().all(|x| x.usable && x.cooldown == 0.0));
+    }
+
+    #[test]
+    fn a_heal_skill_key_mends_the_player_and_keeps_the_current_order() {
+        // rules.ron: 단축키 4 = 치유 (#8, 회복 60, MP 15).
+        let mut s = session();
+        let me = s.player();
+        s.auth.world_mut().set_hp(me, 100);
+        let slime = find(&s, "슬라임");
+        s.order = Order::Attack {
+            target: slime,
+            skill: None,
+        };
+        s.use_skill(4);
+        assert_eq!(last_log(&s), "치유 → 자신");
+        assert!(
+            matches!(s.order, Order::Attack { target, skill: None } if target == slime),
+            "하던 주문은 그대로"
+        );
+        s.tick(DT, None);
+        let u = s.world().unit(me).unwrap();
+        assert_eq!((u.hp(), u.mp()), (160, 45));
+        assert!(s.log.iter().any(|l| l == "HP +60 (HP 160)"), "{:?}", s.log);
     }
 
     #[test]
@@ -1848,6 +1952,37 @@ mod tests {
         assert_eq!((unit.hp(), unit.def().max_hp), (333, 333));
         assert_eq!(unit.def().attack, base.def().attack);
         assert_ne!(base.def().max_hp, 333);
+    }
+
+    #[test]
+    fn a_spawn_area_raises_a_scattered_pack_that_respawns_in_place() {
+        let mut scene = Scene::server_default();
+        let slime = scene.items.iter_mut().find(|i| i.name == "슬라임").unwrap();
+        slime.spawn = crate::scene::SpawnArea {
+            count: 3,
+            radius: 2.0,
+        };
+        let center = slime.pos;
+        let s = PlaySession::start(
+            &scene,
+            Camera2d::default(),
+            GameData::embedded(),
+            PlayOptions::default(),
+        )
+        .unwrap();
+        let pack: Vec<Vec2> = s
+            .world()
+            .units()
+            .filter(|(e, _)| s.labels[e].name == "슬라임")
+            .map(|(_, u)| u.spawn_pos())
+            .collect();
+        assert_eq!(pack.len(), 3, "마커 하나에 세 마리");
+        for (i, p) in pack.iter().enumerate() {
+            assert!(p.distance(center) <= 2.0 + 1e-3, "{i}: 반경 밖");
+            for q in &pack[i + 1..] {
+                assert!(p.distance(*q) > 0.1, "같은 자리에 겹쳤다");
+            }
+        }
     }
 
     #[test]

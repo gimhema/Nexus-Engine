@@ -24,8 +24,10 @@ use crate::scene::ActorId;
 
 /// 지금 쓰는 형식 번호.
 pub(crate) const FORMAT_VERSION: u32 = 1;
-/// 한 칸뿐인 기본 저장 파일.
+/// 1번 칸 저장 파일 — 저장 칸이 하나뿐이던 때의 경로를 그대로 쓴다 (예전 저장이 1번 칸이 된다).
 pub(crate) const DEFAULT_SAVE: &str = "saves/player.save.ron";
+/// 저장 칸 수.
+pub(crate) const SLOTS: u8 = 3;
 
 /// 읽어 들인 저장 데이터 — 앱 안에서 쓰는 형태.
 #[derive(Clone, Debug, PartialEq)]
@@ -152,9 +154,23 @@ pub(crate) fn from_ron(text: &str) -> Result<SaveData, String> {
     })
 }
 
-/// 기본 저장 파일 경로.
-pub(crate) fn default_path() -> PathBuf {
-    PathBuf::from(DEFAULT_SAVE)
+/// `slot` 번 칸의 저장 파일 — 1번은 `saves/player.save.ron`, 2번부터 `saves/player2.save.ron` …
+/// 범위 밖의 번호는 1~[`SLOTS`] 로 자른다.
+pub(crate) fn slot_path(slot: u8) -> PathBuf {
+    match slot.clamp(1, SLOTS) {
+        1 => PathBuf::from(DEFAULT_SAVE),
+        n => PathBuf::from(format!("saves/player{n}.save.ron")),
+    }
+}
+
+/// 저장 칸 한 줄 요약 — 메뉴·이어 하기 창용. 비었으면 "비어 있음", 깨졌으면 그 이유.
+pub(crate) fn summary(path: &Path) -> String {
+    match load(path) {
+        Ok(Some(s)) if s.zone.is_empty() => format!("레벨 {} · (새 존)", s.level),
+        Ok(Some(s)) => format!("레벨 {} · {}", s.level, s.zone),
+        Ok(None) => String::from("비어 있음"),
+        Err(e) => format!("읽을 수 없음 — {e}"),
+    }
 }
 
 /// 저장한다 — 임시 파일에 쓴 뒤 이름 바꾸기. 폴더가 없으면 만든다.
@@ -270,6 +286,42 @@ mod tests {
         delete(&path).unwrap();
         delete(&path).unwrap();
         assert_eq!(load(&path), Ok(None));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn slots_have_their_own_files_and_slot_one_is_the_old_path() {
+        assert_eq!(
+            slot_path(1),
+            PathBuf::from(DEFAULT_SAVE),
+            "예전 저장이 1번 칸"
+        );
+        assert_eq!(slot_path(2), PathBuf::from("saves/player2.save.ron"));
+        assert_eq!(slot_path(3), PathBuf::from("saves/player3.save.ron"));
+        // 범위 밖은 자른다.
+        assert_eq!(slot_path(0), slot_path(1));
+        assert_eq!(slot_path(99), slot_path(SLOTS));
+        let all: std::collections::BTreeSet<_> = (1..=SLOTS).map(slot_path).collect();
+        assert_eq!(all.len(), usize::from(SLOTS), "칸마다 다른 파일");
+        // 경로는 소문자·'/' — 두 OS 에서 같은 파일.
+        for p in &all {
+            let s = p.to_string_lossy();
+            assert_eq!(s, s.to_lowercase());
+            assert!(!s.contains(char::from(92)), "역슬래시 없음");
+        }
+    }
+
+    #[test]
+    fn a_slot_summary_says_level_and_zone_or_empty() {
+        let dir = std::env::temp_dir().join(format!("nexus-slot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("player2.save.ron");
+        assert_eq!(summary(&path), "비어 있음");
+        save(&path, &sample()).unwrap();
+        let s = sample();
+        assert_eq!(summary(&path), format!("레벨 {} · {}", s.level, s.zone));
+        std::fs::write(&path, "깨진 파일").unwrap();
+        assert!(summary(&path).starts_with("읽을 수 없음"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

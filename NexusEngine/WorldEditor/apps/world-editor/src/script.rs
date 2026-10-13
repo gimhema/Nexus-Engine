@@ -14,7 +14,7 @@
 //! add npc|monster|player X Y   마커 추가
 //! tool select|paint|art        뷰포트 포인터가 할 일 바꾸기
 //! art 번호 [ground|prop]        지형 그림 붓 (0 = 지우기 — 이때는 층을 적는다)
-//! delete | duplicate | undo | redo | wait
+//! delete | duplicate | spawnarea 마리수 반경 | reloadart | slot N | askplay | continue yes|new|cancel | undo | redo | wait
 //! play                         플레이 시작/정지 (F5 와 같다). 플레이 중 press 는 클릭 명령이 된다
 //! save PATH | open PATH         존 파일 저장 / 열기 (경로에 공백 불가)
 //! dialog open|saveas            열기 / 다른 이름으로 저장 창 띄우기
@@ -87,6 +87,8 @@ pub(crate) enum Step {
     Delete,
     /// 선택한 마커 복제 (Ctrl+D).
     Duplicate,
+    /// 선택한 마커의 스폰 영역 — `(마리 수, 반경 m)`. 인스펙터와 같은 경로다.
+    SpawnArea(u32, f32),
     Undo,
     Redo,
     /// 플레이 시작 / 정지.
@@ -108,12 +110,20 @@ pub(crate) enum Step {
     SaveGame,
     /// 저장 데이터 삭제.
     DeleteSave,
+    /// 저장 칸 바꾸기 (1부터).
+    SaveSlot(u8),
+    /// F5 와 같은 시작 — 저장이 있으면 이어 하기 창을 띄운다.
+    AskPlay,
+    /// 이어 하기 창의 답.
+    Continue(crate::ui::ContinueChoice),
     /// HUD 인벤토리 창 열고 닫기 (I).
     ToggleItems,
     /// 단축키 스킬 (숫자키) — 1부터.
     Skill(usize),
     /// 에디터 패널 숨기기 (F9).
     TogglePanels,
+    /// 그림 다시 읽기 (보기 메뉴).
+    ReloadArt,
     /// 위젯 편집기 열고 닫기 (P7).
     UiEdit,
     /// 편집할 화면 바꾸기.
@@ -209,6 +219,13 @@ fn parse_step(text: &str) -> Result<Step, String> {
         "release" => Button::Release,
         "delete" => return Ok(Step::Delete),
         "duplicate" => return Ok(Step::Duplicate),
+        "spawnarea" => {
+            let count = words
+                .get(1)
+                .and_then(|w| w.parse().ok())
+                .ok_or_else(|| format!("'{text}': spawnarea 마리수 반경"))?;
+            return Ok(Step::SpawnArea(count, number(2)?));
+        }
         "undo" => return Ok(Step::Undo),
         "redo" => return Ok(Step::Redo),
         "wait" => return Ok(Step::Wait),
@@ -239,6 +256,24 @@ fn parse_step(text: &str) -> Result<Step, String> {
         "compile" => return Ok(Step::Compile),
         "savegame" => return Ok(Step::SaveGame),
         "deletesave" => return Ok(Step::DeleteSave),
+        "slot" => {
+            return words
+                .get(1)
+                .and_then(|w| w.parse::<u8>().ok())
+                .filter(|n| (1..=crate::save_file::SLOTS).contains(n))
+                .map(Step::SaveSlot)
+                .ok_or_else(|| format!("'{text}': slot 1~{}", crate::save_file::SLOTS));
+        }
+        "askplay" => return Ok(Step::AskPlay),
+        "continue" => {
+            use crate::ui::ContinueChoice;
+            return match words.get(1).copied() {
+                Some("yes") => Ok(Step::Continue(ContinueChoice::Continue)),
+                Some("new") => Ok(Step::Continue(ContinueChoice::Fresh)),
+                Some("cancel") => Ok(Step::Continue(ContinueChoice::Cancel)),
+                _ => Err(format!("'{text}': continue yes|new|cancel")),
+            };
+        }
         "items" => return Ok(Step::ToggleItems),
         "skill" => {
             let n = words
@@ -249,6 +284,7 @@ fn parse_step(text: &str) -> Result<Step, String> {
             return Ok(Step::Skill(n));
         }
         "panels" => return Ok(Step::TogglePanels),
+        "reloadart" => return Ok(Step::ReloadArt),
         "uiedit" => return Ok(Step::UiEdit),
         "startlevel" => return Ok(Step::StartLevel),
         "esc" => return Ok(Step::Escape),
@@ -471,6 +507,18 @@ mod tests {
         assert!(parse("skill 0").is_err() && parse("skill 10").is_err() && parse("skill").is_err());
         assert_eq!(parse("skill 2").unwrap(), [Step::Skill(2)]);
         assert_eq!(parse("duplicate").unwrap(), [Step::Duplicate]);
+        assert_eq!(parse("spawnarea 5 3.5").unwrap(), [Step::SpawnArea(5, 3.5)]);
+        assert!(parse("spawnarea 5").is_err());
+        assert_eq!(parse("reloadart").unwrap(), [Step::ReloadArt]);
+        assert_eq!(parse("slot 2").unwrap(), [Step::SaveSlot(2)]);
+        assert!(parse("slot 9").is_err());
+        assert_eq!(
+            parse("askplay; continue new").unwrap(),
+            [
+                Step::AskPlay,
+                Step::Continue(crate::ui::ContinueChoice::Fresh)
+            ]
+        );
     }
 
     #[test]

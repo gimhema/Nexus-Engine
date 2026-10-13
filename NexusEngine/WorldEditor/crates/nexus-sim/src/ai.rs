@@ -153,8 +153,8 @@ fn nearest_hostile(world: &SimWorld, me: Entity) -> Option<Entity> {
 
     let mut best: Option<(f32, Entity)> = None;
     for (other, o) in world.units() {
-        // 불사 유닛은 쳐 봐야 거절된다 — 처음부터 노리지 않는다.
-        if other == me || !o.is_alive() || o.def().immortal {
+        // 불사·보호 중인 유닛은 쳐 봐야 거절된다 — 처음부터 노리지 않는다.
+        if other == me || !o.is_alive() || o.def().immortal || o.is_protected(world.now()) {
             continue;
         }
         if world.relation(def.faction, o.def().faction) != Relation::Hostile {
@@ -258,6 +258,8 @@ mod tests {
             cooldown_ms,
             damage_mult: 1.0,
             mp_cost: 0,
+            radius: 0.0,
+            heal: 0,
         };
         w.define_skill(BITE, skill(1.5, 1000));
         w.define_skill(SWORD, skill(2.0, 800));
@@ -556,6 +558,28 @@ mod tests {
         );
         let events = run(&mut auth, 10);
         assert!(!events.iter().any(|e| matches!(e, Event::Engaged { .. })));
+    }
+
+    #[test]
+    fn protected_units_are_left_alone_until_protection_ends() {
+        let mut w = world_with(flat());
+        w.spawn_unit(Vec2::new(10.5, 10.5), 0.0, slime());
+        let p = w.spawn_unit(Vec2::new(12.5, 10.5), 0.0, player());
+        // 부활 직후처럼 1초 보호.
+        w.unit_mut(p).unwrap().protected_until = Some(std::time::Duration::from_secs(1));
+        let mut auth = LocalAuthority::new(w);
+        assert!(
+            !run(&mut auth, 15)
+                .iter()
+                .any(|e| matches!(e, Event::Engaged { .. })),
+            "보호 중인데 노렸다"
+        );
+        assert!(
+            run(&mut auth, 10)
+                .iter()
+                .any(|e| matches!(e, Event::Engaged { .. })),
+            "보호가 풀린 뒤에도 노리지 않는다"
+        );
     }
 
     // ── 싸움의 끝 ────────────────────────────────────────────────────────────

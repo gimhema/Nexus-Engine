@@ -21,8 +21,8 @@ use std::time::Duration;
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SkillId(pub u32);
 
-/// 스킬 정적 데이터. 서버 `SkillDef` 의 단일 대상(Melee/Ranged) 부분.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// 스킬 정적 데이터. 서버 `SkillDef` 의 단일 대상(Melee/Ranged) 부분 + 범위·회복.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SkillDef {
     /// 최대 사거리 (m). 공격자와 대상의 지면 거리가 이 값 이하여야 한다.
     pub range: f32,
@@ -32,6 +32,20 @@ pub struct SkillDef {
     pub damage_mult: f32,
     /// 쓸 때 드는 MP. 0 이면 MP 를 보지 않는다. 거절된 공격은 MP 를 쓰지 않는다 (쿨타임과 같다).
     pub mp_cost: u32,
+    /// 0 보다 크면 **범위 스킬** — 대상 둘레 이 반경(m) 안의 다른 유닛에게도 들어간다.
+    /// 피해 스킬은 시전자에게 **적대**인 유닛만, 회복 스킬은 시전자 자신과 **우호** 유닛만 맞는다.
+    pub radius: f32,
+    /// 0 보다 크면 **회복 스킬** — 피해 대신 HP 를 이만큼 채운다 ([`Event::Healed`](crate::Event::Healed)).
+    /// 자신이나 적대가 아닌 유닛을 대상으로 한다 (적대 대상은 `InvalidTarget`).
+    pub heal: u32,
+}
+
+impl SkillDef {
+    /// 회복 스킬인가.
+    #[must_use]
+    pub fn is_heal(&self) -> bool {
+        self.heal > 0
+    }
 }
 
 impl SkillDef {
@@ -116,6 +130,8 @@ mod flow_tests {
                 cooldown_ms: 1000,
                 damage_mult: 1.0,
                 mp_cost: 0,
+                radius: 0.0,
+                heal: 0,
             },
         );
         world.define_skill(
@@ -125,6 +141,8 @@ mod flow_tests {
                 cooldown_ms: 2000,
                 damage_mult: 0.5,
                 mp_cost: 0,
+                radius: 0.0,
+                heal: 0,
             },
         );
         let a = world.spawn_unit(Vec2::new(1.5, 1.5), 0.0, fighter());
@@ -276,6 +294,7 @@ mod flow_tests {
                 at: Vec2::new(10.5, 10.5),
                 hp_per_mille: 500,
                 exp_loss_per_mille: 100,
+                protect_ms: 0,
             });
             auth.tick(DT)
         };
@@ -303,6 +322,144 @@ mod flow_tests {
         );
     }
 
+    /// 진영 둘(1 ↔ 2 적대)로 나눈 범위 스킬 시험장 — `[시전자, 대상, 대상 옆 적, 먼 적, 대상 옆 아군]`.
+    fn melee_crowd() -> (LocalAuthority, [Entity; 5]) {
+        use crate::{FactionId, Relation};
+        let mut world = SimWorld::new(TileMap::new(20, 20, 1.0, Vec2::ZERO, Tile::default()));
+        world.set_relation(FactionId(1), FactionId(2), Relation::Hostile);
+        world.define_skill(
+            WHIRL,
+            SkillDef {
+                range: 3.0,
+                cooldown_ms: 1000,
+                damage_mult: 1.0,
+                radius: 2.5,
+                ..SkillDef::default()
+            },
+        );
+        world.define_skill(
+            MEND,
+            SkillDef {
+                range: 5.0,
+                cooldown_ms: 1000,
+                heal: 50,
+                radius: 3.0,
+                ..SkillDef::default()
+            },
+        );
+        let side = |faction| UnitDef {
+            faction: FactionId(faction),
+            ..fighter()
+        };
+        let caster = world.spawn_unit(Vec2::new(1.5, 1.5), 0.0, side(1));
+        let target = world.spawn_unit(Vec2::new(3.5, 1.5), 0.0, side(2));
+        let near = world.spawn_unit(Vec2::new(5.5, 1.5), 0.0, side(2));
+        let far = world.spawn_unit(Vec2::new(9.5, 1.5), 0.0, side(2));
+        let ally = world.spawn_unit(Vec2::new(3.5, 3.5), 0.0, side(1));
+        (
+            LocalAuthority::new(world),
+            [caster, target, near, far, ally],
+        )
+    }
+
+    const WHIRL: SkillId = SkillId(7);
+    const MEND: SkillId = SkillId(8);
+
+    #[test]
+    fn an_area_skill_hits_every_hostile_around_the_target_and_nobody_else() {
+        let (mut auth, [caster, target, near, far, ally]) = melee_crowd();
+        let events = attack(&mut auth, caster, target, WHIRL);
+        let hit: Vec<Entity> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Damaged { target, .. } => Some(*target),
+                _ => None,
+            })
+            .collect();
+        // 대상이 먼저, 그다음 범위 안의 적 — 먼 적·아군·시전자는 맞지 않는다.
+        assert_eq!(hit, [target, near]);
+        for e in [far, ally, caster] {
+            assert_eq!(auth.world().unit(e).unwrap().hp(), 100, "{e:?}");
+        }
+        // 쿨타임은 한 번만 — 여러 마리를 맞혀도 스킬은 한 번 쓴 것이다.
+        assert_eq!(
+            rejected(&attack(&mut auth, caster, near, WHIRL)),
+            Some(Rejection::OnCooldown)
+        );
+    }
+
+    #[test]
+    fn a_heal_skill_mends_self_and_allies_and_refuses_enemies() {
+        let (mut auth, [caster, target, near, _, ally]) = melee_crowd();
+        // 아군·시전자를 다치게 해 둔다.
+        auth.world_mut().set_hp(caster, 40);
+        auth.world_mut().set_hp(ally, 90);
+        auth.world_mut().set_hp(near, 10);
+
+        // 적에게는 쓸 수 없다.
+        assert_eq!(
+            rejected(&attack(&mut auth, caster, target, MEND)),
+            Some(Rejection::InvalidTarget)
+        );
+        // 자신에게 — 범위 안의 아군도 함께, 적은 빠진다. 최대치를 넘지 않는다.
+        let events = attack(&mut auth, caster, caster, MEND);
+        let healed: Vec<(Entity, u32)> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Healed { unit, amount, .. } => Some((*unit, *amount)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(healed, [(caster, 50), (ally, 10)]);
+        assert_eq!(auth.world().unit(caster).unwrap().hp(), 90);
+        assert_eq!(auth.world().unit(ally).unwrap().hp(), 100);
+        assert_eq!(
+            auth.world().unit(near).unwrap().hp(),
+            10,
+            "적은 회복하지 않는다"
+        );
+    }
+
+    #[test]
+    fn a_revived_unit_is_protected_for_a_while() {
+        let (mut auth, a, _) = arena();
+        let t = auth.world_mut().spawn_unit(
+            Vec2::new(3.5, 2.5),
+            0.0,
+            UnitDef {
+                max_hp: 20,
+                ..fighter()
+            },
+        );
+        attack(&mut auth, a, t, MELEE);
+        for _ in 0..40 {
+            auth.tick(DT); // 쿨타임이 풀리게
+        }
+        auth.submit(Intent::Revive {
+            unit: t,
+            at: Vec2::new(3.5, 2.5),
+            hp_per_mille: 1000,
+            exp_loss_per_mille: 0,
+            protect_ms: 1000,
+        });
+        auth.tick(DT);
+        let now = auth.world().now();
+        assert!(auth.world().unit(t).unwrap().is_protected(now));
+        let mut hit_at = None;
+        for n in 1..=40 {
+            let events = attack(&mut auth, a, t, MELEE);
+            if events.iter().any(|e| matches!(e, Event::Damaged { .. })) {
+                hit_at = Some(n);
+                break;
+            }
+            assert_eq!(rejected(&events), Some(Rejection::Invulnerable), "{n}");
+        }
+        // 일어난 tick 에서 1초 (20 tick) — 그 뒤 첫 일격이 들어간다.
+        assert_eq!(hit_at, Some(20));
+        let u = auth.world().unit(t).unwrap();
+        assert_eq!(u.protection_left(auth.world().now()), Duration::ZERO);
+    }
+
     #[test]
     fn a_revived_unit_does_not_also_respawn() {
         let (mut auth, a, _) = arena();
@@ -321,6 +478,7 @@ mod flow_tests {
             at: Vec2::new(3.5, 2.5),
             hp_per_mille: 1000,
             exp_loss_per_mille: 0,
+            protect_ms: 0,
         });
         for _ in 0..60 {
             assert!(
@@ -663,6 +821,8 @@ mod flow_tests {
                 cooldown_ms: 0,
                 damage_mult: 1.0,
                 mp_cost: 30,
+                radius: 0.0,
+                heal: 0,
             },
         );
         let caster = world.spawn_unit(
@@ -713,6 +873,8 @@ mod flow_tests {
                 cooldown_ms: 5000,
                 damage_mult: 1.0,
                 mp_cost: 30,
+                radius: 0.0,
+                heal: 0,
             },
         );
         attack(&mut auth, c, t, BOLT);

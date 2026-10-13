@@ -55,6 +55,8 @@ pub struct SimWorld {
     factions: FactionTable,
     rng: Rng,
     pickup_range: f32,
+    /// 땅의 아이템이 사라지기까지. `None` 이면 사라지지 않는다.
+    ground_item_lifetime: Option<Duration>,
     /// 시뮬레이션 시계 — tick 마다 `dt` 만큼 정확히 늘어난다. 쿨타임의 기준.
     now: Duration,
 }
@@ -73,6 +75,7 @@ impl SimWorld {
             factions: FactionTable::default(),
             rng: Rng::new(0),
             pickup_range: DEFAULT_PICKUP_RANGE,
+            ground_item_lifetime: None,
             now: Duration::ZERO,
         }
     }
@@ -177,6 +180,19 @@ impl SimWorld {
         };
     }
 
+    /// 땅의 아이템이 사라지기까지의 시간 (설정 작업). `None`·0 이면 영영 남는다 (기본).
+    /// 떨어진 뒤 이 시간이 지나면 그 tick 에 치워지고 [`Event::ItemDespawned`] 가 난다.
+    pub fn set_ground_item_lifetime(&mut self, lifetime: Option<Duration>) {
+        self.ground_item_lifetime = lifetime.filter(|d| !d.is_zero());
+    }
+
+    /// 땅 아이템이 사라지기까지 남은 시간. 소멸 시간이 없으면 `None`.
+    #[must_use]
+    pub fn ground_item_time_left(&self, item: &GroundItem) -> Option<Duration> {
+        self.ground_item_lifetime
+            .map(|life| (item.dropped_at + life).saturating_sub(self.now))
+    }
+
     #[must_use]
     pub fn pickup_range(&self) -> f32 {
         self.pickup_range
@@ -252,7 +268,15 @@ impl SimWorld {
         if self.ground.len() <= slot {
             self.ground.resize_with(slot + 1, || None);
         }
-        self.ground[slot] = Some((entity, GroundItem { pos, stack }));
+        let dropped_at = self.now;
+        self.ground[slot] = Some((
+            entity,
+            GroundItem {
+                pos,
+                stack,
+                dropped_at,
+            },
+        ));
         entity
     }
 
@@ -370,7 +394,8 @@ impl SimWorld {
         events: &mut Vec<Event>,
     ) -> Result<(), Rejection> {
         let def = *self.skills.get(&skill).ok_or(Rejection::UnknownSkill)?;
-        if attacker == target {
+        // 회복은 자신에게도 쓴다. 피해는 자신에게 쓸 수 없다.
+        if attacker == target && !def.is_heal() {
             return Err(Rejection::InvalidTarget);
         }
         let a = self.unit(attacker).ok_or(Rejection::UnknownEntity)?;
@@ -392,17 +417,46 @@ impl SimWorld {
         if a.pos.distance_squared(t.pos) > def.range * def.range {
             return Err(Rejection::OutOfRange);
         }
-        if t.def.immortal {
-            return Err(Rejection::Invulnerable);
-        }
-        if self.factions.get(a.def.faction, t.def.faction) == Relation::Friendly {
-            return Err(Rejection::Friendly);
+        let relation = self.factions.get(a.def.faction, t.def.faction);
+        if def.is_heal() {
+            if attacker != target && relation == Relation::Hostile {
+                return Err(Rejection::InvalidTarget);
+            }
+        } else {
+            if t.def.immortal || t.is_protected(self.now) {
+                return Err(Rejection::Invulnerable);
+            }
+            if relation == Relation::Friendly {
+                return Err(Rejection::Friendly);
+            }
         }
 
-        // 장비가 더해진 수치로 계산한다.
-        let amount = combat::damage(a.attack(), def.damage_mult, t.defense());
+        // 맞는 유닛 — 대상이 먼저, 그다음 범위 안의 다른 유닛을 슬롯 순서대로 (결정적).
+        let mut hits = vec![target];
+        if def.radius > 0.0 {
+            let (center, now) = (t.pos, self.now);
+            let faction = a.def.faction;
+            let r2 = def.radius * def.radius;
+            for (e, u) in self.units() {
+                if e == target || !u.is_alive() || u.pos.distance_squared(center) > r2 {
+                    continue;
+                }
+                let rel = self.factions.get(faction, u.def.faction);
+                let ok = if def.is_heal() {
+                    e == attacker || rel == Relation::Friendly
+                } else {
+                    e != attacker
+                        && rel == Relation::Hostile
+                        && !u.def.immortal
+                        && !u.is_protected(now)
+                };
+                if ok {
+                    hits.push(e);
+                }
+            }
+        }
+
         let facing = t.pos - a.pos;
-
         let now = self.now;
         let a = self.unit_mut(attacker).ok_or(Rejection::UnknownEntity)?;
         a.cooldowns.insert(skill, now + def.cooldown());
@@ -411,7 +465,42 @@ impl SimWorld {
             a.heading = dir_to_heading(facing);
         }
 
-        let t = self.unit_mut(target).ok_or(Rejection::UnknownEntity)?;
+        for target in hits {
+            if def.is_heal() {
+                if let Some(t) = self.unit_mut(target) {
+                    let before = t.hp;
+                    t.hp = t.hp.saturating_add(def.heal).min(t.max_hp());
+                    events.push(Event::Healed {
+                        unit: target,
+                        amount: t.hp - before,
+                        remaining_hp: t.hp,
+                    });
+                }
+            } else {
+                self.strike(attacker, target, skill, def, events);
+            }
+        }
+        Ok(())
+    }
+
+    /// 피해 한 번 — 판정을 마친 뒤에 부른다. 범위 스킬이면 맞는 유닛마다 한 번씩.
+    fn strike(
+        &mut self,
+        attacker: Entity,
+        target: Entity,
+        skill: SkillId,
+        def: SkillDef,
+        events: &mut Vec<Event>,
+    ) {
+        let now = self.now;
+        // 장비가 더해진 수치로 계산한다.
+        let Some(attack) = self.unit(attacker).map(Unit::attack) else {
+            return;
+        };
+        let Some(t) = self.unit_mut(target) else {
+            return;
+        };
+        let amount = combat::damage(attack, def.damage_mult, t.defense());
         t.hp = t.hp.saturating_sub(amount);
         let remaining_hp = t.hp;
         events.push(Event::Damaged {
@@ -440,7 +529,6 @@ impl SimWorld {
                 target: attacker,
             });
         }
-        Ok(())
     }
 
     /// 죽인 쪽에 경험치를 준다 (P3). 레벨이 오르면 **HP·MP 가 가득 찬다** — 상한이 올라가므로.
@@ -678,6 +766,23 @@ impl SimWorld {
         }
     }
 
+    /// 소멸 시간이 지난 땅의 아이템을 치운다 — 슬롯 순서대로 (결정적).
+    fn expire_ground_items(&mut self, events: &mut Vec<Event>) {
+        let Some(life) = self.ground_item_lifetime else {
+            return;
+        };
+        let now = self.now;
+        let due: Vec<Entity> = self
+            .ground_items()
+            .filter(|(_, g)| now >= g.dropped_at + life)
+            .map(|(e, _)| e)
+            .collect();
+        for item in due {
+            self.despawn(item);
+            events.push(Event::ItemDespawned { item });
+        }
+    }
+
     /// 쓰러진 유닛을 `at` 에서 일으킨다 ([`Intent::Revive`](crate::Intent::Revive)).
     ///
     /// 핸들은 그대로다(리스폰은 새 핸들) — 레벨·소지품·장비가 남는다. HP·MP 는 최대치의 천분율,
@@ -689,8 +794,10 @@ impl SimWorld {
         at: Vec2,
         hp_per_mille: u32,
         exp_loss_per_mille: u32,
+        protect: Duration,
         events: &mut Vec<Event>,
     ) -> Result<(), Rejection> {
+        let now = self.now;
         if !at.is_finite() {
             return Err(Rejection::NoPath);
         }
@@ -710,6 +817,7 @@ impl SimWorld {
         u.ai = AiState::default();
         u.cooldowns.clear();
         u.died_at = None;
+        u.protected_until = (!protect.is_zero()).then(|| now + protect);
         let exp_lost = u.progress.lose(exp_loss_per_mille);
         let hp = u.hp;
         events.push(Event::Revived {
@@ -752,6 +860,7 @@ impl SimWorld {
     pub(crate) fn step(&mut self, dt: Duration, events: &mut Vec<Event>) {
         self.now += dt;
         self.respawn_due(events);
+        self.expire_ground_items(events);
         let tick = dt;
         let dt = dt.as_secs_f32();
         let tiles = &self.tiles;

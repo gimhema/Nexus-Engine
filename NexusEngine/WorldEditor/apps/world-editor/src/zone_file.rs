@@ -37,7 +37,7 @@ pub(crate) const ZONE_DIR: &str = "zones";
 /// 확장자.
 pub(crate) const EXTENSION: &str = ".zone.ron";
 /// 타일맵 한 변의 상한. 잘못된 파일이 수십 GB 를 할당하지 않도록.
-const MAX_TILEMAP_SIDE: u32 = 4096;
+pub(crate) const MAX_TILEMAP_SIDE: u32 = 4096;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct ZoneFile {
@@ -124,6 +124,25 @@ struct MarkerFile {
     size: f32,
     /// 방향 (라디안, 0 = +X, 반시계 +).
     orientation: f32,
+    /// 스폰 영역 — 몇 마리를 어느 반경에. 기본값(한 마리·제자리)이면 쓰지 않는다.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    count: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    radius: f32,
+}
+
+fn one() -> u32 {
+    1
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde 가 참조로 넘긴다
+fn is_one(n: &u32) -> bool {
+    *n == 1
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(x: &f32) -> bool {
+    *x == 0.0
 }
 
 /// 마커별 수치 덮어쓰기 — 적힌 항목만 액터 타입 값을 대신한다.
@@ -360,6 +379,8 @@ impl ZoneFile {
                     pos: item.pos.to_array(),
                     size: item.size,
                     orientation: item.orientation,
+                    count: item.spawn.count,
+                    radius: item.spawn.radius,
                 })
                 .collect(),
         }
@@ -440,6 +461,19 @@ impl ZoneFile {
                 MarkerKindFile::Monster => ItemKind::Monster,
             };
             let overrides = m.overrides.into_overrides(&format!("markers[{i}]"))?;
+            if !(1..=crate::scene::MAX_SPAWN_COUNT).contains(&m.count) {
+                return Err(format!(
+                    "markers[{i}].count 는 1~{} 이어야 함",
+                    crate::scene::MAX_SPAWN_COUNT
+                ));
+            }
+            if !(m.radius.is_finite() && (0.0..=crate::scene::MAX_SPAWN_RADIUS).contains(&m.radius))
+            {
+                return Err(format!(
+                    "markers[{i}].radius 는 0~{}m 이어야 함",
+                    crate::scene::MAX_SPAWN_RADIUS
+                ));
+            }
             let entity = scene.add(&m.name, kind, pos, m.size);
             if let Some(item) = scene.item_mut(entity) {
                 item.orientation = units::normalize_heading(m.orientation);
@@ -447,6 +481,10 @@ impl ZoneFile {
                 // 안 열리면 곤란하다. 실제로 쓸 때 `GameData::resolve_actor` 가 기본값으로 푼다.
                 item.actor = crate::scene::ActorId::new(m.actor);
                 item.overrides = overrides;
+                item.spawn = crate::scene::SpawnArea {
+                    count: m.count,
+                    radius: m.radius,
+                };
             }
         }
         Ok(scene)
@@ -611,6 +649,31 @@ mod tests {
         let loaded = from_ron(&text).unwrap();
         let overrides = |s: &Scene| s.items.iter().map(|i| i.overrides).collect::<Vec<_>>();
         assert_eq!(overrides(&loaded), overrides(&original));
+    }
+
+    #[test]
+    fn spawn_areas_round_trip_and_only_appear_when_set() {
+        let mut original = Scene::server_default();
+        original.items[1].spawn = crate::scene::SpawnArea {
+            count: 4,
+            radius: 2.5,
+        };
+        let text = to_ron(&original);
+        // 무리인 마커 하나에만 붙는다 — 샘플 존·예전 파일은 바이트 그대로.
+        assert_eq!(text.matches("count:").count(), 1, "{text}");
+        assert_eq!(text.matches("radius:").count(), 1, "{text}");
+        let loaded = from_ron(&text).unwrap();
+        let areas = |s: &Scene| s.items.iter().map(|i| i.spawn).collect::<Vec<_>>();
+        assert_eq!(areas(&loaded), areas(&original));
+
+        for (from, to, field) in [
+            ("count: 4", "count: 0", "markers[1].count"),
+            ("count: 4", "count: 99", "markers[1].count"),
+            ("radius: 2.5", "radius: -1.0", "markers[1].radius"),
+        ] {
+            let err = from_ron(&text.replace(from, to)).unwrap_err();
+            assert!(err.contains(field), "{err}");
+        }
     }
 
     #[test]

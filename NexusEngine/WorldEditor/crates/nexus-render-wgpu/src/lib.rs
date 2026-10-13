@@ -369,7 +369,8 @@ pub struct WgpuRenderer {
     /// 픽셀아트용 Nearest 샘플러. 모든 텍스처가 공유한다.
     sampler: wgpu::Sampler,
     /// [`TextureId`] 의 인덱스로 찾는다. 0 번은 항상 1×1 흰색.
-    textures: Vec<TextureEntry>,
+    /// 푼 자리는 `None` — 번호를 다시 쓰지 않는다 (`unload_texture`).
+    textures: Vec<Option<TextureEntry>>,
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
     depth_view: wgpu::TextureView,
@@ -674,7 +675,7 @@ impl WgpuRenderer {
             screen_bind_group,
             texture_layout,
             sampler,
-            textures: vec![white],
+            textures: vec![Some(white)],
             instance_buffer,
             instance_capacity: INITIAL_INSTANCE_CAPACITY,
             depth_view,
@@ -850,13 +851,33 @@ impl Renderer for WgpuRenderer {
 
         let index = u32::try_from(self.textures.len())
             .map_err(|_| RenderError::TextureFailed(String::from("텍스처 수가 u32 를 넘음")))?;
-        self.textures.push(entry);
+        self.textures.push(Some(entry));
         Ok(TextureId::from_index(index))
+    }
+
+    fn unload_texture(&mut self, texture: TextureId) -> Result<(), RenderError> {
+        if self.frame.is_some() {
+            return Err(RenderError::TextureFailed(String::from(
+                "프레임 도중에는 텍스처를 풀 수 없음",
+            )));
+        }
+        // 흰색은 단색 쿼드가 늘 쓴다 — 풀지 않는다. 자리는 None 으로 남겨 번호를 다시 쓰지 않는다.
+        if texture != TextureId::WHITE
+            && let Some(slot) = self.textures.get_mut(texture.index() as usize)
+        {
+            *slot = None;
+        }
+        Ok(())
     }
 
     fn submit(&mut self, command: RenderCommand) -> Result<(), RenderError> {
         // frame 을 빌리기 전에 읽어 둔다 — 아래에서 self 를 다시 빌릴 수 없다.
-        let texture_count = self.textures.len();
+        let textures = &self.textures;
+        let alive = |t: TextureId| {
+            textures
+                .get(t.index() as usize)
+                .is_some_and(Option::is_some)
+        };
         let frame = self
             .frame
             .as_mut()
@@ -911,12 +932,12 @@ impl Renderer for WgpuRenderer {
                 texture,
             } => {
                 // 없는 텍스처는 흰색으로 떨어뜨린다 — 스프라이트와 같은 이유(아래 참고).
-                let texture = if (texture.index() as usize) < texture_count {
+                let texture = if alive(texture) {
                     texture
                 } else {
                     TextureId::WHITE
                 };
-                let (o, s) = frame.layer.depth_range();
+                let (o, s) = frame.space.depth_span(frame.layer);
                 let span = [o, s];
                 let uv = flip_v_for(frame.space, uv);
                 frame.push(
@@ -948,12 +969,12 @@ impl Renderer for WgpuRenderer {
             } => {
                 // 없는 텍스처는 흰색으로 떨어뜨린다. 프레임 도중이라 오류를 반환할 수 없고,
                 // 화면이 통째로 사라지는 것보다 단색으로 눈에 띄는 편이 낫다.
-                let texture = if (texture.index() as usize) < texture_count {
+                let texture = if alive(texture) {
                     texture
                 } else {
                     TextureId::WHITE
                 };
-                let (o, s) = frame.layer.depth_range();
+                let (o, s) = frame.space.depth_span(frame.layer);
                 let span = [o, s];
                 let uv = flip_v_for(frame.space, uv);
                 frame.push(
@@ -1102,7 +1123,12 @@ impl Renderer for WgpuRenderer {
                             PipelineKind::Blend => &self.pipeline_blend,
                             PipelineKind::Cutout => &self.pipeline_cutout,
                         });
-                        let entry = &self.textures[batch.texture.index() as usize];
+                        // submit 이 살아 있는 텍스처만 배치에 넣고, 프레임 도중에는 풀 수 없다.
+                        // 그래도 비어 있으면 흰색으로 — 프레임을 버리는 것보다 낫다.
+                        let entry = self.textures[batch.texture.index() as usize]
+                            .as_ref()
+                            .or(self.textures[0].as_ref())
+                            .expect("흰색 텍스처는 풀지 않는다");
                         pass.set_bind_group(1, &entry.bind_group, &[]);
                         bound = Some((batch.kind, batch.texture));
                     }

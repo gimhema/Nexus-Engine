@@ -450,6 +450,17 @@ pub(crate) struct SpriteLibrary {
 }
 
 impl SpriteLibrary {
+    /// 이 라이브러리가 GPU 에 올린 텍스처 — 그림을 다시 읽을 때 옛 것을 풀려고 (중복 없음).
+    pub(crate) fn textures(&self) -> Vec<TextureId> {
+        let mut all: Vec<TextureId> = std::iter::once(&self.fallback)
+            .chain(self.by_actor.values())
+            .map(|s| s.texture)
+            .collect();
+        all.sort_by_key(|t| t.index());
+        all.dedup();
+        all
+    }
+
     /// 내장 시트를 올리고, `sheets` 가 가리키는 **액터 타입별** 시트를 덮어쓴다.
     ///
     /// `sheets` 는 `(액터 번호, 정의 파일 경로)` 목록이다 — `data/display.ron` 에서 온다.

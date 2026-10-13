@@ -377,6 +377,7 @@ impl ScreenEditor {
                 ui.label("이름");
                 ui.add(egui::TextEdit::singleline(&mut screen.name).desired_width(150.0));
             });
+            on_open_fields(ui, &mut screen.on_open, &self.scripts);
         }
         ui.horizontal(|ui| {
             ui.add(
@@ -432,6 +433,12 @@ impl ScreenEditor {
                     },
                 ),
                 ("+ 스킬 칸", WidgetKind::Skills),
+                (
+                    "+ 색 채움",
+                    WidgetKind::Fill {
+                        color: (0.0, 0.0, 0.0, 0.5),
+                    },
+                ),
                 (
                     "+ 버튼",
                     WidgetKind::Button {
@@ -534,6 +541,7 @@ impl ScreenEditor {
             if w.size.is_none() {
                 ui.weak(match w.kind {
                     WidgetKind::Panel { .. } => "창: 부모 사각형을 가득 채웁니다.",
+                    WidgetKind::Fill { .. } => "색 채움: 부모 사각형을 가득 채웁니다.",
                     WidgetKind::Image { .. } => "그림: 원래 픽셀 크기 × 배율로 그립니다.",
                     _ => "내용 크기에 맞춥니다.",
                 });
@@ -901,6 +909,16 @@ fn kind_fields(
         WidgetKind::Panel { frame } => {
             ui.checkbox(frame, "창 그림 (끄면 자리만 잡는 투명 그룹)");
         }
+        WidgetKind::Fill { color } => {
+            let mut rgba = [color.0, color.1, color.2, color.3];
+            ui.horizontal(|ui| {
+                ui.label("색");
+                if ui.color_edit_button_rgba_unmultiplied(&mut rgba).changed() {
+                    *color = (rgba[0], rgba[1], rgba[2], rgba[3]);
+                }
+            });
+            ui.weak("알파를 낮추면 뒤가 비친다 — 화면을 어둡게 덮을 때 쓴다.");
+        }
         WidgetKind::Text { format } => {
             ui.horizontal(|ui| {
                 ui.label("문구");
@@ -938,6 +956,7 @@ fn kind_fields(
         WidgetKind::Skills => {
             ui.weak("조작하는 액터의 단축키 스킬(액터 편집기의 \"단축키 스킬\")을 1번 키부터 가로로 그립니다.");
             ui.weak("쿨타임이 남은 만큼 어둡게 덮이고, MP 가 모자라면 흐려집니다.");
+            ui.weak("플레이 중에 칸을 누르면 그 스킬을 씁니다.");
         }
         WidgetKind::Button { label, action } => {
             ui.horizontal(|ui| {
@@ -957,6 +976,7 @@ fn kind_fields(
                         .map_or_else(|| String::from("scripts/ui/pause.rhai"), |(p, _)| p.clone()),
                     call: String::new(),
                 },
+                Action::Skill(1),
                 Action::None,
             ];
             egui::ComboBox::from_label("동작")
@@ -982,6 +1002,13 @@ fn kind_fields(
                         ui.label("레벨 번호");
                         ui.add(egui::TextEdit::singleline(target).desired_width(120.0));
                     });
+                }
+                Action::Skill(key) => {
+                    ui.horizontal(|ui| {
+                        ui.label("숫자키");
+                        ui.add(egui::DragValue::new(key).range(1..=9));
+                    });
+                    ui.weak("조작하는 액터의 그 번호 단축키 스킬을 쓴다 (숫자키와 같다).");
                 }
                 Action::Script { path, call } => {
                     egui::ComboBox::from_label("스크립트")
@@ -1022,6 +1049,49 @@ fn kind_fields(
 
 /// 버튼이 부를 수 있는 스크립트 — `data/scripts` 의 `.rhai` 와 그 안의 인자 없는 함수.
 /// 컴파일이 안 되는 파일은 함수 목록이 비어 있다 (고를 수는 있다 — 고치는 중일 수 있으므로).
+/// 화면이 열릴 때 부를 스크립트 — 켜면 버튼 스크립트처럼 파일과 함수를 고른다.
+fn on_open_fields(
+    ui: &mut egui::Ui,
+    hook: &mut Option<crate::screen::ScriptCall>,
+    scripts: &[(String, Vec<String>)],
+) {
+    let mut on = hook.is_some();
+    if ui
+        .checkbox(&mut on, "열릴 때 스크립트")
+        .on_hover_text("화면이 뜰 때마다 이 함수를 부른다 — 버튼 스크립트와 같은 API")
+        .changed()
+    {
+        *hook = on.then(|| crate::screen::ScriptCall {
+            path: scripts
+                .first()
+                .map_or_else(|| String::from("scripts/ui/pause.rhai"), |(p, _)| p.clone()),
+            call: String::new(),
+        });
+    }
+    let Some(h) = hook.as_mut() else {
+        return;
+    };
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt("on-open-script")
+            .selected_text(h.path.as_str())
+            .show_ui(ui, |ui| {
+                for (p, _) in scripts {
+                    ui.selectable_value(&mut h.path, p.clone(), p);
+                }
+            });
+        ui.add(egui::TextEdit::singleline(&mut h.call).desired_width(100.0));
+    });
+    if let Some((_, funcs)) = scripts.iter().find(|(p, _)| *p == h.path) {
+        ui.horizontal_wrapped(|ui| {
+            for f in funcs {
+                if ui.selectable_label(h.call == *f, f).clicked() {
+                    h.call.clone_from(f);
+                }
+            }
+        });
+    }
+}
+
 fn button_scripts() -> Vec<(String, Vec<String>)> {
     let dir = Path::new(crate::game_data::DATA_DIR).join(crate::script_editor::SCRIPT_DIR);
     crate::script_editor::list(&dir)
@@ -1173,6 +1243,7 @@ mod tests {
         let screen = ScreenFile {
             version: 1,
             name: String::from("x"),
+            on_open: None,
             widgets,
         };
         ScreenEditor {

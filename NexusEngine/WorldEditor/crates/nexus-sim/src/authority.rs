@@ -59,6 +59,8 @@ pub enum Intent {
         at: Vec2,
         hp_per_mille: u32,
         exp_loss_per_mille: u32,
+        /// 일어난 뒤 공격받지 않는 시간 (ms, 0 = 없음). 보호 중인 유닛은 AI 도 노리지 않는다.
+        protect_ms: u32,
     },
 }
 
@@ -151,6 +153,8 @@ pub enum Event {
         stack: ItemStack,
         pos: Vec2,
     },
+    /// 땅의 아이템이 소멸 시간이 지나 사라졌다. `item` 핸들은 이제 무효다.
+    ItemDespawned { item: Entity },
     /// 땅의 아이템을 주웠다. `item` 핸들은 이제 무효다.
     PickedUp {
         unit: Entity,
@@ -309,7 +313,15 @@ fn apply(world: &mut SimWorld, intent: Intent, events: &mut Vec<Event>) -> Resul
             at,
             hp_per_mille,
             exp_loss_per_mille,
-        } => world.revive(unit, at, hp_per_mille, exp_loss_per_mille, events),
+            protect_ms,
+        } => world.revive(
+            unit,
+            at,
+            hp_per_mille,
+            exp_loss_per_mille,
+            Duration::from_millis(u64::from(protect_ms)),
+            events,
+        ),
     }
 }
 

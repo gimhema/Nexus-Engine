@@ -155,6 +155,8 @@ pub struct Unit {
     pub(crate) spawn_heading: f32,
     /// 죽은 시각 (시뮬레이션 시계). 리스폰 시각의 기준.
     pub(crate) died_at: Option<Duration>,
+    /// 이 시각까지 공격받지 않는다 (부활 직후 보호). `None` 이면 보호 없음.
+    pub(crate) protected_until: Option<Duration>,
 }
 
 impl Unit {
@@ -179,6 +181,7 @@ impl Unit {
             spawn_pos: pos,
             spawn_heading: heading,
             died_at: None,
+            protected_until: None,
         }
     }
 
@@ -200,6 +203,19 @@ impl Unit {
 
     /// 처음 선 자리 — 리스폰과 기본 부활이 여기서 일어난다. 이어 하기면 저장한 자리다
     /// ([`SimWorld::set_position`](crate::SimWorld::set_position)).
+    /// 부활 직후 보호 중인지 — 보호 중에는 공격이 `Invulnerable` 로 거절되고 AI 가 노리지 않는다.
+    #[must_use]
+    pub fn is_protected(&self, now: Duration) -> bool {
+        self.protected_until.is_some_and(|t| now < t)
+    }
+
+    /// 보호가 풀리기까지 남은 시간 (보호 중이 아니면 0).
+    #[must_use]
+    pub fn protection_left(&self, now: Duration) -> Duration {
+        self.protected_until
+            .map_or(Duration::ZERO, |t| t.saturating_sub(now))
+    }
+
     #[must_use]
     pub fn spawn_pos(&self) -> Vec2 {
         self.spawn_pos

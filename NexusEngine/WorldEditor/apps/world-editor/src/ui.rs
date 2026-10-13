@@ -22,14 +22,16 @@ use nexus_sim::{AiKind, BagKind, Tile, UnitDef};
 
 use crate::actor_editor::ActorEditor;
 use crate::content::{ContentAction, ContentBrowser};
-use crate::edit::{BrushShape, InspectorEdit, MAX_BRUSH_RADIUS, PointerInput, Tool};
+use crate::edit::{BrushShape, InspectorEdit, MAX_BRUSH_RADIUS, PointerInput, SpawnEdit, Tool};
 use crate::grid;
 use crate::level_editor::LevelEditor;
 use crate::palette::Palette;
 use crate::play::{InventoryAction, PlaySession};
 use crate::rules_editor::RulesEditor;
+use crate::save_file;
 use crate::scene::{
-    ActorId, ArtId, Item, ItemKind, OverrideEdit, Overrides, Pick, Scene, Target, ZONE_LABEL,
+    ActorId, ArtId, Item, ItemKind, MAX_SPAWN_COUNT, MAX_SPAWN_RADIUS, OverrideEdit, Overrides,
+    Pick, Scene, Target, ZONE_LABEL,
 };
 use crate::screen::Screens;
 use crate::screen_editor::ScreenEditor;
@@ -122,6 +124,20 @@ pub(crate) struct UiModel<'a> {
     /// 마지막 저장 이후 바뀌었다.
     pub(crate) dirty: bool,
     pub(crate) notice: Option<&'a Notice>,
+    /// 지금 쓰는 저장 칸 (1부터).
+    pub(crate) save_slot: u8,
+    /// 이어 할지 묻는 중이면 그 칸의 요약 ("레벨 3 · zones/village.zone.ron").
+    pub(crate) continue_prompt: Option<&'a str>,
+}
+
+/// 이어 하기 창의 답.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ContinueChoice {
+    /// 저장 칸에서 이어 한다.
+    Continue,
+    /// 저장을 무시하고 새로 시작한다 (멈추면 그 칸을 덮어쓴다).
+    Fresh,
+    Cancel,
 }
 
 impl UiModel<'_> {
@@ -146,6 +162,10 @@ pub(crate) struct UiActions {
     pub(crate) save_game: bool,
     /// 저장 데이터 삭제 — 다음 플레이는 새로 시작한다.
     pub(crate) delete_save: bool,
+    /// 저장 칸 바꾸기 (플레이 메뉴).
+    pub(crate) set_save_slot: Option<u8>,
+    /// 이어 하기 창의 답.
+    pub(crate) continue_choice: Option<ContinueChoice>,
     /// HUD 인벤토리 창 열고 닫기 (I).
     pub(crate) toggle_items: bool,
     /// 단축키 스킬 (숫자키 1~9, 플레이 중) — 1부터 센다.
@@ -202,6 +222,8 @@ pub(crate) struct UiActions {
     pub(crate) reload_levels: bool,
     /// 화면 파일이 바뀌었다 (휴지통에서 되살림) — 화면을 다시 읽는다.
     pub(crate) reload_screens: bool,
+    /// 그림(시트·타일셋·그림 위젯)을 디스크에서 다시 올린다 — 옛 텍스처는 푼다.
+    pub(crate) reload_art: bool,
     /// 상태 바에 띄울 알림 (오류 아님).
     pub(crate) notice: Option<String>,
     /// 뷰포트 포인터 — 뷰포트가 그려진 프레임에만 있다.
@@ -453,6 +475,7 @@ impl EditorUi {
                 *dialog = Some(FileDialog::new(mode, model.zone_path));
             }
             file_dialog(ui, dialog, model.dirty, &mut actions);
+            continue_window(ui, model, &mut actions);
             palette.show(ui, &mut actions);
             // 위젯 편집기 — 창이 직접 model.screen_editor 를 고친다 (액션을 거치지 않는다).
             {
@@ -787,6 +810,16 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
                 if ui.button("저장 데이터 삭제").clicked() {
                     actions.delete_save = true;
                 }
+                // 저장 칸 — 게임 저장·이어 하기·삭제가 이 칸을 쓴다. 메뉴를 열 때만 디스크를 읽는다.
+                ui.menu_button(format!("저장 칸 ({}번)", model.save_slot), |ui| {
+                    for slot in 1..=save_file::SLOTS {
+                        let path = save_file::slot_path(slot);
+                        let text = format!("{slot}번 — {}", save_file::summary(&path));
+                        if ui.radio(model.save_slot == slot, text).clicked() {
+                            actions.set_save_slot = Some(slot);
+                        }
+                    }
+                });
                 ui.separator();
                 if ui
                     .add(egui::Button::new("인벤토리 창").shortcut_text("I"))
@@ -824,6 +857,14 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
                     actions.frame_selection = true;
                 }
                 ui.separator();
+                if ui
+                    .button("그림 다시 읽기")
+                    .on_hover_text("스프라이트 시트·타일셋·그림 위젯을 디스크에서 다시 올립니다 — 다시 시작하지 않아도 된다")
+                    .clicked()
+                {
+                    actions.reload_art = true;
+                }
+                ui.separator();
 
                 // 쿼터뷰는 게임 화면과 같은 시점(WYSIWYG), 탑다운은 좌표를 정밀하게
                 // 찍을 때 쓴다. 기울어져 있으면 세로 방향 거리감이 눌려서 배치가 어렵다.
@@ -845,6 +886,40 @@ fn request_save(model: &UiModel<'_>, actions: &mut UiActions) {
         Some(path) => actions.save_zone = Some(path.to_path_buf()),
         None => actions.file_dialog = Some(FileDialogMode::SaveAs),
     }
+}
+
+/// 이어 하기 창 — 플레이를 시작할 때 저장 칸에 진행 상황이 있으면 묻는다 (F5).
+fn continue_window(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
+    let Some(summary) = model.continue_prompt else {
+        return;
+    };
+    egui::Window::new("이어 하기")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ui.ctx(), |ui| {
+            ui.label(format!(
+                "{}번 칸에 저장된 진행이 있습니다.",
+                model.save_slot
+            ));
+            ui.strong(summary);
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("이어 하기").clicked() {
+                    actions.continue_choice = Some(ContinueChoice::Continue);
+                }
+                if ui
+                    .button("새로 시작")
+                    .on_hover_text("저장을 쓰지 않고 시작한다 — 멈추면 이 칸을 덮어쓴다")
+                    .clicked()
+                {
+                    actions.continue_choice = Some(ContinueChoice::Fresh);
+                }
+                if ui.button("취소").clicked() {
+                    actions.continue_choice = Some(ContinueChoice::Cancel);
+                }
+            });
+        });
 }
 
 /// 존 열기 / 다른 이름으로 저장 창.
@@ -1460,6 +1535,7 @@ fn inspector_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActio
 
                         ui.add_space(10.0);
                         actor_section(ui, model, &[item], actions);
+                        spawn_section(ui, &[item], actions);
                     }
                 }
                 many => {
@@ -1478,10 +1554,65 @@ fn inspector_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActio
                     if !actors.is_empty() {
                         ui.add_space(10.0);
                         actor_section(ui, model, &actors, actions);
+                        spawn_section(ui, &actors, actions);
                     }
                 }
             }
         });
+}
+
+/// 스폰 영역 — 몇 마리를 어느 반경에 흩어 세울지. 플레이어 스폰에는 없다 (조작할 한 명이다).
+/// 여러 개를 골랐으면 전부에 적용하고, 값이 다르면 "여러 값" 이라고 알린다.
+fn spawn_section(ui: &mut egui::Ui, items: &[&Item], actions: &mut UiActions) {
+    let items: Vec<&&Item> = items
+        .iter()
+        .filter(|i| i.kind != ItemKind::PlayerSpawn)
+        .collect();
+    let Some(first) = items.first() else {
+        return;
+    };
+    ui.add_space(10.0);
+    ui.strong("스폰 영역");
+    egui::Grid::new("spawn-area").num_columns(3).show(ui, |ui| {
+        let mut count = first.spawn.count;
+        ui.label("마리 수");
+        let r = ui.add(egui::DragValue::new(&mut count).range(1..=MAX_SPAWN_COUNT));
+        let finished = r.drag_stopped() || r.lost_focus();
+        if r.changed() || finished {
+            actions.inspector = Some(InspectorEdit::ItemSpawn {
+                edit: SpawnEdit::Count(count),
+                finished,
+            });
+        }
+        let c = first.spawn.count;
+        if items.iter().any(|i| i.spawn.count != c) {
+            ui.weak("여러 값");
+        }
+        ui.end_row();
+
+        let mut radius = first.spawn.radius;
+        ui.label("반경");
+        let r = ui.add(
+            egui::DragValue::new(&mut radius)
+                .speed(0.1)
+                .range(0.0..=MAX_SPAWN_RADIUS)
+                .fixed_decimals(1)
+                .suffix(" m"),
+        );
+        let finished = r.drag_stopped() || r.lost_focus();
+        if r.changed() || finished {
+            actions.inspector = Some(InspectorEdit::ItemSpawn {
+                edit: SpawnEdit::Radius(radius),
+                finished,
+            });
+        }
+        let rad = first.spawn.radius;
+        if items.iter().any(|i| i.spawn.radius != rad) {
+            ui.weak("여러 값");
+        }
+        ui.end_row();
+    });
+    ui.weak("무리는 반경 안에 고르게 흩어져 서고, 마리마다 제자리에서 리스폰한다.");
 }
 
 /// 덮어쓴 줄의 글자색 — 수치가 `rules.ron` 이 아니라 존 파일에 있다는 표시.

@@ -258,7 +258,8 @@ impl SpriteAnchor {
 ///
 /// 화면 공간의 기준은 창 전체가 아니라 [`SetViewport`](RenderCommand::SetViewport) 로 정한
 /// 영역이다 — 에디터에서는 패널 사이의 게임 화면이 곧 HUD 의 화면이 된다.
-/// 화면 공간에서도 층·`depth_bias` 는 그대로 쓰인다 (HUD 안에서의 겹침 순서).
+/// 화면 공간은 층과 무관하게 **모든 월드 층보다 앞**의 자기 깊이 구간을 쓴다
+/// ([`SCREEN_DEPTH`]) — HUD 위로 월드의 HP 막대가 비치지 않게. 안에서의 겹침 순서는 `depth_bias`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Space {
     /// 월드 미터. **기본값.**
@@ -305,12 +306,30 @@ impl DrawLayer {
     #[must_use]
     pub fn depth_range(self) -> (f32, f32) {
         match self {
-            Self::Overlay => (0.00, 0.32),
+            // 표시 층은 월드 깊이를 쓸 일이 적어(겹침은 depth_bias 로 정한다) 좁게 두고,
+            // 그 앞 [0, SCREEN_DEPTH] 를 화면 공간(HUD)에 내준다.
+            Self::Overlay => (0.25, 0.08),
             Self::Object => (0.34, 0.32),
             Self::Ground => (0.68, 0.32),
         }
     }
 }
+
+impl Space {
+    /// 이 공간·층의 쿼드가 쓰는 NDC 깊이 구간 `(시작, 크기)`.
+    /// 화면 공간은 층을 보지 않는다 — 늘 [`SCREEN_DEPTH`] 에서 `depth_bias` 만큼 앞으로 온다.
+    #[must_use]
+    pub fn depth_span(self, layer: DrawLayer) -> (f32, f32) {
+        match self {
+            Self::World => layer.depth_range(),
+            Self::Screen => (SCREEN_DEPTH, 0.0),
+        }
+    }
+}
+
+/// 화면 공간(HUD)의 기준 깊이. 여기서 `depth_bias` 만큼 앞으로 쌓인다 — 2400 칸까지 0 위에 남는다.
+/// 월드의 가장 앞 층([`DrawLayer::Overlay`])보다 앞이다.
+pub const SCREEN_DEPTH: f32 = 0.24;
 
 /// 겹침 순서를 한 칸 옮기는 [`depth_bias`](RenderCommand::DrawRect) 단위.
 ///
@@ -401,13 +420,21 @@ pub trait Renderer {
 
     /// 이미지를 GPU 에 올리고 핸들을 받는다. **프레임 바깥에서** 호출한다.
     ///
-    /// 올린 텍스처는 렌더러가 살아 있는 동안 유지된다. 해제는 아직 없다 —
-    /// 존 전환에서 애셋을 갈아끼우게 되는 S5 에서 다시 본다.
+    /// 올린 텍스처는 [`unload_texture`](Self::unload_texture) 로 풀기 전까지 유지된다.
     ///
     /// # Errors
     /// 크기가 0 이거나 `rgba` 길이가 `width * height * 4` 와 다르면
     /// [`RenderError::TextureFailed`].
     fn load_texture(&mut self, desc: &TextureDesc<'_>) -> Result<TextureId, RenderError>;
+
+    /// 올린 텍스처를 푼다 — 그림을 갈아끼울 때 옛 것이 GPU 에 쌓이지 않게. **프레임 바깥에서** 호출한다.
+    ///
+    /// 푼 핸들의 번호는 **다시 쓰지 않는다** — 남아 있는 옛 핸들로 그리면 다른 그림이 아니라
+    /// 흰색이 나온다 (눈에 띄게). [`TextureId::WHITE`]·모르는 핸들·이미 푼 핸들은 아무 일도 없다.
+    ///
+    /// # Errors
+    /// 프레임 도중이면 [`RenderError::TextureFailed`] — 그 프레임의 배치가 아직 텍스처를 쓴다.
+    fn unload_texture(&mut self, texture: TextureId) -> Result<(), RenderError>;
 
     /// 프레임 시작 — 스왑체인 이미지를 획득한다.
     ///
@@ -443,4 +470,31 @@ pub trait Renderer {
     /// # Errors
     /// 캡처는 수행됐지만 읽기에 실패했으면 오류를 반환한다.
     fn take_capture(&mut self) -> Option<Result<Capture, RenderError>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layers_do_not_overlap_and_the_screen_is_in_front_of_all_of_them() {
+        let layers = [DrawLayer::Overlay, DrawLayer::Object, DrawLayer::Ground];
+        // 앞 층의 끝이 뒤 층의 시작보다 앞이다 (틈이 있다).
+        for pair in layers.windows(2) {
+            let (o, s) = pair[0].depth_range();
+            assert!(o + s < pair[1].depth_range().0, "{pair:?}");
+        }
+        let (front, _) = layers
+            .iter()
+            .map(|l| l.depth_range())
+            .fold((1.0, 0.0), |a, b| if b.0 < a.0 { b } else { a });
+        // 화면 공간은 층과 무관하게 같은 기준에서, 어느 월드 층보다 앞.
+        for l in layers {
+            assert_eq!(Space::Screen.depth_span(l), (SCREEN_DEPTH, 0.0));
+            assert_eq!(Space::World.depth_span(l), l.depth_range());
+        }
+        assert!(SCREEN_DEPTH < front);
+        // HUD 의 겹침 칸을 다 써도 0 아래로(잘림) 내려가지 않는다.
+        const { assert!(SCREEN_DEPTH - 2400.0 * DEPTH_LAYER >= -1e-6) };
+    }
 }

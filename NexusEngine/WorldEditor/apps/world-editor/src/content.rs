@@ -1740,6 +1740,12 @@ fn details(root: &Path, asset: &Asset, assets: &[Asset], forms: &Forms) -> Detai
                 if f.mp_cost > 0 {
                     row("MP", f.mp_cost.to_string());
                 }
+                if f.radius > 0.0 {
+                    row("범위", format!("{}m", f.radius));
+                }
+                if f.heal > 0 {
+                    row("회복", f.heal.to_string());
+                }
             }
         }
         AssetKind::Loot => {

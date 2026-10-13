@@ -22,3 +22,10 @@ fn drink() {
     use_item(potion());
     resume();
 }
+
+// 화면이 열릴 때 — ui/pause.ui.ron 의 on_open 이 부른다 (버튼과 같은 API).
+fn opened() {
+    if playing() && item_count(potion()) == 0 {
+        notify("포션이 없습니다 — 일시정지 중에는 회복할 수 없습니다");
+    }
+}

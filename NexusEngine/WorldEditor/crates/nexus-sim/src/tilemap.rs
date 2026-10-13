@@ -114,6 +114,57 @@ impl TileMap {
         self.origin
     }
 
+    /// 맵이 `min`~`max` 영역을 다 덮도록 **늘린다** (줄이지는 않는다 — 칠한 칸을 잃지 않게).
+    /// 새 칸은 `fill`, 칸 격자의 위상(원점)은 그대로다. 한 변은 `max_side` 칸까지.
+    ///
+    /// 음수 쪽으로 늘면 기존 칸의 좌표가 밀린다 — 돌려준 `(dx, dy)` 를 기존 [`TileCoord`] 에 더하면
+    /// 같은 칸을 가리킨다. 바뀐 것이 없으면 `None`.
+    pub fn grow_to_cover(
+        &mut self,
+        min: Vec2,
+        max: Vec2,
+        fill: Tile,
+        max_side: u32,
+    ) -> Option<(i32, i32)> {
+        if !(min.is_finite() && max.is_finite()) {
+            return None;
+        }
+        let ts = self.tile_size;
+        // 영역 끝이 든 칸까지 (max 는 그 칸을 포함하도록 내림 + 1).
+        let lo = |v: f32, o: f32| ((v - o) / ts).floor() as i64;
+        let (x0, y0) = (
+            lo(min.x, self.origin.x).min(0),
+            lo(min.y, self.origin.y).min(0),
+        );
+        let (x1, y1) = (
+            (lo(max.x, self.origin.x) + 1).max(i64::from(self.width)),
+            (lo(max.y, self.origin.y) + 1).max(i64::from(self.height)),
+        );
+        let cap = i64::from(max_side.max(self.width).max(self.height));
+        // 상한을 넘으면 기존 맵 쪽을 지키고 늘어나는 쪽을 자른다.
+        let x0 = x0.max(x1 - cap).min(0);
+        let y0 = y0.max(y1 - cap).min(0);
+        let x1 = x1.min(x0 + cap);
+        let y1 = y1.min(y0 + cap);
+        let (width, height) = ((x1 - x0) as u32, (y1 - y0) as u32);
+        if x0 == 0 && y0 == 0 && width == self.width && height == self.height {
+            return None;
+        }
+        let (dx, dy) = ((-x0) as i32, (-y0) as i32);
+        let mut tiles = vec![fill; width as usize * height as usize];
+        for y in 0..self.height {
+            let from = (y * self.width) as usize;
+            let to = (y as usize + dy as usize) * width as usize + dx as usize;
+            tiles[to..to + self.width as usize]
+                .copy_from_slice(&self.tiles[from..from + self.width as usize]);
+        }
+        self.origin -= Vec2::new(dx as f32, dy as f32) * ts;
+        self.width = width;
+        self.height = height;
+        self.tiles = tiles;
+        Some((dx, dy))
+    }
+
     /// 맵 전체가 덮는 월드 영역 `(min, max)`.
     #[must_use]
     pub fn world_bounds(&self) -> (Vec2, Vec2) {
@@ -607,5 +658,61 @@ mod tests {
         assert_eq!(map.find_path(at(0, 0), at(119, 119)), None);
         let open = flat(120, 120);
         assert!(open.find_path(at(0, 0), at(119, 119)).is_some());
+    }
+
+    #[test]
+    fn growing_keeps_painted_tiles_under_the_same_world_spot() {
+        let wall = Tile {
+            walkable: false,
+            ..Tile::default()
+        };
+        let mut map = TileMap::new(4, 4, 1.0, Vec2::ZERO, Tile::default());
+        map.set(at(1, 2), wall);
+        let spot = map.tile_center(at(1, 2));
+
+        // 음수 쪽 2.5m, 양수 쪽 6m 까지 — 칸 격자 위상(정수 m)은 그대로.
+        let shift = map.grow_to_cover(
+            Vec2::new(-2.5, -1.0),
+            Vec2::new(6.0, 3.0),
+            Tile::default(),
+            4096,
+        );
+        assert_eq!(shift, Some((3, 1)));
+        assert_eq!(map.origin(), Vec2::new(-3.0, -1.0));
+        assert_eq!((map.width(), map.height()), (10, 5));
+        // 같은 칸이 밀린 좌표에 — 월드 위치는 같다.
+        let moved = at(1 + 3, 2 + 1);
+        assert_eq!(map.get(moved), Some(wall));
+        assert_eq!(map.tile_center(moved), spot);
+        assert_eq!(map.world_to_tile(spot), moved);
+        // 새 칸은 기본 타일.
+        assert_eq!(map.get(at(0, 0)), Some(Tile::default()));
+
+        // 이미 덮으면 아무 일도 없다 — 줄이지 않는다.
+        assert_eq!(
+            map.grow_to_cover(Vec2::ZERO, Vec2::new(1.0, 1.0), Tile::default(), 4096),
+            None
+        );
+        assert_eq!((map.width(), map.height()), (10, 5));
+    }
+
+    #[test]
+    fn growing_stops_at_the_side_limit_and_keeps_the_old_map() {
+        let mut map = TileMap::new(4, 4, 1.0, Vec2::ZERO, Tile::default());
+        map.set(
+            at(0, 0),
+            Tile {
+                level: 2,
+                ..Tile::default()
+            },
+        );
+        let shift = map.grow_to_cover(Vec2::splat(-100.0), Vec2::splat(100.0), Tile::default(), 16);
+        let (dx, dy) = shift.unwrap();
+        assert_eq!((map.width(), map.height()), (16, 16));
+        assert_eq!(map.get(at(dx, dy)).unwrap().level, 2, "옛 칸은 남는다");
+        assert_eq!(
+            map.grow_to_cover(Vec2::NAN, Vec2::ONE, Tile::default(), 16),
+            None
+        );
     }
 }

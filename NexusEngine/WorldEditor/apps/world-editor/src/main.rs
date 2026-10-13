@@ -201,6 +201,12 @@ struct Editor {
     /// 화면 버튼 상태 — 마우스가 올라간 것 / 누르고 있는 것.
     ui_hover: Option<String>,
     ui_press: Option<String>,
+    /// 지난 프레임의 화면 스택 `(레벨, 화면들)` — 새로 뜬 화면의 `on_open` 을 부르려고.
+    open_screens: (String, Vec<String>),
+    /// 지금 쓰는 저장 칸 (1부터, 플레이 메뉴에서 바꾼다).
+    save_slot: u8,
+    /// 이어 할지 묻는 중이면 그 칸의 요약 — 창이 뜬다.
+    continue_prompt: Option<String>,
     /// 에디터가 보는 게임 데이터 — **액터 타입 목록**(인스펙터)과 마커 그림에 쓴다.
     ///
     /// 플레이는 시작할 때 자기 것을 새로 읽는다. 이쪽도 그때 함께 갱신해 에디터와 플레이가
@@ -267,6 +273,9 @@ impl Default for Editor {
             pending_level: None,
             ui_hover: None,
             ui_press: None,
+            open_screens: (String::new(), Vec::new()),
+            save_slot: 1,
+            continue_prompt: None,
             data: None,
             fixed_zoom: None,
             play: None,
@@ -454,6 +463,8 @@ impl Editor {
             zone_path: self.zone_path.as_deref(),
             dirty,
             notice: self.notice.as_ref(),
+            save_slot: self.save_slot,
+            continue_prompt: self.continue_prompt.as_deref(),
             stats: FrameStats {
                 fps: self.fps,
                 quads: self
@@ -564,9 +575,10 @@ impl Editor {
     /// 진행 상황을 저장한다 (P3-4 — 수동 저장과 정상 종료).
     fn save_game(&mut self, session: &PlaySession) {
         let data = session.save_data(self.zone_name());
-        match save_file::save(&save_file::default_path(), &data) {
+        let path = save_file::slot_path(self.save_slot);
+        match save_file::save(&path, &data) {
             Ok(()) => self.notify(
-                format!("저장 — 레벨 {} ({})", data.level, save_file::DEFAULT_SAVE),
+                format!("저장 — 레벨 {} ({}번 칸)", data.level, self.save_slot),
                 false,
             ),
             Err(e) => self.notify(format!("저장하지 못했습니다 — {e}"), true),
@@ -579,7 +591,7 @@ impl Editor {
         if self.play.is_some() || self.shell.is_some() {
             self.stop_play();
         } else {
-            self.start_play();
+            self.start_play(SaveChoice::Ask);
         }
     }
 
@@ -599,7 +611,14 @@ impl Editor {
     }
 
     /// 지금 편집 중인 씬으로 플레이를 시작한다 (F5). 화면은 이 존이 속한 레벨이 정한다.
-    fn start_play(&mut self) {
+    fn start_play(&mut self, choice: SaveChoice) {
+        let slot_path = save_file::slot_path(self.save_slot);
+        // 저장이 있으면 먼저 묻는다 — 답은 이어 하기 창이 준다 (`ContinueChoice`).
+        if choice == SaveChoice::Ask && matches!(save_file::load(&slot_path), Ok(Some(_))) {
+            self.continue_prompt = Some(save_file::summary(&slot_path));
+            return;
+        }
+        self.continue_prompt = None;
         // 스크립트 편집기에 저장하지 않은 변경이 있으면 먼저 저장한다 — 플레이는 디스크의 파일로 돈다.
         // 고친 것이 적용되지 않은 채 옛 스크립트로 플레이하면 무엇이 문제인지 알기 어렵다.
         if let Some(saved) = self.ui.as_mut().and_then(EditorUi::save_dirty_script) {
@@ -629,7 +648,11 @@ impl Editor {
             Err(e) => self.notify(format!("액터 목록을 갱신하지 못했습니다 — {e}"), true),
         }
         // 저장 데이터가 있으면 이어서 한다. 다른 존이면 위치만 버리고 캐릭터는 이어진다.
-        let save = match save_file::load(&save_file::default_path()) {
+        let loaded = match choice {
+            SaveChoice::Fresh => Ok(None),
+            SaveChoice::Ask | SaveChoice::Continue => save_file::load(&slot_path),
+        };
+        let save = match loaded {
             Ok(save) => save,
             Err(e) => {
                 self.notify(format!("저장 파일을 읽지 못해 새로 시작합니다 — {e}"), true);
@@ -664,6 +687,47 @@ impl Editor {
                 self.shell = Some(self.shell_for_zone());
             }
             Err(e) => self.notify(format!("플레이할 수 없음: {e}"), true),
+        }
+    }
+
+    /// 새로 뜬 화면의 `on_open` 스크립트를 부른다. 화면을 여는 길(레벨·일시정지·버튼·스크립트)이
+    /// 여럿이라 그 자리마다 넣지 않고, **스택이 바뀐 것을 보고** 부른다. 레벨이 바뀌면 전부 새로 뜬 것이다.
+    fn run_open_hooks(&mut self) {
+        let (level, now) = match self.shell.as_ref() {
+            Some(s) => (s.level.clone(), s.screens.clone()),
+            None => (String::new(), Vec::new()),
+        };
+        let (old_level, old) =
+            std::mem::replace(&mut self.open_screens, (level.clone(), now.clone()));
+        let opened = now
+            .into_iter()
+            .filter(|id| old_level != level || !old.contains(id));
+        let hooks: Vec<screen::ScriptCall> = opened
+            .filter_map(|id| self.screens.screen(&id).and_then(|s| s.on_open.clone()))
+            .collect();
+        for h in hooks {
+            self.run_ui_script(&h.path, &h.call);
+        }
+    }
+
+    /// 이어 하기 창의 답.
+    fn answer_continue(&mut self, choice: ui::ContinueChoice) {
+        self.continue_prompt = None;
+        match choice {
+            ui::ContinueChoice::Continue => self.start_play(SaveChoice::Continue),
+            ui::ContinueChoice::Fresh => {
+                self.start_play(SaveChoice::Fresh);
+                if self.play.is_some() {
+                    self.notify(
+                        format!(
+                            "새로 시작 — 멈추거나 저장하면 {}번 칸을 덮어씁니다",
+                            self.save_slot
+                        ),
+                        false,
+                    );
+                }
+            }
+            ui::ContinueChoice::Cancel => {}
         }
     }
 
@@ -750,7 +814,7 @@ impl Editor {
                     self.open_zone(PathBuf::from(zone));
                 }
                 self.stop_play();
-                self.start_play();
+                self.start_play(SaveChoice::Continue);
             }
             None => {
                 self.stop_play();
@@ -802,9 +866,51 @@ impl Editor {
                 self.notify(w, true);
             }
         }
+        if actions.reload_art {
+            self.reload_art();
+        }
         if let Some(text) = &actions.notice {
             self.notify(text.clone(), false);
         }
+    }
+
+    /// 그림을 디스크에서 다시 올린다 — 시트·타일셋은 새로 읽고, 그림 위젯은 다음 프레임에 다시 올라간다.
+    /// 새 것을 다 올린 **뒤에** 옛 텍스처를 푼다 (실패한 쪽은 옛 것을 그대로 쓴다). 프레임 바깥에서 부른다.
+    fn reload_art(&mut self) {
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        let mut old = Vec::new();
+        let mut warnings = Vec::new();
+        let sheets = self
+            .data
+            .as_ref()
+            .map(GameData::sprite_sheets)
+            .unwrap_or_default();
+        match SpriteLibrary::load(renderer, &sheets, &mut warnings) {
+            Ok(fresh) => {
+                if let Some(prev) = self.sprites.replace(fresh) {
+                    old.extend(prev.textures());
+                }
+            }
+            Err(e) => warnings.push(format!("스프라이트 시트 로드 실패: {e}")),
+        }
+        match Terrain::load(renderer) {
+            Ok(fresh) => old.extend(std::mem::replace(&mut self.terrain, fresh).textures()),
+            Err(e) => warnings.push(format!("지형 그림을 읽지 못했습니다 — {e}")),
+        }
+        old.extend(self.screens.forget_images());
+        let freed = old.len();
+        for t in old {
+            let _ = renderer.unload_texture(t);
+        }
+        for w in warnings {
+            self.notify(w, true);
+        }
+        self.notify(
+            format!("그림을 다시 읽었습니다 — 옛 텍스처 {freed}개를 풀었습니다"),
+            false,
+        );
     }
 
     /// 파일 작업 실행 (P9). 확인 창과 **같은 계획을 다시 세워** 실행한다 — 창을 띄운 뒤 디스크가
@@ -977,6 +1083,11 @@ impl Editor {
                 );
             }
             Action::Script { path, call } => self.run_ui_script(&path, &call),
+            // 스킬 칸·스킬 버튼 — 숫자키와 같은 경로 (P14).
+            Action::Skill(key) => match self.play.as_mut() {
+                Some(play) => play.use_skill(key as usize),
+                None => self.notify(String::from("스킬은 플레이 중에만 쓸 수 있습니다"), false),
+            },
             Action::None => {}
         }
     }
@@ -1255,8 +1366,18 @@ impl Editor {
                 false,
             );
         }
+        if let Some(slot) = actions.set_save_slot {
+            self.save_slot = slot;
+            self.notify(
+                format!("저장 칸 {slot}번 — 다음 저장·이어 하기가 이 칸을 씁니다"),
+                false,
+            );
+        }
+        if let Some(choice) = actions.continue_choice {
+            self.answer_continue(choice);
+        }
         if actions.delete_save {
-            match save_file::delete(&save_file::default_path()) {
+            match save_file::delete(&save_file::slot_path(self.save_slot)) {
                 Ok(()) => self.notify(
                     String::from("저장 데이터를 지웠습니다 — 다음 플레이는 새로 시작합니다"),
                     false,
@@ -1453,15 +1574,37 @@ impl Editor {
             Step::Duplicate => {
                 self.editing.duplicate_selected(&mut self.scene);
             }
+            Step::SpawnArea(count, radius) => {
+                for edit in [
+                    edit::SpawnEdit::Count(count),
+                    edit::SpawnEdit::Radius(radius),
+                ] {
+                    self.editing.apply_inspector(
+                        &mut self.scene,
+                        edit::InspectorEdit::ItemSpawn {
+                            edit,
+                            finished: true,
+                        },
+                    );
+                }
+            }
             Step::Undo => {
                 self.editing.undo(&mut self.scene);
             }
             Step::Redo => {
                 self.editing.redo(&mut self.scene);
             }
+            // 스크립트의 play 는 묻지 않고 이어 한다 — 자동 확인이 창에 막히지 않게.
             Step::TogglePlay => {
-                self.toggle_play();
+                if self.play.is_some() || self.shell.is_some() {
+                    self.stop_play();
+                } else {
+                    self.start_play(SaveChoice::Continue);
+                }
             }
+            Step::SaveSlot(slot) => self.save_slot = slot,
+            Step::AskPlay => self.start_play(SaveChoice::Ask),
+            Step::Continue(choice) => self.answer_continue(choice),
             Step::Save(path) => {
                 self.save_zone(path);
             }
@@ -1497,7 +1640,7 @@ impl Editor {
                 }
             }
             Step::DeleteSave => {
-                if let Err(e) = save_file::delete(&save_file::default_path()) {
+                if let Err(e) = save_file::delete(&save_file::slot_path(self.save_slot)) {
                     self.notify(format!("저장 데이터를 지우지 못했습니다 — {e}"), true);
                 }
             }
@@ -1508,6 +1651,7 @@ impl Editor {
                 }
             }
             Step::TogglePanels => self.hide_panels = !self.hide_panels,
+            Step::ReloadArt => self.reload_art(),
             Step::UiEdit => self.screen_editor.toggle(&self.screens),
             Step::UiScreen(id) => self.screen_editor.switch(&self.screens, &id),
             Step::UiPick(id) => {
@@ -1681,6 +1825,7 @@ impl Editor {
                 &mut self.commands,
             );
             draw_arrow(item, px, &mut self.commands);
+            draw_spawn_area(item, px, &mut self.commands);
         }
 
         // ── 오브젝트 층 ──────────────────────────────────────────────────────
@@ -2189,6 +2334,7 @@ impl App for Editor {
             }
             None => (None, None),
         };
+        self.run_open_hooks();
         // 뷰포트가 확정된 뒤여야 배율이 맞는다.
         if viewport.is_some() {
             self.follow_player(alpha);
@@ -2285,6 +2431,40 @@ fn draw_arrow(item: &scene::Item, px: f32, out: &mut Vec<RenderCommand>) {
     }
 }
 
+/// 스폰 영역 — 반경 원과 마리마다의 자리 (무리일 때만). 플레이 때 서는 자리 그대로다.
+fn draw_spawn_area(item: &scene::Item, px: f32, out: &mut Vec<RenderCommand>) {
+    const SEGMENTS: usize = 48;
+    let area = item.spawn;
+    if item.kind == scene::ItemKind::PlayerSpawn || (area.count <= 1 && area.radius <= 0.0) {
+        return;
+    }
+    let [r, g, b, _] = item.kind.color();
+    let faint = [r, g, b, 0.45];
+    if area.radius > 0.0 {
+        let at = |i: usize| {
+            #[allow(clippy::cast_precision_loss)]
+            let a = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+            item.pos + Vec2::new(a.cos(), a.sin()) * area.radius
+        };
+        for i in 0..SEGMENTS {
+            push_segment(at(i), at(i + 1), THIN_LINE_PX * px, BIAS_MARKER, faint, out);
+        }
+    }
+    let dot = 7.0 * px;
+    for p in area.points(item.pos) {
+        out.push(RenderCommand::DrawRect {
+            center: p,
+            size: Vec2::splat(dot),
+            rotation: std::f32::consts::FRAC_PI_4,
+            z: 0.0,
+            depth_bias: BIAS_MARKER,
+            color: [r, g, b, 0.8],
+            uv: UvRect::FULL,
+            texture: TextureId::WHITE,
+        });
+    }
+}
+
 /// `a` 에서 `b` 까지 굵기 `thick` 의 선분 (회전된 사각형 하나).
 pub(crate) fn push_segment(
     a: Vec2,
@@ -2333,4 +2513,15 @@ fn draw(
         renderer.submit_ui(frame)?;
     }
     renderer.end_frame()
+}
+
+/// 플레이를 시작할 때 저장 칸을 어떻게 쓸지.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SaveChoice {
+    /// 저장이 있으면 이어 하기 창으로 묻는다 (F5).
+    Ask,
+    /// 저장이 있으면 이어 한다 (레벨 열기·스크립트).
+    Continue,
+    /// 저장을 쓰지 않는다.
+    Fresh,
 }

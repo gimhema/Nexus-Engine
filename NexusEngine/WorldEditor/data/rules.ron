@@ -23,6 +23,8 @@
         4: (range: 2.0, cooldown_ms: 3000, damage_mult: 2.0, mp_cost: 20),  // 고블린 강타
         5: (range: 2.0, cooldown_ms: 3000, damage_mult: 1.8, mp_cost: 15),  // 플레이어 강베기 (단축키 1)
         6: (range: 6.0, cooldown_ms: 2000, damage_mult: 0.8, mp_cost: 10),  // 플레이어 돌 던지기 (단축키 2)
+        7: (range: 2.0, cooldown_ms: 4000, damage_mult: 1.2, mp_cost: 20, radius: 2.5),  // 플레이어 회오리 베기 (단축키 3) — 대상 둘레 2.5m 의 적 모두
+        8: (range: 0.0, cooldown_ms: 6000, damage_mult: 0.0, mp_cost: 15, heal: 60),  // 플레이어 치유 (단축키 4) — 자신
     },
 
     items: {
@@ -60,7 +62,7 @@
             faction: 1,
             basic_attack: Some(1),
             // 단축키 스킬 — 조작할 때 숫자키 1·2·… 로 쓴다 (맨 앞이 1번 키).
-            skills: [5, 6],
+            skills: [5, 6, 7, 8],
             // 레벨이 오를 때마다 더해지는 수치 (P3). 필요 경험치는 level² × 100.
             growth: (max_hp: 40, max_mp: 10, attack: 4, defense: 2),
         ),
@@ -149,6 +151,9 @@
     ],
     // 플레이어 기본 부활 — 쓰러지면 delay_ms 뒤 저장 지점(처음 선 자리, 이어 하기면 저장한 자리)에서
     // 최대치의 hp_percent 로 일어나고, 지금 레벨의 경험치를 exp_loss_percent 만큼 잃는다.
+    // 일어난 뒤 protect_ms 동안은 공격받지 않는다 (몬스터도 노리지 않는다).
     // 액터 스크립트에 on_dead 를 정의하면 그 액터는 이 규칙 대신 스크립트가 부활시킨다 (revive 함수).
-    revive: (delay_ms: 3000, hp_percent: 100, exp_loss_percent: 0),
+    revive: (delay_ms: 3000, hp_percent: 100, exp_loss_percent: 0, protect_ms: 3000),
+    // 땅에 떨어진 아이템(드롭·버린 것)이 사라지기까지 ms. 0 이면 영영 남는다.
+    ground_item_ms: 60000,
 )

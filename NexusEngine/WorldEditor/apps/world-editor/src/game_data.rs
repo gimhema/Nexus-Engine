@@ -41,6 +41,8 @@ pub(crate) const RULES_PATH: &str = "data/rules.ron";
 pub(crate) const DISPLAY_PATH: &str = "data/display.ron";
 /// 리스폰 시간 상한 (ms) — 1시간. 오타(0 을 하나 더)로 영영 안 나오는 몬스터를 막는다.
 const MAX_RESPAWN_MS: u32 = 3_600_000;
+/// 범위 스킬의 반경 상한 (m).
+const MAX_SKILL_RADIUS: f32 = 50.0;
 /// 단축키 칸 수 — 숫자키 1~9.
 pub(crate) const MAX_HOTBAR: usize = 9;
 
@@ -88,6 +90,9 @@ struct RulesFile {
     starting_kit: Vec<StackFile>,
     /// 플레이어 기본 부활 — 적지 않으면 3초 뒤 저장 지점에서 HP 가득, 패널티 없음.
     /// 액터 스크립트가 `on_dead` 를 정의하면 그 액터에는 쓰이지 않는다 (스크립트가 맡는다).
+    /// 땅에 떨어진 아이템이 사라지기까지 (ms). 0 이거나 적지 않으면 영영 남는다.
+    #[serde(default)]
+    ground_item_ms: u32,
     #[serde(default)]
     revive: ReviveFile,
 }
@@ -101,6 +106,9 @@ struct ReviveFile {
     hp_percent: u32,
     #[serde(default)]
     exp_loss_percent: u32,
+    /// 일어난 뒤 공격받지 않는 시간 (ms). 0 이면 보호 없음.
+    #[serde(default)]
+    protect_ms: u32,
 }
 
 impl Default for ReviveFile {
@@ -109,6 +117,7 @@ impl Default for ReviveFile {
             delay_ms: default_revive_delay(),
             hp_percent: default_revive_hp(),
             exp_loss_percent: 0,
+            protect_ms: 0,
         }
     }
 }
@@ -128,6 +137,8 @@ pub(crate) struct RevivePolicy {
     pub(crate) delay: Duration,
     pub(crate) hp_per_mille: u32,
     pub(crate) exp_loss_per_mille: u32,
+    /// 일어난 뒤 보호 시간 (ms).
+    pub(crate) protect_ms: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -154,6 +165,12 @@ struct SkillFile {
     /// 쓸 때 드는 MP. 적지 않으면 0 — MP 를 보지 않는다.
     #[serde(default)]
     mp_cost: u32,
+    /// 범위 반경 (m). 0 이면 대상 하나.
+    #[serde(default)]
+    radius: f32,
+    /// 회복량. 0 보다 크면 피해 대신 회복하는 스킬이다.
+    #[serde(default)]
+    heal: u32,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -388,6 +405,8 @@ pub(crate) struct GameData {
     skill_names: BTreeMap<SkillId, String>,
     /// 진영의 표시 이름 (`display.ron`).
     faction_names: BTreeMap<u32, String>,
+    /// 땅의 아이템 소멸 시간 — `None` 이면 남는다.
+    ground_item_lifetime: Option<Duration>,
     revive: RevivePolicy,
     /// 경로 → 스크립트 본문. 컴파일은 플레이를 시작할 때 한다.
     script_sources: BTreeMap<String, String>,
@@ -462,6 +481,10 @@ impl GameData {
                 s.range.is_finite() && s.range >= 0.0 && s.damage_mult.is_finite(),
                 format!("스킬 {id}: 사거리·배율은 유한한 수, 사거리는 0 이상"),
             );
+            check(
+                s.radius.is_finite() && (0.0..=MAX_SKILL_RADIUS).contains(&s.radius),
+                format!("스킬 {id}: radius 는 0~{MAX_SKILL_RADIUS}m"),
+            );
         }
         for (table, entries) in &r.loot {
             for e in entries {
@@ -489,6 +512,11 @@ impl GameData {
                 // 레벨이 올라도 MP 가 늘지 않는데 비용이 최대 MP 보다 크면 영영 칠 수 없다 —
                 // AI 가 사거리 안에서 서서 기다리기만 한다.
                 if let Some(s) = r.skills.get(&skill) {
+                    // 회복 스킬을 기본 공격으로 두면 AI 가 적에게 쓰려다 매번 거절된다.
+                    check(
+                        s.heal == 0,
+                        format!("액터 {id}: 기본 공격 스킬 {skill} 이(가) 회복 스킬"),
+                    );
                     check(
                         s.mp_cost <= u.max_mp || u.growth.max_mp > 0,
                         format!(
@@ -576,6 +604,13 @@ impl GameData {
             r.skills.contains_key(&r.player_attack),
             format!("player_attack: 없는 스킬 {}", r.player_attack),
         );
+        check(
+            r.skills.get(&r.player_attack).is_none_or(|s| s.heal == 0),
+            format!(
+                "player_attack: 스킬 {} 이(가) 회복 스킬 — 클릭 공격에 쓸 수 없음",
+                r.player_attack
+            ),
+        );
         for s in &r.starting_kit {
             check(
                 r.items.contains_key(&s.item),
@@ -616,10 +651,15 @@ impl GameData {
         check(
             (1..=100).contains(&r.revive.hp_percent)
                 && r.revive.exp_loss_percent <= 100
-                && r.revive.delay_ms <= MAX_RESPAWN_MS,
+                && r.revive.delay_ms <= MAX_RESPAWN_MS
+                && r.revive.protect_ms <= MAX_RESPAWN_MS,
             String::from(
-                "revive: hp_percent 는 1~100, exp_loss_percent 는 0~100, delay_ms 는 1시간 이하",
+                "revive: hp_percent 는 1~100, exp_loss_percent 는 0~100, delay_ms·protect_ms 는 1시간 이하",
             ),
+        );
+        check(
+            r.ground_item_ms <= MAX_RESPAWN_MS,
+            String::from("ground_item_ms 는 1시간 이하"),
         );
         if !errors.is_empty() {
             return Err(format!("게임 데이터 오류 — {}", errors.join(" / ")));
@@ -643,6 +683,8 @@ impl GameData {
                             cooldown_ms: s.cooldown_ms,
                             damage_mult: s.damage_mult,
                             mp_cost: s.mp_cost,
+                            radius: s.radius,
+                            heal: s.heal,
                         },
                     )
                 })
@@ -740,10 +782,13 @@ impl GameData {
                 .iter()
                 .map(|(id, l)| (*id, l.name.clone()))
                 .collect(),
+            ground_item_lifetime: (r.ground_item_ms > 0)
+                .then(|| Duration::from_millis(u64::from(r.ground_item_ms))),
             revive: RevivePolicy {
                 delay: Duration::from_millis(u64::from(r.revive.delay_ms)),
                 hp_per_mille: r.revive.hp_percent * 10,
                 exp_loss_per_mille: r.revive.exp_loss_percent * 10,
+                protect_ms: r.revive.protect_ms,
             },
             script_sources: BTreeMap::new(),
         })
@@ -789,6 +834,7 @@ impl GameData {
     /// 규칙을 시뮬레이션 월드에 등록한다 (설정 작업).
     pub(crate) fn install(&self, world: &mut SimWorld) {
         world.set_seed(self.seed);
+        world.set_ground_item_lifetime(self.ground_item_lifetime);
         for &(a, b, relation) in &self.relations {
             world.set_relation(a, b, relation);
         }
@@ -1440,6 +1486,8 @@ pub(crate) struct SkillForm {
     pub(crate) cooldown_ms: u32,
     pub(crate) damage_mult: f32,
     pub(crate) mp_cost: u32,
+    pub(crate) radius: f32,
+    pub(crate) heal: u32,
     pub(crate) name: String,
 }
 
@@ -1450,6 +1498,8 @@ impl SkillForm {
             cooldown_ms: 1000,
             damage_mult: 1.0,
             mp_cost: 0,
+            radius: 0.0,
+            heal: 0,
             name: name.to_owned(),
         }
     }
@@ -1461,8 +1511,16 @@ impl SkillForm {
         } else {
             format!(", mp_cost: {}", self.mp_cost)
         };
+        // 범위·회복도 있을 때만.
+        let mut extra = String::new();
+        if self.radius > 0.0 {
+            extra.push_str(&format!(", radius: {:?}", self.radius));
+        }
+        if self.heal > 0 {
+            extra.push_str(&format!(", heal: {}", self.heal));
+        }
         format!(
-            "{id}: (range: {:?}, cooldown_ms: {}, damage_mult: {:?}{mp}),",
+            "{id}: (range: {:?}, cooldown_ms: {}, damage_mult: {:?}{mp}{extra}),",
             self.range, self.cooldown_ms, self.damage_mult
         )
     }
@@ -1558,6 +1616,8 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
                     cooldown_ms: s.cooldown_ms,
                     damage_mult: s.damage_mult,
                     mp_cost: s.mp_cost,
+                    radius: s.radius,
+                    heal: s.heal,
                     name: d.skills.get(id).map(|l| l.name.clone()).unwrap_or_default(),
                 },
             )
@@ -1650,6 +1710,10 @@ pub(crate) struct SettingsForm {
     pub(crate) starting_kit: Vec<(u32, u32)>,
     /// 기본 부활 — `(대기 ms, HP %, 경험치 손실 %)`.
     pub(crate) revive: (u32, u32, u32),
+    /// 부활 뒤 보호 (ms).
+    pub(crate) revive_protect_ms: u32,
+    /// 땅의 아이템 소멸 시간 (ms, 0 = 남음).
+    pub(crate) ground_item_ms: u32,
 }
 
 pub(crate) fn settings_form(rules: &str) -> Result<SettingsForm, String> {
@@ -1682,6 +1746,8 @@ pub(crate) fn settings_form(rules: &str) -> Result<SettingsForm, String> {
             r.revive.hp_percent,
             r.revive.exp_loss_percent,
         ),
+        ground_item_ms: r.ground_item_ms,
+        revive_protect_ms: r.revive.protect_ms,
     })
 }
 
@@ -1716,22 +1782,31 @@ pub(crate) fn patch_settings(
         .collect();
     text = replace_block(&text, "starting_kit", '[', &kit)?;
     let (delay, hp, loss) = f.revive;
-    let revive = format!("(delay_ms: {delay}, hp_percent: {hp}, exp_loss_percent: {loss})");
-    text = match replace_field(&text, "revive", &revive) {
-        Ok(t) => t,
-        // 예전 파일 — 줄이 없으면 맨 끝 `)` 앞에 넣는다.
-        Err(_) => match text.rfind(')') {
-            Some(end) => format!(
-                "{}    revive: {revive},
-{}",
-                &text[..end],
-                &text[end..]
-            ),
-            None => return Err(String::from("rules.ron 의 끝 `)` 을 찾지 못함")),
-        },
+    let protect = match f.revive_protect_ms {
+        0 => String::new(),
+        ms => format!(", protect_ms: {ms}"),
     };
+    let revive =
+        format!("(delay_ms: {delay}, hp_percent: {hp}, exp_loss_percent: {loss}{protect})");
+    text = set_or_append(&text, "revive", &revive)?;
+    text = set_or_append(&text, "ground_item_ms", &f.ground_item_ms.to_string())?;
     GameData::parse(&text, display)?;
     Ok(text)
+}
+
+/// 한 줄 필드를 바꾼다 — 예전 파일이라 줄이 없으면 맨 끝 `)` 앞에 넣는다.
+fn set_or_append(text: &str, field: &str, value: &str) -> Result<String, String> {
+    if let Ok(t) = crate::ron_patch::replace_field(text, field, value) {
+        return Ok(t);
+    }
+    let end = text
+        .rfind(')')
+        .ok_or_else(|| String::from("rules.ron 의 끝 `)` 을 찾지 못함"))?;
+    Ok(format!(
+        "{}    {field}: {value},\n{}",
+        &text[..end],
+        &text[end..]
+    ))
 }
 
 /// 진영 이름 표 — `display.ron` 의 `factions` (P19). 블록이 없으면 빈 표.
@@ -1944,15 +2019,18 @@ mod tests {
     #[test]
     fn hotbar_skills_must_exist_fit_and_not_repeat() {
         let data = GameData::embedded();
-        assert_eq!(data.actor_skills(ActorId::new(1)), [SkillId(5), SkillId(6)]);
+        assert_eq!(
+            data.actor_skills(ActorId::new(1)),
+            [SkillId(5), SkillId(6), SkillId(7), SkillId(8)]
+        );
         assert!(data.actor_skills(ActorId::new(100)).is_empty());
         assert_eq!(data.skill_name(SkillId(5)), "강베기");
         assert_eq!(data.skill_name(SkillId(999)), "스킬 #999");
 
         for (bad, expect) in [
-            ("skills: [5, 6],", "없는 스킬 77"),
-            ("skills: [5, 6],", "두 번"),
-            ("skills: [5, 6],", "9개까지"),
+            ("skills: [5, 6, 7, 8],", "없는 스킬 77"),
+            ("skills: [5, 6, 7, 8],", "두 번"),
+            ("skills: [5, 6, 7, 8],", "9개까지"),
         ] {
             let replacement = match expect {
                 "없는 스킬 77" => "skills: [5, 77],",
@@ -1964,6 +2042,41 @@ mod tests {
             let err = GameData::parse(&rules, EMBEDDED_DISPLAY).unwrap_err();
             assert!(err.contains(expect), "'{expect}' 기대: {err}");
         }
+    }
+
+    #[test]
+    fn area_and_heal_skills_are_read_and_checked() {
+        let data = GameData::embedded();
+        let whirl = data
+            .skills
+            .iter()
+            .find(|(id, _)| *id == SkillId(7))
+            .unwrap()
+            .1;
+        let mend = data
+            .skills
+            .iter()
+            .find(|(id, _)| *id == SkillId(8))
+            .unwrap()
+            .1;
+        assert_eq!((whirl.radius, whirl.heal), (2.5, 0));
+        assert!(mend.is_heal() && mend.heal == 60);
+
+        let wide = EMBEDDED_RULES.replacen("radius: 2.5", "radius: 99.0", 1);
+        let err = GameData::parse(&wide, EMBEDDED_DISPLAY).unwrap_err();
+        assert!(err.contains("스킬 7") && err.contains("radius"), "{err}");
+        // 회복 스킬을 기본 공격·클릭 공격으로 두면 쓸 수 없다.
+        let basic = EMBEDDED_RULES.replacen("basic_attack: Some(2)", "basic_attack: Some(8)", 1);
+        assert_ne!(basic, EMBEDDED_RULES, "시험 전제");
+        let err = GameData::parse(&basic, EMBEDDED_DISPLAY).unwrap_err();
+        assert!(err.contains("회복 스킬"), "{err}");
+        let click = EMBEDDED_RULES.replacen("player_attack: 1,", "player_attack: 8,", 1);
+        assert_ne!(click, EMBEDDED_RULES, "시험 전제");
+        let err = GameData::parse(&click, EMBEDDED_DISPLAY).unwrap_err();
+        assert!(
+            err.contains("player_attack") && err.contains("회복"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1987,14 +2100,16 @@ mod tests {
 
     #[test]
     fn the_revive_rule_is_checked_written_and_defaulted() {
-        const LINE: &str = "revive: (delay_ms: 3000, hp_percent: 100, exp_loss_percent: 0),";
+        const LINE: &str =
+            "revive: (delay_ms: 3000, hp_percent: 100, exp_loss_percent: 0, protect_ms: 3000),";
         let data = GameData::embedded();
         assert_eq!(
             data.revive(),
             RevivePolicy {
                 delay: Duration::from_millis(3000),
                 hp_per_mille: 1000,
-                exp_loss_per_mille: 0
+                exp_loss_per_mille: 0,
+                protect_ms: 3000,
             }
         );
         let bad = EMBEDDED_RULES.replacen("hp_percent: 100", "hp_percent: 0", 1);
@@ -2009,7 +2124,11 @@ mod tests {
         assert_ne!(old, EMBEDDED_RULES, "시험 전제");
         assert_eq!(
             GameData::parse(&old, EMBEDDED_DISPLAY).unwrap().revive(),
-            data.revive()
+            RevivePolicy {
+                protect_ms: 0,
+                ..data.revive()
+            },
+            "예전 파일은 보호 없음"
         );
         let mut form = settings_form(&old).unwrap();
         form.revive = (500, 40, 10);
@@ -2023,6 +2142,81 @@ mod tests {
             text.matches("revive:").count(),
             EMBEDDED_RULES.matches("revive:").count()
         );
+        // 보호 시간은 0 이 아닐 때만 적힌다.
+        form.revive_protect_ms = 1500;
+        let text = patch_settings(EMBEDDED_RULES, EMBEDDED_DISPLAY, &form).unwrap();
+        assert!(text.contains("exp_loss_percent: 10, protect_ms: 1500),"));
+        let back = GameData::parse(&text, EMBEDDED_DISPLAY).unwrap().revive();
+        assert_eq!(back.protect_ms, 1500);
+        let bad = EMBEDDED_RULES.replacen("protect_ms: 3000", "protect_ms: 9000000", 1);
+        assert!(GameData::parse(&bad, EMBEDDED_DISPLAY).is_err());
+    }
+
+    #[test]
+    fn ground_item_lifetime_is_checked_written_and_installed() {
+        const LINE: &str = "ground_item_ms: 60000,";
+        let data = GameData::embedded();
+        assert_eq!(
+            data.ground_item_lifetime,
+            Some(Duration::from_secs(60)),
+            "내장 데이터"
+        );
+        let too_long = EMBEDDED_RULES.replacen(LINE, "ground_item_ms: 36000000,", 1);
+        assert!(
+            GameData::parse(&too_long, EMBEDDED_DISPLAY)
+                .unwrap_err()
+                .contains("ground_item_ms")
+        );
+        // 0 = 영영 남는다.
+        let never = EMBEDDED_RULES.replacen(LINE, "ground_item_ms: 0,", 1);
+        assert_eq!(
+            GameData::parse(&never, EMBEDDED_DISPLAY)
+                .unwrap()
+                .ground_item_lifetime,
+            None
+        );
+
+        // 줄이 없는 예전 파일은 남는 쪽, 설정 창이 저장하면 줄이 생긴다.
+        let old = EMBEDDED_RULES.replacen(LINE, "", 1);
+        assert_ne!(old, EMBEDDED_RULES, "시험 전제");
+        assert_eq!(
+            GameData::parse(&old, EMBEDDED_DISPLAY)
+                .unwrap()
+                .ground_item_lifetime,
+            None
+        );
+        let mut form = settings_form(&old).unwrap();
+        assert_eq!(form.ground_item_ms, 0);
+        form.ground_item_ms = 5000;
+        let text = patch_settings(&old, EMBEDDED_DISPLAY, &form).unwrap();
+        assert_eq!(text.matches("ground_item_ms:").count(), 1);
+        let back = GameData::parse(&text, EMBEDDED_DISPLAY).unwrap();
+        assert_eq!(back.ground_item_lifetime, Some(Duration::from_secs(5)));
+
+        // 월드에 들어간다 — 드롭이 5초 뒤 사라진다.
+        use nexus_sim::Authority as _;
+        let mut world = nexus_sim::SimWorld::new(nexus_sim::TileMap::new(
+            4,
+            4,
+            1.0,
+            nexus_core::Vec2::ZERO,
+            nexus_sim::Tile::default(),
+        ));
+        back.install(&mut world);
+        let mut auth = nexus_sim::LocalAuthority::new(world);
+        let g = auth.world_mut().spawn_ground_item(
+            nexus_core::Vec2::ZERO,
+            nexus_sim::ItemStack {
+                item: nexus_sim::ItemId(501),
+                count: 1,
+            },
+        );
+        for _ in 0..99 {
+            auth.tick(Duration::from_millis(50));
+        }
+        assert!(auth.world().ground_item(g).is_some(), "너무 일찍 사라짐");
+        auth.tick(Duration::from_millis(50));
+        assert!(auth.world().ground_item(g).is_none(), "5초가 지나도 남음");
     }
 
     #[test]

@@ -117,6 +117,7 @@ pub(crate) const PLACEHOLDERS: &[&str] = &[
     "exp",
     "exp_to_next",
     "loading",
+    "revive",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -189,6 +190,10 @@ pub(crate) struct ScreenFile {
     pub(crate) version: u32,
     /// 사람이 읽는 이름 — 편집기 목록에 보인다.
     pub(crate) name: String,
+    /// 화면이 열릴 때 부를 스크립트 함수 — 버튼 스크립트(P17)와 같은 규칙 (`data/` 기준 `.rhai`,
+    /// 인자 없는 함수). 없으면 아무 일도 없다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) on_open: Option<ScriptCall>,
     /// 최상위 위젯 — 목록 순서대로 그린다 (뒤가 위).
     pub(crate) widgets: Vec<Widget>,
 }
@@ -199,8 +204,35 @@ impl ScreenFile {
         Self {
             version: FORMAT_VERSION,
             name: name.to_owned(),
+            on_open: None,
             widgets: Vec::new(),
         }
+    }
+}
+
+/// 스크립트 함수 하나 — `path` 는 `data/` 기준 `.rhai`, `call` 은 인자 없는 함수 이름.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ScriptCall {
+    pub(crate) path: String,
+    pub(crate) call: String,
+}
+
+impl ScriptCall {
+    fn check(&self, what: &str) -> Result<(), String> {
+        if !crate::game_data::script_path_ok(&self.path) {
+            return Err(format!(
+                "{what}: 스크립트 경로 '{}' — data/ 기준, 소문자, '/' 구분, .rhai",
+                self.path
+            ));
+        }
+        if !is_identifier(&self.call) {
+            return Err(format!(
+                "{what}: 스크립트 함수 이름 '{}' 이 올바르지 않음",
+                self.call
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -328,10 +360,12 @@ pub(crate) enum Show {
     Always,
     /// 인벤토리를 열었을 때만 (**I**).
     ItemsOpen,
+    /// 플레이어가 쓰러져 있는 동안만 — 어둡게 덮기·"N초 뒤 일어납니다".
+    Down,
 }
 
 impl Show {
-    pub(crate) const ALL: [Self; 2] = [Self::Always, Self::ItemsOpen];
+    pub(crate) const ALL: [Self; 3] = [Self::Always, Self::ItemsOpen, Self::Down];
 
     fn is_default(&self) -> bool {
         matches!(self, Self::Always)
@@ -341,6 +375,7 @@ impl Show {
         match self {
             Self::Always => "항상",
             Self::ItemsOpen => "인벤토리 열었을 때",
+            Self::Down => "쓰러져 있을 때",
         }
     }
 
@@ -348,6 +383,7 @@ impl Show {
         match self {
             Self::Always => true,
             Self::ItemsOpen => values.show_items,
+            Self::Down => values.down,
         }
     }
 }
@@ -390,6 +426,9 @@ pub(crate) enum WidgetKind {
         #[serde(default = "white", skip_serializing_if = "is_white")]
         tint: (f32, f32, f32, f32),
     },
+    /// 단색 사각형 (sRGB, 알파 포함) — 화면을 어둡게 덮거나 띠를 깔 때.
+    /// `size` 가 없으면 **부모 사각형 전체**를 차지한다 (창과 같다).
+    Fill { color: (f32, f32, f32, f32) },
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -414,6 +453,7 @@ impl WidgetKind {
             Self::Skills => "스킬 칸",
             Self::Button { .. } => "버튼",
             Self::Image { .. } => "그림",
+            Self::Fill { .. } => "색 채움",
         }
     }
 
@@ -479,6 +519,9 @@ pub(crate) enum Action {
     /// 스크립트 함수를 부른다 — 고정 동작으로 안 되는 특별한 일 (P17).
     /// `path` 는 `data/` 기준 `.rhai`, `call` 은 그 안의 **인자 없는** 함수 이름.
     Script { path: String, call: String },
+    /// 단축키 스킬을 쓴다 — 숫자키 1~9 를 누른 것과 같다. 스킬 칸([`WidgetKind::Skills`])을
+    /// 누르면 그 칸의 번호로 이 동작이 난다.
+    Skill(u32),
     /// 아무것도 하지 않는다 — 배치만 해 두는 버튼.
     None,
 }
@@ -493,6 +536,7 @@ impl Action {
             Self::Resume => "계속하기",
             Self::Quit => "종료",
             Self::Script { .. } => "스크립트",
+            Self::Skill(_) => "스킬 쓰기",
             Self::None => "없음",
         }
     }
@@ -533,6 +577,10 @@ pub(crate) struct Values {
     pub(crate) show_items: bool,
     /// 로딩 진행 `(지난 ms, 전체 ms)` — 레벨을 여는 동안만 0 이 아니다.
     pub(crate) loading: (u32, u32),
+    /// 플레이어가 쓰러져 있다 ([`Show::Down`]).
+    pub(crate) down: bool,
+    /// 기본 부활까지 남은 초 (`{revive}`). 스크립트가 부활을 맡으면 `None` — 빈 글자가 된다.
+    pub(crate) revive_in: Option<f32>,
 }
 
 impl Values {
@@ -552,6 +600,8 @@ impl Values {
             skills: play.skill_slots(),
             show_items,
             loading: (0, 0),
+            down: !u.is_alive(),
+            revive_in: play.revive_in(),
         })
     }
 
@@ -589,6 +639,8 @@ impl Values {
             ],
             show_items: true,
             loading: (60, 100),
+            down: false,
+            revive_in: Some(2.4),
         }
     }
 
@@ -775,6 +827,9 @@ impl Screens {
         if file.name.trim().is_empty() {
             return Err(String::from("화면 이름이 비어 있음"));
         }
+        if let Some(hook) = &file.on_open {
+            hook.check("on_open")?;
+        }
         let mut seen: Vec<&str> = Vec::new();
         check_widgets(&file.widgets, 0, &mut seen)?;
         Ok(file)
@@ -882,8 +937,7 @@ impl Screens {
 
     /// 화면 문구에 **새 글자**가 생겼으면 아틀라스를 다시 구워 올린다 (편집 중 타이핑).
     ///
-    /// 텍스처 해제 API 가 없어 **이전 아틀라스는 GPU 에 남는다** — 편집 중에만 일어나는
-    /// 일이라 그대로 둔다. 실패하면 이유를 돌려주고 옛 아틀라스를 계속 쓴다.
+    /// 새 아틀라스를 올린 뒤 **옛 것은 푼다**. 실패하면 이유를 돌려주고 옛 아틀라스를 계속 쓴다.
     pub(crate) fn ensure_text_glyphs(&mut self, renderer: &mut dyn Renderer) -> Option<String> {
         let wanted = self.wanted_chars();
         let text = self.text.as_ref()?;
@@ -898,11 +952,22 @@ impl Screens {
             Ok(texture) => {
                 let text = self.text.as_mut().expect("위에서 확인했다");
                 text.sheet = sheet;
-                text.texture = texture;
+                let old = std::mem::replace(&mut text.texture, texture);
+                // 프레임 바깥이라 실패하지 않는다 — 실패해도 옛 것이 남을 뿐이다.
+                let _ = renderer.unload_texture(old);
                 None
             }
             Err(e) => Some(format!("{}: {e}", text.path)),
         }
+    }
+
+    /// 그림 위젯의 그림을 잊는다 — 다음 프레임에 `ensure_images` 가 디스크에서 다시 올린다.
+    /// 풀어야 할 옛 텍스처를 돌려준다.
+    pub(crate) fn forget_images(&mut self) -> Vec<TextureId> {
+        std::mem::take(&mut self.images)
+            .into_values()
+            .filter_map(|i| i.ok().map(|(t, _)| t))
+            .collect()
     }
 
     pub(crate) fn theme(&self) -> Option<&ThemeFile> {
@@ -981,7 +1046,7 @@ impl Screens {
         let s = self.scale();
         let size = match (w.size, &w.kind) {
             (Some(size), _) => (size.0.max(1) as f32 * s, size.1.max(1) as f32 * s),
-            (None, WidgetKind::Panel { .. }) => (parent.w, parent.h),
+            (None, WidgetKind::Panel { .. } | WidgetKind::Fill { .. }) => (parent.w, parent.h),
             (None, WidgetKind::Text { format }) => self.text_size(&fill(format, values)),
             (None, WidgetKind::Button { label, .. }) => {
                 let (w, h) = self.text_size(label);
@@ -996,7 +1061,10 @@ impl Screens {
             }
         };
         let pos = (w.pos.0 as f32 * s, w.pos.1 as f32 * s);
-        let at = if matches!((w.size, &w.kind), (None, WidgetKind::Panel { .. })) {
+        let at = if matches!(
+            (w.size, &w.kind),
+            (None, WidgetKind::Panel { .. } | WidgetKind::Fill { .. })
+        ) {
             // 부모를 가득 채우는 패널은 앵커·오프셋을 무시한다 (컨테이너로 쓰는 경우).
             Vec2::new(parent.x, parent.y)
         } else {
@@ -1047,8 +1115,29 @@ impl Screens {
                 WidgetKind::Button { action, .. } if l.rect.contains(at) => {
                     Some((l.widget.id.clone(), action.clone()))
                 }
+                // 스킬 칸은 칸마다 버튼이다 — 이름에 칸 번호를 붙여 눌림·호버를 칸별로 가린다.
+                WidgetKind::Skills if l.rect.contains(at) => self
+                    .skill_cells(values, l.rect)
+                    .find(|(_, r)| r.contains(at))
+                    .map(|(key, _)| (format!("{}#{key}", l.widget.id), Action::Skill(key))),
                 _ => None,
             })
+    }
+
+    /// 스킬 칸 하나하나의 사각형 — `(숫자키, 사각형)`. 그리기와 누르기가 같은 계산을 쓴다.
+    fn skill_cells<'v>(
+        &self,
+        values: &'v Values,
+        r: Rect,
+    ) -> impl Iterator<Item = (u32, Rect)> + 'v {
+        let s = self.scale();
+        let (cell, gap) = (SKILL_CELL * s, 3.0 * s);
+        values.skills.iter().enumerate().map(move |(i, slot)| {
+            (
+                u32::from(slot.key),
+                Rect::new(r.x + i as f32 * (cell + gap), r.y, cell, cell),
+            )
+        })
     }
 
     /// 화면에서 끌어 옮긴 양을 `pos`(UI 픽셀) 증분으로 바꾼다 — 배율만큼 나눈다.
@@ -1111,6 +1200,14 @@ impl Screens {
                 let bias = |slot: f32| (base + slot) * DEPTH_LAYER;
                 let r = laid.rect;
                 match &laid.widget.kind {
+                    WidgetKind::Fill { color } => {
+                        rect(
+                            r,
+                            [color.0, color.1, color.2, color.3],
+                            bias(BIAS_BACK),
+                            out,
+                        );
+                    }
                     WidgetKind::Panel { frame } => {
                         if *frame {
                             self.nine_slice(
@@ -1545,7 +1642,7 @@ pub(crate) fn to_ron(screen: &ScreenFile) -> String {
 // 메뉴 UI → 위젯 편집기. 저장하면 이 파일이 통째로 다시 쓰이므로 주석은 남지 않는다.
 //
 // pos·size 는 UI 픽셀(테마의 scale 을 곱하기 전)이고, anchor 기준점에서 오른쪽·아래가 +다.
-// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {mp} {max_mp} {level} {exp} {exp_to_next} {loading}(로딩 %)
+// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {mp} {max_mp} {level} {exp} {exp_to_next} {loading}(로딩 %) {revive}(부활까지 초)
 // Image 위젯의 path 는 작업 디렉터리 기준 PNG (소문자·'/'), region 은 그림의 픽셀 사각형이다.
 ";
     format!("{header}{body}\n")
@@ -1588,7 +1685,11 @@ fn fill(format: &str, v: &Values) -> String {
     ] {
         out = out.replace(&format!("{{{name}}}"), &value.to_string());
     }
-    out
+    // 남은 초는 소수 한 자리 — 정수로 내리면 "0초 뒤" 가 1초 가까이 보인다.
+    let revive = v
+        .revive_in
+        .map_or(String::new(), |s| format!("{:.1}", s.max(0.0)));
+    out.replace("{revive}", &revive)
 }
 
 /// 위젯 트리 검사 — 빈 이름, 이름 중복(트리 전체), 없는 값 이름, 0 크기, 너무 깊은 트리.
@@ -1629,6 +1730,11 @@ fn check_widgets<'a>(
                 {
                     return Err(format!("'{}': {} 대상이 비어 있음", w.id, action.label()));
                 }
+                if let Action::Skill(key) = action
+                    && !(1..=9).contains(key)
+                {
+                    return Err(format!("'{}': 스킬 번호는 1~9", w.id));
+                }
                 if let Action::Script { path, call } = action {
                     if !crate::game_data::script_path_ok(path) {
                         return Err(format!(
@@ -1661,6 +1767,12 @@ fn check_widgets<'a>(
                 let t = [tint.0, tint.1, tint.2, tint.3];
                 if t.iter().any(|c| !(0.0..=1.0).contains(c)) {
                     return Err(format!("'{}': tint 는 0~1", w.id));
+                }
+            }
+            WidgetKind::Fill { color } => {
+                let c = [color.0, color.1, color.2, color.3];
+                if c.iter().any(|c| !(0.0..=1.0).contains(c)) {
+                    return Err(format!("'{}': color 는 0~1", w.id));
                 }
             }
             WidgetKind::Panel { .. } | WidgetKind::Skills => {}
@@ -2078,6 +2190,63 @@ mod tests {
     }
 
     /// 버튼 히트 테스트는 **그리기와 같은 자리**를 봐야 한다 — 어긋나면 눌러도 반응이 없다.
+    #[test]
+    fn each_hotbar_cell_is_a_skill_button() {
+        let mut ui = measured();
+        let mut screen = ScreenFile::new("HUD");
+        screen.widgets.push(Widget {
+            anchor: Anchor::BottomRight,
+            pos: (-12, -12),
+            ..Widget::new("skills", WidgetKind::Skills)
+        });
+        ui.set_screen("hud", screen.clone());
+        let values = Values::preview(); // 칸 3개 (1·2·3)
+        let viewport = (800.0, 600.0);
+        let rect = ui
+            .layout(&screen, &values, viewport)
+            .into_iter()
+            .find(|l| l.widget.id == "skills")
+            .unwrap()
+            .rect;
+        let cells: Vec<(u32, Rect)> = ui.skill_cells(&values, rect).collect();
+        assert_eq!(cells.len(), 3);
+        for (key, cell) in cells {
+            assert_eq!(
+                ui.button_at("hud", &values, viewport, cell.center()),
+                Some((format!("skills#{key}"), Action::Skill(key)))
+            );
+        }
+        // 칸 사이 틈은 아무것도 아니다.
+        let (_, first) = ui.skill_cells(&values, rect).next().unwrap();
+        let gap = Vec2::new(first.x + first.w + 1.0, first.y + first.h * 0.5);
+        assert_eq!(ui.button_at("hud", &values, viewport, gap), None);
+    }
+
+    #[test]
+    fn an_open_hook_round_trips_and_is_checked() {
+        let mut screen = ScreenFile::new("메뉴");
+        let plain = to_ron(&screen);
+        assert!(!plain.contains("on_open"), "없으면 쓰지 않는다");
+        screen.on_open = Some(ScriptCall {
+            path: String::from("scripts/ui/menu.rhai"),
+            call: String::from("opened"),
+        });
+        let text = to_ron(&screen);
+        assert_eq!(Screens::read_screen(&text).unwrap(), screen);
+        let bad_path = text.replace("scripts/ui/menu.rhai", "Scripts/Menu.rhai");
+        assert!(
+            Screens::read_screen(&bad_path)
+                .unwrap_err()
+                .contains("on_open")
+        );
+        let bad_call = text.replace("\"opened\"", "\"열기\"");
+        assert!(
+            Screens::read_screen(&bad_call)
+                .unwrap_err()
+                .contains("on_open")
+        );
+    }
+
     #[test]
     fn a_click_finds_the_button_drawn_at_that_spot() {
         let mut ui = measured();

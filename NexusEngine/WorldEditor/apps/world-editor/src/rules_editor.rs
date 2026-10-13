@@ -251,11 +251,32 @@ impl RulesEditor {
                 ui.add(egui::DragValue::new(loss).range(0..=100))
                     .on_hover_text("지금 레벨에서 모은 경험치에서 잃는다. 레벨은 내려가지 않는다");
                 ui.end_row();
+                ui.label("부활 뒤 보호 (ms)");
+                ui.add(
+                    egui::DragValue::new(&mut f.revive_protect_ms)
+                        .speed(100)
+                        .range(0..=3_600_000),
+                )
+                .on_hover_text(
+                    "일어난 뒤 이 시간 동안 공격받지 않고 몬스터가 노리지 않는다. 0 = 없음",
+                );
+                ui.end_row();
             });
         ui.weak("저장 지점(처음 선 자리, 이어 하기면 저장한 자리)에서 일어난다.");
         ui.weak(
             "액터 스크립트에 on_dead 를 정의하면 그 액터는 이 규칙 대신 스크립트가 부활시킨다.",
         );
+
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.strong("땅 아이템 소멸 (ms)");
+            ui.add(
+                egui::DragValue::new(&mut f.ground_item_ms)
+                    .speed(1000)
+                    .range(0..=3_600_000),
+            )
+            .on_hover_text("드롭·버린 아이템이 이 시간 뒤 사라진다. 0 = 영영 남음");
+        });
     }
 
     fn footer(&mut self, ui: &mut egui::Ui) {

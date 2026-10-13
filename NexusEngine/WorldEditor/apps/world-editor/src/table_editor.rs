@@ -584,6 +584,18 @@ fn skill_form(ui: &mut egui::Ui, f: &mut SkillForm) {
         ui.label("MP 소모");
         ui.add(egui::DragValue::new(&mut f.mp_cost).range(0..=100_000));
         ui.end_row();
+        ui.label("범위 반경 (m)");
+        ui.add(
+            egui::DragValue::new(&mut f.radius)
+                .speed(0.1)
+                .range(0.0..=50.0),
+        )
+        .on_hover_text("0 이면 대상 하나. 피해 스킬은 대상 둘레의 적대 유닛, 회복 스킬은 우호 유닛에게도 들어간다");
+        ui.end_row();
+        ui.label("회복량");
+        ui.add(egui::DragValue::new(&mut f.heal).range(0..=1_000_000))
+            .on_hover_text("0 보다 크면 피해 대신 HP 를 채운다 — 자신·우호 유닛에게 쓴다");
+        ui.end_row();
     });
     ui.weak("피해 = max(1, 공격 × 배율 − 방어) — 서버 CombatProcessor 와 같은 식.");
     ui.weak("MP 소모가 0 이면 MP 를 보지 않는다. MP 가 모자라면 거절되고 쿨타임도 걸리지 않는다.");
@@ -684,10 +696,23 @@ mod tests {
             cooldown_ms: 2000,
             damage_mult: 1.5,
             mp_cost: 10,
+            radius: 2.0,
+            heal: 0,
             name: String::from("화살"),
         };
         let (r, d) = patch(&r, &d, 5, &Edit::Skill(skill.clone())).unwrap();
-        assert!(r.contains("5: (range: 6.0, cooldown_ms: 2000, damage_mult: 1.5, mp_cost: 10),"));
+        assert!(r.contains(
+            "5: (range: 6.0, cooldown_ms: 2000, damage_mult: 1.5, mp_cost: 10, radius: 2.0),"
+        ));
+        // 회복 스킬 — 회복량이 있을 때만 적힌다.
+        let mend = SkillForm {
+            heal: 40,
+            radius: 0.0,
+            ..SkillForm::new("기도")
+        };
+        let (r, d) = patch(&r, &d, 9, &Edit::Skill(mend.clone())).unwrap();
+        assert!(r.contains("9: (range: 2.0, cooldown_ms: 1000, damage_mult: 1.0, heal: 40),"));
+        assert_eq!(table_forms(&r, &d).unwrap().skills[&9], mend);
         let forms = table_forms(&r, &d).unwrap();
         assert_eq!(forms.items[&503], item);
         assert_eq!(forms.skills[&5], skill);

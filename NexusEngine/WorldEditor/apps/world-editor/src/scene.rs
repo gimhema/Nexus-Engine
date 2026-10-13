@@ -82,6 +82,50 @@ pub(crate) struct Item {
     pub(crate) actor: ActorId,
     /// 이 마커에만 적용하는 수치 (P1-4). 비어 있으면 액터 타입 값을 그대로 쓴다.
     pub(crate) overrides: Overrides,
+    /// 이 마커에서 몇 마리를 어느 반경에 흩어 세우는지 (몬스터·NPC). 기본은 한 마리, 제자리.
+    pub(crate) spawn: SpawnArea,
+}
+
+/// 스폰 영역 — 마커 하나가 세우는 무리. 배치의 성질이라 액터 타입이 아니라 마커에 둔다.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SpawnArea {
+    /// 마리 수 (1 ~ [`MAX_SPAWN_COUNT`]).
+    pub(crate) count: u32,
+    /// 흩어지는 반경 (m, 0 ~ [`MAX_SPAWN_RADIUS`]). 0 이면 전부 마커 자리.
+    pub(crate) radius: f32,
+}
+
+pub(crate) const MAX_SPAWN_COUNT: u32 = 30;
+pub(crate) const MAX_SPAWN_RADIUS: f32 = 50.0;
+
+impl Default for SpawnArea {
+    fn default() -> Self {
+        Self {
+            count: 1,
+            radius: 0.0,
+        }
+    }
+}
+
+impl SpawnArea {
+    /// 한 마리씩의 자리 — 해바라기 배치(황금각)로 원 안에 고르게. 난수가 없어 같은 존이면
+    /// 늘 같은 자리다 (결정성). 첫 마리가 가장 안쪽이다.
+    pub(crate) fn points(&self, center: Vec2) -> Vec<Vec2> {
+        const GOLDEN_ANGLE: f32 = 2.399_963;
+        let n = self.count.max(1);
+        (0..n)
+            .map(|i| {
+                if n == 1 || self.radius <= 0.0 {
+                    return center;
+                }
+                #[allow(clippy::cast_precision_loss)]
+                let (fi, fnn) = (i as f32, n as f32);
+                let r = self.radius * ((fi + 0.5) / fnn).sqrt();
+                let a = fi * GOLDEN_ANGLE;
+                center + Vec2::new(a.cos(), a.sin()) * r
+            })
+            .collect()
+    }
 }
 
 /// 마커별 수치 덮어쓰기 (P1-4). `None` 인 항목은 액터 타입의 값을 따른다.
@@ -345,7 +389,33 @@ pub(crate) struct Scene {
     pub(crate) props: crate::terrain::ArtLayer,
 }
 
+/// 그림 층의 칸 좌표를 `(dx, dy)` 만큼 민다 — 타일맵이 음수 쪽으로 늘었을 때.
+pub(crate) fn shift_layer(layer: &mut crate::terrain::ArtLayer, (dx, dy): (i32, i32)) {
+    *layer = std::mem::take(layer)
+        .into_iter()
+        .map(|(c, id)| (TileCoord::new(c.x + dx, c.y + dy), id))
+        .collect();
+}
+
 impl Scene {
+    /// 타일맵이 존 경계를 다 덮도록 늘린다 (줄이지 않는다). 새 칸은 기본 타일(걸을 수 있음).
+    ///
+    /// 음수 쪽으로 늘면 칸 좌표가 밀린다 — 그림 층도 함께 밀고, 밀린 양을 돌려준다
+    /// (언두 기록의 칸 좌표도 같이 밀어야 한다 — `Editing` 이 한다).
+    pub(crate) fn fit_tiles_to_zone(&mut self) -> Option<(i32, i32)> {
+        let shift = self.tiles.grow_to_cover(
+            self.zone.min,
+            self.zone.max,
+            nexus_sim::Tile::default(),
+            crate::zone_file::MAX_TILEMAP_SIDE,
+        )?;
+        if shift != (0, 0) {
+            shift_layer(&mut self.art, shift);
+            shift_layer(&mut self.props, shift);
+        }
+        Some(shift)
+    }
+
     /// NexusEngine `Server.cpp` 의 기본 존 배치.
     ///
     /// `Server.cpp` 는 `boundsMin`/`boundsMax` 를 설정하지 않으므로
@@ -448,6 +518,7 @@ impl Scene {
             // 종류의 기본 액터를 쓴다. 인스펙터에서 바꾼다.
             actor: ActorId::DEFAULT,
             overrides: Overrides::default(),
+            spawn: SpawnArea::default(),
         });
         entity
     }
@@ -469,6 +540,7 @@ impl Scene {
             orientation: 0.0,
             actor: ActorId::DEFAULT,
             overrides: Overrides::default(),
+            spawn: SpawnArea::default(),
         }
     }
 

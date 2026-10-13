@@ -597,6 +597,8 @@
             pos: (20.0, -5.0),
             size: 0.8,
             orientation: 0.0,
+            count: 3,
+            radius: 3.0,
         ),
         (
             name: "늪 슬라임",

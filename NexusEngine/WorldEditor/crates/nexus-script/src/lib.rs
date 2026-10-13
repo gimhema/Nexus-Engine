@@ -739,7 +739,8 @@ fn build_engine(ctx: &Rc<RefCell<Ctx>>) -> Engine {
     }
 
     // ── 부활 (on_dead 에서) ──────────────────────────────────────────────
-    // revive(me, x, y, hp%) / revive(me, x, y, hp%, 경험치 손실%) — 비율은 0~100 으로 자른다.
+    // revive(me, x, y, hp%) / revive(me, x, y, hp%, 경험치 손실%) /
+    // revive(me, x, y, hp%, 경험치 손실%, 보호 ms) — 비율은 0~100, 보호는 0~1시간으로 자른다.
     fn revive_intent(
         ctx: &Rc<RefCell<Ctx>>,
         me: UnitRef,
@@ -747,6 +748,7 @@ fn build_engine(ctx: &Rc<RefCell<Ctx>>) -> Engine {
         y: FLOAT,
         hp_percent: INT,
         loss_percent: INT,
+        protect_ms: INT,
     ) -> Result<bool, Box<EvalAltResult>> {
         let mut c = ctx.borrow_mut();
         c.check_self(me.0)?;
@@ -759,13 +761,14 @@ fn build_engine(ctx: &Rc<RefCell<Ctx>>) -> Engine {
             at: Vec2::new(x, y),
             hp_per_mille: per_mille(hp_percent),
             exp_loss_per_mille: per_mille(loss_percent),
+            protect_ms: u32::try_from(protect_ms.clamp(0, 3_600_000)).unwrap_or(0),
         });
         Ok(true)
     }
     {
         let ctx = ctx.clone();
         engine.register_fn("revive", move |me: UnitRef, x: FLOAT, y: FLOAT, hp: INT| {
-            revive_intent(&ctx, me, x, y, hp, 0)
+            revive_intent(&ctx, me, x, y, hp, 0, 0)
         });
     }
     {
@@ -773,7 +776,16 @@ fn build_engine(ctx: &Rc<RefCell<Ctx>>) -> Engine {
         engine.register_fn(
             "revive",
             move |me: UnitRef, x: FLOAT, y: FLOAT, hp: INT, loss: INT| {
-                revive_intent(&ctx, me, x, y, hp, loss)
+                revive_intent(&ctx, me, x, y, hp, loss, 0)
+            },
+        );
+    }
+    {
+        let ctx = ctx.clone();
+        engine.register_fn(
+            "revive",
+            move |me: UnitRef, x: FLOAT, y: FLOAT, hp: INT, loss: INT, protect: INT| {
+                revive_intent(&ctx, me, x, y, hp, loss, protect)
             },
         );
     }

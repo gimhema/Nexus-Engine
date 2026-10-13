@@ -18,8 +18,8 @@ use nexus_core::{Entity, Vec2, units};
 use nexus_sim::{Tile, TileCoord};
 
 use crate::scene::{
-    ActorId, ArtId, Handle, Item, ItemKind, OverrideEdit, Overrides, Pick, Scene, Target,
-    ZoneBounds,
+    ActorId, ArtId, Handle, Item, ItemKind, MAX_SPAWN_COUNT, MAX_SPAWN_RADIUS, OverrideEdit,
+    Overrides, Pick, Scene, SpawnArea, Target, ZoneBounds,
 };
 use crate::terrain::ArtKind;
 
@@ -53,6 +53,8 @@ pub(crate) enum Command {
     MoveItems(Vec<(Entity, Vec2, Vec2)>),
     /// 대상별 (원래 방향, 새 방향). 라디안.
     RotateItems(Vec<(Entity, f32, f32)>),
+    /// 위치와 방향을 함께 — 무리 회전 (Shift + 회전 손잡이). `(마커, 원래 위치, 원래 방향, 새 위치, 새 방향)`.
+    TransformItems(Vec<(Entity, Vec2, f32, Vec2, f32)>),
     /// (목록 위치, 항목). 위치 오름차순.
     AddItems(Vec<(usize, Item)>),
     /// (원래 목록 위치, 항목). 위치 오름차순.
@@ -67,6 +69,8 @@ pub(crate) enum Command {
     SetActors(Vec<(Entity, ActorId, ActorId)>),
     /// 마커별 수치 덮어쓰기 (P1-4). `(마커, 원래, 새것)`.
     SetOverrides(Vec<(Entity, Overrides, Overrides)>),
+    /// 스폰 영역 (마리 수·반경). `(마커, 원래, 새것)`.
+    SetSpawn(Vec<(Entity, SpawnArea, SpawnArea)>),
     /// 그림 칠하기 한 번(누름→뗌). `(좌표, 원래, 새것)`. `kind` 가 어느 층인지 정한다.
     PaintArt {
         kind: ArtKind,
@@ -87,6 +91,14 @@ impl Command {
             Self::RotateItems(turns) => {
                 set_headings(scene, turns.iter().map(|&(e, _, to)| (e, to)))
             }
+            Self::TransformItems(edits) => {
+                for &(e, _, _, pos, heading) in edits {
+                    if let Some(item) = scene.item_mut(e) {
+                        item.pos = pos;
+                        item.orientation = heading;
+                    }
+                }
+            }
             Self::AddItems(items) => insert_all(scene, items),
             Self::RemoveItems(items) => remove_all(scene, items),
             Self::SetZone { to, .. } => scene.zone = *to,
@@ -99,6 +111,7 @@ impl Command {
             Self::SetOverrides(edits) => {
                 set_overrides(scene, edits.iter().map(|&(e, _, to)| (e, to)))
             }
+            Self::SetSpawn(edits) => set_spawns(scene, edits.iter().map(|&(e, _, to)| (e, to))),
             Self::PaintArt { kind, edits } => {
                 for &(at, _, to) in edits {
                     set_art(scene, *kind, at, to);
@@ -119,6 +132,14 @@ impl Command {
             Self::RotateItems(turns) => {
                 set_headings(scene, turns.iter().map(|&(e, from, _)| (e, from)));
             }
+            Self::TransformItems(edits) => {
+                for &(e, pos, heading, _, _) in edits {
+                    if let Some(item) = scene.item_mut(e) {
+                        item.pos = pos;
+                        item.orientation = heading;
+                    }
+                }
+            }
             Self::AddItems(items) => remove_all(scene, items),
             Self::RemoveItems(items) => insert_all(scene, items),
             Self::SetZone { from, .. } => scene.zone = *from,
@@ -133,6 +154,7 @@ impl Command {
             Self::SetOverrides(edits) => {
                 set_overrides(scene, edits.iter().map(|&(e, from, _)| (e, from)))
             }
+            Self::SetSpawn(edits) => set_spawns(scene, edits.iter().map(|&(e, from, _)| (e, from))),
             Self::PaintArt { kind, edits } => {
                 for &(at, from, _) in edits {
                     set_art(scene, *kind, at, from);
@@ -145,11 +167,15 @@ impl Command {
         match self {
             Self::MoveItems(moves) => moves.iter().all(|&(_, from, to)| from == to),
             Self::RotateItems(turns) => turns.iter().all(|&(_, from, to)| from == to),
+            Self::TransformItems(edits) => edits
+                .iter()
+                .all(|&(_, p0, h0, p1, h1)| p0 == p1 && h0 == h1),
             Self::AddItems(items) | Self::RemoveItems(items) => items.is_empty(),
             Self::SetZone { from, to } => from == to,
             Self::PaintTiles(edits) => edits.is_empty(),
             Self::SetActors(edits) => edits.iter().all(|&(_, from, to)| from == to),
             Self::SetOverrides(edits) => edits.iter().all(|(_, from, to)| from == to),
+            Self::SetSpawn(edits) => edits.iter().all(|(_, from, to)| from == to),
             Self::PaintArt { edits, .. } => edits.is_empty(),
         }
     }
@@ -166,6 +192,7 @@ impl Command {
         match self {
             Self::MoveItems(moves) => count(moves.len(), "이동"),
             Self::RotateItems(turns) => count(turns.len(), "회전"),
+            Self::TransformItems(edits) => count(edits.len(), "무리 회전"),
             Self::AddItems(items) => match items.as_slice() {
                 [(_, item)] => format!("{} 추가", item.name),
                 _ => count(items.len(), "추가"),
@@ -178,6 +205,7 @@ impl Command {
             Self::PaintTiles(edits) => count(edits.len(), "타일 칠하기"),
             Self::SetActors(edits) => count(edits.len(), "액터 타입 변경"),
             Self::SetOverrides(edits) => count(edits.len(), "수치 덮어쓰기"),
+            Self::SetSpawn(edits) => count(edits.len(), "스폰 영역 변경"),
             Self::PaintArt { kind, edits } => count(
                 edits.len(),
                 match kind {
@@ -229,6 +257,14 @@ fn set_actors(scene: &mut Scene, actors: impl Iterator<Item = (Entity, ActorId)>
     for (e, actor) in actors {
         if let Some(item) = scene.item_mut(e) {
             item.actor = actor;
+        }
+    }
+}
+
+fn set_spawns(scene: &mut Scene, values: impl Iterator<Item = (Entity, SpawnArea)>) {
+    for (e, spawn) in values {
+        if let Some(item) = scene.item_mut(e) {
+            item.spawn = spawn;
         }
     }
 }
@@ -291,6 +327,18 @@ pub(crate) struct History {
 }
 
 impl History {
+    /// 기록된 칠하기의 칸 좌표를 민다 — 타일맵이 음수 쪽으로 늘었을 때.
+    fn shift_tiles(&mut self, (dx, dy): (i32, i32)) {
+        let at = |c: TileCoord| TileCoord::new(c.x + dx, c.y + dy);
+        for (_, cmd) in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+            match cmd {
+                Command::PaintTiles(edits) => edits.iter_mut().for_each(|e| e.0 = at(e.0)),
+                Command::PaintArt { edits, .. } => edits.iter_mut().for_each(|e| e.0 = at(e.0)),
+                _ => {}
+            }
+        }
+    }
+
     /// 이미 씬에 적용된 편집을 기록한다. 아무것도 바뀌지 않았으면 무시한다.
     fn record(&mut self, cmd: Command) {
         if cmd.is_noop() {
@@ -373,6 +421,18 @@ pub(crate) enum InspectorEdit {
         edit: OverrideEdit,
         finished: bool,
     },
+    /// 스폰 영역 한 항목. 고른 마커 중 **플레이어 스폰이 아닌 것 전부**에 적용한다.
+    ItemSpawn {
+        edit: SpawnEdit,
+        finished: bool,
+    },
+}
+
+/// 스폰 영역의 한 항목.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum SpawnEdit {
+    Count(u32),
+    Radius(f32),
 }
 
 /// 진행 중인 뷰포트 드래그.
@@ -388,6 +448,8 @@ enum Drag {
     Rotate {
         entity: Entity,
         originals: Vec<(Entity, f32)>,
+        /// Shift 로 잡았으면 **무리째** — 위치도 무리 중심을 축으로 돈다.
+        orbit: Option<Orbit>,
     },
     Zone {
         handle: Handle,
@@ -407,6 +469,8 @@ enum LiveEdit {
     ItemPos(Entity, Vec2),
     /// 덮어쓴 값을 끌어 바꾸는 동안 — 고른 마커별 원래 값.
     Overrides(Vec<(Entity, Overrides)>),
+    /// 스폰 영역을 끌어 바꾸는 동안 — 고른 마커별 원래 값.
+    Spawn(Vec<(Entity, SpawnArea)>),
     ItemHeading(Entity, f32),
     Zone(ZoneBounds),
 }
@@ -800,8 +864,15 @@ impl Editing {
                     }
                 }
             }
-            Some(Drag::Rotate { originals, .. }) => {
+            Some(Drag::Rotate {
+                originals, orbit, ..
+            }) => {
                 set_headings(scene, originals.into_iter());
+                for (e, pos) in orbit.map(|o| o.positions).unwrap_or_default() {
+                    if let Some(item) = scene.item_mut(e) {
+                        item.pos = pos;
+                    }
+                }
             }
             Some(Drag::Zone { original, .. }) => scene.zone = original,
             Some(Drag::Box { base, .. }) => self.selection = base,
@@ -818,6 +889,7 @@ impl Editing {
             }
             Some(LiveEdit::Zone(z)) => scene.zone = z,
             Some(LiveEdit::Overrides(originals)) => set_overrides(scene, originals.into_iter()),
+            Some(LiveEdit::Spawn(originals)) => set_spawns(scene, originals.into_iter()),
             None => {}
         }
     }
@@ -963,7 +1035,15 @@ impl Editing {
                     .filter_map(|e| scene.item(e).map(|i| (e, i.orientation)))
                     .collect();
                 if originals.iter().any(|(e, _)| *e == entity) {
-                    self.drag = Some(Drag::Rotate { entity, originals });
+                    // Shift 로 잡으면 무리째 — 둘 이상일 때만 의미가 있다.
+                    let orbit = (additive && originals.len() > 1)
+                        .then(|| Orbit::new(scene, &originals, cursor))
+                        .flatten();
+                    self.drag = Some(Drag::Rotate {
+                        entity,
+                        originals,
+                        orbit,
+                    });
                 }
             }
             Some(Pick::Item(entity)) => {
@@ -1018,7 +1098,7 @@ impl Editing {
         }
     }
 
-    fn finish_drag(&mut self, scene: &Scene) {
+    fn finish_drag(&mut self, scene: &mut Scene) {
         let Some(drag) = self.drag.take() else {
             return;
         };
@@ -1027,6 +1107,19 @@ impl Editing {
                 originals
                     .into_iter()
                     .filter_map(|(e, from)| scene.item(e).map(|i| (e, from, i.pos)))
+                    .collect(),
+            ),
+            Drag::Rotate {
+                originals,
+                orbit: Some(orbit),
+                ..
+            } => Command::TransformItems(
+                originals
+                    .into_iter()
+                    .zip(orbit.positions)
+                    .filter_map(|((e, h0), (_, p0))| {
+                        scene.item(e).map(|i| (e, p0, h0, i.pos, i.orientation))
+                    })
                     .collect(),
             ),
             Drag::Rotate { originals, .. } => Command::RotateItems(
@@ -1042,7 +1135,22 @@ impl Editing {
             // 선택은 이미 드래그 중에 반영됐다. 기록할 편집이 아니다.
             Drag::Box { .. } => return,
         };
+        let zone = matches!(cmd, Command::SetZone { .. });
         self.history.record(cmd);
+        if zone {
+            self.fit_tiles(scene);
+        }
+    }
+
+    /// 존 경계가 바뀐 뒤 — 타일맵이 존 전체를 덮도록 늘린다. 칸 좌표가 밀렸으면 언두 기록의
+    /// 칠하기 좌표도 같이 민다 (같은 칸을 가리키게). 늘린 것 자체는 기록하지 않는다 —
+    /// 새 칸은 기본 타일이라 되돌릴 내용이 없다.
+    fn fit_tiles(&mut self, scene: &mut Scene) {
+        if let Some(shift) = scene.fit_tiles_to_zone()
+            && shift != (0, 0)
+        {
+            self.history.shift_tiles(shift);
+        }
     }
 
     // ── 인스펙터 ─────────────────────────────────────────────────────────
@@ -1112,6 +1220,9 @@ impl Editing {
             InspectorEdit::ItemOverride { edit, finished } => {
                 self.apply_override(scene, edit, finished);
             }
+            InspectorEdit::ItemSpawn { edit, finished } => {
+                self.apply_spawn(scene, edit, finished);
+            }
             InspectorEdit::Zone { bounds, finished } => {
                 let original = match self.live {
                     Some(LiveEdit::Zone(orig)) => orig,
@@ -1124,6 +1235,7 @@ impl Editing {
                         from: original,
                         to: bounds,
                     });
+                    self.fit_tiles(scene);
                 } else {
                     self.live = Some(LiveEdit::Zone(original));
                 }
@@ -1134,6 +1246,47 @@ impl Editing {
     /// 선택한 마커 전부의 덮어쓰기 한 항목을 바꾼다.
     ///
     /// 끄는 도중(`finished == false`)에는 원래 값을 기억만 하고, 끝날 때 원래 → 지금을 한 스텝으로 남긴다.
+    fn apply_spawn(&mut self, scene: &mut Scene, edit: SpawnEdit, finished: bool) {
+        let originals = match self.live.take() {
+            Some(LiveEdit::Spawn(orig)) => orig,
+            _ => self
+                .selection
+                .iter()
+                .filter_map(|t| match t {
+                    Target::Item(e) => scene
+                        .item(*e)
+                        .filter(|i| i.kind != ItemKind::PlayerSpawn)
+                        .map(|i| (*e, i.spawn)),
+                    Target::Zone => None,
+                })
+                .collect(),
+        };
+        for &(e, _) in &originals {
+            if let Some(item) = scene.item_mut(e) {
+                match edit {
+                    SpawnEdit::Count(n) => item.spawn.count = n.clamp(1, MAX_SPAWN_COUNT),
+                    SpawnEdit::Radius(r) => {
+                        item.spawn.radius = if r.is_finite() {
+                            r.clamp(0.0, MAX_SPAWN_RADIUS)
+                        } else {
+                            0.0
+                        };
+                    }
+                }
+            }
+        }
+        if finished {
+            let edits = originals
+                .into_iter()
+                .filter_map(|(e, from)| scene.item(e).map(|i| (e, from, i.spawn)))
+                .filter(|(_, from, to)| from != to)
+                .collect();
+            self.history.record(Command::SetSpawn(edits));
+        } else {
+            self.live = Some(LiveEdit::Spawn(originals));
+        }
+    }
+
     fn apply_override(&mut self, scene: &mut Scene, edit: OverrideEdit, finished: bool) {
         let originals = match self.live.take() {
             Some(LiveEdit::Overrides(orig)) => orig,
@@ -1187,7 +1340,32 @@ fn update_drag(scene: &mut Scene, drag: &Drag, cursor: Vec2, snap: bool, grid: f
                 }
             }
         }
-        Drag::Rotate { entity, originals } => {
+        Drag::Rotate {
+            originals,
+            orbit: Some(orbit),
+            ..
+        } => {
+            // 무리 회전 — 누른 자리에서 지금 커서까지 무리 중심을 축으로 돈 각도만큼,
+            // 위치는 중심 둘레로, 방향은 같은 각도만큼 함께 돈다. Ctrl 이면 15° 단위.
+            let dir = cursor - orbit.center;
+            if dir.length_squared() <= f32::EPSILON {
+                return;
+            }
+            let mut delta = units::dir_to_heading(dir) - orbit.start;
+            if snap {
+                delta = (delta / ROTATE_SNAP).round() * ROTATE_SNAP;
+            }
+            let turn = Vec2::from_angle(delta);
+            for (&(e, h0), &(_, p0)) in originals.iter().zip(&orbit.positions) {
+                if let Some(item) = scene.item_mut(e) {
+                    item.pos = orbit.center + turn.rotate(p0 - orbit.center);
+                    item.orientation = units::normalize_heading(h0 + delta);
+                }
+            }
+        }
+        Drag::Rotate {
+            entity, originals, ..
+        } => {
             let Some(&(_, grabbed_from)) = originals.iter().find(|(e, _)| e == entity) else {
                 return;
             };
@@ -1219,6 +1397,35 @@ fn update_drag(scene: &mut Scene, drag: &Drag, cursor: Vec2, snap: bool, grid: f
         }
         // 박스 선택은 선택만 바꾼다 — `handle_pointer` 가 처리한다.
         Drag::Box { .. } => {}
+    }
+}
+
+/// 무리 회전의 기준 — 무리 중심, 누른 자리의 각도, 마커마다 원래 위치(`originals` 와 같은 순서).
+#[derive(Clone, Debug)]
+struct Orbit {
+    center: Vec2,
+    start: f32,
+    positions: Vec<(Entity, Vec2)>,
+}
+
+impl Orbit {
+    /// 커서가 중심과 겹치면 각도를 정할 수 없어 `None` — 그때는 방향만 돈다.
+    fn new(scene: &Scene, originals: &[(Entity, f32)], cursor: Vec2) -> Option<Self> {
+        let positions: Vec<(Entity, Vec2)> = originals
+            .iter()
+            .filter_map(|&(e, _)| scene.item(e).map(|i| (e, i.pos)))
+            .collect();
+        if positions.len() != originals.len() {
+            return None;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let center = positions.iter().map(|(_, p)| *p).sum::<Vec2>() / positions.len() as f32;
+        let dir = cursor - center;
+        (dir.length_squared() > f32::EPSILON).then(|| Self {
+            center,
+            start: units::dir_to_heading(dir),
+            positions,
+        })
     }
 }
 
@@ -1327,6 +1534,42 @@ mod tests {
         assert!(tile_at(&s, Vec2::new(0.5, 0.5)).walkable);
         assert!(tile_at(&s, Vec2::new(3.5, 0.5)).walkable);
         assert!(!ed.undo(&mut s), "스텝이 하나여야 한다");
+    }
+
+    #[test]
+    fn growing_the_zone_grows_the_tilemap_and_keeps_strokes_undoable() {
+        let (mut s, mut ed) = paint_setup();
+        let spot = Vec2::new(0.5, 0.5);
+        paint(&mut ed, &mut s, &[spot]);
+        let (old_min, old_max) = s.tiles.world_bounds();
+
+        // 존을 타일맵 밖(음수 쪽)까지 넓힌다 — 인스펙터 편집 한 번.
+        let mut bounds = s.zone;
+        bounds.min = old_min - Vec2::new(40.0, 25.0);
+        bounds.max = old_max + Vec2::new(10.0, 0.0);
+        ed.apply_inspector(
+            &mut s,
+            InspectorEdit::Zone {
+                bounds,
+                finished: true,
+            },
+        );
+        let (min, max) = s.tiles.world_bounds();
+        assert!(min.x <= bounds.min.x && min.y <= bounds.min.y, "{min:?}");
+        assert!(max.x >= bounds.max.x && max.y >= bounds.max.y, "{max:?}");
+        // 칠한 칸은 같은 월드 자리에 남고, 넓어진 곳은 걸을 수 있다.
+        assert!(!tile_at(&s, spot).walkable);
+        assert!(tile_at(&s, bounds.min + Vec2::splat(0.5)).walkable);
+
+        // 존 변경을 되돌리고, 그 앞의 칠하기도 되돌린다 — 밀린 좌표로도 같은 칸이 돌아온다.
+        assert!(ed.undo(&mut s));
+        assert!(ed.undo(&mut s));
+        assert!(
+            tile_at(&s, spot).walkable,
+            "칠하기 언두가 엉뚱한 칸을 고쳤다"
+        );
+        assert!(ed.redo(&mut s));
+        assert!(!tile_at(&s, spot).walkable);
     }
 
     #[test]
@@ -1442,6 +1685,66 @@ mod tests {
             edit: OverrideEdit::MaxHp(edit),
             finished,
         }
+    }
+
+    #[test]
+    fn spawn_area_edits_skip_player_spawns_clamp_and_undo_in_one_step() {
+        let (mut s, a, b) = scene();
+        let p = s.add("P", ItemKind::PlayerSpawn, Vec2::ZERO, 20.0);
+        let mut ed = Editing::default();
+        for e in [a, b, p] {
+            ed.select(Target::Item(e), true);
+        }
+        let spawn = |edit, finished| InspectorEdit::ItemSpawn { edit, finished };
+        ed.apply_inspector(&mut s, spawn(SpawnEdit::Count(3), false));
+        ed.apply_inspector(&mut s, spawn(SpawnEdit::Count(999), true));
+        ed.apply_inspector(&mut s, spawn(SpawnEdit::Radius(-4.0), true));
+        for e in [a, b] {
+            let area = s.item(e).unwrap().spawn;
+            assert_eq!(
+                (area.count, area.radius),
+                (MAX_SPAWN_COUNT, 0.0),
+                "범위로 자름"
+            );
+        }
+        assert_eq!(
+            s.item(p).unwrap().spawn,
+            SpawnArea::default(),
+            "플레이어 스폰은 한 명"
+        );
+        ed.apply_inspector(&mut s, spawn(SpawnEdit::Radius(f32::NAN), true));
+        assert_eq!(s.item(a).unwrap().spawn.radius, 0.0);
+
+        // 마리 수를 끈 것 한 스텝 (반경 편집은 값이 그대로라 기록되지 않았다).
+        assert!(ed.undo(&mut s));
+        assert_eq!(s.item(a).unwrap().spawn, SpawnArea::default());
+        assert_eq!(s.item(b).unwrap().spawn, SpawnArea::default());
+        assert!(!ed.undo(&mut s));
+    }
+
+    #[test]
+    fn spawn_points_fill_the_circle_the_same_way_every_time() {
+        let center = Vec2::new(10.0, -5.0);
+        assert_eq!(SpawnArea::default().points(center), [center]);
+        let area = SpawnArea {
+            count: 12,
+            radius: 4.0,
+        };
+        let points = area.points(center);
+        assert_eq!(points.len(), 12);
+        assert_eq!(points, area.points(center), "결정적");
+        for (i, p) in points.iter().enumerate() {
+            assert!(p.distance(center) <= 4.0 + 1e-4, "{i}: 원 밖");
+            for q in &points[i + 1..] {
+                assert!(p.distance(*q) > 0.5, "겹친 자리");
+            }
+        }
+        // 반경이 0 이면 전부 마커 자리.
+        let stacked = SpawnArea {
+            count: 3,
+            radius: 0.0,
+        };
+        assert_eq!(stacked.points(center), [center; 3]);
     }
 
     #[test]
@@ -2110,6 +2413,48 @@ mod tests {
             "한 스텝으로 둘 다"
         );
         assert!(close(s.item(b).unwrap().orientation, 90f32.to_radians()));
+    }
+
+    #[test]
+    fn shift_turns_the_whole_group_around_its_center_in_one_step() {
+        let (mut s, a, b) = scene();
+        let (pa, pb) = (s.item(a).unwrap().pos, s.item(b).unwrap().pos);
+        let center = (pa + pb) * 0.5;
+        let mut ed = Editing::default();
+        ed.select(Target::Item(a), false);
+        ed.select(Target::Item(b), true);
+
+        // A 의 손잡이를 Shift 로 잡고 무리 중심 둘레로 90° (반시계).
+        let handle = crate::scene::rotate_handle_pos(s.item(a).unwrap(), PX);
+        ed.handle_pointer(
+            &mut s,
+            &PointerInput {
+                additive: true,
+                ..press(handle)
+            },
+        );
+        let turn = Vec2::from_angle(90f32.to_radians());
+        let at = center + turn.rotate(handle - center);
+        ed.handle_pointer(&mut s, &move_to(at));
+        ed.handle_pointer(&mut s, &release_at(at));
+
+        let near = |p: Vec2, q: Vec2| p.distance(q) < 1e-2;
+        assert!(near(
+            s.item(a).unwrap().pos,
+            center + turn.rotate(pa - center)
+        ));
+        assert!(near(
+            s.item(b).unwrap().pos,
+            center + turn.rotate(pb - center)
+        ));
+        assert!(close(s.item(a).unwrap().orientation, 90f32.to_radians()));
+        assert!(close(s.item(b).unwrap().orientation, 90f32.to_radians()));
+        assert_eq!(ed.history().undo_label().as_deref(), Some("2개 무리 회전"));
+
+        // 위치와 방향이 한 스텝으로 돌아온다.
+        ed.undo(&mut s);
+        assert_eq!((s.item(a).unwrap().pos, s.item(b).unwrap().pos), (pa, pb));
+        assert!(close(s.item(a).unwrap().orientation, 0.0));
     }
 
     #[test]
