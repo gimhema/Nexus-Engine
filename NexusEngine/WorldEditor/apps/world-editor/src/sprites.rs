@@ -545,14 +545,13 @@ impl SpriteLibrary {
     }
 }
 
-/// 시험용 — 저장소의 시트 정의 하나를 GPU 없이 읽는다 (`key` 는 저장소 기준 경로).
+/// 시험용 — 시트 정의 본문을 GPU·디스크 없이 읽는다. `image` 를 비우면 내장 `markers.png` 를 쓴다.
+///
+/// 받아온 애셋의 시트를 읽지 않는 이유: 시트마다 있는 클립이 달라서(공격·사망 그림이 없는 팩이 많다)
+/// 애셋을 갈아끼우면 재생 규칙 시험이 같이 깨진다. 규칙 시험은 클립을 시험 안에 적는다.
 #[cfg(test)]
-pub(crate) fn sheet_for_test(key: &str) -> SpriteSheet {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(key);
-    let def = std::fs::read_to_string(&path).unwrap();
-    plan_sheet(&def, path.parent()).unwrap().sheet
+pub(crate) fn sheet_for_test(def: &str) -> SpriteSheet {
+    plan_sheet(def, None).unwrap().sheet
 }
 
 #[cfg(test)]

@@ -1723,8 +1723,18 @@ mod tests {
 
     // ── 전투 동작 ────────────────────────────────────────────────────────────
 
-    const PLAYER_SHEET: &str = "assets/third_party/zelda-like-armm1998/player.sheet.ron";
-    const SLIME_SHEET: &str = "assets/third_party/slime-garakh/monster.sheet.ron";
+    /// 공격 그림은 있고 사망 그림은 없는 시트 (내장 그림의 칸을 빌려 쓴다 — 재생 규칙만 본다).
+    const PLAYER_SHEET: &str = "(version: 1, cell: (32, 48), directions: 4, clips: [
+        (state: Idle, row: 0, frames: 4, frame_ms: 250, looping: true),
+        (state: Walk, row: 4, frames: 4, frame_ms: 150, looping: true),
+        (state: Attack, row: 0, frames: 4, frame_ms: 90, looping: false),
+    ])";
+    /// 사망 그림만 있고 공격·피격 그림은 없는 시트.
+    const SLIME_SHEET: &str = "(version: 1, cell: (32, 48), directions: 4, clips: [
+        (state: Idle, row: 0, frames: 4, frame_ms: 250, looping: true),
+        (state: Walk, row: 4, frames: 4, frame_ms: 150, looping: true),
+        (state: Die, row: 0, frames: 3, frame_ms: 150, looping: false),
+    ])";
     const STANDING: UnitPose = UnitPose {
         alive: true,
         moving: false,
