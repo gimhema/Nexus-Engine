@@ -12,3 +12,11 @@
 /trash/
 
 /docs/
+
+# 로컬 전용 — 저장소에 올리지 않는다
+# Claude Code 가이드 (머신마다 따로 둔다)
+/CLAUDE.md
+/CLAUDE_LINUX.md
+# 받아온 팩·WorldCanvas 빌드 결과 — 데이터가 가리키지만 각자 받아 둔다 (CLAUDE.md 의 「애셋 폴더」)
+/assets/third_party/
+/assets/worldcanvas/
