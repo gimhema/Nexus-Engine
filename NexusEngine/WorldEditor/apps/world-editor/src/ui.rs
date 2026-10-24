@@ -206,6 +206,10 @@ pub(crate) struct UiActions {
     open_palette: Option<Option<String>>,
     /// 스크립트 편집기 열기. 안쪽 값이 있으면 그 파일을 연다 (UI 내부에서 소비).
     open_scripts: Option<Option<String>>,
+    /// 스탯·직업 디자이너를 연다 (UI 내부에서 소비, R2).
+    open_stat_designer: bool,
+    /// 게임 규칙 설정 창을 연다 (UI 내부에서 소비).
+    open_rules: bool,
     /// 팔레트 창에서 고른 그림 조각 — 편집기가 `terrain.ron` 에 추가하고 붓으로 삼는다.
     pub(crate) pick_art: Option<crate::terrain::Pick>,
     /// 붓 모양·반지름 바꾸기.
@@ -256,6 +260,7 @@ pub(crate) struct EditorUi {
     rules: RulesEditor,
     /// 휴지통 (P20).
     trash: crate::trash::TrashWindow,
+    stat_designer: crate::stat_designer::StatDesigner,
 }
 
 /// 존 열기 / 다른 이름으로 저장 창.
@@ -326,6 +331,7 @@ impl EditorUi {
             tables: TableEditor::default(),
             rules: RulesEditor::default(),
             trash: crate::trash::TrashWindow::default(),
+            stat_designer: crate::stat_designer::StatDesigner::default(),
         }
     }
 
@@ -347,6 +353,11 @@ impl EditorUi {
     /// 콘텐츠 브라우저 — 자동 검증의 `content*` 단계가 쓴다.
     pub(crate) fn content_mut(&mut self) -> &mut ContentBrowser {
         &mut self.content
+    }
+
+    /// 스탯·직업 디자이너 — 자동 검증 스크립트(`statdesigner`)가 연다.
+    pub(crate) fn stat_designer_mut(&mut self) -> &mut crate::stat_designer::StatDesigner {
+        &mut self.stat_designer
     }
 
     /// 이 리소스를 **저장하지 않은 채** 고치고 있는 UI 편집기가 있으면 그 이유 — 파일 작업을 막는다 (P9).
@@ -467,9 +478,16 @@ impl EditorUi {
         let tables = &mut self.tables;
         let rules = &mut self.rules;
         let trash = &mut self.trash;
+        let stat_designer = &mut self.stat_designer;
 
         let output = self.ctx.run_ui(raw, |ui| {
             menu_bar(ui, model, &mut actions);
+            if std::mem::take(&mut actions.open_stat_designer) {
+                stat_designer.open();
+            }
+            if std::mem::take(&mut actions.open_rules) {
+                rules.open();
+            }
             shortcuts(ui, model, &mut actions);
             if let Some(mode) = actions.file_dialog.take() {
                 *dialog = Some(FileDialog::new(mode, model.zone_path));
@@ -496,6 +514,7 @@ impl EditorUi {
             sheets.show(ui);
             tables.show(ui);
             rules.show(ui);
+            stat_designer.show(ui);
             trash.show(ui.ctx());
             if actions.toggle_content {
                 content.toggle();
@@ -538,6 +557,10 @@ impl EditorUi {
                 content.refresh();
             }
             if rules.take_saved() {
+                actions.reload_data = true;
+                content.refresh();
+            }
+            if stat_designer.take_saved() {
                 actions.reload_data = true;
                 content.refresh();
             }
@@ -741,6 +764,15 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
                 {
                     actions.delete = true;
                 }
+            });
+            ui.menu_button("데이터", |ui| {
+                if ui.button("스탯·직업 디자이너…").clicked() {
+                    actions.open_stat_designer = true;
+                }
+                if ui.button("게임 규칙 설정…").clicked() {
+                    actions.open_rules = true;
+                }
+                ui.weak("data/rules.ron · display.ron — 고치고 저장한 뒤 F5.");
             });
             ui.menu_button("스크립트", |ui| {
                 if ui.button("스크립트 편집기…").clicked() {
@@ -1414,6 +1446,16 @@ fn play_inspector(ui: &mut egui::Ui, play: &PlaySession, actions: &mut UiActions
         p.exp(),
         p.exp_to_next()
     ));
+    // 직업과 기본 스탯 (R2) — 이름·순서는 데이터가 정한다.
+    let class = play.class_name();
+    if !class.is_empty() {
+        let stats: Vec<String> = play
+            .stat_lines()
+            .into_iter()
+            .map(|(name, v)| format!("{name} {v}"))
+            .collect();
+        ui.monospace(format!("{class}  {}", stats.join("  ")));
+    }
 
     ui.add_space(6.0);
     ui.strong("장착");

@@ -12,6 +12,7 @@ use crate::faction::FactionId;
 use crate::item::Inventory;
 use crate::loot::LootTableId;
 use crate::progress::{Growth, Progress};
+use crate::stats::{ClassId, StatSheet};
 use crate::trigger::{FlagId, Flags};
 
 /// 액터 타입 번호 — 데이터(`rules.ron` 의 `actors`)의 키. 서버 테이블과 같은 ID 공간이다.
@@ -42,6 +43,9 @@ pub enum AiKind {
 pub struct UnitDef {
     /// 이 수치를 가져온 액터 타입 (조건 판정용).
     pub actor: ActorType,
+    /// 직업 (R2). 있고 등록돼 있으면 HP·MP·MP 회복·공격·방어를 **스탯 수식**으로 계산하고
+    /// 아래의 같은 수치와 `growth` 는 쓰지 않는다. 없으면 지금처럼 수치를 그대로 쓴다.
+    pub class: Option<ClassId>,
     /// 이동 속도 (m/s). 음수·NaN 은 0 으로 본다.
     pub move_speed: f32,
     /// 최대 HP. 0 은 1 로 본다 — 태어나자마자 죽은 유닛은 만들지 않는다.
@@ -79,6 +83,7 @@ impl Default for UnitDef {
     fn default() -> Self {
         Self {
             actor: ActorType::default(),
+            class: None,
             move_speed: 0.0,
             max_hp: 1,
             max_mp: 0,
@@ -171,6 +176,8 @@ pub struct Unit {
     pub(crate) protected_until: Option<Duration>,
     /// 캐릭터 범위 진행 플래그 (R1). 리스폰하면 새 유닛이라 비어 있다 — 플레이어는 리스폰하지 않는다.
     pub(crate) flags: Flags,
+    /// 직업이 있는 유닛의 계산된 스탯 (R2). 레벨·장비가 바뀔 때 `SimWorld` 가 다시 계산한다.
+    pub(crate) sheet: Option<StatSheet>,
 }
 
 impl Unit {
@@ -197,7 +204,22 @@ impl Unit {
             died_at: None,
             protected_until: None,
             flags: Flags::default(),
+            sheet: None,
         }
+    }
+
+    /// 직업이 있는 유닛의 기본·파생 스탯 (R2). 직업이 없으면 `None`.
+    #[must_use]
+    pub fn stat_sheet(&self) -> Option<&StatSheet> {
+        self.sheet.as_ref()
+    }
+
+    /// 초당 MP 회복량.
+    #[must_use]
+    pub fn mp_regen(&self) -> u32 {
+        self.sheet
+            .as_ref()
+            .map_or(self.def.mp_regen, |s| s.derived.mp_regen)
     }
 
     /// 캐릭터 범위 플래그 하나 (없으면 0).
@@ -251,6 +273,9 @@ impl Unit {
     /// 레벨 성장 + 장비가 더해진 공격력 — 전투는 이 값을 쓴다.
     #[must_use]
     pub fn attack(&self) -> u32 {
+        if let Some(s) = &self.sheet {
+            return s.derived.attack;
+        }
         self.def
             .attack
             .saturating_add(self.grown(self.def.growth.attack))
@@ -260,6 +285,9 @@ impl Unit {
     /// 레벨 성장이 반영된 최대 HP. **`def().max_hp` 대신 이것을 쓴다.**
     #[must_use]
     pub fn max_hp(&self) -> u32 {
+        if let Some(s) = &self.sheet {
+            return s.derived.max_hp;
+        }
         self.def
             .max_hp
             .saturating_add(self.grown(self.def.growth.max_hp))
@@ -274,6 +302,9 @@ impl Unit {
     /// 레벨 성장이 반영된 최대 MP. **`def().max_mp` 대신 이것을 쓴다.** 0 이면 MP 가 없는 유닛.
     #[must_use]
     pub fn max_mp(&self) -> u32 {
+        if let Some(s) = &self.sheet {
+            return s.derived.max_mp;
+        }
         self.def
             .max_mp
             .saturating_add(self.grown(self.def.growth.max_mp))
@@ -288,7 +319,8 @@ impl Unit {
     /// MP 를 `dt` 만큼 회복한다. 가득 차 있으면 자투리도 버린다 — 쓰자마자 한 번에 튀어 오르지 않게.
     pub(crate) fn regen_mp(&mut self, dt: Duration) {
         let cap = self.max_mp();
-        if self.mp >= cap || self.def.mp_regen == 0 {
+        let regen = self.mp_regen();
+        if self.mp >= cap || regen == 0 {
             self.mp = self.mp.min(cap);
             self.mp_carry = 0;
             return;
@@ -296,7 +328,7 @@ impl Unit {
         let millis = u64::try_from(dt.as_millis()).unwrap_or(u64::MAX);
         self.mp_carry = self
             .mp_carry
-            .saturating_add(u64::from(self.def.mp_regen).saturating_mul(millis));
+            .saturating_add(u64::from(regen).saturating_mul(millis));
         let gained = u32::try_from(self.mp_carry / 1000).unwrap_or(u32::MAX);
         self.mp_carry %= 1000;
         self.mp = self.mp.saturating_add(gained).min(cap);
@@ -316,6 +348,9 @@ impl Unit {
     /// 레벨 성장 + 장비가 더해진 방어력.
     #[must_use]
     pub fn defense(&self) -> u32 {
+        if let Some(s) = &self.sheet {
+            return s.derived.defense;
+        }
         self.def
             .defense
             .saturating_add(self.grown(self.def.growth.defense))

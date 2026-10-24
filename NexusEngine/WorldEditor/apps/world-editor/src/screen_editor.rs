@@ -977,6 +977,10 @@ fn kind_fields(
                     call: String::new(),
                 },
                 Action::Skill(1),
+                Action::NewGame {
+                    class: 1,
+                    level: String::from("village"),
+                },
                 Action::None,
             ];
             egui::ComboBox::from_label("동작")
@@ -1002,6 +1006,17 @@ fn kind_fields(
                         ui.label("레벨 번호");
                         ui.add(egui::TextEdit::singleline(target).desired_width(120.0));
                     });
+                }
+                Action::NewGame { class, level } => {
+                    ui.horizontal(|ui| {
+                        ui.label("직업 번호");
+                        ui.add(egui::DragValue::new(class).range(1..=u32::MAX));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("레벨 번호");
+                        ui.add(egui::TextEdit::singleline(level).desired_width(120.0));
+                    });
+                    ui.weak("그 직업으로 새로 시작해 레벨을 연다 — 저장 칸은 이어 하지 않는다.");
                 }
                 Action::Skill(key) => {
                     ui.horizontal(|ui| {

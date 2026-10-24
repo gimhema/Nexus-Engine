@@ -687,6 +687,13 @@ impl Spec {
                     format!("OpenLevel(\"{id}\")"),
                     format!("OpenLevel(\"{new}\")"),
                 ),
+                // 새 게임 버튼 (R2) — `NewGame(class: N, level: "id")`.
+                (
+                    "ui",
+                    ".ui.ron",
+                    format!("level: \"{id}\""),
+                    format!("level: \"{new}\""),
+                ),
                 (
                     "data",
                     "project.ron",

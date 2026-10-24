@@ -120,6 +120,8 @@ pub enum Rejection {
     NotUsable,
     /// 살아 있는 유닛은 부활할 수 없다.
     NotDead,
+    /// 이 직업은 입을 수 없는 장비 (R2).
+    ClassRestricted,
 }
 
 /// tick 동안 일어난 일.

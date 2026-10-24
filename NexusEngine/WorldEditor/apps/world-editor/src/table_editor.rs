@@ -24,8 +24,8 @@ use std::path::Path;
 use nexus_render_wgpu::egui;
 
 use crate::game_data::{
-    DISPLAY_PATH, GameData, ItemForm, ItemKindForm, LootRow, RULES_PATH, SkillForm, SlotChoice,
-    TableForms, loot_entry, table_forms,
+    DISPLAY_PATH, EquipBonusForm, GameData, ItemForm, ItemKindForm, LootRow, RULES_PATH, SkillForm,
+    SlotChoice, TableForms, loot_entry, table_forms,
 };
 
 /// 편집기의 탭.
@@ -508,6 +508,7 @@ fn item_form(ui: &mut egui::Ui, f: &mut ItemForm) {
                     slot: SlotChoice::Weapon,
                     attack: 1,
                     defense: 0,
+                    bonus: EquipBonusForm::default(),
                 };
             }
         });
@@ -533,6 +534,7 @@ fn item_form(ui: &mut egui::Ui, f: &mut ItemForm) {
                 slot,
                 attack,
                 defense,
+                bonus,
             } => {
                 ui.label("자리");
                 egui::ComboBox::from_id_salt("item-slot")
@@ -548,6 +550,47 @@ fn item_form(ui: &mut egui::Ui, f: &mut ItemForm) {
                 ui.end_row();
                 ui.label("방어");
                 ui.add(egui::DragValue::new(defense).range(0..=100_000));
+                ui.end_row();
+                // 스탯 보너스·직업 제한 (R2) — 이름은 rules.ron 의 stats.base, 번호는 classes.
+                ui.label("스탯 보너스");
+                ui.vertical(|ui| {
+                    let mut remove = None;
+                    for (i, (name, value)) in bonus.stats.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(name).desired_width(70.0));
+                            ui.add(egui::DragValue::new(value).range(-100_000..=100_000));
+                            if ui.small_button("×").clicked() {
+                                remove = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = remove {
+                        bonus.stats.remove(i);
+                    }
+                    if ui.small_button("+ 스탯").clicked() {
+                        bonus.stats.push((String::new(), 1));
+                    }
+                });
+                ui.end_row();
+                ui.label("직업 제한");
+                ui.vertical(|ui| {
+                    let mut text = bonus
+                        .classes
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    if ui
+                        .add(egui::TextEdit::singleline(&mut text).desired_width(120.0))
+                        .changed()
+                    {
+                        bonus.classes = text
+                            .split(',')
+                            .filter_map(|t| t.trim().parse().ok())
+                            .collect();
+                    }
+                    ui.weak("직업 번호를 쉼표로 — 비우면 누구나");
+                });
                 ui.end_row();
             }
         }

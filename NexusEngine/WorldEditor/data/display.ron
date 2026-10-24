@@ -70,4 +70,19 @@
         100: (name: "마을"),
         201: (name: "야생 몬스터"),
     },
+
+    // 직업의 이름·설명 (R2). 번호는 rules.ron 의 classes 와 같다.
+    classes: {
+        1: (name: "전사", description: "힘과 체력으로 버틴다. 칼을 든다."),
+        2: (name: "마법사", description: "지능이 높아 MP 가 많고 빨리 찬다. 칼은 들 수 없다."),
+        3: (name: "궁수", description: "민첩이 공격력이 된다."),
+    },
+
+    // 기본 스탯의 화면 이름 (R2). 키는 rules.ron 의 stats.base. 없으면 규칙 이름 그대로 보인다.
+    stats: {
+        "str": (name: "힘"),
+        "vit": (name: "체력"),
+        "int": (name: "지능"),
+        "agi": (name: "민첩"),
+    },
 )

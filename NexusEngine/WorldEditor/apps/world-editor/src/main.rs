@@ -16,6 +16,7 @@
 
 mod actor_editor;
 mod asset_ops;
+mod class_file;
 mod content;
 mod edit;
 mod game_data;
@@ -35,6 +36,7 @@ mod script;
 mod script_editor;
 mod sheet_viewer;
 mod sprites;
+mod stat_designer;
 mod table_editor;
 mod terrain;
 mod tiles;
@@ -53,6 +55,7 @@ use nexus_render::{
     DEPTH_LAYER, DrawLayer, FrameStatus, RenderCommand, RenderError, Renderer, TextureId, UvRect,
 };
 use nexus_render_wgpu::{TextureCarry, UiFrame, WgpuRenderer};
+use nexus_sim::ClassId;
 
 use edit::{Editing, PointerInput, Tool};
 use game_data::GameData;
@@ -208,6 +211,8 @@ struct Editor {
     save_slot: u8,
     /// 이어 할지 묻는 중이면 그 칸의 요약 — 창이 뜬다.
     continue_prompt: Option<String>,
+    /// 새 게임 버튼이 고른 직업 (R2) — 다음 플레이 시작이 꺼내 쓴다.
+    new_game: Option<ClassId>,
     /// 에디터가 보는 게임 데이터 — **액터 타입 목록**(인스펙터)과 마커 그림에 쓴다.
     ///
     /// 플레이는 시작할 때 자기 것을 새로 읽는다. 이쪽도 그때 함께 갱신해 에디터와 플레이가
@@ -277,6 +282,7 @@ impl Default for Editor {
             open_screens: (String::new(), Vec::new()),
             save_slot: 1,
             continue_prompt: None,
+            new_game: None,
             data: None,
             fixed_zoom: None,
             play: None,
@@ -613,6 +619,13 @@ impl Editor {
 
     /// 지금 편집 중인 씬으로 플레이를 시작한다 (F5). 화면은 이 존이 속한 레벨이 정한다.
     fn start_play(&mut self, choice: SaveChoice) {
+        // 새 게임 버튼이 맡겨 둔 직업이 있으면 저장을 쓰지 않는 새 시작이다 (R2).
+        let new_game = self.new_game.take();
+        let choice = if new_game.is_some() {
+            SaveChoice::Fresh
+        } else {
+            choice
+        };
         let slot_path = save_file::slot_path(self.save_slot);
         // 저장이 있으면 먼저 묻는다 — 답은 이어 하기 창이 준다 (`ContinueChoice`).
         if choice == SaveChoice::Ask && matches!(save_file::load(&slot_path), Ok(Some(_))) {
@@ -676,6 +689,7 @@ impl Editor {
         let options = PlayOptions {
             spawn: self.selected_player_spawn(),
             save,
+            class: new_game,
         };
         match PlaySession::start(&self.scene, self.camera, data, options) {
             Ok(session) => {
@@ -1071,6 +1085,12 @@ impl Editor {
                 }
             }
             Action::OpenLevel(id) => self.open_level(&id),
+            // 새 게임 (R2) — 고른 직업을 맡겨 두고 레벨을 연다. 레벨이 존을 열며 플레이를 시작할 때
+            // `start_play` 가 꺼내 쓴다 (저장 칸을 쓰지 않는 새 시작으로).
+            Action::NewGame { class, level } => {
+                self.new_game = Some(ClassId(class));
+                self.open_level(&level);
+            }
             Action::OpenStartLevel => {
                 let id = self.levels.startup().to_owned();
                 self.open_level(&id);
@@ -1668,6 +1688,19 @@ impl Editor {
                 p.released = button == Button::Release;
             }
             Step::OpenLevel(id) => self.open_level(&id),
+            Step::UiClick(widget) => {
+                let action = self.shell.as_ref().and_then(|shell| {
+                    shell
+                        .screens
+                        .iter()
+                        .rev()
+                        .find_map(|screen| self.screens.button_action(screen, &widget))
+                });
+                match action {
+                    Some(action) => self.run_action(action),
+                    None => self.notify(format!("떠 있는 화면에 '{widget}' 버튼이 없습니다"), true),
+                }
+            }
             Step::Escape => self.toggle_pause(),
             Step::ContentToggle => {
                 if let Some(ui) = self.ui.as_mut() {
@@ -1724,6 +1757,11 @@ impl Editor {
                 }
             }
             // 두 번 누르기와 같은 경로 — UI 창은 UI 가 열고, 나머지는 에디터가 맡는다.
+            Step::StatDesigner => {
+                if let Some(ui) = self.ui.as_mut() {
+                    ui.stat_designer_mut().open();
+                }
+            }
             Step::Trash => {
                 let dirty = self.is_dirty();
                 if let Some(ui) = self.ui.as_mut() {

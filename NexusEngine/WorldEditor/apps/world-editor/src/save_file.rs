@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use nexus_core::Vec2;
-use nexus_sim::{FlagId, ItemId};
+use nexus_sim::{ClassId, FlagId, ItemId};
 use serde::{Deserialize, Serialize};
 
 use crate::scene::ActorId;
@@ -36,6 +36,8 @@ pub(crate) const SLOTS: u8 = 3;
 pub(crate) struct SaveData {
     /// 조작하던 액터 타입.
     pub(crate) actor: ActorId,
+    /// 직업 (R2). `None` = 직업이 생기기 전의 저장 파일 — 기본 직업으로 이어 한다.
+    pub(crate) class: Option<ClassId>,
     pub(crate) level: u32,
     pub(crate) exp: u32,
     pub(crate) hp: u32,
@@ -64,6 +66,9 @@ pub(crate) struct SaveData {
 struct SaveFile {
     version: u32,
     actor: u32,
+    /// 직업 (R2). 없는 예전 파일도 읽힌다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    class: Option<u32>,
     level: u32,
     exp: u32,
     hp: u32,
@@ -98,6 +103,7 @@ pub(crate) fn to_ron(save: &SaveData) -> String {
     let file = SaveFile {
         version: FORMAT_VERSION,
         actor: save.actor.raw(),
+        class: save.class.map(|c| c.0),
         level: save.level,
         exp: save.exp,
         hp: save.hp,
@@ -152,6 +158,7 @@ pub(crate) fn from_ron(text: &str) -> Result<SaveData, String> {
     }
     Ok(SaveData {
         actor: ActorId::new(file.actor),
+        class: file.class.map(ClassId),
         level: file.level,
         exp: file.exp,
         hp: file.hp,
@@ -237,6 +244,7 @@ mod tests {
     fn sample() -> SaveData {
         SaveData {
             actor: ActorId::new(1),
+            class: Some(ClassId(2)),
             level: 3,
             exp: 240,
             hp: 180,

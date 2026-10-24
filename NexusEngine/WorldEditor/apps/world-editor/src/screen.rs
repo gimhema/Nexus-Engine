@@ -61,6 +61,10 @@ const EMBEDDED_SCREENS: &[(&str, &str)] = &[
     ("settings", include_str!("../../../ui/settings.ui.ron")),
     ("pause", include_str!("../../../ui/pause.ui.ron")),
     ("loading", include_str!("../../../ui/loading.ui.ron")),
+    (
+        "class_select",
+        include_str!("../../../ui/class_select.ui.ron"),
+    ),
 ];
 
 const FORMAT_VERSION: u32 = 1;
@@ -118,6 +122,7 @@ pub(crate) const PLACEHOLDERS: &[&str] = &[
     "exp_to_next",
     "loading",
     "revive",
+    "class",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -519,6 +524,9 @@ pub(crate) enum Action {
     /// 스크립트 함수를 부른다 — 고정 동작으로 안 되는 특별한 일 (P17).
     /// `path` 는 `data/` 기준 `.rhai`, `call` 은 그 안의 **인자 없는** 함수 이름.
     Script { path: String, call: String },
+    /// 그 직업으로 **새 게임**을 시작해 `level` 을 연다 (R2) — 저장 칸이 있어도 이어 하지 않는다
+    /// (멈추면 그 칸을 덮어쓴다). 직업 고르기 화면의 버튼이 이것을 쓴다.
+    NewGame { class: u32, level: String },
     /// 단축키 스킬을 쓴다 — 숫자키 1~9 를 누른 것과 같다. 스킬 칸([`WidgetKind::Skills`])을
     /// 누르면 그 칸의 번호로 이 동작이 난다.
     Skill(u32),
@@ -537,6 +545,7 @@ impl Action {
             Self::Quit => "종료",
             Self::Script { .. } => "스크립트",
             Self::Skill(_) => "스킬 쓰기",
+            Self::NewGame { .. } => "새 게임",
             Self::None => "없음",
         }
     }
@@ -581,6 +590,8 @@ pub(crate) struct Values {
     pub(crate) down: bool,
     /// 기본 부활까지 남은 초 (`{revive}`). 스크립트가 부활을 맡으면 `None` — 빈 글자가 된다.
     pub(crate) revive_in: Option<f32>,
+    /// 플레이어 직업 이름 (`{class}`, R2). 직업이 없는 게임이면 빈 글자.
+    pub(crate) class: String,
 }
 
 impl Values {
@@ -602,6 +613,7 @@ impl Values {
             loading: (0, 0),
             down: !u.is_alive(),
             revive_in: play.revive_in(),
+            class: play.class_name(),
         })
     }
 
@@ -641,6 +653,7 @@ impl Values {
             loading: (60, 100),
             down: false,
             revive_in: Some(2.4),
+            class: String::from("전사"),
         }
     }
 
@@ -1095,6 +1108,17 @@ impl Screens {
             cols as f32 * (cell + gap) - gap,
             rows as f32 * (cell + gap) - gap,
         )
+    }
+
+    /// 화면 `id` 안의 버튼 `widget` 이 하는 일 — 자동 검증 스크립트(`uiclick`)가 이름으로 누를 때.
+    pub(crate) fn button_action(&self, id: &str, widget: &str) -> Option<Action> {
+        fn find(widgets: &[Widget], name: &str) -> Option<Action> {
+            widgets.iter().find_map(|w| match &w.kind {
+                WidgetKind::Button { action, .. } if w.id == name => Some(action.clone()),
+                _ => find(&w.children, name),
+            })
+        }
+        find(&self.screens.get(id)?.widgets, widget)
     }
 
     /// 그 자리에 있는 버튼 — 위에 그려진 것이 먼저다. 버튼이 아니면 `None`.
@@ -1642,7 +1666,7 @@ pub(crate) fn to_ron(screen: &ScreenFile) -> String {
 // 메뉴 UI → 위젯 편집기. 저장하면 이 파일이 통째로 다시 쓰이므로 주석은 남지 않는다.
 //
 // pos·size 는 UI 픽셀(테마의 scale 을 곱하기 전)이고, anchor 기준점에서 오른쪽·아래가 +다.
-// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {mp} {max_mp} {level} {exp} {exp_to_next} {loading}(로딩 %) {revive}(부활까지 초)
+// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {mp} {max_mp} {level} {exp} {exp_to_next} {loading}(로딩 %) {revive}(부활까지 초) {class}(직업)
 // Image 위젯의 path 는 작업 디렉터리 기준 PNG (소문자·'/'), region 은 그림의 픽셀 사각형이다.
 ";
     format!("{header}{body}\n")
@@ -1690,6 +1714,7 @@ fn fill(format: &str, v: &Values) -> String {
         .revive_in
         .map_or(String::new(), |s| format!("{:.1}", s.max(0.0)));
     out.replace("{revive}", &revive)
+        .replace("{class}", &v.class)
 }
 
 /// 위젯 트리 검사 — 빈 이름, 이름 중복(트리 전체), 없는 값 이름, 0 크기, 너무 깊은 트리.
@@ -1734,6 +1759,14 @@ fn check_widgets<'a>(
                     && !(1..=9).contains(key)
                 {
                     return Err(format!("'{}': 스킬 번호는 1~9", w.id));
+                }
+                if let Action::NewGame { class, level } = action
+                    && (*class == 0 || level.trim().is_empty())
+                {
+                    return Err(format!(
+                        "'{}': 새 게임은 직업 번호(1 이상)와 레벨이 있어야 함",
+                        w.id
+                    ));
                 }
                 if let Action::Script { path, call } = action {
                     if !crate::game_data::script_path_ok(path) {

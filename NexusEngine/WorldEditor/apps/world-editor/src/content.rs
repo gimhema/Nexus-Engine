@@ -1725,6 +1725,7 @@ fn details(root: &Path, asset: &Asset, assets: &[Asset], forms: &Forms) -> Detai
                             slot,
                             attack,
                             defense,
+                            ..
                         } => format!("장비({}) · 공격 {attack} · 방어 {defense}", slot.label()),
                     },
                 );
@@ -1805,6 +1806,7 @@ fn references(root: &Path, asset: &Asset, assets: &[Asset], forms: &Forms) -> Ve
         AssetKind::Level => {
             let id = asset.file_id().unwrap_or_default();
             needles.push((AssetKind::Screen, format!("OpenLevel(\"{id}\")")));
+            needles.push((AssetKind::Screen, format!("level: \"{id}\"")));
             needles.push((AssetKind::Data, format!("startup_level: \"{id}\"")));
         }
         AssetKind::Screen => {

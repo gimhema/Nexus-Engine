@@ -31,6 +31,7 @@
 //! uipick 이름 | uidrag dx dy  위젯 고르기 / 고른 위젯 옮기기
 //! uisave                      화면 파일(ui/<번호>.ui.ron) 저장
 //! uipress x y | uirelease x y 화면 좌표(뷰포트 픽셀)로 누르기 / 떼기 — 버튼 확인용
+//! uiclick 위젯이름             떠 있는 화면(맨 위부터)에서 그 이름의 버튼 동작을 실행 — 좌표 없이
 //! level 번호 | startlevel     레벨 열기 / 시작 레벨 열기 (P7)
 //! esc                         일시정지 화면 열고 닫기 (Esc 와 같다)
 //! content | contentpick 키    콘텐츠 브라우저 열고 닫기 / 항목 고르기 (P8, 키 = 경로 또는 actor:번호)
@@ -38,6 +39,7 @@
 //! contentfolder 경로 | contentview icons|list   브라우저 폴더로 가기 (`/` = 맨 위) / 보기 방식
 //! contentmenu                 브라우저 빈 곳 오른쪽 클릭 메뉴 열기 (새로 만들기)
 //! trash                       휴지통 창 열기 (P20)
+//! statdesigner                스탯·직업 디자이너 열기 (R2)
 //! contentop delete|duplicate|rename [새이름]  고른 항목에 파일 작업 확인 창 (P9)
 //! contentconfirm              확인 창의 "실행"
 //! ```
@@ -137,6 +139,8 @@ pub(crate) enum Step {
         button: Button,
         at: Vec2,
     },
+    /// 떠 있는 화면에서 이름으로 버튼을 누른다 (R2) — 좌표를 몰라도 화면 흐름을 검증할 수 있게.
+    UiClick(String),
     /// 레벨 열기 (P7) — 언리얼의 Open Level.
     OpenLevel(String),
     /// 시작 레벨 열기 (data/project.ron 의 startup_level).
@@ -145,6 +149,8 @@ pub(crate) enum Step {
     Escape,
     /// 콘텐츠 브라우저 열고 닫기 (P8).
     ContentToggle,
+    /// 스탯·직업 디자이너 열기 (R2).
+    StatDesigner,
     /// 휴지통 창 열기 (P20).
     Trash,
     /// 콘텐츠 브라우저에서 항목 고르기 — 경로 또는 `actor:번호`.
@@ -290,6 +296,7 @@ fn parse_step(text: &str) -> Result<Step, String> {
         "esc" => return Ok(Step::Escape),
         "content" => return Ok(Step::ContentToggle),
         "trash" => return Ok(Step::Trash),
+        "statdesigner" => return Ok(Step::StatDesigner),
         "contentopen" => return Ok(Step::ContentOpen),
         "contentmenu" => return Ok(Step::ContentMenu),
         "contentconfirm" => return Ok(Step::ContentConfirm),
@@ -331,6 +338,12 @@ fn parse_step(text: &str) -> Result<Step, String> {
                 .get(1)
                 .ok_or_else(|| format!("'{text}': level 뒤에 레벨 번호"))?;
             return Ok(Step::OpenLevel((*id).to_string()));
+        }
+        "uiclick" => {
+            let id = words
+                .get(1)
+                .ok_or_else(|| format!("'{text}': uiclick 뒤에 위젯 이름"))?;
+            return Ok(Step::UiClick((*id).to_string()));
         }
         "uipress" | "uirelease" => {
             let num = |i: usize| -> Result<f32, String> {

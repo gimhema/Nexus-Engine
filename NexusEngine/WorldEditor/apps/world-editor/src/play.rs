@@ -21,8 +21,8 @@ use nexus_core::{Camera2d, Entity, Vec2, Vec3};
 use nexus_render::{DEPTH_LAYER, RenderCommand, SpriteAnchor, TextureId, UvRect};
 use nexus_script::RhaiHost;
 use nexus_sim::{
-    Authority, BagKind, EquipSlot, Event, Intent, ItemStack, LocalAuthority, Progress, Rejection,
-    Relation, SimWorld, SkillId, Unit,
+    Authority, BagKind, ClassId, EquipSlot, Event, Intent, ItemStack, LocalAuthority, Progress,
+    Rejection, Relation, SimWorld, SkillId, Unit,
 };
 
 use crate::game_data::{ActorLook, GameData};
@@ -103,6 +103,8 @@ pub(crate) struct PlayOptions {
     pub(crate) spawn: Option<Entity>,
     /// 이어서 할 저장 데이터 (P3). 없으면 새로 시작한다.
     pub(crate) save: Option<SaveData>,
+    /// 새 게임에서 고른 직업 (R2). 이어 하기면 저장한 직업이 이긴다. 둘 다 없으면 기본 직업.
+    pub(crate) class: Option<ClassId>,
 }
 
 /// 진행 중인 플레이 한 판.
@@ -157,6 +159,14 @@ impl PlaySession {
             compiled.insert(path.to_owned(), id);
         }
 
+        // 플레이어 직업 (R2) — 저장한 직업 → 새 게임에서 고른 직업 → 기본 직업. 데이터에서 사라진
+        // 직업은 건너뛴다 (데이터를 고쳤다고 이어 하기가 막히면 곤란하다 — 아이템과 같은 규칙).
+        let player_class = [options.save.as_ref().and_then(|s| s.class), options.class]
+            .into_iter()
+            .flatten()
+            .find(|c| data.has_class(*c))
+            .or_else(|| data.default_class());
+
         let mut labels = HashMap::new();
         let mut player = None;
         // 조작할 스폰 — 고른 마커가 있으면 그것, 없으면 첫 플레이어 스폰 (P3-1).
@@ -194,11 +204,11 @@ impl PlaySession {
                 } else {
                     item.pos
                 };
-                let unit = world.spawn_unit(
-                    pos,
-                    item.orientation,
-                    item.overrides.apply(data.unit_def(actor)),
-                );
+                let mut def = item.overrides.apply(data.unit_def(actor));
+                if is_player {
+                    def.class = player_class;
+                }
+                let unit = world.spawn_unit(pos, item.orientation, def);
                 let name = if is_player {
                     String::from("플레이어")
                 } else {
@@ -228,9 +238,15 @@ impl PlaySession {
             }
         }
         let player = player.ok_or("플레이어 스폰이 없어 플레이할 수 없습니다")?;
-        let hotbar = labels
-            .get(&player)
-            .map(|l: &Label| data.actor_skills(l.actor).to_vec())
+        // 단축키 — 직업이 정했으면 그것, 아니면 액터 타입의 것.
+        let hotbar = player_class
+            .and_then(|c| data.class_skills(c))
+            .map(<[SkillId]>::to_vec)
+            .or_else(|| {
+                labels
+                    .get(&player)
+                    .map(|l: &Label| data.actor_skills(l.actor).to_vec())
+            })
             .unwrap_or_default();
         let scripted_revive = labels
             .get(&player)
@@ -284,6 +300,31 @@ impl PlaySession {
         self.auth.ticks()
     }
 
+    /// 플레이어 직업 이름 (R2). 직업이 없으면 빈 문자열.
+    pub(crate) fn class_name(&self) -> String {
+        self.world()
+            .unit(self.player)
+            .and_then(|u| u.def().class)
+            .map_or_else(String::new, |c| self.data.class_name(c))
+    }
+
+    /// 플레이어 기본 스탯 `(화면 이름, 값)` — 데이터가 정한 순서 (R2). 직업이 없으면 빈 목록.
+    pub(crate) fn stat_lines(&self) -> Vec<(String, i64)> {
+        let (Some(u), Some(rules)) = (self.world().unit(self.player), self.world().stat_rules())
+        else {
+            return Vec::new();
+        };
+        let Some(sheet) = u.stat_sheet() else {
+            return Vec::new();
+        };
+        rules
+            .stats()
+            .iter()
+            .zip(&sheet.base)
+            .map(|(key, v)| (self.data.stat_name(key).to_owned(), *v))
+            .collect()
+    }
+
     /// 유닛 이름. 모르면 `"?"`.
     pub(crate) fn name(&self, unit: Entity) -> &str {
         self.labels.get(&unit).map_or("?", |l| l.name.as_str())
@@ -320,6 +361,7 @@ impl PlaySession {
                 .into_iter()
                 .filter_map(|slot| inventory?.equipped(slot))
                 .collect(),
+            class: u.and_then(|u| u.def().class),
             flags: u.map(|u| u.flags().iter().collect()).unwrap_or_default(),
             world_flags: self.world().world_flags().iter().collect(),
         }
@@ -1216,6 +1258,7 @@ mod text {
             Rejection::InventoryFull => "가방이 가득 찼습니다",
             Rejection::NotUsable => "쓸 수 없는 아이템입니다",
             Rejection::NotDead => "쓰러진 상태가 아닙니다",
+            Rejection::ClassRestricted => "이 직업은 쓸 수 없는 장비입니다",
         }
     }
 }
@@ -1359,6 +1402,7 @@ mod tests {
             PlayOptions {
                 spawn: Some(second),
                 save: None,
+                class: None,
             },
         )
         .unwrap();
@@ -1399,6 +1443,7 @@ mod tests {
             PlayOptions {
                 spawn: None,
                 save: Some(save.clone()),
+                class: None,
             },
         )
         .unwrap();
@@ -1895,6 +1940,7 @@ mod tests {
             PlayOptions {
                 spawn: None,
                 save: Some(save),
+                class: None,
             },
         )
         .unwrap();
@@ -1914,6 +1960,7 @@ mod tests {
             PlayOptions {
                 spawn: None,
                 save: Some(save),
+                class: None,
             },
         )
         .unwrap();
@@ -1940,6 +1987,7 @@ mod tests {
             PlayOptions {
                 spawn: None,
                 save: Some(save),
+                class: None,
             },
         )
         .unwrap();
@@ -1983,6 +2031,7 @@ mod tests {
             PlayOptions {
                 spawn: None,
                 save: Some(save),
+                class: None,
             },
         )
         .expect("없는 아이템 때문에 플레이가 막히면 안 된다");
@@ -2156,5 +2205,83 @@ mod tests {
         s.tick(DT, None);
         assert_eq!(s.world().unit(s.player()).unwrap().attack(), base + 12);
         assert!(s.log().any(|l| l == "숏소드 장착"));
+    }
+
+    // ── 직업 (R2) ────────────────────────────────────────────────────────────
+
+    fn new_game(class: Option<ClassId>, save: Option<SaveData>) -> PlaySession {
+        PlaySession::start(
+            &Scene::server_default(),
+            Camera2d::default(),
+            GameData::embedded(),
+            PlayOptions {
+                spawn: None,
+                save,
+                class,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_default_class_is_the_old_player() {
+        // 직업 1(전사)은 직업이 생기기 전의 플레이어와 수치가 같다 — 밸런스가 흔들리지 않게.
+        let s = new_game(None, None);
+        let u = s.world().unit(s.player()).unwrap();
+        assert_eq!(u.def().class, Some(ClassId(1)));
+        assert_eq!(
+            (
+                u.max_hp(),
+                u.max_mp(),
+                u.mp_regen(),
+                u.attack(),
+                u.defense()
+            ),
+            (200, 60, 2, 20, 5)
+        );
+        assert_eq!(s.class_name(), "전사");
+        assert_eq!(
+            s.stat_lines(),
+            [
+                (String::from("힘"), 10),
+                (String::from("체력"), 9),
+                (String::from("지능"), 5),
+                (String::from("민첩"), 5)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_mage_has_its_own_numbers_hotbar_and_cannot_hold_the_sword() {
+        let mut s = new_game(Some(ClassId(2)), None);
+        let u = s.world().unit(s.player()).unwrap();
+        // rules.ron 마법사: vit 6 → HP 140, int 12 → MP 12×12+20 = 164, 회복 6, 공격 str 5 × 2.
+        assert_eq!(
+            (u.max_hp(), u.max_mp(), u.mp_regen(), u.attack()),
+            (140, 164, 6, 10)
+        );
+        assert_eq!(s.hotbar, [SkillId(8), SkillId(6)], "직업의 단축키");
+        s.inventory(InventoryAction::Equip(0));
+        s.tick(DT, None);
+        assert!(
+            s.log().any(|l| l.contains("이 직업은 쓸 수 없는 장비")),
+            "{:?}",
+            s.log
+        );
+        assert_eq!(s.world().unit(s.player()).unwrap().attack(), 10);
+    }
+
+    #[test]
+    fn the_class_is_saved_and_beats_a_new_game_choice_when_continuing() {
+        let save = new_game(Some(ClassId(3)), None).save_data(String::new());
+        assert_eq!(save.class, Some(ClassId(3)));
+        let s = new_game(Some(ClassId(2)), Some(save.clone()));
+        assert_eq!(s.class_name(), "궁수", "이어 하기면 저장한 직업");
+        // 데이터에서 사라진 직업 → 기본 직업으로 이어 한다 (막지 않는다).
+        let gone = SaveData {
+            class: Some(ClassId(77)),
+            ..save
+        };
+        assert_eq!(new_game(None, Some(gone)).class_name(), "전사");
     }
 }

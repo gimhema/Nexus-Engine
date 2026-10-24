@@ -27,6 +27,7 @@ use crate::item::{
 };
 use crate::loot::{self, LootEntry, LootTableId, Rng};
 use crate::progress::Progress;
+use crate::stats::{ClassDef, ClassId, EquipRules, EquipTotals, StatRules};
 use crate::tilemap::TileMap;
 use crate::trigger::{
     Condition, Effect, FlagId, FlagScope, Flags, Happening, MAX_ROUNDS, TriggerDef, TriggerId,
@@ -66,6 +67,11 @@ pub struct SimWorld {
     world_flags: Flags,
     /// 트리거 — 번호 순으로 판정한다 (R1).
     triggers: BTreeMap<TriggerId, TriggerDef>,
+    /// 스탯 체계와 직업 (R2). 체계가 없으면 직업이 있는 유닛도 수치를 그대로 쓴다.
+    stat_rules: Option<StatRules>,
+    classes: HashMap<ClassId, ClassDef>,
+    /// 장비의 기본 스탯 보너스·직업 제한. 없는 장비는 보너스도 제한도 없다.
+    equip_rules: HashMap<ItemId, EquipRules>,
 }
 
 impl SimWorld {
@@ -86,7 +92,40 @@ impl SimWorld {
             now: Duration::ZERO,
             world_flags: Flags::default(),
             triggers: BTreeMap::new(),
+            stat_rules: None,
+            classes: HashMap::new(),
+            equip_rules: HashMap::new(),
         }
+    }
+
+    /// 스탯 체계를 정한다 (설정 작업 — **스폰보다 먼저**. 이미 선 유닛은 다시 계산하지 않는다).
+    pub fn set_stat_rules(&mut self, rules: StatRules) {
+        self.stat_rules = Some(rules);
+    }
+
+    #[must_use]
+    pub fn stat_rules(&self) -> Option<&StatRules> {
+        self.stat_rules.as_ref()
+    }
+
+    /// 직업을 등록한다 (설정 작업 — 스폰보다 먼저).
+    pub fn define_class(&mut self, id: ClassId, def: ClassDef) {
+        self.classes.insert(id, def);
+    }
+
+    #[must_use]
+    pub fn class(&self, id: ClassId) -> Option<&ClassDef> {
+        self.classes.get(&id)
+    }
+
+    /// 장비의 스탯 보너스·직업 제한을 등록한다 (설정 작업).
+    pub fn define_equip_rules(&mut self, item: ItemId, rules: EquipRules) {
+        self.equip_rules.insert(item, rules);
+    }
+
+    #[must_use]
+    pub fn equip_rules(&self, item: ItemId) -> Option<&EquipRules> {
+        self.equip_rules.get(&item)
     }
 
     /// 트리거를 등록한다 (설정 작업). 같은 번호면 갈아 끼운다.
@@ -189,6 +228,9 @@ impl SimWorld {
     pub fn set_progress(&mut self, unit: Entity, progress: Progress) {
         if let Some(u) = self.unit_mut(unit) {
             u.progress = progress;
+        }
+        self.refresh_stats(unit);
+        if let Some(u) = self.unit_mut(unit) {
             let cap = u.max_hp();
             u.hp = u.hp.min(cap);
             u.mp = u.mp.min(u.max_mp());
@@ -252,7 +294,7 @@ impl SimWorld {
             return false;
         };
         u.inventory.set_equipped(slot, Some(item));
-        self.refresh_equipment_bonus(unit);
+        self.refresh_stats(unit);
         true
     }
 
@@ -327,6 +369,12 @@ impl SimWorld {
             self.units.resize_with(slot + 1, || None);
         }
         self.units[slot] = Some((entity, Unit::new(pos, heading, def)));
+        // 직업이 있으면 수식으로 계산한 값으로 가득 채운 채 선다.
+        self.refresh_stats(entity);
+        if let Some(u) = self.unit_mut(entity) {
+            u.hp = u.max_hp();
+            u.mp = u.max_mp();
+        }
         entity
     }
 
@@ -632,6 +680,10 @@ impl SimWorld {
             progress,
         });
         if levels > 0 {
+            self.refresh_stats(unit);
+            let Some(u) = self.unit_mut(unit) else {
+                return;
+            };
             let full = u.max_hp();
             u.hp = full;
             u.mp = u.max_mp();
@@ -797,6 +849,13 @@ impl SimWorld {
         let ItemKind::Equipment { slot: place, .. } = def.kind else {
             return Err(Rejection::NotUsable);
         };
+        if self
+            .equip_rules
+            .get(&stack.item)
+            .is_some_and(|r| !r.allows(u.def.class))
+        {
+            return Err(Rejection::ClassRestricted);
+        }
 
         let u = self.unit_mut(unit).ok_or(Rejection::UnknownEntity)?;
         let previous = u.inventory.equipped(place);
@@ -804,7 +863,7 @@ impl SimWorld {
         u.inventory
             .equipment
             .put(bag_slot, previous.map(|item| ItemStack { item, count: 1 }));
-        self.refresh_equipment_bonus(unit);
+        self.refresh_stats(unit);
         events.push(Event::EquipmentChanged { unit, slot: place });
         Ok(())
     }
@@ -825,30 +884,48 @@ impl SimWorld {
         let u = self.unit_mut(unit).ok_or(Rejection::UnknownEntity)?;
         u.inventory.set_equipped(place, None);
         u.inventory.equipment.add(item, 1, 1);
-        self.refresh_equipment_bonus(unit);
+        self.refresh_stats(unit);
         events.push(Event::EquipmentChanged { unit, slot: place });
         Ok(())
     }
 
     /// 장착 장비의 수치 합을 유닛에 다시 적는다. 전투는 매번 정의를 찾지 않고 이 값을 쓴다.
-    fn refresh_equipment_bonus(&mut self, unit: Entity) {
+    /// 장비 합계와 (직업이 있으면) 스탯 시트를 다시 계산한다 — 스폰·레벨·장착이 바뀔 때.
+    /// 현재 HP·MP 는 건드리지 않는다 (상한을 넘으면 부른 쪽이 자른다).
+    fn refresh_stats(&mut self, unit: Entity) {
         let Some(u) = self.unit(unit) else { return };
-        let (mut attack, mut defense) = (0u32, 0u32);
+        let mut equip = EquipTotals::default();
         for place in EquipSlot::ALL {
-            let def = u.inventory.equipped(place).and_then(|i| self.items.get(&i));
+            let Some(item) = u.inventory.equipped(place) else {
+                continue;
+            };
             if let Some(ItemKind::Equipment {
                 attack: a,
                 defense: d,
                 ..
-            }) = def.map(|d| d.kind)
+            }) = self.items.get(&item).map(|d| d.kind)
             {
-                attack = attack.saturating_add(a);
-                defense = defense.saturating_add(d);
+                equip.attack = equip.attack.saturating_add(a);
+                equip.defense = equip.defense.saturating_add(d);
+            }
+            for &(stat, add) in self.equip_rules.get(&item).map_or(&[][..], |r| &r.stats) {
+                if equip.stats.len() <= stat {
+                    equip.stats.resize(stat + 1, 0);
+                }
+                equip.stats[stat] = equip.stats[stat].saturating_add(add);
             }
         }
+        let sheet = match (&self.stat_rules, u.def.class) {
+            (Some(rules), Some(class)) => self
+                .classes
+                .get(&class)
+                .map(|c| rules.sheet(c, u.progress.level(), &equip)),
+            _ => None,
+        };
         if let Some(u) = self.unit_mut(unit) {
-            u.bonus_attack = attack;
-            u.bonus_defense = defense;
+            u.bonus_attack = equip.attack;
+            u.bonus_defense = equip.defense;
+            u.sheet = sheet;
         }
     }
 

@@ -30,8 +30,10 @@ use nexus_sim::{
     ActorType, AiKind, EquipSlot, FactionId, Growth, ItemDef, ItemId, ItemKind as SimItemKind,
     LootEntry, LootTableId, Relation, SimWorld, SkillDef, SkillId, TriggerDef, TriggerId, UnitDef,
 };
+use nexus_sim::{ClassDef, ClassId, EquipRules, StatRules};
 use serde::Deserialize;
 
+use crate::class_file::{self, ClassFile, ClassLookFile, EquipRef, StatsFile};
 use crate::scene::{ActorId, ItemKind};
 use crate::trigger_file::{self, TriggerFile};
 
@@ -99,6 +101,12 @@ struct RulesFile {
     /// 트리거 — 언제·만약·한다 (R1). 번호 순으로 판정한다. 형식은 `trigger_file` 모듈 doc.
     #[serde(default)]
     triggers: BTreeMap<u32, TriggerFile>,
+    /// 기본 스탯과 파생 수식 (R2). 적지 않으면 직업도 없다. 형식은 `class_file` 모듈 doc.
+    #[serde(default)]
+    stats: StatsFile,
+    /// 직업 (R2) — 새 게임에서 고른다.
+    #[serde(default)]
+    classes: BTreeMap<u32, ClassFile>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -177,7 +185,7 @@ struct SkillFile {
     heal: u32,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 enum ItemFile {
     Consumable {
@@ -191,7 +199,33 @@ enum ItemFile {
         slot: SlotFile,
         attack: u32,
         defense: u32,
+        /// 기본 스탯 보너스 (R2) — `{"str": 2}`. 이름은 `stats.base`.
+        #[serde(default)]
+        stats: BTreeMap<String, i64>,
+        /// 입을 수 있는 직업 (R2). 비우면 누구나.
+        #[serde(default)]
+        classes: Vec<u32>,
     },
+}
+
+impl RulesFile {
+    /// 스탯 체계 — 블록을 적지 않았으면 `None`.
+    fn stats_block(&self) -> Option<&StatsFile> {
+        (!self.stats.is_absent()).then_some(&self.stats)
+    }
+}
+
+impl ItemFile {
+    fn equip_ref(&self, item: u32) -> Option<EquipRef<'_>> {
+        match self {
+            Self::Equipment { stats, classes, .. } => Some(EquipRef {
+                item,
+                stats,
+                classes,
+            }),
+            Self::Consumable { .. } => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -314,6 +348,12 @@ struct DisplayFile {
     /// 진영의 표시 이름 (P19). 번호는 `rules.ron` 의 진영 번호(서버 `EFactionId`)와 같다. 없으면 번호로 보인다.
     #[serde(default)]
     factions: BTreeMap<u32, SkillLookFile>,
+    /// 직업 이름·설명 (R2). 번호는 `rules.ron` 의 `classes`.
+    #[serde(default)]
+    classes: BTreeMap<u32, ClassLookFile>,
+    /// 기본 스탯의 화면 이름 (R2) — `{"str": (name: "힘")}`. 없으면 규칙 이름 그대로.
+    #[serde(default)]
+    stats: BTreeMap<String, SkillLookFile>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -416,6 +456,17 @@ pub(crate) struct GameData {
     script_sources: BTreeMap<String, String>,
     /// 트리거 (R1) — 번호 순.
     triggers: Vec<(TriggerId, TriggerDef)>,
+    /// 스탯 체계 (R2). 없으면 직업이 없는 게임이다.
+    stat_rules: Option<StatRules>,
+    /// 직업 — 번호 순.
+    classes: Vec<(ClassId, ClassDef)>,
+    class_skills: BTreeMap<ClassId, Vec<SkillId>>,
+    /// 직업 `(이름, 설명)` (`display.ron`).
+    class_looks: BTreeMap<ClassId, (String, String)>,
+    /// 기본 스탯 규칙 이름 → 화면 이름.
+    stat_names: BTreeMap<String, String>,
+    /// 장비의 스탯 보너스·직업 제한 — 둘 다 없는 장비는 빠진다.
+    equip_rules: Vec<(ItemId, EquipRules)>,
 }
 
 impl GameData {
@@ -667,6 +718,29 @@ impl GameData {
             r.ground_item_ms <= MAX_RESPAWN_MS,
             String::from("ground_item_ms 는 1시간 이하"),
         );
+        let equipment: Vec<EquipRef<'_>> = r
+            .items
+            .iter()
+            .filter_map(|(id, i)| i.equip_ref(*id))
+            .collect();
+        errors.extend(class_file::validate(
+            r.stats_block(),
+            &r.classes,
+            &equipment,
+            |s| r.skills.contains_key(&s),
+        ));
+        for id in d.classes.keys().filter(|id| !r.classes.contains_key(id)) {
+            errors.push(format!("표시 직업 {id}: rules.ron 에 없는 직업"));
+        }
+        for name in d
+            .stats
+            .keys()
+            .filter(|n| r.stats_block().is_none_or(|s| !s.base_has(n)))
+        {
+            errors.push(format!(
+                "표시 스탯 '{name}': rules.ron 의 stats.base 에 없음"
+            ));
+        }
         errors.extend(trigger_file::validate(
             &r.triggers,
             |i| r.items.contains_key(&i),
@@ -675,6 +749,7 @@ impl GameData {
         if !errors.is_empty() {
             return Err(format!("게임 데이터 오류 — {}", errors.join(" / ")));
         }
+        let built = class_file::build(r.stats_block(), &r.classes);
 
         Ok(Self {
             seed: r.seed,
@@ -703,7 +778,7 @@ impl GameData {
             items: r
                 .items
                 .iter()
-                .map(|(id, i)| (ItemId(*id), (*i).into()))
+                .map(|(id, i)| (ItemId(*id), i.clone().into()))
                 .collect(),
             loot: r
                 .loot
@@ -809,6 +884,29 @@ impl GameData {
             },
             script_sources: BTreeMap::new(),
             triggers: trigger_file::to_sim(&r.triggers),
+            stat_rules: built.as_ref().map(|(rules, _)| rules.clone()),
+            classes: built.map(|(_, c)| c).unwrap_or_default(),
+            class_skills: r
+                .classes
+                .iter()
+                .filter(|(_, c)| !c.skills.is_empty())
+                .map(|(id, c)| (ClassId(*id), c.skills.iter().map(|s| SkillId(*s)).collect()))
+                .collect(),
+            class_looks: d
+                .classes
+                .iter()
+                .map(|(id, l)| (ClassId(*id), (l.name.clone(), l.description.clone())))
+                .collect(),
+            stat_names: d
+                .stats
+                .iter()
+                .map(|(k, l)| (k.clone(), l.name.clone()))
+                .collect(),
+            equip_rules: equipment
+                .iter()
+                .filter(|e| !e.stats.is_empty() || !e.classes.is_empty())
+                .map(|e| (ItemId(e.item), class_file::equip_rules(r.stats_block(), e)))
+                .collect(),
         })
     }
 
@@ -868,6 +966,46 @@ impl GameData {
         for (id, def) in &self.triggers {
             world.define_trigger(*id, def.clone());
         }
+        if let Some(rules) = &self.stat_rules {
+            world.set_stat_rules(rules.clone());
+        }
+        for (id, def) in &self.classes {
+            world.define_class(*id, def.clone());
+        }
+        for (id, rules) in &self.equip_rules {
+            world.define_equip_rules(*id, rules.clone());
+        }
+    }
+
+    /// 직업 번호 — 번호 순 (R2). 비어 있으면 직업이 없는 게임이다.
+    pub(crate) fn class_ids(&self) -> impl Iterator<Item = ClassId> + '_ {
+        self.classes.iter().map(|(id, _)| *id)
+    }
+
+    /// 새 게임에서 따로 고르지 않았을 때의 직업 — 가장 작은 번호.
+    pub(crate) fn default_class(&self) -> Option<ClassId> {
+        self.class_ids().next()
+    }
+
+    pub(crate) fn has_class(&self, id: ClassId) -> bool {
+        self.classes.iter().any(|(c, _)| *c == id)
+    }
+
+    /// 직업 이름. 표시 파일에 없으면 번호로.
+    pub(crate) fn class_name(&self, id: ClassId) -> String {
+        self.class_looks
+            .get(&id)
+            .map_or_else(|| format!("직업 #{}", id.0), |(n, _)| n.clone())
+    }
+
+    /// 직업의 단축키 스킬. 비어 있으면 액터 타입의 것을 쓴다.
+    pub(crate) fn class_skills(&self, id: ClassId) -> Option<&[SkillId]> {
+        self.class_skills.get(&id).map(Vec::as_slice)
+    }
+
+    /// 기본 스탯의 화면 이름 — 표시 파일에 없으면 규칙 이름 그대로.
+    pub(crate) fn stat_name<'a>(&'a self, key: &'a str) -> &'a str {
+        self.stat_names.get(key).map_or(key, String::as_str)
     }
 
     /// 마커가 실제로 쓸 액터 타입.
@@ -1071,6 +1209,7 @@ impl From<ItemFile> for ItemDef {
                 slot,
                 attack,
                 defense,
+                ..
             } => Self {
                 kind: SimItemKind::Equipment {
                     slot: slot.into(),
@@ -1088,6 +1227,7 @@ impl From<&UnitFile> for UnitDef {
     fn from(u: &UnitFile) -> Self {
         Self {
             actor: ActorType::default(),
+            class: None,
             move_speed: u.move_speed,
             max_hp: u.max_hp,
             max_mp: u.max_mp,
@@ -1386,7 +1526,7 @@ pub(crate) struct ItemForm {
     pub(crate) color: (f32, f32, f32),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ItemKindForm {
     Consumable {
         heal: u32,
@@ -1397,7 +1537,38 @@ pub(crate) enum ItemKindForm {
         slot: SlotChoice,
         attack: u32,
         defense: u32,
+        /// 기본 스탯 보너스·직업 제한 (R2) — 표 편집기가 고치지 않아도 저장할 때 그대로 다시 쓴다.
+        bonus: EquipBonusForm,
     },
+}
+
+/// 장비의 스탯 보너스·직업 제한 (R2).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct EquipBonusForm {
+    /// `(스탯 이름, 더하는 값)` — 이름 순.
+    pub(crate) stats: Vec<(String, i64)>,
+    /// 비우면 누구나.
+    pub(crate) classes: Vec<u32>,
+}
+
+impl EquipBonusForm {
+    /// 항목 줄에 붙일 꼬리 — 비어 있으면 아무것도 없다 (예전 항목이 바이트 그대로 남게).
+    fn file_tail(&self) -> String {
+        let mut tail = String::new();
+        if !self.stats.is_empty() {
+            let list: Vec<String> = self
+                .stats
+                .iter()
+                .map(|(k, v)| format!("\"{k}\": {v}"))
+                .collect();
+            tail.push_str(&format!(", stats: {{{}}}", list.join(", ")));
+        }
+        if !self.classes.is_empty() {
+            let list: Vec<String> = self.classes.iter().map(u32::to_string).collect();
+            tail.push_str(&format!(", classes: [{}]", list.join(", ")));
+        }
+        tail
+    }
 }
 
 /// 장착 자리 — 편집기 드롭다운용 (파일 형식 `SlotFile` 과 같은 다섯 가지, 서버 순서).
@@ -1467,14 +1638,14 @@ impl ItemForm {
 
     /// `rules.ron` 의 `items` 항목 — 손으로 쓴 것과 같은 한 줄.
     pub(crate) fn rules_entry(&self, id: u32) -> String {
-        match self.kind {
+        match &self.kind {
             ItemKindForm::Consumable {
                 heal,
                 mana,
                 max_stack,
             } => {
                 // MP 회복은 있을 때만 적는다 — 예전 항목이 바이트 그대로 남게.
-                let mana = if mana == 0 {
+                let mana = if *mana == 0 {
                     String::new()
                 } else {
                     format!("mana: {mana}, ")
@@ -1485,9 +1656,11 @@ impl ItemForm {
                 slot,
                 attack,
                 defense,
+                bonus,
             } => format!(
-                "{id}: Equipment(slot: {}, attack: {attack}, defense: {defense}),",
-                slot.file_name()
+                "{id}: Equipment(slot: {}, attack: {attack}, defense: {defense}{}),",
+                slot.file_name(),
+                bonus.file_tail()
             ),
         }
     }
@@ -1611,10 +1784,16 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
                     slot,
                     attack,
                     defense,
+                    ref stats,
+                    ref classes,
                 } => ItemKindForm::Equipment {
                     slot: slot.into(),
                     attack,
                     defense,
+                    bonus: EquipBonusForm {
+                        stats: stats.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+                        classes: classes.clone(),
+                    },
                 },
             };
             let look = d.items.get(id);
@@ -1887,6 +2066,27 @@ pub(crate) fn write_tables(root: &Path, rules: &str, display: &str) -> Result<()
     }
     std::fs::rename(&tmp_rules, &rules_path).map_err(|e| io(&rules_path, e))?;
     std::fs::rename(&tmp_display, &display_path).map_err(|e| io(&display_path, e))
+}
+
+/// 스탯 디자이너의 폼 (R2) — 두 파일의 `stats`·`classes` 블록에서.
+pub(crate) fn stat_form(rules: &str, display: &str) -> Result<class_file::StatForm, String> {
+    let r: RulesFile = ron::from_str(rules).map_err(|e| format!("{RULES_PATH}: {e}"))?;
+    let d: DisplayFile = ron::from_str(display).map_err(|e| format!("{DISPLAY_PATH}: {e}"))?;
+    let labels = d.stats.into_iter().map(|(k, l)| (k, l.name)).collect();
+    Ok(class_file::StatForm::from_blocks(
+        &r.stats, &r.classes, &d.classes, &labels,
+    ))
+}
+
+/// 폼을 두 파일에 써 넣고 **게임과 같은 검사**로 다시 읽어 본다 (R2). 통과해야 결과를 돌려준다.
+pub(crate) fn patch_stat_form(
+    rules: &str,
+    display: &str,
+    form: &class_file::StatForm,
+) -> Result<(String, String), String> {
+    let (rules, display) = form.patch(rules, display)?;
+    GameData::parse(&rules, &display)?;
+    Ok((rules, display))
 }
 
 /// 규칙·표시 파일의 지금 텍스트 — 디스크가 있으면 그것, 없으면 내장본 (읽기 규칙과 같다).
