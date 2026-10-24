@@ -49,6 +49,9 @@ pub enum ItemKind {
         attack: u32,
         defense: u32,
     },
+    /// 쓰면 `skill` 을 배운다 — 이미 배웠으면 한 레벨 올린다 (R3). 배울 수 없으면 거절되고 사라지지 않는다.
+    /// 소모품 가방에 들어간다. 드롭 표·상점에 실으면 그것이 곧 스킬을 얻는 경로가 된다.
+    SkillBook { skill: crate::combat::SkillId },
 }
 
 /// 아이템 정적 데이터.
@@ -63,7 +66,7 @@ impl ItemDef {
     #[must_use]
     pub fn bag(&self) -> BagKind {
         match self.kind {
-            ItemKind::Consumable { .. } => BagKind::Consumable,
+            ItemKind::Consumable { .. } | ItemKind::SkillBook { .. } => BagKind::Consumable,
             ItemKind::Equipment { .. } => BagKind::Equipment,
         }
     }
@@ -73,7 +76,7 @@ impl ItemDef {
     pub fn stack_limit(&self) -> u32 {
         match self.kind {
             ItemKind::Equipment { .. } => 1,
-            ItemKind::Consumable { .. } => self.max_stack.max(1),
+            ItemKind::Consumable { .. } | ItemKind::SkillBook { .. } => self.max_stack.max(1),
         }
     }
 }

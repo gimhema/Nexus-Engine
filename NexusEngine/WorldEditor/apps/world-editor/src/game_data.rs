@@ -30,12 +30,13 @@ use nexus_sim::{
     ActorType, AiKind, EquipSlot, FactionId, Growth, ItemDef, ItemId, ItemKind as SimItemKind,
     LootEntry, LootTableId, Relation, SimWorld, SkillDef, SkillId, TriggerDef, TriggerId, UnitDef,
 };
-use nexus_sim::{ClassDef, ClassId, EquipRules, StatRules};
+use nexus_sim::{ClassDef, ClassId, EquipRules, Formula, SkillRules, StatRules};
 use serde::Deserialize;
 
 use crate::class_file::{self, ClassFile, ClassLookFile, EquipRef, StatsFile};
 use crate::scene::{ActorId, ItemKind};
-use crate::trigger_file::{self, TriggerFile};
+use crate::skill_file::{self, NumOr, SkillLevelRef};
+use crate::trigger_file::{self, ConditionFile, TriggerFile};
 
 /// 지금 읽을 수 있는 형식 번호.
 const FORMAT_VERSION: u32 = 1;
@@ -107,6 +108,9 @@ struct RulesFile {
     /// 직업 (R2) — 새 게임에서 고른다.
     #[serde(default)]
     classes: BTreeMap<u32, ClassFile>,
+    /// 경험치 곡선 (R3) — 변수 `level`. 적지 않으면 서버와 같은 `level * level * 100`.
+    #[serde(default)]
+    exp_curve: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -168,21 +172,59 @@ enum RelationKindFile {
     Friendly,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SkillFile {
     range: f32,
-    cooldown_ms: u32,
+    /// 숫자 또는 수식 (R3 — 변수에 `skill_level`).
+    cooldown_ms: NumOr,
+    /// 피해 배율. `power`(천분율 수식)를 적으면 그것이 이긴다.
+    #[serde(default = "one_f32")]
     damage_mult: f32,
-    /// 쓸 때 드는 MP. 적지 않으면 0 — MP 를 보지 않는다.
+    /// 위력 천분율 수식 (R3) — `"1500 + skill_level * 100"` 이면 1.6배부터.
     #[serde(default)]
-    mp_cost: u32,
+    power: String,
+    /// 쓸 때 드는 MP. 적지 않으면 0 — MP 를 보지 않는다. 숫자 또는 수식.
+    #[serde(default)]
+    mp_cost: NumOr,
     /// 범위 반경 (m). 0 이면 대상 하나.
     #[serde(default)]
     radius: f32,
-    /// 회복량. 0 보다 크면 피해 대신 회복하는 스킬이다.
+    /// 회복량. 0 보다 크면 피해 대신 회복하는 스킬이다. 숫자 또는 수식.
     #[serde(default)]
-    heal: u32,
+    heal: NumOr,
+    /// 최대 레벨 (R3). 적지 않으면 1.
+    #[serde(default = "one_u32")]
+    max_level: u32,
+    /// 배울 수 있는 직업 (R3). 비우면 누구나.
+    #[serde(default)]
+    classes: Vec<u32>,
+    /// 습득 조건 (R3) — 트리거의 `when` 과 같은 형식. 적지 않으면 늘 참.
+    #[serde(default = "trigger_file::always")]
+    requires: ConditionFile,
+}
+
+fn one_f32() -> f32 {
+    1.0
+}
+
+fn one_u32() -> u32 {
+    1
+}
+
+impl SkillFile {
+    fn level_ref(&self, id: u32) -> SkillLevelRef<'_> {
+        SkillLevelRef {
+            id,
+            max_level: self.max_level,
+            classes: &self.classes,
+            requires: &self.requires,
+            power: &self.power,
+            cooldown_ms: &self.cooldown_ms,
+            mp_cost: &self.mp_cost,
+            heal: &self.heal,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -206,6 +248,12 @@ enum ItemFile {
         #[serde(default)]
         classes: Vec<u32>,
     },
+    /// 쓰면 `skill` 을 배운다 / 한 레벨 올린다 (R3). 소모품 가방에 들어간다.
+    SkillBook {
+        skill: u32,
+        #[serde(default = "one_u32")]
+        max_stack: u32,
+    },
 }
 
 impl RulesFile {
@@ -223,7 +271,7 @@ impl ItemFile {
                 stats,
                 classes,
             }),
-            Self::Consumable { .. } => None,
+            Self::Consumable { .. } | Self::SkillBook { .. } => None,
         }
     }
 }
@@ -467,6 +515,10 @@ pub(crate) struct GameData {
     stat_names: BTreeMap<String, String>,
     /// 장비의 스탯 보너스·직업 제한 — 둘 다 없는 장비는 빠진다.
     equip_rules: Vec<(ItemId, EquipRules)>,
+    /// 스킬 부착 규칙·레벨 수식 (R3) — 특별한 것이 없는 스킬은 빠진다.
+    skill_rules: Vec<(SkillId, SkillRules)>,
+    /// 경험치 곡선 (R3). `None` 이면 기본 곡선.
+    exp_curve: Option<Formula>,
 }
 
 impl GameData {
@@ -571,14 +623,16 @@ impl GameData {
                 if let Some(s) = r.skills.get(&skill) {
                     // 회복 스킬을 기본 공격으로 두면 AI 가 적에게 쓰려다 매번 거절된다.
                     check(
-                        s.heal == 0,
+                        s.heal.is_zero(),
                         format!("액터 {id}: 기본 공격 스킬 {skill} 이(가) 회복 스킬"),
                     );
+                    // MP 가 수식이면 레벨마다 달라 미리 볼 수 없다 — 숫자일 때만 본다.
+                    let mp = s.mp_cost.fixed().unwrap_or(0);
                     check(
-                        s.mp_cost <= u.max_mp || u.growth.max_mp > 0,
+                        mp <= u.max_mp || u.growth.max_mp > 0,
                         format!(
-                            "액터 {id}: 기본 공격 스킬 {skill} 의 MP {} 이(가) 최대 MP {} 보다 커서 쓸 수 없음",
-                            s.mp_cost, u.max_mp
+                            "액터 {id}: 기본 공격 스킬 {skill} 의 MP {mp} 이(가) 최대 MP {} 보다 커서 쓸 수 없음",
+                            u.max_mp
                         ),
                     );
                 }
@@ -594,15 +648,17 @@ impl GameData {
                         format!("액터 {id}: 단축키 {}: 없는 스킬 {skill}", i + 1),
                     ),
                     // 기본 공격과 같은 이유 — 영영 못 쓰는 칸은 저작 실수다.
-                    Some(s) => check(
-                        s.mp_cost <= u.max_mp || u.growth.max_mp > 0,
-                        format!(
-                            "액터 {id}: 단축키 {} 스킬 {skill} 의 MP {} 이(가) 최대 MP {} 보다 커서 쓸 수 없음",
-                            i + 1,
-                            s.mp_cost,
-                            u.max_mp
-                        ),
-                    ),
+                    Some(s) => {
+                        let mp = s.mp_cost.fixed().unwrap_or(0);
+                        check(
+                            mp <= u.max_mp || u.growth.max_mp > 0,
+                            format!(
+                                "액터 {id}: 단축키 {} 스킬 {skill} 의 MP {mp} 이(가) 최대 MP {} 보다 커서 쓸 수 없음",
+                                i + 1,
+                                u.max_mp
+                            ),
+                        );
+                    }
                 }
                 check(
                     !u.skills[..i].contains(skill),
@@ -662,7 +718,9 @@ impl GameData {
             format!("player_attack: 없는 스킬 {}", r.player_attack),
         );
         check(
-            r.skills.get(&r.player_attack).is_none_or(|s| s.heal == 0),
+            r.skills
+                .get(&r.player_attack)
+                .is_none_or(|s| s.heal.is_zero()),
             format!(
                 "player_attack: 스킬 {} 이(가) 회복 스킬 — 클릭 공격에 쓸 수 없음",
                 r.player_attack
@@ -745,7 +803,40 @@ impl GameData {
             &r.triggers,
             |i| r.items.contains_key(&i),
             |a| r.actors.contains_key(&a),
+            |s| r.skills.contains_key(&s),
         ));
+        // 스킬의 R3 칸 — 레벨 수식·부착 규칙.
+        let stat_names: Vec<String> = r
+            .stats_block()
+            .map(|s| s.names().to_vec())
+            .unwrap_or_default();
+        let item_exists = |i: u32| r.items.contains_key(&i);
+        let actor_exists = |a: u32| r.actors.contains_key(&a);
+        let skill_exists = |s: u32| r.skills.contains_key(&s);
+        for (id, s) in &r.skills {
+            errors.extend(skill_file::validate(
+                &s.level_ref(*id),
+                &stat_names,
+                |c| r.classes.contains_key(&c),
+                &item_exists,
+                &actor_exists,
+                &skill_exists,
+            ));
+        }
+        for (id, item) in &r.items {
+            if let ItemFile::SkillBook { skill, .. } = item
+                && !r.skills.contains_key(skill)
+            {
+                errors.push(format!("아이템 {id}: 스킬북이 없는 스킬 {skill} 을 가리킴"));
+            }
+        }
+        let exp_curve = match skill_file::exp_curve(&r.exp_curve) {
+            Ok(curve) => curve,
+            Err(e) => {
+                errors.push(e);
+                None
+            }
+        };
         if !errors.is_empty() {
             return Err(format!("게임 데이터 오류 — {}", errors.join(" / ")));
         }
@@ -764,13 +855,15 @@ impl GameData {
                 .map(|(id, s)| {
                     (
                         SkillId(*id),
+                        // 수식 칸의 숫자 값은 자리만 채운다 — 쓸 때 `effective_skill` 이 수식으로 덮는다.
+                        // 회복 수식이면 1 로 두어 "회복 스킬" 로 분류되게 한다.
                         SkillDef {
                             range: s.range,
-                            cooldown_ms: s.cooldown_ms,
+                            cooldown_ms: s.cooldown_ms.base(0),
                             damage_mult: s.damage_mult,
-                            mp_cost: s.mp_cost,
+                            mp_cost: s.mp_cost.base(0),
                             radius: s.radius,
-                            heal: s.heal,
+                            heal: s.heal.base(1),
                         },
                     )
                 })
@@ -902,6 +995,17 @@ impl GameData {
                 .iter()
                 .map(|(k, l)| (k.clone(), l.name.clone()))
                 .collect(),
+            skill_rules: r
+                .skills
+                .iter()
+                .filter_map(|(id, s)| {
+                    Some((
+                        SkillId(*id),
+                        skill_file::rules(&s.level_ref(*id), &stat_names)?,
+                    ))
+                })
+                .collect(),
+            exp_curve,
             equip_rules: equipment
                 .iter()
                 .filter(|e| !e.stats.is_empty() || !e.classes.is_empty())
@@ -974,6 +1078,12 @@ impl GameData {
         }
         for (id, rules) in &self.equip_rules {
             world.define_equip_rules(*id, rules.clone());
+        }
+        for (id, rules) in &self.skill_rules {
+            world.define_skill_rules(*id, rules.clone());
+        }
+        if let Some(curve) = &self.exp_curve {
+            world.set_exp_curve(curve.clone());
         }
     }
 
@@ -1217,6 +1327,12 @@ impl From<ItemFile> for ItemDef {
                     defense,
                 },
                 max_stack: 1,
+            },
+            ItemFile::SkillBook { skill, max_stack } => Self {
+                kind: SimItemKind::SkillBook {
+                    skill: SkillId(skill),
+                },
+                max_stack,
             },
         }
     }
@@ -1540,6 +1656,8 @@ pub(crate) enum ItemKindForm {
         /// 기본 스탯 보너스·직업 제한 (R2) — 표 편집기가 고치지 않아도 저장할 때 그대로 다시 쓴다.
         bonus: EquipBonusForm,
     },
+    /// 스킬북 (R3) — 쓰면 그 스킬을 배운다 / 한 레벨 올린다.
+    SkillBook { skill: u32, max_stack: u32 },
 }
 
 /// 장비의 스탯 보너스·직업 제한 (R2).
@@ -1662,6 +1780,9 @@ impl ItemForm {
                 slot.file_name(),
                 bonus.file_tail()
             ),
+            ItemKindForm::SkillBook { skill, max_stack } => {
+                format!("{id}: SkillBook(skill: {skill}, max_stack: {max_stack}),")
+            }
         }
     }
 
@@ -1685,6 +1806,35 @@ pub(crate) struct SkillForm {
     pub(crate) radius: f32,
     pub(crate) heal: u32,
     pub(crate) name: String,
+    /// 레벨·부착 규칙 (R3) — 고치지 않아도 저장할 때 그대로 다시 쓴다.
+    pub(crate) level: SkillLevelForm,
+}
+
+/// 스킬의 R3 칸. **수식 칸이 비어 있지 않으면 같은 이름의 숫자 칸보다 이긴다.**
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SkillLevelForm {
+    pub(crate) max_level: u32,
+    pub(crate) classes: Vec<u32>,
+    /// 습득 조건 — RON 텍스트(`Level(cmp: Ge, value: 3)`). 비우면 늘 참.
+    pub(crate) requires: String,
+    pub(crate) power: String,
+    pub(crate) cooldown: String,
+    pub(crate) mp_cost: String,
+    pub(crate) heal: String,
+}
+
+impl Default for SkillLevelForm {
+    fn default() -> Self {
+        Self {
+            max_level: 1,
+            classes: Vec::new(),
+            requires: String::new(),
+            power: String::new(),
+            cooldown: String::new(),
+            mp_cost: String::new(),
+            heal: String::new(),
+        }
+    }
 }
 
 impl SkillForm {
@@ -1697,27 +1847,51 @@ impl SkillForm {
             radius: 0.0,
             heal: 0,
             name: name.to_owned(),
+            level: SkillLevelForm::default(),
         }
     }
 
     pub(crate) fn rules_entry(&self, id: u32) -> String {
+        let q = crate::ron_patch::quote;
+        let l = &self.level;
+        let set = |s: &str| !s.trim().is_empty();
+        // 숫자 칸 또는 그 칸의 수식.
+        let num_or = |n: u32, f: &str| if set(f) { q(f.trim()) } else { n.to_string() };
         // MP 비용은 있을 때만 적는다 — 예전 항목이 바이트 그대로 남게.
-        let mp = if self.mp_cost == 0 {
+        let mp = if self.mp_cost == 0 && !set(&l.mp_cost) {
             String::new()
         } else {
-            format!(", mp_cost: {}", self.mp_cost)
+            format!(", mp_cost: {}", num_or(self.mp_cost, &l.mp_cost))
         };
         // 범위·회복도 있을 때만.
         let mut extra = String::new();
         if self.radius > 0.0 {
             extra.push_str(&format!(", radius: {:?}", self.radius));
         }
-        if self.heal > 0 {
-            extra.push_str(&format!(", heal: {}", self.heal));
+        if self.heal > 0 || set(&l.heal) {
+            extra.push_str(&format!(", heal: {}", num_or(self.heal, &l.heal)));
         }
+        // R3 칸 — 기본값이면 적지 않는다.
+        if l.max_level > 1 {
+            extra.push_str(&format!(", max_level: {}", l.max_level));
+        }
+        if !l.classes.is_empty() {
+            let list: Vec<String> = l.classes.iter().map(u32::to_string).collect();
+            extra.push_str(&format!(", classes: [{}]", list.join(", ")));
+        }
+        if set(&l.requires) {
+            extra.push_str(&format!(", requires: {}", l.requires.trim()));
+        }
+        // 위력 수식이 있으면 배율 대신 그것을 적는다.
+        let power = if set(&l.power) {
+            format!("power: {}", q(l.power.trim()))
+        } else {
+            format!("damage_mult: {:?}", self.damage_mult)
+        };
         format!(
-            "{id}: (range: {:?}, cooldown_ms: {}, damage_mult: {:?}{mp}{extra}),",
-            self.range, self.cooldown_ms, self.damage_mult
+            "{id}: (range: {:?}, cooldown_ms: {}, {power}{mp}{extra}),",
+            self.range,
+            num_or(self.cooldown_ms, &l.cooldown)
         )
     }
 
@@ -1795,6 +1969,9 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
                         classes: classes.clone(),
                     },
                 },
+                ItemFile::SkillBook { skill, max_stack } => {
+                    ItemKindForm::SkillBook { skill, max_stack }
+                }
             };
             let look = d.items.get(id);
             (
@@ -1815,12 +1992,25 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
                 *id,
                 SkillForm {
                     range: s.range,
-                    cooldown_ms: s.cooldown_ms,
+                    cooldown_ms: s.cooldown_ms.base(0),
                     damage_mult: s.damage_mult,
-                    mp_cost: s.mp_cost,
+                    mp_cost: s.mp_cost.base(0),
                     radius: s.radius,
-                    heal: s.heal,
+                    heal: s.heal.base(0),
                     name: d.skills.get(id).map(|l| l.name.clone()).unwrap_or_default(),
+                    level: SkillLevelForm {
+                        max_level: s.max_level,
+                        classes: s.classes.clone(),
+                        requires: if s.requires == ConditionFile::Always {
+                            String::new()
+                        } else {
+                            ron::to_string(&s.requires).unwrap_or_default()
+                        },
+                        power: s.power.clone(),
+                        cooldown: s.cooldown_ms.formula().unwrap_or("").to_owned(),
+                        mp_cost: s.mp_cost.formula().unwrap_or("").to_owned(),
+                        heal: s.heal.formula().unwrap_or("").to_owned(),
+                    },
                 },
             )
         })
@@ -2030,6 +2220,41 @@ pub(crate) fn triggers_using(
         .collect())
 }
 
+/// 스킬 `skill` 을 쓰는 곳 (R3) — 지우기 전에 사람이 읽을 이유로. 액터·플레이어 공격은 부르는 쪽이 따로 본다.
+pub(crate) fn skill_users(rules: &str, skill: u32) -> Result<Vec<String>, String> {
+    let r: RulesFile = ron::from_str(rules).map_err(|e| format!("{RULES_PATH}: {e}"))?;
+    let mut out = Vec::new();
+    for (id, c) in &r.classes {
+        if c.skills.contains(&skill) {
+            out.push(format!("직업 #{id} 시작 스킬"));
+        }
+    }
+    for (id, item) in &r.items {
+        if matches!(item, ItemFile::SkillBook { skill: s, .. } if *s == skill) {
+            out.push(format!("스킬북 아이템 #{id}"));
+        }
+    }
+    for (id, s) in &r.skills {
+        if *id != skill
+            && trigger_file::condition_refs_of(&s.requires)
+                .skills
+                .contains(&skill)
+        {
+            out.push(format!("스킬 #{id} 의 습득 조건"));
+        }
+    }
+    let triggers: Vec<String> = r
+        .triggers
+        .iter()
+        .filter(|(_, t)| trigger_file::refs(t).skills.contains(&skill))
+        .map(|(id, _)| format!("#{id}"))
+        .collect();
+    if !triggers.is_empty() {
+        out.push(format!("트리거 {}", triggers.join(", ")));
+    }
+    Ok(out)
+}
+
 /// 진영 이름 표 — `display.ron` 의 `factions` (P19). 블록이 없으면 빈 표.
 pub(crate) fn faction_names(display: &str) -> Result<BTreeMap<u32, String>, String> {
     let d: DisplayFile = ron::from_str(display).map_err(|e| format!("{DISPLAY_PATH}: {e}"))?;
@@ -2231,12 +2456,12 @@ mod tests {
         let rules = EMBEDDED_RULES
             .replacen("basic_attack: Some(2)", "basic_attack: Some(77)", 1)
             .replacen("(item: 909, count: 1", "(item: 4040, count: 1", 1)
-            .replacen("player_attack: 1", "player_attack: 9", 1);
+            .replacen("player_attack: 1", "player_attack: 99", 1);
         let err = GameData::parse(&rules, EMBEDDED_DISPLAY).unwrap_err();
         for expected in [
             "없는 스킬 77",
             "없는 아이템 4040",
-            "player_attack: 없는 스킬 9",
+            "player_attack: 없는 스킬 99",
         ] {
             assert!(err.contains(expected), "'{expected}' 기대, 실제: {err}");
         }
@@ -2302,7 +2527,9 @@ mod tests {
             .unwrap()
             .1;
         assert_eq!((whirl.radius, whirl.heal), (2.5, 0));
-        assert!(mend.is_heal() && mend.heal == 60);
+        // 치유는 회복량이 수식이다 (R3) — 정의의 숫자는 "회복 스킬" 로 분류되게 하는 자리 값이고,
+        // 실제 양은 쓸 때 수식으로 계산한다 (`play::tests::skill_formulas_scale_with_level_and_stats`).
+        assert!(mend.is_heal());
 
         let wide = EMBEDDED_RULES.replacen("radius: 2.5", "radius: 99.0", 1);
         let err = GameData::parse(&wide, EMBEDDED_DISPLAY).unwrap_err();

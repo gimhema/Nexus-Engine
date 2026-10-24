@@ -27,6 +27,7 @@
 //! savegame | deletesave       진행 상황 저장 / 저장 데이터 삭제 (P3)
 //! items | panels              HUD 인벤토리 창 / 에디터 패널 숨기기 (P5)
 //! skill 번호                  단축키 스킬 (숫자키 1~9 와 같다, 플레이 중)
+//! hotbar 칸 스킬번호          단축키 배치 (R3, 칸 0 = 그 스킬 빼기) — 스킬 창의 칸 고르기와 같다
 //! uiedit | uiscreen 번호      위젯 편집기 열고 닫기 / 편집할 화면 바꾸기 (P7)
 //! uipick 이름 | uidrag dx dy  위젯 고르기 / 고른 위젯 옮기기
 //! uisave                      화면 파일(ui/<번호>.ui.ron) 저장
@@ -122,6 +123,11 @@ pub(crate) enum Step {
     ToggleItems,
     /// 단축키 스킬 (숫자키) — 1부터.
     Skill(usize),
+    /// 단축키 배치 (R3) — `key` 1~9 칸에 `skill` 을 놓는다. `key` 가 0 이면 그 스킬을 뺀다.
+    Hotbar {
+        key: usize,
+        skill: u32,
+    },
     /// 에디터 패널 숨기기 (F9).
     TogglePanels,
     /// 그림 다시 읽기 (보기 메뉴).
@@ -288,6 +294,16 @@ fn parse_step(text: &str) -> Result<Step, String> {
                 .filter(|n| (1..=9).contains(n))
                 .ok_or_else(|| format!("'{text}': skill 1~9"))?;
             return Ok(Step::Skill(n));
+        }
+        "hotbar" => {
+            let num = |i: usize| words.get(i).and_then(|w| w.parse::<usize>().ok());
+            let (Some(key), Some(skill)) = (num(1).filter(|k| *k <= 9), num(2)) else {
+                return Err(format!("'{text}': hotbar 칸(0~9) 스킬번호"));
+            };
+            return Ok(Step::Hotbar {
+                key,
+                skill: u32::try_from(skill).unwrap_or(u32::MAX),
+            });
         }
         "panels" => return Ok(Step::TogglePanels),
         "reloadart" => return Ok(Step::ReloadArt),

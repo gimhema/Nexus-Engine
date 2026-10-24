@@ -1,12 +1,16 @@
 //! 레벨과 경험치 (단계 2 P3).
 //!
-//! 서버 `CharacterEntityData` 와 같은 의미다 — 필요 경험치는 **`level² × 100`**,
-//! 한 번에 여러 레벨이 오를 수 있다.
+//! 서버 `CharacterEntityData` 와 같은 의미다 — 필요 경험치는 기본 **`level² × 100`** 이고,
+//! 한 번에 여러 레벨이 오를 수 있다. 곡선은 데이터로 바꿀 수 있다 (R3, `SimWorld::set_exp_curve`) —
+//! 그래서 [`Progress`] 는 지금 레벨의 필요 경험치를 **스스로 들고 다닌다**(`next`).
 //!
 //! 레벨이 오르면 **성장치**(`UnitDef::growth`)만큼 최대 HP·MP·공격·방어가 늘어난다. 수치는 코드가
 //! 아니라 데이터다 — 성장치를 적지 않은 액터(대부분의 몬스터)는 레벨이 올라도 수치가 그대로다.
 
-/// 레벨 하나를 더 올리는 데 필요한 경험치. 서버와 같은 공식.
+/// 한 번에 올릴 수 있는 레벨 수 상한 — 곡선이 1 같은 작은 값이어도 경험치 더하기가 멈추게.
+const MAX_LEVELS_PER_GAIN: u32 = 10_000;
+
+/// 레벨 하나를 더 올리는 데 필요한 경험치 — **기본 곡선**. 서버와 같은 공식.
 #[must_use]
 pub fn exp_to_next(level: u32) -> u32 {
     level.saturating_mul(level).saturating_mul(100)
@@ -25,13 +29,15 @@ pub struct Growth {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Progress {
     level: u32,
-    /// 지금 레벨에서 모은 경험치 (다음 레벨까지 남은 양은 `exp_to_next(level) - exp`).
+    /// 지금 레벨에서 모은 경험치 (다음 레벨까지 남은 양은 `next - exp`).
     exp: u32,
+    /// 지금 레벨에서 다음 레벨까지 필요한 경험치 (1 이상) — 곡선이 정한다.
+    next: u32,
 }
 
 impl Default for Progress {
     fn default() -> Self {
-        Self { level: 1, exp: 0 }
+        Self::new(1, 0)
     }
 }
 
@@ -39,10 +45,18 @@ impl Progress {
     /// 저장 파일에서 되살릴 때. 레벨 0 은 1 로 보정하고, 남은 경험치는 레벨 구간 안으로 자른다.
     #[must_use]
     pub fn new(level: u32, exp: u32) -> Self {
+        Self::with_curve(level, exp, exp_to_next)
+    }
+
+    /// 곡선을 정해 만든다 — 월드가 데이터 곡선으로 다시 맞출 때 쓴다. 곡선이 0 을 내면 1 로 본다.
+    #[must_use]
+    pub fn with_curve(level: u32, exp: u32, curve: impl Fn(u32) -> u32) -> Self {
         let level = level.max(1);
+        let next = curve(level).max(1);
         Self {
             level,
-            exp: exp.min(exp_to_next(level).saturating_sub(1)),
+            exp: exp.min(next - 1),
+            next,
         }
     }
 
@@ -59,7 +73,7 @@ impl Progress {
     /// 다음 레벨까지 필요한 경험치.
     #[must_use]
     pub fn exp_to_next(self) -> u32 {
-        exp_to_next(self.level)
+        self.next
     }
 
     /// 지금 레벨에서 모은 경험치의 `per_mille`(천분율)을 잃는다 — 사망 패널티. **레벨은 내려가지 않는다**
@@ -71,13 +85,19 @@ impl Progress {
         lost
     }
 
-    /// 경험치를 더한다. **오른 레벨 수**를 돌려준다 (0 이면 그대로).
+    /// 경험치를 더한다 (기본 곡선). **오른 레벨 수**를 돌려준다 (0 이면 그대로).
     pub fn add(&mut self, amount: u32) -> u32 {
+        self.add_with(amount, exp_to_next)
+    }
+
+    /// 경험치를 더한다 — 다음 레벨들의 필요 경험치는 `curve` 로 잰다.
+    pub fn add_with(&mut self, amount: u32, curve: impl Fn(u32) -> u32) -> u32 {
         self.exp = self.exp.saturating_add(amount);
         let mut gained = 0;
-        while self.exp >= self.exp_to_next() {
-            self.exp -= self.exp_to_next();
+        while self.exp >= self.next && gained < MAX_LEVELS_PER_GAIN {
+            self.exp -= self.next;
             self.level += 1;
+            self.next = curve(self.level).max(1);
             gained += 1;
         }
         gained

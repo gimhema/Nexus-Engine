@@ -60,6 +60,9 @@ const PROTECT_BLINK_MS: u128 = 100;
 /// 깜빡임 길이 (tick). 3 tick = 150ms.
 const HIT_FLASH_TICKS: u8 = 3;
 
+/// 단축키 칸 수 — 숫자키 1~9 (R3).
+pub(crate) const HOTBAR_SLOTS: usize = 9;
+
 /// 플레이어가 클릭으로 내린 주문. 매 tick 이것을 보고 Intent 를 낸다.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Order {
@@ -107,6 +110,19 @@ pub(crate) struct PlayOptions {
     pub(crate) class: Option<ClassId>,
 }
 
+/// 스킬 창 한 줄 (R3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SkillLine {
+    pub(crate) skill: SkillId,
+    pub(crate) name: String,
+    pub(crate) level: u32,
+    pub(crate) max_level: u32,
+    /// 지금 레벨의 MP.
+    pub(crate) mp_cost: u32,
+    /// 놓인 단축키 칸 (0부터). 없으면 `None`.
+    pub(crate) slot: Option<usize>,
+}
+
 /// 진행 중인 플레이 한 판.
 #[derive(Debug)]
 pub(crate) struct PlaySession {
@@ -119,7 +135,9 @@ pub(crate) struct PlaySession {
     hit_flash: HashMap<Entity, u8>,
     order: Order,
     /// 단축키 스킬 — 조작하는 액터 타입의 `skills`. 1번 키가 맨 앞.
-    hotbar: Vec<SkillId>,
+    /// 단축키 칸 — [`HOTBAR_SLOTS`] 칸, 빈 칸은 `None` (R3). **플레이어가 직접 배치한다** — 새로 배운
+    /// 스킬은 저절로 들어가지 않는다. 처음에는 시작 스킬을 차례로 넣어 둔다.
+    hotbar: Vec<Option<SkillId>>,
     /// 플레이어가 기본 부활할 시각 (시뮬레이션 시계). 쓰러져 있는 동안만 있다.
     revive_at: Option<Duration>,
     /// 조작하는 액터의 스크립트가 `on_dead` 를 정의했다 — 부활은 스크립트가 맡고 기본 부활은 하지 않는다.
@@ -238,8 +256,8 @@ impl PlaySession {
             }
         }
         let player = player.ok_or("플레이어 스폰이 없어 플레이할 수 없습니다")?;
-        // 단축키 — 직업이 정했으면 그것, 아니면 액터 타입의 것.
-        let hotbar = player_class
+        // 시작 스킬 — 직업이 정했으면 그것, 아니면 액터 타입의 것 (R3).
+        let starting: Vec<SkillId> = player_class
             .and_then(|c| data.class_skills(c))
             .map(<[SkillId]>::to_vec)
             .or_else(|| {
@@ -248,6 +266,26 @@ impl PlaySession {
                     .map(|l: &Label| data.actor_skills(l.actor).to_vec())
             })
             .unwrap_or_default();
+        // 배운 스킬 — 이어 하기면 저장한 것, 아니면(새 게임·스킬이 생기기 전의 저장) 시작 스킬 1레벨.
+        let saved_skills = options.save.as_ref().and_then(|s| s.skills.as_ref());
+        match saved_skills {
+            Some(list) => {
+                for &(skill, level) in list {
+                    world.set_skill_level(player, skill, level);
+                }
+            }
+            None => {
+                for &skill in &starting {
+                    world.set_skill_level(player, skill, 1);
+                }
+            }
+        }
+        // 단축키 — 저장한 배치가 있으면 그것, 아니면 시작 스킬을 차례로.
+        let mut hotbar = match options.save.as_ref().and_then(|s| s.hotbar.as_ref()) {
+            Some(saved) => saved.clone(),
+            None => starting.iter().map(|s| Some(*s)).collect(),
+        };
+        hotbar.resize(HOTBAR_SLOTS, None);
         let scripted_revive = labels
             .get(&player)
             .is_some_and(|l: &Label| data.scripted_revive(l.actor));
@@ -325,6 +363,50 @@ impl PlaySession {
             .collect()
     }
 
+    /// 플레이어가 배운 스킬 — 스킬 창용 (R3). 직업이 없는 게임이면 단축키에 있는 스킬을 1레벨로 보인다.
+    pub(crate) fn skill_lines(&self) -> Vec<SkillLine> {
+        let world = self.world();
+        let Some(u) = world.unit(self.player) else {
+            return Vec::new();
+        };
+        let mut learned: Vec<(SkillId, u32)> = u.learned_skills().collect();
+        if u.def().class.is_none() && learned.is_empty() {
+            learned = self.hotbar.iter().flatten().map(|s| (*s, 1)).collect();
+        }
+        learned
+            .into_iter()
+            .map(|(skill, level)| {
+                let def = world.effective_skill(self.player, skill);
+                SkillLine {
+                    skill,
+                    name: self.data.skill_name(skill),
+                    level,
+                    max_level: world.skill_max_level(skill),
+                    mp_cost: def.map_or(0, |d| d.mp_cost),
+                    slot: self.hotbar.iter().position(|s| *s == Some(skill)),
+                }
+            })
+            .collect()
+    }
+
+    /// 단축키 배치 (R3) — `slot`(0부터) 에 `skill` 을 놓는다. 다른 칸에 있던 같은 스킬은 빠지고,
+    /// 그 칸에 있던 스킬은 밀려난다. `slot` 이 `None` 이면 단축키에서 뺀다.
+    pub(crate) fn assign_hotbar(&mut self, skill: SkillId, slot: Option<usize>) {
+        for s in &mut self.hotbar {
+            if *s == Some(skill) {
+                *s = None;
+            }
+        }
+        if let Some(i) = slot.filter(|i| *i < HOTBAR_SLOTS) {
+            self.hotbar[i] = Some(skill);
+            self.note(format!(
+                "단축키 {} ← {}",
+                i + 1,
+                self.data.skill_name(skill)
+            ));
+        }
+    }
+
     /// 유닛 이름. 모르면 `"?"`.
     pub(crate) fn name(&self, unit: Entity) -> &str {
         self.labels.get(&unit).map_or("?", |l| l.name.as_str())
@@ -362,6 +444,8 @@ impl PlaySession {
                 .filter_map(|slot| inventory?.equipped(slot))
                 .collect(),
             class: u.and_then(|u| u.def().class),
+            skills: Some(u.map(|u| u.learned_skills().collect()).unwrap_or_default()),
+            hotbar: Some(self.hotbar.clone()),
             flags: u.map(|u| u.flags().iter().collect()).unwrap_or_default(),
             world_flags: self.world().world_flags().iter().collect(),
         }
@@ -440,15 +524,30 @@ impl PlaySession {
         let world = self.world();
         let me = world.unit(self.player);
         let now = world.now();
-        self.hotbar
+        // 마지막으로 채운 칸까지만 그린다 — 빈 칸은 흐리게.
+        let shown = self
+            .hotbar
+            .iter()
+            .rposition(Option::is_some)
+            .map_or(0, |i| i + 1);
+        self.hotbar[..shown]
             .iter()
             .enumerate()
-            .map(|(i, &skill)| {
-                let def = world.skill(skill);
+            .map(|(i, slot)| {
+                let key = u8::try_from(i + 1).unwrap_or(u8::MAX);
+                let Some(skill) = *slot else {
+                    return crate::screen::SkillSlot {
+                        key,
+                        cooldown: 0.0,
+                        usable: false,
+                    };
+                };
+                // 레벨 수식이 반영된 값 (R3) — MP·쿨타임이 레벨마다 다르다.
+                let def = world.effective_skill(self.player, skill);
                 let total = def.map_or(0.0, |d| d.cooldown().as_secs_f32());
                 let left = me.map_or(0.0, |u| u.cooldown_left(skill, now).as_secs_f32());
                 crate::screen::SkillSlot {
-                    key: u8::try_from(i + 1).unwrap_or(u8::MAX),
+                    key,
                     cooldown: if total > 0.0 { left / total } else { 0.0 },
                     usable: me
                         .is_some_and(|u| u.is_alive() && def.is_some_and(|d| u.has_mp(d.mp_cost))),
@@ -487,9 +586,9 @@ impl PlaySession {
     }
 
     fn plan_skill(&self, key: usize) -> Result<(Entity, SkillId), String> {
-        let skill = *key
+        let skill = key
             .checked_sub(1)
-            .and_then(|i| self.hotbar.get(i))
+            .and_then(|i| self.hotbar.get(i).copied().flatten())
             .ok_or_else(|| format!("단축키 {key} 에 스킬이 없습니다"))?;
         let name = self.data.skill_name(skill);
         let world = self.auth.world();
@@ -497,9 +596,16 @@ impl PlaySession {
             .unit(self.player)
             .filter(|u| u.is_alive())
             .ok_or_else(|| String::from("쓰러진 상태입니다"))?;
+        // 레벨 수식이 반영된 값 (R3).
         let def = world
-            .skill(skill)
+            .effective_skill(self.player, skill)
             .ok_or_else(|| format!("{name}: 모르는 스킬입니다"))?;
+        if me.def().class.is_some()
+            && me.def().basic_attack != Some(skill)
+            && me.skill_level(skill) == 0
+        {
+            return Err(format!("{name}: 배우지 않은 스킬입니다"));
+        }
         let now = world.now();
         if !me.is_ready(skill, now) {
             return Err(format!(
@@ -579,6 +685,16 @@ impl PlaySession {
         let events = self.auth.tick(dt);
         let cues = AnimCue::collect(&events);
         for event in events {
+            // 잊은 스킬은 단축키에서도 뺀다 (R3).
+            if let Event::SkillForgotten { unit, skill } = event
+                && unit == self.player
+            {
+                for slot in &mut self.hotbar {
+                    if *slot == Some(skill) {
+                        *slot = None;
+                    }
+                }
+            }
             self.on_event(event);
         }
         // 깜빡임은 tick 으로 센다 — 렌더 프레임으로 세면 fps 에 따라 길이가 달라진다.
@@ -812,6 +928,20 @@ impl PlaySession {
             ),
             Event::LeveledUp { unit, level, .. } if unit == self.player => {
                 format!("레벨 {level} 달성 — HP 가 가득 찼다")
+            }
+            Event::SkillLearned { unit, skill, level } if unit == self.player => {
+                let max = self.world().skill_max_level(skill);
+                if level == 1 {
+                    format!(
+                        "스킬을 배웠다: {} — 스킬 목록에서 단축키에 놓으세요",
+                        self.data.skill_name(skill)
+                    )
+                } else {
+                    format!("{} 레벨 {level}/{max}", self.data.skill_name(skill))
+                }
+            }
+            Event::SkillForgotten { unit, skill } if unit == self.player => {
+                format!("스킬을 잊었다: {}", self.data.skill_name(skill))
             }
             // 플레이어는 이름 없이 (포션·회복 스킬), 다른 유닛은 이름을 붙인다 (범위 회복).
             Event::Healed {
@@ -1259,6 +1389,9 @@ mod text {
             Rejection::NotUsable => "쓸 수 없는 아이템입니다",
             Rejection::NotDead => "쓰러진 상태가 아닙니다",
             Rejection::ClassRestricted => "이 직업은 쓸 수 없는 장비입니다",
+            Rejection::SkillNotLearned => "배우지 않은 스킬입니다",
+            Rejection::SkillMaxed => "이미 최대 레벨인 스킬입니다",
+            Rejection::SkillRequirement => "배울 수 없는 스킬입니다 (직업·조건)",
         }
     }
 }
@@ -1651,10 +1784,16 @@ mod tests {
     fn the_hotbar_comes_from_the_controlled_actor() {
         let s = session();
         assert_eq!(
-            s.hotbar,
-            [SkillId(5), SkillId(6), SkillId(7), SkillId(8)],
-            "rules.ron: actors.1.skills"
+            s.hotbar[..4],
+            [
+                Some(SkillId(5)),
+                Some(SkillId(6)),
+                Some(SkillId(7)),
+                Some(SkillId(8))
+            ],
+            "rules.ron: classes.1.skills (시작 스킬이 처음 단축키에 차례로)"
         );
+        assert_eq!(s.hotbar.len(), HOTBAR_SLOTS);
         let slots = s.skill_slots();
         assert_eq!(slots.len(), 4);
         assert!(slots.iter().all(|x| x.usable && x.cooldown == 0.0));
@@ -2260,7 +2399,11 @@ mod tests {
             (u.max_hp(), u.max_mp(), u.mp_regen(), u.attack()),
             (140, 164, 6, 10)
         );
-        assert_eq!(s.hotbar, [SkillId(8), SkillId(6)], "직업의 단축키");
+        assert_eq!(
+            s.hotbar[..3],
+            [Some(SkillId(8)), Some(SkillId(6)), None],
+            "직업의 시작 스킬"
+        );
         s.inventory(InventoryAction::Equip(0));
         s.tick(DT, None);
         assert!(
@@ -2283,5 +2426,142 @@ mod tests {
             ..save
         };
         assert_eq!(new_game(None, Some(gone)).class_name(), "전사");
+    }
+
+    // ── 스킬 (R3) ────────────────────────────────────────────────────────────
+
+    fn give(s: &mut PlaySession, item: u32, count: u32) -> u16 {
+        let me = s.player();
+        assert!(s.auth.world_mut().give_item(me, ItemId(item), count));
+        let bag = s
+            .world()
+            .unit(me)
+            .unwrap()
+            .inventory()
+            .bag(BagKind::Consumable);
+        bag.iter()
+            .find(|(_, st)| st.item == ItemId(item))
+            .unwrap()
+            .0 as u16
+    }
+
+    #[test]
+    fn skill_formulas_scale_with_level_and_stats() {
+        // 치유 = 40 + int × 2 + skill_level × 10 — 전사(int 5) 60, 마법사(int 12) 74.
+        let warrior = new_game(Some(ClassId(1)), None);
+        let w = warrior.world();
+        assert_eq!(
+            w.effective_skill(warrior.player(), SkillId(8))
+                .unwrap()
+                .heal,
+            60
+        );
+        let mage = new_game(Some(ClassId(2)), None);
+        assert_eq!(
+            mage.world()
+                .effective_skill(mage.player(), SkillId(8))
+                .unwrap()
+                .heal,
+            74
+        );
+
+        // 강베기 비급으로 2레벨 → 위력 1.9배, MP 17.
+        let mut s = new_game(Some(ClassId(1)), None);
+        let me = s.player();
+        let before = s.world().effective_skill(me, SkillId(5)).unwrap();
+        assert_eq!((before.damage_mult, before.mp_cost), (1.8, 15));
+        let slot = give(&mut s, 3001, 1);
+        s.inventory(InventoryAction::Use(slot));
+        s.tick(DT, None);
+        assert_eq!(s.world().unit(me).unwrap().skill_level(SkillId(5)), 2);
+        let after = s.world().effective_skill(me, SkillId(5)).unwrap();
+        assert_eq!((after.damage_mult, after.mp_cost), (1.9, 17));
+        assert!(s.log().any(|l| l == "강베기 레벨 2/5"), "{:?}", s.log);
+    }
+
+    #[test]
+    fn a_mage_gets_fireball_at_level_3_and_places_it_by_hand() {
+        let mut s = new_game(Some(ClassId(2)), None);
+        let me = s.player();
+        let fireball = SkillId(9);
+        // 레벨 2, 다음 레벨까지 1 남김 (exp_curve: 레벨 2 → 3 은 400) — 경험치 1 짜리를 쓰러뜨리면 레벨 3.
+        assert_eq!(s.world().exp_needed(2), 400);
+        s.auth.world_mut().set_progress(me, Progress::new(2, 399));
+        let near = s.world().unit(me).unwrap().pos() + Vec2::new(1.0, 0.0);
+        let dummy = s.auth.world_mut().spawn_unit(
+            near,
+            0.0,
+            nexus_sim::UnitDef {
+                exp_reward: 1,
+                faction: nexus_sim::FactionId(201),
+                ..nexus_sim::UnitDef::default()
+            },
+        );
+        s.auth.submit(Intent::Attack {
+            unit: me,
+            target: dummy,
+            skill: SkillId(1),
+        });
+        s.tick(DT, None);
+        assert_eq!(s.world().unit(me).unwrap().progress().level(), 3);
+        assert_eq!(
+            s.world().unit(me).unwrap().skill_level(fireball),
+            1,
+            "{:?}",
+            s.log
+        );
+        assert!(
+            !s.hotbar.contains(&Some(fireball)),
+            "새로 배운 스킬은 저절로 놓이지 않는다"
+        );
+        assert!(s.log().any(|l| l.starts_with("스킬을 배웠다: 화염구")));
+
+        s.assign_hotbar(fireball, Some(0));
+        assert_eq!(s.hotbar[0], Some(fireball), "그 칸에 있던 치유는 밀려난다");
+        assert!(!s.hotbar.contains(&Some(SkillId(8))));
+        s.assign_hotbar(SkillId(8), Some(4));
+
+        // 저장 → 이어 하기: 배운 스킬·레벨·배치가 그대로.
+        let save = s.save_data(String::new());
+        let back = new_game(None, Some(save));
+        let u = back.world().unit(back.player()).unwrap();
+        assert_eq!(u.skill_level(fireball), 1);
+        assert_eq!(back.hotbar[0], Some(fireball));
+        assert_eq!(back.hotbar[4], Some(SkillId(8)));
+    }
+
+    #[test]
+    fn an_old_save_without_skills_gets_the_starting_skills() {
+        let mut save = new_game(Some(ClassId(3)), None).save_data(String::new());
+        save.skills = None;
+        save.hotbar = None;
+        let s = new_game(None, Some(save));
+        let u = s.world().unit(s.player()).unwrap();
+        assert_eq!(
+            u.learned_skills().collect::<Vec<_>>(),
+            [(SkillId(5), 1), (SkillId(6), 1)],
+            "궁수의 시작 스킬"
+        );
+        assert_eq!(s.hotbar[..2], [Some(SkillId(6)), Some(SkillId(5))]);
+    }
+
+    #[test]
+    fn a_warrior_cannot_read_the_fireball_tome() {
+        let mut s = new_game(Some(ClassId(1)), None);
+        let slot = give(&mut s, 3002, 1);
+        s.inventory(InventoryAction::Use(slot));
+        s.tick(DT, None);
+        assert!(
+            s.log().any(|l| l.contains("배울 수 없는 스킬")),
+            "{:?}",
+            s.log
+        );
+        let lines = s.skill_lines();
+        assert_eq!(lines.len(), 4, "전사의 시작 스킬 넷");
+        assert_eq!(
+            (lines[0].name.as_str(), lines[0].level, lines[0].max_level),
+            ("강베기", 1, 5)
+        );
+        assert_eq!(lines[0].slot, Some(0));
     }
 }

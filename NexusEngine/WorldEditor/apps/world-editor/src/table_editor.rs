@@ -336,11 +336,17 @@ impl TableEditor {
             .iter()
             .map(|(id, f)| (*id, f.name.clone()))
             .collect();
+        let skills: Vec<(u32, String)> = self
+            .saved
+            .skills
+            .iter()
+            .map(|(id, f)| (*id, f.name.clone()))
+            .collect();
         match self.edit.as_mut() {
             None => {
                 ui.weak("콘텐츠 브라우저에서 두 번 누르거나 위에서 고르세요.");
             }
-            Some(Edit::Item(f)) => item_form(ui, f),
+            Some(Edit::Item(f)) => item_form(ui, f, &skills),
             Some(Edit::Skill(f)) => skill_form(ui, f),
             Some(Edit::Loot(rows)) => loot_form(ui, rows, &items),
         }
@@ -481,7 +487,7 @@ fn patch(rules: &str, display: &str, id: u32, edit: &Edit) -> Result<(String, St
     Ok((rules, display))
 }
 
-fn item_form(ui: &mut egui::Ui, f: &mut ItemForm) {
+fn item_form(ui: &mut egui::Ui, f: &mut ItemForm, skills: &[(u32, String)]) {
     egui::Grid::new("item-form").num_columns(2).show(ui, |ui| {
         ui.label("이름");
         ui.add(egui::TextEdit::singleline(&mut f.name).desired_width(180.0));
@@ -503,7 +509,8 @@ fn item_form(ui: &mut egui::Ui, f: &mut ItemForm) {
                     max_stack: 20,
                 };
             }
-            if ui.selectable_label(!consumable, "장비").clicked() && consumable {
+            let equipment = matches!(f.kind, ItemKindForm::Equipment { .. });
+            if ui.selectable_label(equipment, "장비").clicked() && !equipment {
                 f.kind = ItemKindForm::Equipment {
                     slot: SlotChoice::Weapon,
                     attack: 1,
@@ -511,10 +518,40 @@ fn item_form(ui: &mut egui::Ui, f: &mut ItemForm) {
                     bonus: EquipBonusForm::default(),
                 };
             }
+            let book = matches!(f.kind, ItemKindForm::SkillBook { .. });
+            if ui
+                .selectable_label(book, "스킬북")
+                .on_hover_text("쓰면 그 스킬을 배운다 / 한 레벨 올린다 (R3)")
+                .clicked()
+                && !book
+            {
+                f.kind = ItemKindForm::SkillBook {
+                    skill: skills.first().map_or(1, |(id, _)| *id),
+                    max_stack: 1,
+                };
+            }
         });
         ui.end_row();
 
         match &mut f.kind {
+            ItemKindForm::SkillBook { skill, max_stack } => {
+                ui.label("가르치는 스킬");
+                let name = skills.iter().find(|(id, _)| id == skill).map_or_else(
+                    || format!("#{skill} (없는 스킬)"),
+                    |(id, n)| format!("#{id} {n}"),
+                );
+                egui::ComboBox::from_id_salt("item-book-skill")
+                    .selected_text(name)
+                    .show_ui(ui, |ui| {
+                        for (id, n) in skills {
+                            ui.selectable_value(skill, *id, format!("#{id} {n}"));
+                        }
+                    });
+                ui.end_row();
+                ui.label("최대 겹침");
+                ui.add(egui::DragValue::new(max_stack).range(1..=9_999));
+                ui.end_row();
+            }
             ItemKindForm::Consumable {
                 heal,
                 mana,
@@ -640,6 +677,60 @@ fn skill_form(ui: &mut egui::Ui, f: &mut SkillForm) {
             .on_hover_text("0 보다 크면 피해 대신 HP 를 채운다 — 자신·우호 유닛에게 쓴다");
         ui.end_row();
     });
+    // 레벨·부착 규칙 (R3).
+    ui.add_space(6.0);
+    ui.strong("레벨과 습득");
+    let l = &mut f.level;
+    egui::Grid::new("skill-level-form")
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label("최대 레벨");
+            ui.add(egui::DragValue::new(&mut l.max_level).range(1..=100));
+            ui.end_row();
+            ui.label("배울 수 있는 직업");
+            let mut text = l
+                .classes
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            if ui
+                .add(egui::TextEdit::singleline(&mut text).desired_width(120.0))
+                .on_hover_text("직업 번호를 쉼표로 — 비우면 누구나")
+                .changed()
+            {
+                l.classes = text
+                    .split(',')
+                    .filter_map(|t| t.trim().parse().ok())
+                    .collect();
+            }
+            ui.end_row();
+            ui.label("습득 조건");
+            ui.add(
+                egui::TextEdit::singleline(&mut l.requires)
+                    .hint_text("Level(cmp: Ge, value: 3)")
+                    .desired_width(220.0)
+                    .font(egui::TextStyle::Monospace),
+            )
+            .on_hover_text("트리거의 when 과 같은 형식 — 비우면 늘 참. 레벨을 올릴 때도 매번 본다");
+            ui.end_row();
+            for (label, text, hint) in [
+                ("위력 수식 ‰", &mut l.power, "1500 + skill_level * 100"),
+                ("쿨타임 수식", &mut l.cooldown, "3000 - skill_level * 200"),
+                ("MP 수식", &mut l.mp_cost, "10 + skill_level * 2"),
+                ("회복 수식", &mut l.heal, "20 + int * 3"),
+            ] {
+                ui.label(label);
+                ui.add(
+                    egui::TextEdit::singleline(text)
+                        .hint_text(hint)
+                        .desired_width(220.0)
+                        .font(egui::TextStyle::Monospace),
+                );
+                ui.end_row();
+            }
+        });
+    ui.weak("수식 칸이 비어 있지 않으면 위의 같은 칸(배율·쿨타임·MP·회복)보다 이긴다. 변수: 기본 스탯 · level · equip_attack · equip_defense · skill_level.");
     ui.weak("피해 = max(1, 공격 × 배율 − 방어) — 서버 CombatProcessor 와 같은 식.");
     ui.weak("MP 소모가 0 이면 MP 를 보지 않는다. MP 가 모자라면 거절되고 쿨타임도 걸리지 않는다.");
 }
@@ -741,7 +832,7 @@ mod tests {
             mp_cost: 10,
             radius: 2.0,
             heal: 0,
-            name: String::from("화살"),
+            ..SkillForm::new("화살")
         };
         let (r, d) = patch(&r, &d, 5, &Edit::Skill(skill.clone())).unwrap();
         assert!(r.contains(

@@ -278,7 +278,7 @@ fn edit_form(ui: &mut egui::Ui, form: &mut StatForm, class: &mut usize) {
             ui.label("설명");
             ui.add(egui::TextEdit::singleline(&mut c.description).desired_width(240.0));
             ui.end_row();
-            ui.label("단축키 스킬");
+            ui.label("시작 스킬");
             let mut text = c
                 .skills
                 .iter()
@@ -287,7 +287,7 @@ fn edit_form(ui: &mut egui::Ui, form: &mut StatForm, class: &mut usize) {
                 .join(", ");
             if ui
                 .add(egui::TextEdit::singleline(&mut text).desired_width(140.0))
-                .on_hover_text("스킬 번호를 쉼표로 — 맨 앞이 1번 키. 비우면 액터 타입의 단축키")
+                .on_hover_text("스킬 번호를 쉼표로 — 새 게임에서 1레벨로 배우고 처음 단축키에 차례로 놓인다. 비우면 액터 타입의 것")
                 .changed()
             {
                 c.skills = text

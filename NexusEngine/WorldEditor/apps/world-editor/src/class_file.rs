@@ -97,7 +97,7 @@ pub(crate) struct ClassFile {
     /// 레벨당 성장. 적지 않은 스탯은 0.
     #[serde(default)]
     growth: BTreeMap<String, i64>,
-    /// 단축키 스킬 (맨 앞이 1번 키). 비우면 액터 타입의 단축키를 쓴다.
+    /// 시작 스킬 (R3) — 새 게임에서 1레벨로 배우고 처음 단축키에 차례로 놓인다. 비우면 액터 타입의 것.
     #[serde(default)]
     pub(crate) skills: Vec<u32>,
     /// 이 직업만 다른 파생 수식.
@@ -117,6 +117,11 @@ pub(crate) struct ClassLookFile {
 impl StatsFile {
     pub(crate) fn base_has(&self, name: &str) -> bool {
         self.base.iter().any(|b| b == name)
+    }
+
+    /// 기본 스탯 이름 — 데이터 순서.
+    pub(crate) fn names(&self) -> &[String] {
+        &self.base
     }
 
     /// 블록을 적지 않았다 — 스탯 체계가 없는 게임.

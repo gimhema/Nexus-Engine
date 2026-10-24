@@ -178,6 +178,8 @@ pub struct Unit {
     pub(crate) flags: Flags,
     /// 직업이 있는 유닛의 계산된 스탯 (R2). 레벨·장비가 바뀔 때 `SimWorld` 가 다시 계산한다.
     pub(crate) sheet: Option<StatSheet>,
+    /// 배운 스킬과 그 레벨 (R3). 순서 있는 맵이라 저장·UI 순서가 결정적이다.
+    pub(crate) skills: std::collections::BTreeMap<SkillId, u32>,
 }
 
 impl Unit {
@@ -205,7 +207,19 @@ impl Unit {
             protected_until: None,
             flags: Flags::default(),
             sheet: None,
+            skills: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// 배운 스킬의 레벨 — 0 이면 배우지 않았다 (R3).
+    #[must_use]
+    pub fn skill_level(&self, skill: SkillId) -> u32 {
+        self.skills.get(&skill).copied().unwrap_or(0)
+    }
+
+    /// 배운 스킬 `(스킬, 레벨)` — 번호 순 (R3).
+    pub fn learned_skills(&self) -> impl Iterator<Item = (SkillId, u32)> + '_ {
+        self.skills.iter().map(|(s, l)| (*s, *l))
     }
 
     /// 직업이 있는 유닛의 기본·파생 스탯 (R2). 직업이 없으면 `None`.

@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use nexus_core::Vec2;
-use nexus_sim::{ClassId, FlagId, ItemId};
+use nexus_sim::{ClassId, FlagId, ItemId, SkillId};
 use serde::{Deserialize, Serialize};
 
 use crate::scene::ActorId;
@@ -38,6 +38,10 @@ pub(crate) struct SaveData {
     pub(crate) actor: ActorId,
     /// 직업 (R2). `None` = 직업이 생기기 전의 저장 파일 — 기본 직업으로 이어 한다.
     pub(crate) class: Option<ClassId>,
+    /// 배운 스킬과 레벨 (R3). `None` = 스킬이 생기기 전의 저장 — 직업의 시작 스킬로 이어 한다.
+    pub(crate) skills: Option<Vec<(SkillId, u32)>>,
+    /// 단축키 배치 (R3) — 칸마다 스킬 또는 빈 칸. `None` = 예전 저장 — 시작 스킬을 차례로.
+    pub(crate) hotbar: Option<Vec<Option<SkillId>>>,
     pub(crate) level: u32,
     pub(crate) exp: u32,
     pub(crate) hp: u32,
@@ -69,6 +73,12 @@ struct SaveFile {
     /// 직업 (R2). 없는 예전 파일도 읽힌다.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     class: Option<u32>,
+    /// 배운 스킬 `번호: 레벨` (R3). 없는 예전 파일도 읽힌다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    skills: Option<BTreeMap<u32, u32>>,
+    /// 단축키 칸 (R3) — `[Some(5), None, Some(6)]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hotbar: Option<Vec<Option<u32>>>,
     level: u32,
     exp: u32,
     hp: u32,
@@ -104,6 +114,14 @@ pub(crate) fn to_ron(save: &SaveData) -> String {
         version: FORMAT_VERSION,
         actor: save.actor.raw(),
         class: save.class.map(|c| c.0),
+        skills: save
+            .skills
+            .as_ref()
+            .map(|list| list.iter().map(|(s, l)| (s.0, *l)).collect()),
+        hotbar: save
+            .hotbar
+            .as_ref()
+            .map(|h| h.iter().map(|s| s.map(|s| s.0)).collect()),
         level: save.level,
         exp: save.exp,
         hp: save.hp,
@@ -159,6 +177,15 @@ pub(crate) fn from_ron(text: &str) -> Result<SaveData, String> {
     Ok(SaveData {
         actor: ActorId::new(file.actor),
         class: file.class.map(ClassId),
+        skills: file.skills.map(|m| {
+            m.into_iter()
+                .filter(|(_, l)| *l > 0)
+                .map(|(s, l)| (SkillId(s), l))
+                .collect()
+        }),
+        hotbar: file
+            .hotbar
+            .map(|h| h.into_iter().map(|s| s.map(SkillId)).collect()),
         level: file.level,
         exp: file.exp,
         hp: file.hp,
@@ -245,6 +272,8 @@ mod tests {
         SaveData {
             actor: ActorId::new(1),
             class: Some(ClassId(2)),
+            skills: Some(vec![(SkillId(6), 1), (SkillId(8), 3)]),
+            hotbar: Some(vec![Some(SkillId(8)), None, Some(SkillId(6))]),
             level: 3,
             exp: 240,
             hp: 180,

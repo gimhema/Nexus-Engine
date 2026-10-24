@@ -19,6 +19,7 @@ mod item;
 mod loot;
 mod progress;
 mod script;
+mod skills;
 mod stats;
 mod tilemap;
 mod trigger;
@@ -34,6 +35,7 @@ pub use item::{
 pub use loot::{LootEntry, LootTableId};
 pub use progress::{Growth, Progress, exp_to_next};
 pub use script::{ScriptHost, ScriptLog};
+pub use skills::{SKILL_LEVEL_VAR, SkillRules, skill_variables};
 pub use stats::{
     ClassDef, ClassId, Derived, DerivedStat, EquipRules, EquipTotals, Formula, FormulaError,
     MAX_STATS, RESERVED, StatRules, StatSheet,

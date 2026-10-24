@@ -525,6 +525,8 @@ fn table_users(
             if tables.player_attack == id {
                 out.push(String::from("플레이어 공격"));
             }
+            // R3 — 직업 시작 스킬·스킬북·다른 스킬의 습득 조건·트리거.
+            out.extend(crate::game_data::skill_users(rules, id)?);
         }
         Tab::Loot => {
             for (a, f) in &actors {

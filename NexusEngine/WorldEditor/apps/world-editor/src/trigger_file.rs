@@ -28,10 +28,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::Serialize;
+
 use nexus_core::Vec2;
 use nexus_sim::{
-    ActorType, Cmp, Condition, Effect, FactionId, FlagId, FlagScope, ItemId, On, TriggerDef,
-    TriggerId,
+    ActorType, Cmp, Condition, Effect, FactionId, FlagId, FlagScope, ItemId, On, SkillId,
+    TriggerDef, TriggerId,
 };
 use serde::Deserialize;
 
@@ -45,7 +47,7 @@ pub(crate) struct TriggerFile {
     then: Vec<EffectFile>,
 }
 
-fn always() -> ConditionFile {
+pub(crate) fn always() -> ConditionFile {
     ConditionFile::Always
 }
 
@@ -67,9 +69,11 @@ enum OnFile {
     },
 }
 
-#[derive(Clone, Debug, Deserialize)]
+/// 조건 — 트리거의 `when` 과 스킬의 `requires` 가 같은 형식을 쓴다 (R3).
+/// 표 편집기가 다시 써내야 해서 `Serialize` 도 붙어 있다.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-enum ConditionFile {
+pub(crate) enum ConditionFile {
     Always,
     Flag {
         scope: ScopeFile,
@@ -90,6 +94,12 @@ enum ConditionFile {
     All(Vec<ConditionFile>),
     Any(Vec<ConditionFile>),
     Not(Box<ConditionFile>),
+    /// 대상이 그 스킬을 몇 레벨 배웠나 (배우지 않았으면 0, R3).
+    SkillLevel {
+        skill: u32,
+        cmp: CmpFile,
+        value: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -114,16 +124,29 @@ enum EffectFile {
         count: u32,
     },
     GiveExp(u32),
+    /// 스킬을 배운다 / `levels` 만큼 올린다 (R3). `levels` 를 적지 않으면 1.
+    GrantSkill {
+        skill: u32,
+        #[serde(default = "one")]
+        levels: u32,
+    },
+    RemoveSkill {
+        skill: u32,
+    },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
-enum ScopeFile {
+fn one() -> u32 {
+    1
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+pub(crate) enum ScopeFile {
     Character,
     World,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
-enum CmpFile {
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+pub(crate) enum CmpFile {
     Eq,
     Ne,
     Lt,
@@ -141,6 +164,7 @@ pub(crate) fn validate(
     triggers: &BTreeMap<u32, TriggerFile>,
     item_exists: impl Fn(u32) -> bool,
     actor_exists: impl Fn(u32) -> bool,
+    skill_exists: impl Fn(u32) -> bool,
 ) -> Vec<String> {
     let mut errors = Vec::new();
     for (id, t) in triggers {
@@ -165,7 +189,14 @@ pub(crate) fn validate(
             }
             _ => {}
         }
-        check_condition(&t.when, 0, &item_exists, &actor_exists, &mut err);
+        check_condition(
+            &t.when,
+            0,
+            &item_exists,
+            &actor_exists,
+            &skill_exists,
+            &mut err,
+        );
         if t.then.is_empty() {
             err(String::from("then 이 비어 있음 — 하는 일이 없는 트리거"));
         }
@@ -180,6 +211,11 @@ pub(crate) fn validate(
                     }
                 }
                 EffectFile::GiveExp(0) => err(String::from("then: GiveExp 가 0")),
+                EffectFile::GrantSkill { skill, .. } | EffectFile::RemoveSkill { skill }
+                    if !skill_exists(skill) =>
+                {
+                    err(format!("then: 없는 스킬 {skill}"));
+                }
                 _ => {}
             }
         }
@@ -187,11 +223,13 @@ pub(crate) fn validate(
     errors
 }
 
-fn check_condition(
+/// 조건 하나를 검사한다 — 스킬의 `requires` 도 이것을 쓴다 (R3). 오류는 `when: …` 꼴.
+pub(crate) fn check_condition(
     c: &ConditionFile,
     depth: u32,
     item_exists: &impl Fn(u32) -> bool,
     actor_exists: &impl Fn(u32) -> bool,
+    skill_exists: &impl Fn(u32) -> bool,
     err: &mut impl FnMut(String),
 ) {
     if depth > MAX_DEPTH {
@@ -203,12 +241,17 @@ fn check_condition(
             err(format!("when: 없는 아이템 {item}"));
         }
         ConditionFile::Actor(a) if !actor_exists(*a) => err(format!("when: 없는 액터 {a}")),
+        ConditionFile::SkillLevel { skill, .. } if !skill_exists(*skill) => {
+            err(format!("when: 없는 스킬 {skill}"));
+        }
         ConditionFile::All(list) | ConditionFile::Any(list) => {
             for c in list {
-                check_condition(c, depth + 1, item_exists, actor_exists, err);
+                check_condition(c, depth + 1, item_exists, actor_exists, skill_exists, err);
             }
         }
-        ConditionFile::Not(c) => check_condition(c, depth + 1, item_exists, actor_exists, err),
+        ConditionFile::Not(c) => {
+            check_condition(c, depth + 1, item_exists, actor_exists, skill_exists, err);
+        }
         _ => {}
     }
 }
@@ -218,6 +261,7 @@ fn check_condition(
 pub(crate) struct Refs {
     pub(crate) items: BTreeSet<u32>,
     pub(crate) actors: BTreeSet<u32>,
+    pub(crate) skills: BTreeSet<u32>,
 }
 
 pub(crate) fn refs(t: &TriggerFile) -> Refs {
@@ -233,10 +277,23 @@ pub(crate) fn refs(t: &TriggerFile) -> Refs {
     }
     condition_refs(&t.when, &mut r);
     for e in &t.then {
-        if let EffectFile::GiveItem { item, .. } | EffectFile::TakeItem { item, .. } = *e {
-            r.items.insert(item);
+        match *e {
+            EffectFile::GiveItem { item, .. } | EffectFile::TakeItem { item, .. } => {
+                r.items.insert(item);
+            }
+            EffectFile::GrantSkill { skill, .. } | EffectFile::RemoveSkill { skill } => {
+                r.skills.insert(skill);
+            }
+            _ => {}
         }
     }
+    r
+}
+
+/// 조건 하나가 가리키는 번호 (스킬의 `requires` 용, R3).
+pub(crate) fn condition_refs_of(c: &ConditionFile) -> Refs {
+    let mut r = Refs::default();
+    condition_refs(c, &mut r);
     r
 }
 
@@ -254,6 +311,9 @@ fn condition_refs(c: &ConditionFile, r: &mut Refs) {
             }
         }
         ConditionFile::Not(c) => condition_refs(c, r),
+        ConditionFile::SkillLevel { skill, .. } => {
+            r.skills.insert(*skill);
+        }
         _ => {}
     }
 }
@@ -321,6 +381,11 @@ impl From<&ConditionFile> for Condition {
             ConditionFile::All(list) => Condition::All(list.iter().map(Into::into).collect()),
             ConditionFile::Any(list) => Condition::Any(list.iter().map(Into::into).collect()),
             ConditionFile::Not(c) => Condition::Not(Box::new(c.as_ref().into())),
+            ConditionFile::SkillLevel { skill, cmp, value } => Condition::SkillLevel {
+                skill: SkillId(*skill),
+                cmp: (*cmp).into(),
+                value: *value,
+            },
         }
     }
 }
@@ -347,6 +412,13 @@ impl From<EffectFile> for Effect {
                 count,
             },
             EffectFile::GiveExp(n) => Effect::GiveExp(n),
+            EffectFile::GrantSkill { skill, levels } => Effect::GrantSkill {
+                skill: SkillId(skill),
+                levels,
+            },
+            EffectFile::RemoveSkill { skill } => Effect::RemoveSkill {
+                skill: SkillId(skill),
+            },
         }
     }
 }
@@ -382,7 +454,12 @@ mod tests {
     }
 
     fn errors(text: &str) -> Vec<String> {
-        validate(&parse(text), |i| i == 501, |a| a == 1 || a == 100)
+        validate(
+            &parse(text),
+            |i| i == 501,
+            |a| a == 1 || a == 100,
+            |s| s == 5,
+        )
     }
 
     #[test]

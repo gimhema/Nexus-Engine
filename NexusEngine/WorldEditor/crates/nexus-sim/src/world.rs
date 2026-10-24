@@ -27,7 +27,8 @@ use crate::item::{
 };
 use crate::loot::{self, LootEntry, LootTableId, Rng};
 use crate::progress::Progress;
-use crate::stats::{ClassDef, ClassId, EquipRules, EquipTotals, StatRules};
+use crate::skills::{SkillRules, to_u32};
+use crate::stats::{ClassDef, ClassId, EquipRules, EquipTotals, Formula, StatRules};
 use crate::tilemap::TileMap;
 use crate::trigger::{
     Condition, Effect, FlagId, FlagScope, Flags, Happening, MAX_ROUNDS, TriggerDef, TriggerId,
@@ -72,6 +73,10 @@ pub struct SimWorld {
     classes: HashMap<ClassId, ClassDef>,
     /// 장비의 기본 스탯 보너스·직업 제한. 없는 장비는 보너스도 제한도 없다.
     equip_rules: HashMap<ItemId, EquipRules>,
+    /// 경험치 곡선 (R3) — 변수는 `level`. 없으면 서버와 같은 `level² × 100`.
+    exp_curve: Option<Formula>,
+    /// 스킬 부착 규칙·레벨 수식 (R3). 없는 스킬은 "누구나, 1레벨, 숫자 그대로".
+    skill_rules: HashMap<SkillId, SkillRules>,
 }
 
 impl SimWorld {
@@ -95,7 +100,134 @@ impl SimWorld {
             stat_rules: None,
             classes: HashMap::new(),
             equip_rules: HashMap::new(),
+            exp_curve: None,
+            skill_rules: HashMap::new(),
         }
+    }
+
+    /// 스킬의 부착 규칙·레벨 수식을 등록한다 (설정 작업).
+    pub fn define_skill_rules(&mut self, skill: SkillId, rules: SkillRules) {
+        self.skill_rules.insert(skill, rules);
+    }
+
+    #[must_use]
+    pub fn skill_rules(&self, skill: SkillId) -> Option<&SkillRules> {
+        self.skill_rules.get(&skill)
+    }
+
+    /// 스킬 최대 레벨 (규칙이 없으면 1).
+    #[must_use]
+    pub fn skill_max_level(&self, skill: SkillId) -> u32 {
+        self.skill_rules
+            .get(&skill)
+            .map_or(1, |r| r.max_level.max(1))
+    }
+
+    /// 스킬 레벨을 그대로 심는다 (설정 작업 — 직업의 시작 스킬, 저장 파일에서 되살릴 때).
+    /// 조건은 보지 않는다. 최대 레벨로 자르고, 0 이면 뗀다. 없는 스킬은 무시한다.
+    pub fn set_skill_level(&mut self, unit: Entity, skill: SkillId, level: u32) {
+        if !self.skills.contains_key(&skill) {
+            return;
+        }
+        let max = self.skill_max_level(skill);
+        if let Some(u) = self.unit_mut(unit) {
+            if level == 0 {
+                u.skills.remove(&skill);
+            } else {
+                u.skills.insert(skill, level.min(max));
+            }
+        }
+    }
+
+    /// 이 유닛이 쓸 때의 스킬 — 레벨 수식을 그 유닛의 스탯·스킬 레벨로 계산해 덮은 값 (R3).
+    /// 배우지 않은 스킬은 1레벨로 계산한다. UI 가 툴팁에 쓸 수 있다.
+    #[must_use]
+    pub fn effective_skill(&self, unit: Entity, skill: SkillId) -> Option<SkillDef> {
+        let mut def = *self.skills.get(&skill)?;
+        let Some(rules) = self.skill_rules.get(&skill) else {
+            return Some(def);
+        };
+        let u = self.unit(unit)?;
+        // 변수 순서는 skills::skill_variables 와 같다: 기본 스탯 · level · equip_attack · equip_defense · skill_level.
+        let n = self.stat_rules.as_ref().map_or(0, |r| r.stats().len());
+        let mut vals: Vec<i64> = (0..n)
+            .map(|i| {
+                u.sheet
+                    .as_ref()
+                    .and_then(|s| s.base.get(i).copied())
+                    .unwrap_or(0)
+            })
+            .collect();
+        vals.extend([
+            i64::from(u.progress.level()),
+            i64::from(u.bonus_attack),
+            i64::from(u.bonus_defense),
+            i64::from(u.skill_level(skill).max(1)),
+        ]);
+        if let Some(f) = &rules.power_per_mille {
+            // 천분율 → 배율. 전투 공식은 서버와 같은 f32 배율을 그대로 쓴다.
+            def.damage_mult = to_u32(f.eval(&vals)) as f32 / 1000.0;
+        }
+        if let Some(f) = &rules.cooldown_ms {
+            def.cooldown_ms = to_u32(f.eval(&vals));
+        }
+        if let Some(f) = &rules.mp_cost {
+            def.mp_cost = to_u32(f.eval(&vals));
+        }
+        if let Some(f) = &rules.heal {
+            def.heal = to_u32(f.eval(&vals));
+        }
+        Some(def)
+    }
+
+    /// 스킬을 배운다 / 레벨을 올린다 — **모든 습득 경로가 지나는 문** (R3). 새 레벨을 돌려준다.
+    pub(crate) fn learn(
+        &mut self,
+        unit: Entity,
+        skill: SkillId,
+        levels: u32,
+        events: &mut Vec<Event>,
+    ) -> Result<u32, Rejection> {
+        if !self.skills.contains_key(&skill) {
+            return Err(Rejection::UnknownSkill);
+        }
+        let u = self.unit(unit).ok_or(Rejection::UnknownEntity)?;
+        let max = self.skill_max_level(skill);
+        let have = u.skill_level(skill);
+        if let Some(rules) = self.skill_rules.get(&skill)
+            && (!rules.allows(u.def.class) || !self.check(&rules.requires, unit))
+        {
+            return Err(Rejection::SkillRequirement);
+        }
+        if have >= max {
+            return Err(Rejection::SkillMaxed);
+        }
+        let level = have.saturating_add(levels.max(1)).min(max);
+        if let Some(u) = self.unit_mut(unit) {
+            u.skills.insert(skill, level);
+        }
+        events.push(Event::SkillLearned { unit, skill, level });
+        Ok(level)
+    }
+
+    /// 스킬을 뗀다 (R3). 배우지 않았으면 아무 일도 없다.
+    pub(crate) fn forget(&mut self, unit: Entity, skill: SkillId, events: &mut Vec<Event>) {
+        if let Some(u) = self.unit_mut(unit)
+            && u.skills.remove(&skill).is_some()
+        {
+            events.push(Event::SkillForgotten { unit, skill });
+        }
+    }
+
+    /// 경험치 곡선을 정한다 (설정 작업 — 스폰보다 먼저). 수식의 변수는 `level` 하나다.
+    pub fn set_exp_curve(&mut self, curve: Formula) {
+        self.exp_curve = Some(curve);
+    }
+
+    /// `level` 에서 다음 레벨까지 필요한 경험치 (1 이상).
+    #[must_use]
+    pub fn exp_needed(&self, level: u32) -> u32 {
+        exp_needed(self.exp_curve.as_ref(), level)
     }
 
     /// 스탯 체계를 정한다 (설정 작업 — **스폰보다 먼저**. 이미 선 유닛은 다시 계산하지 않는다).
@@ -200,6 +332,9 @@ impl SimWorld {
             Condition::All(all) => all.iter().all(|c| self.check(c, subject)),
             Condition::Any(any) => any.iter().any(|c| self.check(c, subject)),
             Condition::Not(c) => !self.check(c, subject),
+            Condition::SkillLevel { skill, cmp, value } => {
+                unit.is_some_and(|u| cmp.test(i64::from(u.skill_level(*skill)), i64::from(*value)))
+            }
         }
     }
 
@@ -226,8 +361,11 @@ impl SimWorld {
     /// 레벨·경험치를 그대로 심는다 (설정 작업 — 저장 파일에서 되살릴 때).
     /// 성장치만큼 최대 HP 가 달라지므로 현재 HP 도 상한으로 자른다.
     pub fn set_progress(&mut self, unit: Entity, progress: Progress) {
+        let curve = self.exp_curve.clone();
         if let Some(u) = self.unit_mut(unit) {
-            u.progress = progress;
+            u.progress = Progress::with_curve(progress.level(), progress.exp(), |lv| {
+                exp_needed(curve.as_ref(), lv)
+            });
         }
         self.refresh_stats(unit);
         if let Some(u) = self.unit_mut(unit) {
@@ -368,7 +506,9 @@ impl SimWorld {
         if self.units.len() <= slot {
             self.units.resize_with(slot + 1, || None);
         }
-        self.units[slot] = Some((entity, Unit::new(pos, heading, def)));
+        let mut unit = Unit::new(pos, heading, def);
+        unit.progress = Progress::with_curve(1, 0, |lv| self.exp_needed(lv));
+        self.units[slot] = Some((entity, unit));
         // 직업이 있으면 수식으로 계산한 값으로 가득 채운 채 선다.
         self.refresh_stats(entity);
         if let Some(u) = self.unit_mut(entity) {
@@ -525,7 +665,9 @@ impl SimWorld {
         skill: SkillId,
         events: &mut Vec<Event>,
     ) -> Result<(), Rejection> {
-        let def = *self.skills.get(&skill).ok_or(Rejection::UnknownSkill)?;
+        let def = self
+            .effective_skill(attacker, skill)
+            .ok_or(Rejection::UnknownSkill)?;
         // 회복은 자신에게도 쓴다. 피해는 자신에게 쓸 수 없다.
         if attacker == target && !def.is_heal() {
             return Err(Rejection::InvalidTarget);
@@ -561,6 +703,10 @@ impl SimWorld {
             if relation == Relation::Friendly {
                 return Err(Rejection::Friendly);
             }
+        }
+        // 서버와 겹치는 판정 뒤에 붙인 것 (R3) — 직업이 있는 유닛은 배운 스킬과 기본 공격만 쓴다.
+        if a.def.class.is_some() && a.def.basic_attack != Some(skill) && a.skill_level(skill) == 0 {
+            return Err(Rejection::SkillNotLearned);
         }
 
         // 맞는 유닛 — 대상이 먼저, 그다음 범위 안의 다른 유닛을 슬롯 순서대로 (결정적).
@@ -668,11 +814,20 @@ impl SimWorld {
         if amount == 0 {
             return;
         }
-        let Some(u) = self.unit_mut(unit).filter(|u| u.is_alive()) else {
+        let Some(from) = self
+            .unit(unit)
+            .filter(|u| u.is_alive())
+            .map(|u| u.progress.level())
+        else {
             return;
         };
-        let from = u.progress.level();
-        let levels = u.progress.add(amount);
+        let curve = self.exp_curve.clone();
+        let Some(u) = self.unit_mut(unit) else {
+            return;
+        };
+        let levels = u
+            .progress
+            .add_with(amount, |lv| exp_needed(curve.as_ref(), lv));
         let progress = u.progress;
         events.push(Event::ExperienceGained {
             unit,
@@ -802,8 +957,17 @@ impl SimWorld {
             .get(slot)
             .ok_or(Rejection::EmptySlot)?;
         let def = self.items.get(&stack.item).ok_or(Rejection::UnknownItem)?;
-        let ItemKind::Consumable { heal, mana } = def.kind else {
-            return Err(Rejection::NotUsable);
+        let (heal, mana) = match def.kind {
+            ItemKind::Consumable { heal, mana } => (heal, mana),
+            // 스킬북 (R3) — 배울 수 있을 때만 사라진다.
+            ItemKind::SkillBook { skill } => {
+                self.learn(unit, skill, 1, events)?;
+                if let Some(u) = self.unit_mut(unit) {
+                    u.inventory.consumables.take_one(slot);
+                }
+                return Ok(());
+            }
+            ItemKind::Equipment { .. } => return Err(Rejection::NotUsable),
         };
 
         let u = self.unit_mut(unit).ok_or(Rejection::UnknownEntity)?;
@@ -1157,6 +1321,10 @@ impl SimWorld {
                 }
             }
             Effect::GiveExp(amount) => self.grant_exp(subject, amount, events),
+            Effect::GrantSkill { skill, levels } => {
+                let _ = self.learn(subject, skill, levels, events);
+            }
+            Effect::RemoveSkill { skill } => self.forget(subject, skill, events),
         }
     }
 
@@ -1206,6 +1374,14 @@ impl SimWorld {
             }
         }
     }
+}
+
+/// 곡선(없으면 기본 곡선)으로 `level` 의 필요 경험치. 결과는 1 이상.
+fn exp_needed(curve: Option<&Formula>, level: u32) -> u32 {
+    curve.map_or_else(
+        || crate::progress::exp_to_next(level),
+        |f| u32::try_from(f.eval(&[i64::from(level)]).max(1)).unwrap_or(u32::MAX),
+    )
 }
 
 enum Step {

@@ -16,15 +16,33 @@
 
     // 스킬 — 서버 SkillDef 의 단일 대상 부분.
     // mp_cost 는 적지 않으면 0 — MP 를 보지 않는다. MP 가 모자라면 거절되고 쿨타임도 걸리지 않는다.
+    //
+    // 스킬 레벨 (R3): max_level 을 주면 레벨이 생기고, cooldown_ms·mp_cost·heal 은 숫자 대신 **수식**,
+    // power 는 위력 천분율 수식(적으면 damage_mult 대신 쓴다)이다. 변수: 기본 스탯 · level ·
+    // equip_attack · equip_defense · skill_level. classes 는 배울 수 있는 직업(비우면 누구나),
+    // requires 는 습득 조건(트리거의 when 과 같은 형식). 직업이 있는 유닛(플레이어)은 배운 스킬과
+    // 기본 공격만 쓴다 — 배우는 길은 직업의 시작 스킬 · 스킬북 아이템 · 트리거 GrantSkill.
     skills: {
         1: (range: 2.0, cooldown_ms: 800, damage_mult: 1.0),   // 플레이어 베기
         2: (range: 1.5, cooldown_ms: 1200, damage_mult: 1.0),  // 슬라임 물기
         3: (range: 2.0, cooldown_ms: 1000, damage_mult: 1.2),  // 경비병 일격
         4: (range: 2.0, cooldown_ms: 3000, damage_mult: 2.0, mp_cost: 20),  // 고블린 강타
-        5: (range: 2.0, cooldown_ms: 3000, damage_mult: 1.8, mp_cost: 15),  // 플레이어 강베기 (단축키 1)
+        // 강베기 — 레벨 1 은 예전과 같은 1.8배·MP 15.
+        5: (range: 2.0, cooldown_ms: 3000, power: "1700 + skill_level * 100", mp_cost: "13 + skill_level * 2", max_level: 5, classes: [1, 3]),
         6: (range: 6.0, cooldown_ms: 2000, damage_mult: 0.8, mp_cost: 10),  // 플레이어 돌 던지기 (단축키 2)
         7: (range: 2.0, cooldown_ms: 4000, damage_mult: 1.2, mp_cost: 20, radius: 2.5),  // 플레이어 회오리 베기 (단축키 3) — 대상 둘레 2.5m 의 적 모두
-        8: (range: 0.0, cooldown_ms: 6000, damage_mult: 0.0, mp_cost: 15, heal: 60),  // 플레이어 치유 (단축키 4) — 자신
+        // 치유 — 자신. 지능에 비례한다 (전사 레벨 1 은 예전과 같은 60).
+        8: (range: 0.0, cooldown_ms: 6000, damage_mult: 0.0, mp_cost: 15, heal: "40 + int * 2 + skill_level * 10", max_level: 5),
+        // 화염구 — 마법사 전용, 레벨 3 부터. 트리거 3(레벨 3 도달)이 주고, 마도서(3002)로도 배운다.
+        9: (
+            range: 6.0,
+            cooldown_ms: "3000 - skill_level * 200",
+            power: "1400 + skill_level * 200 + int * 20",
+            mp_cost: "8 + skill_level * 4",
+            max_level: 5,
+            classes: [2],
+            requires: Level(cmp: Ge, value: 3),
+        ),
     },
 
     items: {
@@ -34,6 +52,9 @@
         // 장비는 기본 스탯 보너스(stats)와 입을 수 있는 직업(classes, 비우면 누구나)을 가질 수 있다 (R2).
         1101: Equipment(slot: Weapon, attack: 12, defense: 0, classes: [1, 3]),  // 숏소드 — 마법사는 못 든다
         2101: Equipment(slot: Head, attack: 0, defense: 4),     // 모자
+        // 스킬북 (R3) — 쓰면 그 스킬을 배운다 / 한 레벨 올린다. 드롭 표·상점에 실으면 그것이 습득 경로다.
+        3001: SkillBook(skill: 5, max_stack: 5),   // 강베기 비급
+        3002: SkillBook(skill: 9, max_stack: 5),   // 화염구 마도서
     },
 
     // 드롭 테이블 — 줄마다 따로 굴린다.
@@ -173,8 +194,13 @@
             defense: "agi + equip_defense",
         ),
     ),
+    // 경험치 곡선 (R3) — 레벨 level 에서 다음 레벨까지 필요한 경험치. 변수는 level 하나.
+    // 적지 않으면 이 식(서버 CharacterEntityData 와 같다).
+    exp_curve: "level * level * 100",
+
     // 직업 (R2) — 새 게임에서 고른다(ui/class_select). 이름·설명은 display.ron.
     // base 는 레벨 1 의 기본 스탯, growth 는 레벨당 더해지는 값 (적지 않은 스탯은 0).
+    // skills 는 **시작 스킬** — 새 게임에서 1레벨로 배우고 처음 단축키에 차례로 놓인다 (R3).
     // formulas 를 적으면 그 직업만 그 파생 수식을 쓴다 (stats.derived 와 같은 칸). skills 는 단축키 (맨 앞이 1번 키).
     classes: {
         // 지금까지의 플레이어와 같은 수치 — HP 200(+40), MP 60(+10), 공격 20(+4), 방어 5(+2).
@@ -211,7 +237,7 @@
             when: Actor(1),
             then: [AddFlag(scope: Character, flag: 1, delta: 1)],
         ),
-        // 다섯 마리째에 한 번만 보상 — 빨간 포션 3개와 경험치 100.
+        // 다섯 마리째에 한 번만 보상 — 빨간 포션 3개·강베기 비급·경험치 100.
         2: (
             on: Killed(actor: Some(100)),
             when: All([
@@ -221,9 +247,16 @@
             ]),
             then: [
                 GiveItem(item: 501, count: 3),
+                GiveItem(item: 3001, count: 1),
                 GiveExp(100),
                 SetFlag(scope: Character, flag: 2, value: 1),
             ],
+        ),
+        // 레벨 3 이 되면 화염구 — 마법사만 배운다 (다른 직업은 스킬의 classes 에 막혀 조용히 지나간다).
+        3: (
+            on: LevelReached(3),
+            when: Actor(1),
+            then: [GrantSkill(skill: 9)],
         ),
     },
 )

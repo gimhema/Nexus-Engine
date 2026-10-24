@@ -122,6 +122,12 @@ pub enum Rejection {
     NotDead,
     /// 이 직업은 입을 수 없는 장비 (R2).
     ClassRestricted,
+    /// 배우지 않은 스킬 — 직업이 있는 유닛은 배운 스킬과 기본 공격만 쓴다 (R3).
+    SkillNotLearned,
+    /// 이미 최대 레벨인 스킬 (R3).
+    SkillMaxed,
+    /// 배울 수 없는 스킬 — 직업이 맞지 않거나 습득 조건이 맞지 않는다 (R3).
+    SkillRequirement,
 }
 
 /// tick 동안 일어난 일.
@@ -186,6 +192,14 @@ pub enum Event {
     },
     /// 레벨이 올랐다 — HP·MP 가 가득 찬다. 한 번에 여러 레벨이 오르면 `from` 이 `level - 1` 보다 작다.
     LeveledUp { unit: Entity, from: u32, level: u32 },
+    /// 스킬을 배웠거나 레벨이 올랐다 (R3). `level` 은 새 레벨.
+    SkillLearned {
+        unit: Entity,
+        skill: SkillId,
+        level: u32,
+    },
+    /// 스킬을 잊었다 (R3).
+    SkillForgotten { unit: Entity, skill: SkillId },
     /// 트리거가 일어났다 (R1) — 조건이 맞아 효과를 적용했다. `subject` 는 대상 유닛.
     TriggerFired { trigger: TriggerId, subject: Entity },
     /// 진행 플래그가 바뀌었다 (R1). `unit` 이 `None` 이면 월드 플래그다.

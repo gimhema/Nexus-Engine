@@ -144,6 +144,12 @@ pub enum Condition {
     /// 하나라도 참 (빈 목록은 거짓).
     Any(Vec<Condition>),
     Not(Box<Condition>),
+    /// 대상이 그 스킬을 `value` 레벨과 비교해 (배우지 않았으면 0, R3).
+    SkillLevel {
+        skill: crate::combat::SkillId,
+        cmp: Cmp,
+        value: u32,
+    },
 }
 
 /// 한다 — 대상 유닛(캐릭터 플래그·아이템·경험치)이나 월드(월드 플래그)를 바꾼다.
@@ -169,6 +175,14 @@ pub enum Effect {
     TakeItem { item: ItemId, count: u32 },
     /// 경험치 — 레벨업 규칙은 처치 경험치와 같다. 죽은 대상은 받지 않는다.
     GiveExp(u32),
+    /// 스킬을 배운다 — 이미 배웠으면 `levels` 만큼 올린다 (최대 레벨에서 멈춘다, R3).
+    /// 직업·습득 조건이 맞지 않으면 아무 일도 없다 (다른 효과처럼 조용히).
+    GrantSkill {
+        skill: crate::combat::SkillId,
+        levels: u32,
+    },
+    /// 스킬을 잊는다 (R3).
+    RemoveSkill { skill: crate::combat::SkillId },
 }
 
 /// 언제 — 이 tick 에 일어난 일 중 무엇에 반응하는가. 반응한 유닛이 **대상**이 된다.

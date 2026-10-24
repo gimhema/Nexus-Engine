@@ -35,6 +35,7 @@ mod screenshot;
 mod script;
 mod script_editor;
 mod sheet_viewer;
+mod skill_file;
 mod sprites;
 mod stat_designer;
 mod table_editor;
@@ -1232,6 +1233,9 @@ impl Editor {
         if let Some(action) = actions.inventory {
             session.inventory(action);
         }
+        if let Some((skill, slot)) = actions.hotbar {
+            session.assign_hotbar(skill, slot);
+        }
         if let Some(key) = actions.skill_key {
             session.use_skill(key);
         }
@@ -1669,6 +1673,11 @@ impl Editor {
             Step::Skill(key) => {
                 if let Some(play) = self.play.as_mut() {
                     play.use_skill(key);
+                }
+            }
+            Step::Hotbar { key, skill } => {
+                if let Some(play) = self.play.as_mut() {
+                    play.assign_hotbar(nexus_sim::SkillId(skill), key.checked_sub(1));
                 }
             }
             Step::TogglePanels => self.hide_panels = !self.hide_panels,

@@ -178,6 +178,8 @@ pub(crate) struct UiActions {
     pub(crate) open_level: Option<String>,
     /// 플레이 중 인벤토리 패널 조작.
     pub(crate) inventory: Option<InventoryAction>,
+    /// 플레이 중 스킬 창에서 단축키 배치 `(스킬, 칸)` — 칸이 `None` 이면 뺀다 (R3).
+    pub(crate) hotbar: Option<(nexus_sim::SkillId, Option<usize>)>,
     pub(crate) reset_view: bool,
     /// 선택 항목(없으면 전체 마커)이 화면에 들어오도록 카메라를 맞춘다.
     pub(crate) frame_selection: bool,
@@ -1455,6 +1457,43 @@ fn play_inspector(ui: &mut egui::Ui, play: &PlaySession, actions: &mut UiActions
             .map(|(name, v)| format!("{name} {v}"))
             .collect();
         ui.monospace(format!("{class}  {}", stats.join("  ")));
+    }
+
+    // 스킬 (R3) — 배운 스킬과 레벨, 단축키 배치는 플레이어가 직접 한다.
+    ui.add_space(6.0);
+    ui.strong("스킬");
+    let skills = play.skill_lines();
+    if skills.is_empty() {
+        ui.weak("배운 스킬이 없습니다");
+    }
+    for line in skills {
+        ui.horizontal(|ui| {
+            ui.label(format!(
+                "{} Lv{}/{} · MP {}",
+                line.name, line.level, line.max_level, line.mp_cost
+            ));
+            let shown = line
+                .slot
+                .map_or_else(|| String::from("—"), |i| (i + 1).to_string());
+            egui::ComboBox::from_id_salt(("hotbar", line.skill.0))
+                .width(40.0)
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(line.slot.is_none(), "—").clicked() {
+                        actions.hotbar = Some((line.skill, None));
+                    }
+                    for i in 0..crate::play::HOTBAR_SLOTS {
+                        if ui
+                            .selectable_label(line.slot == Some(i), (i + 1).to_string())
+                            .clicked()
+                        {
+                            actions.hotbar = Some((line.skill, Some(i)));
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("단축키 칸 — 그 칸에 있던 스킬은 밀려난다");
+        });
     }
 
     ui.add_space(6.0);

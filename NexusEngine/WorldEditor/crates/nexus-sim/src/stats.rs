@@ -754,6 +754,8 @@ mod tests {
                 0.0,
                 UnitDef {
                     class: Some(WARRIOR),
+                    // 직업이 있는 유닛은 배운 스킬과 기본 공격만 쓴다 (R3).
+                    basic_attack: Some(SkillId(1)),
                     // 직업이 있으면 이 수치는 쓰이지 않는다.
                     max_hp: 9_999,
                     attack: 9_999,
