@@ -262,6 +262,13 @@ fn plan_actor(root: &Path, op: &FileOp) -> Result<Plan, String> {
                     users.join(", ")
                 ));
             }
+            let triggers = crate::game_data::triggers_using(&rules, None, Some(id))?;
+            if !triggers.is_empty() {
+                return Err(format!(
+                    "이 액터를 쓰는 트리거가 있어 지우지 않습니다 — {}",
+                    trigger_list(&triggers)
+                ));
+            }
             let (rules2, gone_rules) = crate::ron_patch::remove_entry(&rules, "actors", id)?;
             let (display2, gone_display) = crate::ron_patch::remove_entry(&display, "actors", id)?;
             GameData::parse(&rules2, &display2)?;
@@ -340,6 +347,29 @@ fn plan_actor(root: &Path, op: &FileOp) -> Result<Plan, String> {
             }
             p.steps
                 .push(format!("#{id} {} → #{new_id} (두 표)", op.asset.name));
+            // 트리거 (R1) — `Killed(actor: Some(N))` 와 `Actor(N)` 두 모양뿐이다. 닫는 괄호까지 넣어
+            // 바꾸므로 10 을 바꾸다 100 을 건드리지 않는다. 다른 모양으로 적힌 것이 남으면 거부한다.
+            let triggers = crate::game_data::triggers_using(&rules2, None, Some(id))?;
+            if !triggers.is_empty() {
+                for (from, to) in [
+                    (
+                        format!("actor: Some({id})"),
+                        format!("actor: Some({new_id})"),
+                    ),
+                    (format!("Actor({id})"), format!("Actor({new_id})")),
+                ] {
+                    rules2 = rules2.replace(&from, &to);
+                }
+                let left = crate::game_data::triggers_using(&rules2, None, Some(id))?;
+                if !left.is_empty() {
+                    return Err(format!(
+                        "{} 안의 #{id} 를 고쳐 쓰지 못했습니다 (적힌 모양이 다름) — 손으로 고친 뒤 다시 하세요",
+                        trigger_list(&left)
+                    ));
+                }
+                p.steps
+                    .push(format!("고쳐 씀: {} (rules.ron)", trigger_list(&triggers)));
+            }
             // 마커 종류의 기본 액터.
             let mut settings = crate::game_data::settings_form(&rules2)?;
             if settings.default_actors.contains(&id) {
@@ -481,6 +511,10 @@ fn table_users(
             if tables.starting_kit.contains(&id) {
                 out.push(String::from("시작 소지품"));
             }
+            let triggers = crate::game_data::triggers_using(rules, Some(id), None)?;
+            if !triggers.is_empty() {
+                out.push(trigger_list(&triggers));
+            }
         }
         Tab::Skills => {
             for (a, f) in &actors {
@@ -501,6 +535,12 @@ fn table_users(
         }
     }
     Ok(out)
+}
+
+/// `트리거 #1, #2` — 사람이 읽을 목록.
+fn trigger_list(ids: &[u32]) -> String {
+    let list: Vec<String> = ids.iter().map(|i| format!("#{i}")).collect();
+    format!("트리거 {}", list.join(", "))
 }
 
 /// 계획을 실행한다. 휴지통을 썼으면 그 폴더를 돌려준다.
@@ -882,6 +922,9 @@ mod tests {
         // 마커 종류의 기본 액터 (슬라임 100 = Monster 기본) → default_actors 가 따라간다.
         apply(&sb.0, &plan(&sb.0, &rename("actor:100", "110")).unwrap()).unwrap();
         assert!(sb.read(RULES_PATH).contains("Monster: 110,"));
+        // 트리거가 가리키는 번호도 따라간다 (R1).
+        assert!(sb.read(RULES_PATH).contains("Killed(actor: Some(110))"));
+        assert!(!sb.read(RULES_PATH).contains("Some(100)"));
 
         // 플레이어 1 → 2 — 저장 파일의 조작 액터와 Player 기본값.
         std::fs::create_dir_all(sb.0.join("saves")).unwrap();
@@ -894,6 +937,10 @@ mod tests {
         let save = crate::save_file::from_ron(&sb.read("saves/player.save.ron")).unwrap();
         assert_eq!(save.actor, crate::scene::ActorId::new(2));
         assert!(sb.read(RULES_PATH).contains("Player: 2,"));
+        assert!(
+            sb.read(RULES_PATH).contains("when: Actor(2),"),
+            "트리거 조건도"
+        );
         GameData::parse(&sb.read(RULES_PATH), &sb.read(DISPLAY_PATH)).unwrap();
 
         // 거부 — 있는 번호, 0, 같은 번호, 숫자 아님.
@@ -1193,10 +1240,29 @@ mod tests {
         assert!(err.contains("드롭 표 #1"), "{err}");
         let err = plan(&sb.0, &op(OpKind::Delete, AssetKind::Item, "item:501", "")).unwrap_err();
         assert!(err.contains("시작 소지품"), "{err}");
+        assert!(
+            err.contains("트리거 #2"),
+            "보상으로 주는 트리거도 쓰는 곳이다: {err}"
+        );
         let err = plan(&sb.0, &op(OpKind::Delete, AssetKind::Skill, "skill:1", "")).unwrap_err();
         assert!(err.contains("플레이어 공격"), "{err}");
         let err = plan(&sb.0, &op(OpKind::Delete, AssetKind::Loot, "loot:1", "")).unwrap_err();
         assert!(err.contains("액터 #100"), "{err}");
+
+        // 트리거만 가리키는 액터도 지우지 않는다 (R1) — 늪 슬라임 101 을 트리거가 세게 만든다.
+        let rules = sb.read(RULES_PATH).replacen(
+            "triggers: {",
+            "triggers: {\n        9: (on: Killed(actor: Some(101)), then: [GiveExp(1)]),",
+            1,
+        );
+        std::fs::write(sb.0.join(RULES_PATH), rules).unwrap();
+        std::fs::remove_file(sb.0.join("zones/village.zone.ron")).unwrap(); // 마커가 쓰는 것은 따로 시험한다
+        let err = plan(
+            &sb.0,
+            &op(OpKind::Delete, AssetKind::Actor, "actor:101", ""),
+        )
+        .unwrap_err();
+        assert!(err.contains("트리거 #9"), "{err}");
     }
 
     #[test]

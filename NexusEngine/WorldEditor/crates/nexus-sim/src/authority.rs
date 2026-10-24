@@ -18,9 +18,10 @@ use nexus_core::{Entity, Vec2};
 
 use crate::ai;
 use crate::combat::SkillId;
-use crate::item::{BagKind, EquipSlot, ItemStack};
+use crate::item::{BagKind, EquipSlot, ItemId, ItemStack};
 use crate::progress::Progress;
 use crate::script::ScriptHost;
+use crate::trigger::{FlagId, TriggerId};
 use crate::world::SimWorld;
 
 /// 플레이어(또는 AI)가 하려는 일. **요청일 뿐** — 받아들일지는 Authority 가 정한다.
@@ -181,8 +182,24 @@ pub enum Event {
         amount: u32,
         progress: Progress,
     },
-    /// 레벨이 올랐다 — HP·MP 가 가득 찬다.
-    LeveledUp { unit: Entity, level: u32 },
+    /// 레벨이 올랐다 — HP·MP 가 가득 찬다. 한 번에 여러 레벨이 오르면 `from` 이 `level - 1` 보다 작다.
+    LeveledUp { unit: Entity, from: u32, level: u32 },
+    /// 트리거가 일어났다 (R1) — 조건이 맞아 효과를 적용했다. `subject` 는 대상 유닛.
+    TriggerFired { trigger: TriggerId, subject: Entity },
+    /// 진행 플래그가 바뀌었다 (R1). `unit` 이 `None` 이면 월드 플래그다.
+    FlagChanged {
+        unit: Option<Entity>,
+        flag: FlagId,
+        value: i32,
+    },
+    /// 트리거 효과로 아이템을 받았다 (R1). 가방에 다 들어가지 않은 것은 `ItemSpawned` 로 발밑에 떨어졌다.
+    ItemReceived { unit: Entity, stack: ItemStack },
+    /// 트리거 효과로 아이템을 내주었다 (R1). `count` 는 실제로 뺀 개수.
+    ItemTaken {
+        unit: Entity,
+        item: ItemId,
+        count: u32,
+    },
     /// 쓰러진 유닛이 일어났다 (`Intent::Revive`). 핸들은 그대로다 — 리스폰과 다르다.
     Revived {
         unit: Entity,
@@ -281,6 +298,9 @@ impl Authority for LocalAuthority {
             }
         }
         self.world.step(dt, &mut events);
+        // 트리거는 맨 끝 — 이번 tick 에 일어난 일이 전부 모인 뒤에 본다 (R1). 이동은 step 이
+        // 위치를 바꾼 뒤라야 "들어왔다" 를 판정할 수 있다.
+        self.world.run_triggers(&mut events);
         self.ticks += 1;
         if self.scripts.is_some() {
             self.last_events.clone_from(&events);

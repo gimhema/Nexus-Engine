@@ -27,12 +27,13 @@ use std::time::Duration;
 
 use nexus_core::Entity;
 use nexus_sim::{
-    AiKind, EquipSlot, FactionId, Growth, ItemDef, ItemId, ItemKind as SimItemKind, LootEntry,
-    LootTableId, Relation, SimWorld, SkillDef, SkillId, UnitDef,
+    ActorType, AiKind, EquipSlot, FactionId, Growth, ItemDef, ItemId, ItemKind as SimItemKind,
+    LootEntry, LootTableId, Relation, SimWorld, SkillDef, SkillId, TriggerDef, TriggerId, UnitDef,
 };
 use serde::Deserialize;
 
 use crate::scene::{ActorId, ItemKind};
+use crate::trigger_file::{self, TriggerFile};
 
 /// 지금 읽을 수 있는 형식 번호.
 const FORMAT_VERSION: u32 = 1;
@@ -95,6 +96,9 @@ struct RulesFile {
     ground_item_ms: u32,
     #[serde(default)]
     revive: ReviveFile,
+    /// 트리거 — 언제·만약·한다 (R1). 번호 순으로 판정한다. 형식은 `trigger_file` 모듈 doc.
+    #[serde(default)]
+    triggers: BTreeMap<u32, TriggerFile>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -410,6 +414,8 @@ pub(crate) struct GameData {
     revive: RevivePolicy,
     /// 경로 → 스크립트 본문. 컴파일은 플레이를 시작할 때 한다.
     script_sources: BTreeMap<String, String>,
+    /// 트리거 (R1) — 번호 순.
+    triggers: Vec<(TriggerId, TriggerDef)>,
 }
 
 impl GameData {
@@ -661,6 +667,11 @@ impl GameData {
             r.ground_item_ms <= MAX_RESPAWN_MS,
             String::from("ground_item_ms 는 1시간 이하"),
         );
+        errors.extend(trigger_file::validate(
+            &r.triggers,
+            |i| r.items.contains_key(&i),
+            |a| r.actors.contains_key(&a),
+        ));
         if !errors.is_empty() {
             return Err(format!("게임 데이터 오류 — {}", errors.join(" / ")));
         }
@@ -714,7 +725,13 @@ impl GameData {
             actors: r
                 .actors
                 .iter()
-                .map(|(id, u)| (ActorId::new(*id), u.into()))
+                .map(|(id, u)| {
+                    let def = UnitDef {
+                        actor: ActorType(*id),
+                        ..u.into()
+                    };
+                    (ActorId::new(*id), def)
+                })
                 .collect(),
             default_actors: r
                 .default_actors
@@ -791,6 +808,7 @@ impl GameData {
                 protect_ms: r.revive.protect_ms,
             },
             script_sources: BTreeMap::new(),
+            triggers: trigger_file::to_sim(&r.triggers),
         })
     }
 
@@ -846,6 +864,9 @@ impl GameData {
         }
         for (id, entries) in &self.loot {
             world.define_loot(*id, entries.clone());
+        }
+        for (id, def) in &self.triggers {
+            world.define_trigger(*id, def.clone());
         }
     }
 
@@ -1063,8 +1084,10 @@ impl From<ItemFile> for ItemDef {
 }
 
 impl From<&UnitFile> for UnitDef {
+    /// 수치만 옮긴다 — 액터 번호는 표의 키라 파일 항목 안에 없다. 표를 읽는 쪽이 채운다.
     fn from(u: &UnitFile) -> Self {
         Self {
+            actor: ActorType::default(),
             move_speed: u.move_speed,
             max_hp: u.max_hp,
             max_mp: u.max_mp,
@@ -1807,6 +1830,25 @@ fn set_or_append(text: &str, field: &str, value: &str) -> Result<String, String>
         &text[..end],
         &text[end..]
     ))
+}
+
+/// `rules.ron` 의 트리거 중 그 아이템(`item`)이나 액터(`actor`)를 가리키는 것의 번호 (R1).
+/// 콘텐츠 브라우저가 지우기를 거부하거나 번호 바꾸기를 확인할 때 쓴다.
+pub(crate) fn triggers_using(
+    rules: &str,
+    item: Option<u32>,
+    actor: Option<u32>,
+) -> Result<Vec<u32>, String> {
+    let r: RulesFile = ron::from_str(rules).map_err(|e| format!("{RULES_PATH}: {e}"))?;
+    Ok(r.triggers
+        .iter()
+        .filter(|(_, t)| {
+            let refs = trigger_file::refs(t);
+            item.is_some_and(|i| refs.items.contains(&i))
+                || actor.is_some_and(|a| refs.actors.contains(&a))
+        })
+        .map(|(id, _)| *id)
+        .collect())
 }
 
 /// 진영 이름 표 — `display.ron` 의 `factions` (P19). 블록이 없으면 빈 표.

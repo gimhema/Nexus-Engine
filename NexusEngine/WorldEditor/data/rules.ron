@@ -156,4 +156,32 @@
     revive: (delay_ms: 3000, hp_percent: 100, exp_loss_percent: 0, protect_ms: 3000),
     // 땅에 떨어진 아이템(드롭·버린 것)이 사라지기까지 ms. 0 이면 영영 남는다.
     ground_item_ms: 60000,
+
+    // 트리거 — 언제(on) · 만약(when, 적지 않으면 늘 참) · 한다(then) (R1).
+    // 그 tick 의 일이 다 끝난 뒤 번호 순으로 본다 — 앞 번호가 바꾼 플래그를 뒤 번호가 본다.
+    // "한 번만" 은 플래그로 막는다 (조건에 Not(Flag(… 1)), 효과에 SetFlag(… 1)). 플래그는 저장 파일에 남는다.
+    // 플래그 번호는 서버와 같은 ID 공간이다. 지금 쓰는 번호:
+    //   캐릭터 1 = 슬라임 처치 수, 2 = 슬라임 사냥 보상 받음
+    triggers: {
+        // 플레이어가 슬라임을 쓰러뜨릴 때마다 센다.
+        1: (
+            on: Killed(actor: Some(100)),
+            when: Actor(1),
+            then: [AddFlag(scope: Character, flag: 1, delta: 1)],
+        ),
+        // 다섯 마리째에 한 번만 보상 — 빨간 포션 3개와 경험치 100.
+        2: (
+            on: Killed(actor: Some(100)),
+            when: All([
+                Actor(1),
+                Flag(scope: Character, flag: 1, cmp: Ge, value: 5),
+                Not(Flag(scope: Character, flag: 2, cmp: Eq, value: 1)),
+            ]),
+            then: [
+                GiveItem(item: 501, count: 3),
+                GiveExp(100),
+                SetFlag(scope: Character, flag: 2, value: 1),
+            ],
+        ),
+    },
 )

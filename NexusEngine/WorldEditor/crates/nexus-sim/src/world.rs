@@ -13,7 +13,7 @@
 //! [`Authority`](crate::Authority) 에 넘기는 길만 있다. 예외는 스폰/디스폰 — 존을 읽어
 //! 초기 상태를 만드는 **설정 작업**이라 공개한다.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 use nexus_core::units::dir_to_heading;
@@ -28,6 +28,9 @@ use crate::item::{
 use crate::loot::{self, LootEntry, LootTableId, Rng};
 use crate::progress::Progress;
 use crate::tilemap::TileMap;
+use crate::trigger::{
+    Condition, Effect, FlagId, FlagScope, Flags, Happening, MAX_ROUNDS, TriggerDef, TriggerId,
+};
 use crate::unit::{AiKind, AiState, Unit, UnitDef};
 
 /// 도착 판정 거리 (m). 부동소수 오차로 경유점 바로 앞에서 멈추지 않게 한다.
@@ -59,6 +62,10 @@ pub struct SimWorld {
     ground_item_lifetime: Option<Duration>,
     /// 시뮬레이션 시계 — tick 마다 `dt` 만큼 정확히 늘어난다. 쿨타임의 기준.
     now: Duration,
+    /// 월드 범위 진행 플래그 (R1).
+    world_flags: Flags,
+    /// 트리거 — 번호 순으로 판정한다 (R1).
+    triggers: BTreeMap<TriggerId, TriggerDef>,
 }
 
 impl SimWorld {
@@ -77,6 +84,83 @@ impl SimWorld {
             pickup_range: DEFAULT_PICKUP_RANGE,
             ground_item_lifetime: None,
             now: Duration::ZERO,
+            world_flags: Flags::default(),
+            triggers: BTreeMap::new(),
+        }
+    }
+
+    /// 트리거를 등록한다 (설정 작업). 같은 번호면 갈아 끼운다.
+    pub fn define_trigger(&mut self, id: TriggerId, def: TriggerDef) {
+        self.triggers.insert(id, def);
+    }
+
+    /// 등록된 트리거 — 번호 순.
+    pub fn triggers(&self) -> impl Iterator<Item = (TriggerId, &TriggerDef)> {
+        self.triggers.iter().map(|(id, t)| (*id, t))
+    }
+
+    /// 월드 범위 플래그 하나 (없으면 0).
+    #[must_use]
+    pub fn world_flag(&self, flag: FlagId) -> i32 {
+        self.world_flags.get(flag)
+    }
+
+    /// 월드 범위 플래그 전부 — 저장할 때.
+    #[must_use]
+    pub fn world_flags(&self) -> &Flags {
+        &self.world_flags
+    }
+
+    /// 월드 플래그를 그대로 심는다 (설정 작업 — 저장 파일에서 되살릴 때).
+    pub fn set_world_flag(&mut self, flag: FlagId, value: i32) {
+        self.world_flags.set(flag, value);
+    }
+
+    /// 캐릭터 플래그를 그대로 심는다 (설정 작업 — 저장 파일에서 되살릴 때).
+    pub fn set_unit_flag(&mut self, unit: Entity, flag: FlagId, value: i32) {
+        if let Some(u) = self.unit_mut(unit) {
+            u.flags.set(flag, value);
+        }
+    }
+
+    /// 조건을 판정한다 — `subject` 는 대상 유닛. 상태를 바꾸지 않으므로 UI 도 쓸 수 있다
+    /// (이 NPC 기능을 보여 줄지 등).
+    ///
+    /// 대상이 없으면(디스폰) **유닛을 보는 조건은 거짓**이다. 월드 플래그는 그대로 판정한다.
+    #[must_use]
+    pub fn check(&self, condition: &Condition, subject: Entity) -> bool {
+        let unit = self.unit(subject);
+        match condition {
+            Condition::Always => true,
+            Condition::Flag {
+                scope,
+                flag,
+                cmp,
+                value,
+            } => {
+                let have = match scope {
+                    FlagScope::Character => match unit {
+                        Some(u) => u.flags.get(*flag),
+                        None => return false,
+                    },
+                    FlagScope::World => self.world_flags.get(*flag),
+                };
+                cmp.test(i64::from(have), i64::from(*value))
+            }
+            Condition::Level { cmp, value } => {
+                unit.is_some_and(|u| cmp.test(i64::from(u.progress.level()), i64::from(*value)))
+            }
+            Condition::HasItem { item, count } => unit.is_some_and(|u| {
+                let inv = &u.inventory;
+                inv.bag(BagKind::Consumable).count_of(*item)
+                    + inv.bag(BagKind::Equipment).count_of(*item)
+                    >= *count
+            }),
+            Condition::Actor(actor) => unit.is_some_and(|u| u.def.actor == *actor),
+            Condition::Faction(faction) => unit.is_some_and(|u| u.def.faction == *faction),
+            Condition::All(all) => all.iter().all(|c| self.check(c, subject)),
+            Condition::Any(any) => any.iter().any(|c| self.check(c, subject)),
+            Condition::Not(c) => !self.check(c, subject),
         }
     }
 
@@ -539,6 +623,7 @@ impl SimWorld {
         let Some(u) = self.unit_mut(unit).filter(|u| u.is_alive()) else {
             return;
         };
+        let from = u.progress.level();
         let levels = u.progress.add(amount);
         let progress = u.progress;
         events.push(Event::ExperienceGained {
@@ -553,6 +638,7 @@ impl SimWorld {
             u.mp_carry = 0;
             events.push(Event::LeveledUp {
                 unit,
+                from,
                 level: progress.level(),
             });
         }
@@ -853,6 +939,170 @@ impl SimWorld {
                 unit,
                 replaces: old,
             });
+        }
+    }
+
+    /// 이번 tick 의 일에 트리거를 맞춰 본다 (R1) — `step` 뒤에 부른다. 판정 순서는 `trigger` 모듈 doc.
+    ///
+    /// 첫 라운드는 이 tick 에 움직인 유닛(들어옴 판정) → 이벤트 순이고, 효과가 낸 이벤트는
+    /// 다음 라운드에서 본다 ([`MAX_ROUNDS`] 까지).
+    pub(crate) fn run_triggers(&mut self, events: &mut Vec<Event>) {
+        if self.triggers.is_empty() {
+            return;
+        }
+        let ids: Vec<TriggerId> = self.triggers.keys().copied().collect();
+        let mut happenings: Vec<Happening> = self
+            .units()
+            .filter(|(_, u)| u.prev_pos != u.pos)
+            .map(|(unit, u)| Happening::Moved {
+                unit,
+                from: u.prev_pos,
+                to: u.pos,
+            })
+            .collect();
+        let mut seen = 0;
+        for _ in 0..MAX_ROUNDS {
+            let end = events.len();
+            happenings.extend(
+                events[seen..end]
+                    .iter()
+                    .filter_map(|e| self.happening(e, &events[..end])),
+            );
+            seen = end;
+            if happenings.is_empty() {
+                break;
+            }
+            for happened in std::mem::take(&mut happenings) {
+                for &id in &ids {
+                    let Some(def) = self.triggers.get(&id) else {
+                        continue;
+                    };
+                    let Some(subject) = happened.matches(def.on) else {
+                        continue;
+                    };
+                    if !self.check(&def.when, subject) {
+                        continue;
+                    }
+                    let effects = def.then.clone();
+                    events.push(Event::TriggerFired {
+                        trigger: id,
+                        subject,
+                    });
+                    for effect in effects {
+                        self.apply_effect(effect, subject, events);
+                    }
+                }
+            }
+        }
+    }
+
+    /// 트리거가 반응할 수 있는 이벤트면 그 일. `batch` 는 같은 tick 의 이벤트 — 쓰러진 쪽이 같은 tick 에
+    /// 리스폰해 핸들이 바뀌었으면 거기서 새 유닛을 찾아 타입을 읽는다.
+    fn happening(&self, event: &Event, batch: &[Event]) -> Option<Happening> {
+        match *event {
+            Event::Died { unit, killer } => {
+                let victim = self
+                    .unit(unit)
+                    .or_else(|| {
+                        batch.iter().find_map(|e| match *e {
+                            Event::Respawned {
+                                unit: new,
+                                replaces,
+                            } if replaces == unit => self.unit(new),
+                            _ => None,
+                        })
+                    })
+                    .map(|u| u.def.actor);
+                Some(Happening::Killed { killer, victim })
+            }
+            Event::LeveledUp { unit, from, level } => Some(Happening::Leveled {
+                unit,
+                from,
+                to: level,
+            }),
+            Event::PickedUp { unit, stack, .. } => Some(Happening::PickedUp {
+                unit,
+                item: stack.item,
+            }),
+            _ => None,
+        }
+    }
+
+    /// 효과 하나를 적용한다. 바뀐 것만 이벤트로 알린다 (같은 값으로 `SetFlag` 하면 조용하다).
+    fn apply_effect(&mut self, effect: Effect, subject: Entity, events: &mut Vec<Event>) {
+        match effect {
+            Effect::SetFlag { scope, flag, value } => {
+                self.write_flag(scope, flag, subject, |_| value, events);
+            }
+            Effect::AddFlag { scope, flag, delta } => {
+                self.write_flag(scope, flag, subject, |v| v.saturating_add(delta), events);
+            }
+            Effect::GiveItem { item, count } => {
+                let Some(def) = self.items.get(&item).copied() else {
+                    return;
+                };
+                let Some(u) = self.unit_mut(subject).filter(|_| count > 0) else {
+                    return;
+                };
+                let stack = ItemStack { item, count };
+                let bag = u.inventory.bag_mut(def.bag());
+                if bag.fits(item, count, def.stack_limit()) {
+                    bag.add(item, count, def.stack_limit());
+                    events.push(Event::ItemReceived {
+                        unit: subject,
+                        stack,
+                    });
+                } else {
+                    // 가방이 차도 보상을 잃지 않는다 — 발밑에 떨어뜨려 비운 뒤 줍게 한다.
+                    let pos = u.pos;
+                    let ground = self.spawn_ground_item(pos, stack);
+                    events.push(Event::ItemSpawned {
+                        item: ground,
+                        stack,
+                        pos,
+                    });
+                }
+            }
+            Effect::TakeItem { item, count } => {
+                let Some(def) = self.items.get(&item).copied() else {
+                    return;
+                };
+                let Some(u) = self.unit_mut(subject) else {
+                    return;
+                };
+                let taken = u.inventory.bag_mut(def.bag()).remove(item, count);
+                if taken > 0 {
+                    events.push(Event::ItemTaken {
+                        unit: subject,
+                        item,
+                        count: taken,
+                    });
+                }
+            }
+            Effect::GiveExp(amount) => self.grant_exp(subject, amount, events),
+        }
+    }
+
+    fn write_flag(
+        &mut self,
+        scope: FlagScope,
+        flag: FlagId,
+        subject: Entity,
+        f: impl FnOnce(i32) -> i32,
+        events: &mut Vec<Event>,
+    ) {
+        let (flags, unit) = match scope {
+            FlagScope::Character => match self.unit_mut(subject) {
+                Some(u) => (&mut u.flags, Some(subject)),
+                None => return,
+            },
+            FlagScope::World => (&mut self.world_flags, None),
+        };
+        let old = flags.get(flag);
+        let value = f(old);
+        if value != old {
+            flags.set(flag, value);
+            events.push(Event::FlagChanged { unit, flag, value });
         }
     }
 

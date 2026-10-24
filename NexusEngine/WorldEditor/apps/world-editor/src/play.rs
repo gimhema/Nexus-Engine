@@ -320,6 +320,8 @@ impl PlaySession {
                 .into_iter()
                 .filter_map(|slot| inventory?.equipped(slot))
                 .collect(),
+            flags: u.map(|u| u.flags().iter().collect()).unwrap_or_default(),
+            world_flags: self.world().world_flags().iter().collect(),
         }
     }
 
@@ -766,7 +768,7 @@ impl PlaySession {
                 progress.exp(),
                 progress.exp_to_next()
             ),
-            Event::LeveledUp { unit, level } if unit == self.player => {
+            Event::LeveledUp { unit, level, .. } if unit == self.player => {
                 format!("레벨 {level} 달성 — HP 가 가득 찼다")
             }
             // 플레이어는 이름 없이 (포션·회복 스킬), 다른 유닛은 이름을 붙인다 (범위 회복).
@@ -1237,6 +1239,12 @@ fn restore(world: &mut SimWorld, player: Entity, save: &SaveData) {
     world.set_hp(player, save.hp);
     if let Some(mp) = save.mp {
         world.set_mp(player, mp);
+    }
+    for &(flag, value) in &save.flags {
+        world.set_unit_flag(player, flag, value);
+    }
+    for &(flag, value) in &save.world_flags {
+        world.set_world_flag(flag, value);
     }
 }
 #[cfg(test)]
@@ -1915,6 +1923,52 @@ mod tests {
         assert_eq!(me.pos(), Vec2::ZERO, "스폰 지점에서 시작한다");
         // 레벨 4 = 성장치 ×3 (rules.ron: HP +40/레벨).
         assert_eq!(me.max_hp(), 200 + 40 * 3);
+    }
+
+    #[test]
+    fn the_slime_hunt_trigger_rewards_the_fifth_kill_and_the_flags_are_saved() {
+        // rules.ron 트리거 1·2 (R1): 플래그 1 = 슬라임 처치 수, 다섯 마리째에 포션 3개·플래그 2.
+        use nexus_sim::FlagId;
+        const RED_POTION: ItemId = ItemId(501);
+        let mut save = session().save_data(String::new());
+        save.flags = vec![(FlagId(1), 4)];
+        save.world_flags = vec![(FlagId(40), 9)];
+        let mut s = PlaySession::start(
+            &Scene::server_default(),
+            Camera2d::default(),
+            GameData::embedded(),
+            PlayOptions {
+                spawn: None,
+                save: Some(save),
+            },
+        )
+        .unwrap();
+        let me = s.player();
+        let potions = |s: &PlaySession| {
+            let u = s.world().unit(me).unwrap();
+            u.inventory().bag(BagKind::Consumable).count_of(RED_POTION)
+        };
+        let before = potions(&s);
+        let slime = find(&s, "슬라임");
+        s.click(s.world().unit(slime).unwrap().pos(), 0.01);
+        for _ in 0..900 {
+            s.tick(DT, None);
+            if !s.world().unit(slime).unwrap().is_alive() {
+                break;
+            }
+        }
+        assert!(!s.world().unit(slime).unwrap().is_alive(), "{:?}", s.log);
+        let u = s.world().unit(me).unwrap();
+        assert_eq!((u.flag(FlagId(1)), u.flag(FlagId(2))), (5, 1));
+        assert_eq!(potions(&s), before + 3, "보상 포션");
+
+        let again = s.save_data(String::new());
+        assert_eq!(again.flags, [(FlagId(1), 5), (FlagId(2), 1)]);
+        assert_eq!(
+            again.world_flags,
+            [(FlagId(40), 9)],
+            "월드 플래그도 이어진다"
+        );
     }
 
     #[test]

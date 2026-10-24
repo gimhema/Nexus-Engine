@@ -12,6 +12,15 @@ use crate::faction::FactionId;
 use crate::item::Inventory;
 use crate::loot::LootTableId;
 use crate::progress::{Growth, Progress};
+use crate::trigger::{FlagId, Flags};
+
+/// 액터 타입 번호 — 데이터(`rules.ron` 의 `actors`)의 키. 서버 테이블과 같은 ID 공간이다.
+///
+/// 시뮬레이션은 수치를 [`UnitDef`] 로 받으므로 이 번호로 규칙을 고르지 않는다.
+/// "고블린을 쓰러뜨렸다" 같은 **조건 판정**에만 쓴다 (`Condition::Actor`, `On::Killed`).
+/// `0` 은 정하지 않음.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ActorType(pub u32);
 
 /// 전투 AI 행동 유형. 서버 `EAIType` 과 같은 의미다.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -31,6 +40,8 @@ pub enum AiKind {
 /// aggroRange) 와 같은 의미다.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct UnitDef {
+    /// 이 수치를 가져온 액터 타입 (조건 판정용).
+    pub actor: ActorType,
     /// 이동 속도 (m/s). 음수·NaN 은 0 으로 본다.
     pub move_speed: f32,
     /// 최대 HP. 0 은 1 로 본다 — 태어나자마자 죽은 유닛은 만들지 않는다.
@@ -67,6 +78,7 @@ impl Default for UnitDef {
     /// 움직이지 않고 싸우지 않는 최소 유닛. 실제 수치는 데이터에서 채운다.
     fn default() -> Self {
         Self {
+            actor: ActorType::default(),
             move_speed: 0.0,
             max_hp: 1,
             max_mp: 0,
@@ -157,6 +169,8 @@ pub struct Unit {
     pub(crate) died_at: Option<Duration>,
     /// 이 시각까지 공격받지 않는다 (부활 직후 보호). `None` 이면 보호 없음.
     pub(crate) protected_until: Option<Duration>,
+    /// 캐릭터 범위 진행 플래그 (R1). 리스폰하면 새 유닛이라 비어 있다 — 플레이어는 리스폰하지 않는다.
+    pub(crate) flags: Flags,
 }
 
 impl Unit {
@@ -182,7 +196,20 @@ impl Unit {
             spawn_heading: heading,
             died_at: None,
             protected_until: None,
+            flags: Flags::default(),
         }
+    }
+
+    /// 캐릭터 범위 플래그 하나 (없으면 0).
+    #[must_use]
+    pub fn flag(&self, flag: FlagId) -> i32 {
+        self.flags.get(flag)
+    }
+
+    /// 캐릭터 범위 플래그 전부 — 저장할 때.
+    #[must_use]
+    pub fn flags(&self) -> &Flags {
+        &self.flags
     }
 
     #[must_use]

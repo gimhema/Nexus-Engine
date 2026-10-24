@@ -20,6 +20,7 @@ mod loot;
 mod progress;
 mod script;
 mod tilemap;
+mod trigger;
 mod unit;
 mod world;
 
@@ -33,5 +34,8 @@ pub use loot::{LootEntry, LootTableId};
 pub use progress::{Growth, Progress, exp_to_next};
 pub use script::{ScriptHost, ScriptLog};
 pub use tilemap::{Tile, TileCoord, TileMap};
-pub use unit::{AiKind, Unit, UnitDef};
+pub use trigger::{
+    Cmp, Condition, Effect, FlagId, FlagScope, Flags, MAX_ROUNDS, On, TriggerDef, TriggerId,
+};
+pub use unit::{ActorType, AiKind, Unit, UnitDef};
 pub use world::{DEFAULT_PICKUP_RANGE, SimWorld};

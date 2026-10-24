@@ -177,6 +177,25 @@ impl Bag {
     }
 
     /// 칸에서 하나를 뺀다. 0 이 되면 비운다.
+    /// 같은 아이템을 `count` 개까지 뺀다 — **뒤 칸부터**(앞 칸 번호가 덜 흔들리게). 뺀 개수를 돌려준다.
+    pub(crate) fn remove(&mut self, item: ItemId, count: u32) -> u32 {
+        let mut left = count;
+        for slot in self.slots.iter_mut().rev() {
+            if left == 0 {
+                break;
+            }
+            if let Some(s) = slot.as_mut().filter(|s| s.item == item) {
+                let n = s.count.min(left);
+                s.count -= n;
+                left -= n;
+                if s.count == 0 {
+                    *slot = None;
+                }
+            }
+        }
+        count - left
+    }
+
     pub(crate) fn take_one(&mut self, slot: usize) {
         if let Some(Some(s)) = self.slots.get_mut(slot) {
             s.count -= 1;

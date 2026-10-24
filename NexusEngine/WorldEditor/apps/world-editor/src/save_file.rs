@@ -10,14 +10,16 @@
 //!
 //! # 담는 것
 //!
-//! 액터 타입 · 레벨·경험치 · 현재 HP · 가방(칸 번호 그대로) · 장착 · 마지막 존과 위치.
+//! 액터 타입 · 레벨·경험치 · 현재 HP · 가방(칸 번호 그대로) · 장착 · 마지막 존과 위치 ·
+//! 진행 플래그(R1 — 캐릭터 범위와 월드 범위를 따로). 플래그는 0 이 아닌 것만 적는다.
 //! **게임 수치는 담지 않는다** — HP 상한·공격력은 `rules.ron` 에서 다시 계산된다.
 //! 그래서 데이터를 고치면 저장 파일을 지우지 않아도 새 수치가 적용된다.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use nexus_core::Vec2;
-use nexus_sim::ItemId;
+use nexus_sim::{FlagId, ItemId};
 use serde::{Deserialize, Serialize};
 
 use crate::scene::ActorId;
@@ -47,6 +49,10 @@ pub(crate) struct SaveData {
     pub(crate) bags: Vec<(u16, ItemId, u32)>,
     /// 장착한 장비. 자리는 아이템 정의에서 나오므로 아이템 번호만 적는다.
     pub(crate) equipped: Vec<ItemId>,
+    /// 캐릭터 범위 진행 플래그 (R1) — 번호 순, 0 은 없다.
+    pub(crate) flags: Vec<(FlagId, i32)>,
+    /// 월드 범위 진행 플래그 (R1). 싱글에서는 캐릭터와 같은 파일에 둔다 — MMO 에서는 서버 몫이다.
+    pub(crate) world_flags: Vec<(FlagId, i32)>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -72,6 +78,11 @@ struct SaveFile {
     bags: Vec<SlotFile>,
     #[serde(default)]
     equipped: Vec<u32>,
+    /// 캐릭터 플래그 `번호: 값`. 없는 예전 파일도 읽힌다 (전부 0).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    flags: BTreeMap<u32, i32>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    world_flags: BTreeMap<u32, i32>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -103,6 +114,8 @@ pub(crate) fn to_ron(save: &SaveData) -> String {
             })
             .collect(),
         equipped: save.equipped.iter().map(|i| i.0).collect(),
+        flags: save.flags.iter().map(|(f, v)| (f.0, *v)).collect(),
+        world_flags: save.world_flags.iter().map(|(f, v)| (f.0, *v)).collect(),
     };
     let config = ron::ser::PrettyConfig::new()
         .new_line("\n")
@@ -151,7 +164,17 @@ pub(crate) fn from_ron(text: &str) -> Result<SaveData, String> {
             .map(|s| (s.slot, ItemId(s.item), s.count))
             .collect(),
         equipped: file.equipped.iter().map(|&i| ItemId(i)).collect(),
+        // 0 은 "없음" 과 같다 — 손으로 적은 0 은 버린다.
+        flags: flag_list(&file.flags),
+        world_flags: flag_list(&file.world_flags),
     })
+}
+
+fn flag_list(map: &BTreeMap<u32, i32>) -> Vec<(FlagId, i32)> {
+    map.iter()
+        .filter(|(_, v)| **v != 0)
+        .map(|(f, v)| (FlagId(*f), *v))
+        .collect()
 }
 
 /// `slot` 번 칸의 저장 파일 — 1번은 `saves/player.save.ron`, 2번부터 `saves/player2.save.ron` …
@@ -222,7 +245,25 @@ mod tests {
             pos: Some(Vec2::new(-4.5, 7.25)),
             bags: vec![(0, ItemId(501), 3), (7, ItemId(909), 12)],
             equipped: vec![ItemId(1101)],
+            flags: vec![(FlagId(1), 4), (FlagId(2), 1)],
+            world_flags: vec![(FlagId(30), -1)],
         }
+    }
+
+    #[test]
+    fn a_save_from_before_flags_opens_with_no_flags() {
+        let old = SaveData {
+            flags: Vec::new(),
+            world_flags: Vec::new(),
+            ..sample()
+        };
+        let text = to_ron(&old);
+        assert!(!text.contains("flags"), "빈 플래그는 적지 않는다: {text}");
+        let back = from_ron(&text).unwrap();
+        assert!(back.flags.is_empty() && back.world_flags.is_empty());
+        // 손으로 적은 0 은 "없음" 과 같다.
+        let zero = to_ron(&sample()).replace("1: 4", "1: 0");
+        assert_eq!(from_ron(&zero).unwrap().flags, [(FlagId(2), 1)]);
     }
 
     #[test]

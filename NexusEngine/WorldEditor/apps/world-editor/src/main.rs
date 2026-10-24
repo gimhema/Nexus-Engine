@@ -39,6 +39,7 @@ mod table_editor;
 mod terrain;
 mod tiles;
 mod trash;
+mod trigger_file;
 mod ui;
 mod ui_script;
 mod zone_file;
