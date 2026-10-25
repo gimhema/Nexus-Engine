@@ -65,6 +65,7 @@ const EMBEDDED_SCREENS: &[(&str, &str)] = &[
         "class_select",
         include_str!("../../../ui/class_select.ui.ron"),
     ),
+    ("npc", include_str!("../../../ui/npc.ui.ron")),
 ];
 
 const FORMAT_VERSION: u32 = 1;
@@ -77,6 +78,11 @@ const BAR_BACK: [f32; 4] = [0.05, 0.05, 0.07, 0.85];
 const BAR_EDGE: [f32; 4] = [0.85, 0.87, 0.92, 0.9];
 const TEXT: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const TEXT_DIM: [f32; 4] = [0.62, 0.64, 0.70, 1.0];
+/// 누를 수 없는 목록 줄 (R4b) — 돈이 모자라거나 받을 수 없을 때.
+const TEXT_OFF: [f32; 4] = [0.40, 0.41, 0.45, 1.0];
+/// 크기를 정하지 않은 문단·목록의 폭(UI 픽셀)과 목록 줄 수 (R4b).
+const DEFAULT_LIST_WIDTH: f32 = 200.0;
+const DEFAULT_LIST_ROWS: f32 = 6.0;
 const PANEL_TINT: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 const SLOT_BACK: [f32; 4] = [0.12, 0.12, 0.16, 0.9];
 /// 스킬 칸 채움 — 쓸 수 있을 때 / MP 가 모자랄 때.
@@ -124,6 +130,9 @@ pub(crate) const PLACEHOLDERS: &[&str] = &[
     "revive",
     "class",
     "gold",
+    "npc_name",
+    "npc_profile",
+    "npc_page",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -435,6 +444,13 @@ pub(crate) enum WidgetKind {
     /// 단색 사각형 (sRGB, 알파 포함) — 화면을 어둡게 덮거나 띠를 깔 때.
     /// `size` 가 없으면 **부모 사각형 전체**를 차지한다 (창과 같다).
     Fill { color: (f32, f32, f32, f32) },
+    /// 여러 줄 글 — 폭(`size` 의 너비)에 맞춰 줄을 바꾼다 (R4b, NPC 인사말). 값 이름은 [`Self::Text`] 와 같다.
+    /// `size` 가 없으면 폭 200 UI 픽셀, 높이는 줄 수에 맞춘다. 넘치는 줄은 그리지 않는다.
+    Paragraph { format: String },
+    /// 누를 수 있는 줄 목록 — 지금은 **NPC 창의 지금 쪽**(기능 메뉴·사기·팔기·제작·이동·창고·퀘스트, R4b).
+    /// 줄마다 왼쪽 글·오른쪽 글(값·상태). 누르면 [`Action::NpcRow`]. 넘치는 줄은 그리지 않는다.
+    /// `size` 가 없으면 폭 200, 높이 6줄.
+    List { row_height: u32 },
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -460,6 +476,8 @@ impl WidgetKind {
             Self::Button { .. } => "버튼",
             Self::Image { .. } => "그림",
             Self::Fill { .. } => "색 채움",
+            Self::Paragraph { .. } => "문단",
+            Self::List { .. } => "목록",
         }
     }
 
@@ -531,6 +549,10 @@ pub(crate) enum Action {
     /// 단축키 스킬을 쓴다 — 숫자키 1~9 를 누른 것과 같다. 스킬 칸([`WidgetKind::Skills`])을
     /// 누르면 그 칸의 번호로 이 동작이 난다.
     Skill(u32),
+    /// NPC 창 목록의 그 줄을 누른다 (R4b) — 목록 위젯이 줄마다 낸다. 버튼에 직접 적을 일은 드물다.
+    NpcRow(u32),
+    /// NPC 창을 처음 메뉴로 (R4b) — "뒤로" 버튼.
+    NpcBack,
     /// 아무것도 하지 않는다 — 배치만 해 두는 버튼.
     None,
 }
@@ -547,6 +569,8 @@ impl Action {
             Self::Script { .. } => "스크립트",
             Self::Skill(_) => "스킬 쓰기",
             Self::NewGame { .. } => "새 게임",
+            Self::NpcRow(_) => "NPC 목록 줄",
+            Self::NpcBack => "NPC 처음으로",
             Self::None => "없음",
         }
     }
@@ -595,6 +619,25 @@ pub(crate) struct Values {
     pub(crate) class: String,
     /// 기본 재화 금액 (`{gold}`, R4).
     pub(crate) gold: u64,
+    /// 말을 건 NPC 의 창 (R4b) — `{npc_name}`·`{npc_profile}`·`{npc_page}` 와 목록 위젯. 없으면 빈 글자·빈 목록.
+    pub(crate) npc: Option<NpcValues>,
+}
+
+/// NPC 창 값 (R4b).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NpcValues {
+    pub(crate) name: String,
+    pub(crate) profile: String,
+    pub(crate) page: String,
+    pub(crate) rows: Vec<ListRow>,
+}
+
+/// 목록 위젯 한 줄 (R4b).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ListRow {
+    pub(crate) text: String,
+    pub(crate) right: String,
+    pub(crate) enabled: bool,
 }
 
 impl Values {
@@ -618,6 +661,20 @@ impl Values {
             revive_in: play.revive_in(),
             class: play.class_name(),
             gold: play.gold(),
+            npc: play.npc_screen().map(|s| NpcValues {
+                name: s.name,
+                profile: s.profile,
+                page: s.page,
+                rows: s
+                    .rows
+                    .into_iter()
+                    .map(|r| ListRow {
+                        text: r.text,
+                        right: r.right,
+                        enabled: r.enabled,
+                    })
+                    .collect(),
+            }),
         })
     }
 
@@ -659,6 +716,25 @@ impl Values {
             revive_in: Some(2.4),
             class: String::from("전사"),
             gold: 1250,
+            npc: Some(NpcValues {
+                name: String::from("상인"),
+                profile: String::from(
+                    "마을 잡화점 주인. 물약과 마도서를 팔고, 먼 곳으로 가는 길도 안다.",
+                ),
+                page: String::from("사기"),
+                rows: [
+                    ("빨간 포션", "20 골드", true),
+                    ("파란 포션", "25 골드", true),
+                    ("화염구 마도서", "300 골드", false),
+                ]
+                .into_iter()
+                .map(|(t, r, e)| ListRow {
+                    text: t.to_owned(),
+                    right: r.to_owned(),
+                    enabled: e,
+                })
+                .collect(),
+            }),
         }
     }
 
@@ -690,6 +766,9 @@ pub(crate) struct Screens {
     screens: BTreeMap<String, ScreenFile>,
     /// 그림 위젯이 쓰는 그림 — 경로 → 올린 텍스처와 크기, 또는 읽지 못한 이유.
     images: BTreeMap<String, LoadedImage>,
+    /// 화면 파일에 없지만 그려야 하는 글자 — NPC 이름·인사말·목록처럼 값에서 오는 글 (R4b).
+    /// [`Self::note_text`] 로 모으고, 새 글자가 생기면 아틀라스를 다시 굽는다.
+    extra_chars: BTreeSet<char>,
 }
 
 impl Default for Screens {
@@ -702,6 +781,7 @@ impl Default for Screens {
             theme: None,
             screens: BTreeMap::new(),
             images: BTreeMap::new(),
+            extra_chars: BTreeSet::new(),
         }
     }
 }
@@ -896,6 +976,7 @@ impl Screens {
             theme: Some(theme),
             screens: BTreeMap::new(),
             images: BTreeMap::new(),
+            extra_chars: BTreeSet::new(),
         })
     }
 
@@ -910,12 +991,15 @@ impl Screens {
     /// 걸러 내지 않는다 (글리프 몇 개 차이라 걸러 내는 코드가 더 비싸다).
     fn wanted_chars(&self) -> BTreeSet<char> {
         let mut out: BTreeSet<char> = "0123456789 .,:%+-/".chars().collect();
+        out.extend(self.extra_chars.iter().copied());
         for screen in self.screens.values() {
             let mut stack: Vec<&Widget> = screen.widgets.iter().collect();
             while let Some(w) = stack.pop() {
                 stack.extend(w.children.iter());
                 match &w.kind {
-                    WidgetKind::Text { format } => out.extend(format.chars()),
+                    WidgetKind::Text { format } | WidgetKind::Paragraph { format } => {
+                        out.extend(format.chars());
+                    }
                     WidgetKind::Button { label, .. } => out.extend(label.chars()),
                     _ => {}
                 }
@@ -956,6 +1040,27 @@ impl Screens {
     /// 화면 문구에 **새 글자**가 생겼으면 아틀라스를 다시 구워 올린다 (편집 중 타이핑).
     ///
     /// 새 아틀라스를 올린 뒤 **옛 것은 푼다**. 실패하면 이유를 돌려주고 옛 아틀라스를 계속 쓴다.
+    /// 값에서 오는 글의 글자를 모아 둔다 (R4b) — 다음 [`Self::ensure_text_glyphs`] 가 함께 굽는다.
+    pub(crate) fn note_text(&mut self, text: &str) {
+        self.extra_chars.extend(text.chars());
+    }
+
+    /// 화면 값에 든 글(직업 이름·NPC 창)을 [`Self::note_text`] 로 모은다.
+    pub(crate) fn note_values(&mut self, values: &Values) {
+        let mut texts: Vec<&str> = vec![values.class.as_str()];
+        if let Some(npc) = &values.npc {
+            texts.extend([npc.name.as_str(), npc.profile.as_str(), npc.page.as_str()]);
+            for row in &npc.rows {
+                texts.extend([row.text.as_str(), row.right.as_str()]);
+            }
+        }
+        for t in texts {
+            if !t.chars().all(|c| self.extra_chars.contains(&c)) {
+                self.note_text(t);
+            }
+        }
+    }
+
     pub(crate) fn ensure_text_glyphs(&mut self, renderer: &mut dyn Renderer) -> Option<String> {
         let wanted = self.wanted_chars();
         let text = self.text.as_ref()?;
@@ -1077,6 +1182,15 @@ impl Screens {
                 let (w, h) = self.image_size(path, *region);
                 (w as f32 * s, h as f32 * s)
             }
+            (None, WidgetKind::Paragraph { format }) => {
+                let width = DEFAULT_LIST_WIDTH * s;
+                let lines = self.wrap(&fill(format, values), width).len().max(1);
+                (width, lines as f32 * self.text_size("가").1)
+            }
+            (None, WidgetKind::List { row_height }) => (
+                DEFAULT_LIST_WIDTH * s,
+                (*row_height).max(1) as f32 * s * DEFAULT_LIST_ROWS,
+            ),
         };
         let pos = (w.pos.0 as f32 * s, w.pos.1 as f32 * s);
         let at = if matches!(
@@ -1149,8 +1263,56 @@ impl Screens {
                     .skill_cells(values, l.rect)
                     .find(|(_, r)| r.contains(at))
                     .map(|(key, _)| (format!("{}#{key}", l.widget.id), Action::Skill(key))),
+                // 목록도 줄마다 버튼이다 (R4b). 흐린 줄은 누를 수 없다.
+                WidgetKind::List { row_height } if l.rect.contains(at) => self
+                    .list_rows(values, *row_height, l.rect)
+                    .find(|(_, r, enabled)| *enabled && r.contains(at))
+                    .map(|(i, _, _)| (format!("{}#{i}", l.widget.id), Action::NpcRow(i as u32))),
                 _ => None,
             })
+    }
+
+    /// 목록 줄 하나하나의 사각형 — `(줄 번호, 사각형, 누를 수 있나)`. 위젯 안에 들어가는 줄만.
+    /// 그리기와 누르기가 같은 계산을 쓴다 (R4b).
+    fn list_rows<'v>(
+        &self,
+        values: &'v Values,
+        row_height: u32,
+        r: Rect,
+    ) -> impl Iterator<Item = (usize, Rect, bool)> + 'v {
+        let h = row_height.max(1) as f32 * self.scale();
+        let fits = (r.h / h).floor().max(0.0) as usize;
+        values
+            .npc
+            .iter()
+            .flat_map(|n| n.rows.iter())
+            .take(fits)
+            .enumerate()
+            .map(move |(i, row)| (i, Rect::new(r.x, r.y + i as f32 * h, r.w, h), row.enabled))
+    }
+
+    /// 글을 `width` 픽셀 폭에 맞춰 줄로 나눈다 (R4b) — 빈칸에서 끊고, 빈칸이 없으면(긴 낱말·한글 이어 쓰기)
+    /// 글자에서 끊는다. `\n` 은 그대로 줄바꿈이다. 재는 폰트는 그리는 폰트와 같다.
+    fn wrap(&self, text: &str, width: f32) -> Vec<String> {
+        let mut out = Vec::new();
+        for para in text.split('\n') {
+            let mut line = String::new();
+            for ch in para.chars() {
+                line.push(ch);
+                if self.text_size(&line).0 <= width || line.chars().count() == 1 {
+                    continue;
+                }
+                // 넘쳤다 — 마지막 빈칸에서 끊고, 없으면 이 글자 앞에서 끊는다.
+                let cut = line[..line.len() - ch.len_utf8()]
+                    .rfind(' ')
+                    .map_or(line.len() - ch.len_utf8(), |i| i + 1);
+                let rest = line.split_off(cut);
+                out.push(line.trim_end().to_owned());
+                line = rest.trim_start().to_owned();
+            }
+            out.push(line);
+        }
+        out
     }
 
     /// 스킬 칸 하나하나의 사각형 — `(숫자키, 사각형)`. 그리기와 누르기가 같은 계산을 쓴다.
@@ -1294,6 +1456,55 @@ impl Screens {
                     } => {
                         let tint = [tint.0, tint.1, tint.2, tint.3];
                         self.image(path, *region, *border, tint, r, bias(BIAS_BACK), out);
+                    }
+                    WidgetKind::Paragraph { format } => {
+                        let line_h = self.text_size("가").1;
+                        for (i, line) in self.wrap(&fill(format, values), r.w).iter().enumerate() {
+                            let y = r.y + i as f32 * line_h;
+                            if y + line_h > r.y + r.h + 0.5 {
+                                break; // 넘치는 줄은 그리지 않는다
+                            }
+                            let at = Rect::new(r.x, y, r.w, line_h);
+                            self.text(line, at, TEXT, bias(BIAS_TEXT), out);
+                        }
+                    }
+                    WidgetKind::List { row_height } => {
+                        let id = laid.widget.id.as_str();
+                        let rows = values.npc.as_ref().map_or(&[][..], |n| n.rows.as_slice());
+                        for (i, cell, enabled) in self.list_rows(values, *row_height, r) {
+                            let name = format!("{id}#{i}");
+                            let lit = enabled && hover == Some(name.as_str());
+                            if lit {
+                                let back = if pressed == Some(name.as_str()) {
+                                    BUTTON_PRESS
+                                } else {
+                                    BUTTON_HOVER
+                                };
+                                rect(cell, back, bias(BIAS_BACK), out);
+                            }
+                            let color = match (enabled, lit) {
+                                (false, _) => TEXT_OFF,
+                                (true, true) => TEXT,
+                                (true, false) => TEXT_DIM,
+                            };
+                            let row = &rows[i];
+                            let (_, th) = self.text_size(&row.text);
+                            let pad = 4.0 * self.scale();
+                            let y = cell.y + (cell.h - th) * 0.5;
+                            self.text(
+                                &row.text,
+                                Rect::new(cell.x + pad, y, cell.w, th),
+                                color,
+                                bias(BIAS_TEXT),
+                                out,
+                            );
+                            let (rw, _) = self.text_size(&row.right);
+                            let at = Rect::new(cell.x + cell.w - rw - pad, y, rw, th);
+                            self.text(&row.right, at, color, bias(BIAS_TEXT), out);
+                        }
+                        if editing {
+                            outline(r, GUIDE, bias(BIAS_EDGE), 1.0, out);
+                        }
                     }
                 }
                 if selected == Some(laid.widget.id.as_str()) {
@@ -1672,6 +1883,7 @@ pub(crate) fn to_ron(screen: &ScreenFile) -> String {
 //
 // pos·size 는 UI 픽셀(테마의 scale 을 곱하기 전)이고, anchor 기준점에서 오른쪽·아래가 +다.
 // 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {mp} {max_mp} {level} {exp} {exp_to_next} {loading}(로딩 %) {revive}(부활까지 초) {class}(직업) {gold}(기본 재화)
+// NPC 창(R4b): {npc_name} {npc_profile}(인사말) {npc_page}(지금 쪽) — Paragraph 는 폭에 맞춰 줄을 바꾸고, List 는 NPC 창의 목록 줄이다.
 // Image 위젯의 path 는 작업 디렉터리 기준 PNG (소문자·'/'), region 은 그림의 픽셀 사각형이다.
 ";
     format!("{header}{body}\n")
@@ -1721,6 +1933,12 @@ fn fill(format: &str, v: &Values) -> String {
     out.replace("{revive}", &revive)
         .replace("{class}", &v.class)
         .replace("{gold}", &v.gold.to_string())
+        .replace("{npc_name}", v.npc.as_ref().map_or("", |n| n.name.as_str()))
+        .replace(
+            "{npc_profile}",
+            v.npc.as_ref().map_or("", |n| n.profile.as_str()),
+        )
+        .replace("{npc_page}", v.npc.as_ref().map_or("", |n| n.page.as_str()))
 }
 
 /// 위젯 트리 검사 — 빈 이름, 이름 중복(트리 전체), 없는 값 이름, 0 크기, 너무 깊은 트리.
@@ -1751,7 +1969,14 @@ fn check_widgets<'a>(
                     return Err(format!("'{}': 막대는 size 가 필요함", w.id));
                 }
             }
-            WidgetKind::Text { format } => check_format(&w.id, format)?,
+            WidgetKind::Text { format } | WidgetKind::Paragraph { format } => {
+                check_format(&w.id, format)?;
+            }
+            WidgetKind::List { row_height } => {
+                if *row_height == 0 {
+                    return Err(format!("'{}': 줄 높이가 0", w.id));
+                }
+            }
             WidgetKind::Button { label, action } => {
                 if label.trim().is_empty() {
                     return Err(format!("'{}': 버튼 글자가 비어 있음", w.id));
@@ -1941,6 +2166,7 @@ mod tests {
             theme: Some(theme),
             screens: BTreeMap::new(),
             images: BTreeMap::new(),
+            extra_chars: BTreeSet::new(),
         }
     }
 
@@ -2259,6 +2485,58 @@ mod tests {
         let (_, first) = ui.skill_cells(&values, rect).next().unwrap();
         let gap = Vec2::new(first.x + first.w + 1.0, first.y + first.h * 0.5);
         assert_eq!(ui.button_at("hud", &values, viewport, gap), None);
+    }
+
+    /// 목록 위젯은 줄마다 버튼이다 (R4b) — 흐린 줄은 눌리지 않고, 위젯 밖으로 넘치는 줄은 없다.
+    #[test]
+    fn each_list_row_is_a_button_and_dim_rows_are_not() {
+        let mut ui = measured();
+        let mut screen = ScreenFile::new("NPC");
+        screen.widgets.push(Widget {
+            size: Some((120, 30)), // 줄 높이 15 → 두 줄만 들어간다
+            ..Widget::new("rows", WidgetKind::List { row_height: 15 })
+        });
+        ui.set_screen("npc", screen.clone());
+        let values = Values::preview(); // 빨간 포션·파란 포션·(흐린) 마도서
+        let viewport = (800.0, 600.0);
+        let rect = ui
+            .layout(&screen, &values, viewport)
+            .into_iter()
+            .find(|l| l.widget.id == "rows")
+            .unwrap()
+            .rect;
+        let rows: Vec<(usize, Rect, bool)> = ui.list_rows(&values, 15, rect).collect();
+        assert_eq!(rows.len(), 2, "넘치는 셋째 줄은 없다");
+        for (i, r, _) in &rows {
+            assert_eq!(
+                ui.button_at("npc", &values, viewport, r.center()),
+                Some((format!("rows#{i}"), Action::NpcRow(*i as u32)))
+            );
+        }
+        // 셋째 줄(흐림)이 들어가도록 키워도 그 줄은 눌리지 않는다.
+        screen.widgets[0].size = Some((120, 45));
+        ui.set_screen("npc", screen.clone());
+        let rect = ui.layout(&screen, &values, viewport)[0].rect;
+        let (_, third, enabled) = ui.list_rows(&values, 15, rect).nth(2).unwrap();
+        assert!(!enabled);
+        assert_eq!(ui.button_at("npc", &values, viewport, third.center()), None);
+    }
+
+    #[test]
+    fn a_paragraph_wraps_at_spaces_and_keeps_every_word() {
+        let ui = measured();
+        let text = "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG";
+        let one = ui.text_size("W").0;
+        let lines = ui.wrap(text, one * 12.0);
+        assert!(lines.len() > 1, "{lines:?}");
+        assert!(
+            lines.iter().all(|l| ui.text_size(l).0 <= one * 12.0),
+            "{lines:?}"
+        );
+        assert_eq!(lines.join(" "), text, "빈칸에서 끊고 낱말을 잃지 않는다");
+        // 빈칸이 없으면 글자에서 끊는다. 줄바꿈 문자는 그대로 줄을 바꾼다.
+        assert!(ui.wrap(&"A".repeat(40), one * 5.0).len() >= 8);
+        assert_eq!(ui.wrap("AB\nCD", one * 50.0), ["AB", "CD"]);
     }
 
     #[test]

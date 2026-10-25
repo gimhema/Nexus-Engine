@@ -95,6 +95,8 @@ const BOX_FILL: [f32; 4] = [1.0, 0.82, 0.25, 0.012];
 /// 지형 그림 — 지면 층 맨 아래. 규칙 색(`BIAS_TILE`)이 이 위에 얹힌다.
 /// 플레이 중 띄우는 HUD 화면 번호 — 레벨마다 고를 수 있게 되기 전의 기본값이다.
 const HUD_SCREEN: &str = "hud";
+/// NPC 창 화면 (R4b) — 말을 걸면 띄운다. 위젯 편집기로 디자인한다 (`ui/npc.ui.ron`).
+const NPC_SCREEN: &str = "npc";
 
 const BIAS_ART: f32 = 0.25 * DEPTH_LAYER;
 /// 타일 — 지면 층에서 그리드 바로 위.
@@ -211,6 +213,8 @@ struct Editor {
     /// 화면 버튼 상태 — 마우스가 올라간 것 / 누르고 있는 것.
     ui_hover: Option<String>,
     ui_press: Option<String>,
+    /// NPC 창 화면을 띄워 두었다 (R4b) — 사람이 닫은 것과 거래가 끝난 것을 가린다.
+    npc_shown: bool,
     /// 지난 프레임의 화면 스택 `(레벨, 화면들)` — 새로 뜬 화면의 `on_open` 을 부르려고.
     open_screens: (String, Vec<String>),
     /// 지금 쓰는 저장 칸 (1부터, 플레이 메뉴에서 바꾼다).
@@ -287,6 +291,7 @@ impl Default for Editor {
             pending_level: None,
             ui_hover: None,
             ui_press: None,
+            npc_shown: false,
             open_screens: (String::new(), Vec::new()),
             save_slot: 1,
             continue_prompt: None,
@@ -760,6 +765,52 @@ impl Editor {
 
     /// 새로 뜬 화면의 `on_open` 스크립트를 부른다. 화면을 여는 길(레벨·일시정지·버튼·스크립트)이
     /// 여럿이라 그 자리마다 넣지 않고, **스택이 바뀐 것을 보고** 부른다. 레벨이 바뀌면 전부 새로 뜬 것이다.
+    /// NPC 창 화면을 말 걸기 상태에 맞춘다 (R4b) — 말을 걸면 띄우고, 멀어지거나 쓰러지면 내리고,
+    /// 사람이 창을 닫으면(닫기 버튼·Esc) 거래도 끝낸다. 화면을 여는 길이 여럿이라 매 프레임 맞춰 본다
+    /// (`run_open_hooks` 와 같은 방식).
+    fn sync_npc_screen(&mut self) {
+        let trading = self.play.as_ref().is_some_and(PlaySession::is_trading);
+        let Some(shell) = self.shell.as_mut() else {
+            self.npc_shown = false;
+            return;
+        };
+        let shown = shell.screens.iter().skip(1).any(|s| s == NPC_SCREEN);
+        match (trading, self.npc_shown, shown) {
+            (true, false, _) => {
+                if self.screens.screen(NPC_SCREEN).is_some() {
+                    shell.push(NPC_SCREEN);
+                    self.npc_shown = true;
+                } else {
+                    self.notify(
+                        format!("'{NPC_SCREEN}' 화면이 없어 NPC 창을 띄울 수 없습니다"),
+                        true,
+                    );
+                    if let Some(play) = self.play.as_mut() {
+                        play.trade(play::TradeAction::Close);
+                    }
+                }
+            }
+            // 사람이 창을 닫았다 — 거래도 끝낸다.
+            (true, true, false) => {
+                if let Some(play) = self.play.as_mut() {
+                    play.trade(play::TradeAction::Close);
+                }
+                self.npc_shown = false;
+            }
+            // 거래가 끝났다(멀어짐·쓰러짐) — 창을 내린다. 바탕 화면은 건드리지 않는다.
+            (false, _, true) => {
+                let base = shell.screens.first().cloned();
+                shell.screens.retain(|s| s != NPC_SCREEN);
+                if shell.screens.is_empty() {
+                    shell.screens.extend(base);
+                }
+                self.npc_shown = false;
+            }
+            (false, _, false) => self.npc_shown = false,
+            (true, true, true) => {}
+        }
+    }
+
     fn run_open_hooks(&mut self) {
         let (level, now) = match self.shell.as_ref() {
             Some(s) => (s.level.clone(), s.screens.clone()),
@@ -1162,6 +1213,17 @@ impl Editor {
                 Some(play) => play.use_skill(key as usize),
                 None => self.notify(String::from("스킬은 플레이 중에만 쓸 수 있습니다"), false),
             },
+            // NPC 창 (R4b) — 목록 줄·뒤로 버튼.
+            Action::NpcRow(row) => {
+                if let Some(play) = self.play.as_mut() {
+                    play.npc_pick(row as usize);
+                }
+            }
+            Action::NpcBack => {
+                if let Some(play) = self.play.as_mut() {
+                    play.npc_back();
+                }
+            }
             Action::None => {}
         }
     }
@@ -1287,9 +1349,6 @@ impl Editor {
         }
         if let Some((skill, slot)) = actions.hotbar {
             session.assign_hotbar(skill, slot);
-        }
-        if let Some(action) = actions.trade {
-            session.trade(action);
         }
         if let Some(quest) = actions.abandon_quest {
             session.abandon_quest(quest);
@@ -2482,12 +2541,16 @@ impl App for Editor {
             }
             None => (None, None),
         };
+        self.sync_npc_screen();
         self.run_open_hooks();
         // 뷰포트가 확정된 뒤여야 배율이 맞는다.
         if viewport.is_some() {
             self.follow_player(alpha);
         }
 
+        // 값에서 오는 글(NPC 창·직업 이름)의 글자도 굽는다 (R4b).
+        let values = Values::of(self.play.as_ref(), self.show_items);
+        self.screens.note_values(&values);
         // 화면 문구에 새 글자(편집기에서 타이핑한 한글 등)가 생겼으면 글자 아틀라스를
         // 다시 굽는다 — 프레임 바깥에서 텍스처를 올려야 하므로 그리기 전에 한다.
         let (font_warning, image_warnings) = match self.renderer.as_mut() {

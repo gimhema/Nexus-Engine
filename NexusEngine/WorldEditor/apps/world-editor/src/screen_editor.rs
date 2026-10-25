@@ -434,6 +434,13 @@ impl ScreenEditor {
                 ),
                 ("+ 스킬 칸", WidgetKind::Skills),
                 (
+                    "+ 문단",
+                    WidgetKind::Paragraph {
+                        format: String::from("{npc_profile}"),
+                    },
+                ),
+                ("+ 목록", WidgetKind::List { row_height: 14 }),
+                (
                     "+ 색 채움",
                     WidgetKind::Fill {
                         color: (0.0, 0.0, 0.0, 0.5),
@@ -543,6 +550,8 @@ impl ScreenEditor {
                     WidgetKind::Panel { .. } => "창: 부모 사각형을 가득 채웁니다.",
                     WidgetKind::Fill { .. } => "색 채움: 부모 사각형을 가득 채웁니다.",
                     WidgetKind::Image { .. } => "그림: 원래 픽셀 크기 × 배율로 그립니다.",
+                    WidgetKind::Paragraph { .. } => "문단: 폭 200, 높이는 줄 수에 맞춥니다.",
+                    WidgetKind::List { .. } => "목록: 폭 200, 높이 6줄.",
                     _ => "내용 크기에 맞춥니다.",
                 });
             }
@@ -953,6 +962,25 @@ fn kind_fields(
                 ui.add(egui::DragValue::new(columns).speed(1.0).range(1..=20));
             });
         }
+        WidgetKind::Paragraph { format } => {
+            ui.label("문구 (여러 줄 — 폭에 맞춰 줄을 바꾼다)");
+            ui.add(
+                egui::TextEdit::multiline(format)
+                    .desired_rows(2)
+                    .desired_width(220.0),
+            );
+            ui.weak("NPC 인사말은 {npc_profile}. 넘치는 줄은 그리지 않는다 — 크기를 넉넉히.");
+        }
+        WidgetKind::List { row_height } => {
+            ui.horizontal(|ui| {
+                ui.label("줄 높이");
+                ui.add(egui::DragValue::new(row_height).range(4..=64).suffix(" px"));
+            });
+            ui.weak(
+                "NPC 창의 지금 쪽(기능 메뉴·사기·팔기·제작·이동·창고·퀘스트)을 줄마다 그립니다.",
+            );
+            ui.weak("줄을 누르면 그 쪽으로 넘어가거나 사고판다. 넘치는 줄은 그리지 않는다.");
+        }
         WidgetKind::Skills => {
             ui.weak("조작하는 액터의 단축키 스킬(액터 편집기의 \"단축키 스킬\")을 1번 키부터 가로로 그립니다.");
             ui.weak("쿨타임이 남은 만큼 어둡게 덮이고, MP 가 모자라면 흐려집니다.");
@@ -977,6 +1005,7 @@ fn kind_fields(
                     call: String::new(),
                 },
                 Action::Skill(1),
+                Action::NpcBack,
                 Action::NewGame {
                     class: 1,
                     level: String::from("village"),

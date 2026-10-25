@@ -128,6 +128,66 @@ pub(crate) enum TradeAction {
     Close,
 }
 
+/// NPC 창의 쪽 (R4b) — 처음은 기능 메뉴, 고르면 그 목록으로 넘어간다. 대사 분기(R9)가 생기면
+/// 메뉴 앞에 끼운다.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum NpcPage {
+    #[default]
+    Menu,
+    Quests,
+    Buy(ShopId),
+    Sell(ShopId),
+    Craft(CraftId),
+    Teleport(TeleportId),
+    Deposit,
+    Withdraw,
+}
+
+impl NpcPage {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Menu => "무엇을 도와줄까?",
+            Self::Quests => "퀘스트",
+            Self::Buy(_) => "사기",
+            Self::Sell(_) => "팔기",
+            Self::Craft(_) => "제작",
+            Self::Teleport(_) => "이동",
+            Self::Deposit => "창고에 맡기기",
+            Self::Withdraw => "창고에서 찾기",
+        }
+    }
+}
+
+/// NPC 창 목록 한 줄 (R4b) — 화면의 목록 위젯이 그리고, 누르면 [`PlaySession::npc_pick`] 으로 온다.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NpcRow {
+    /// 왼쪽 글 — "빨간 포션", "사기" …
+    pub(crate) text: String,
+    /// 오른쪽 글 — 값·상태 ("20 골드", "보고하기").
+    pub(crate) right: String,
+    /// 누를 수 있나 (돈이 모자라면·받을 수 없으면 흐리게).
+    pub(crate) enabled: bool,
+    act: NpcAct,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum NpcAct {
+    Page(NpcPage),
+    Trade(TradeAction),
+    None,
+}
+
+/// NPC 창이 그리는 것 (R4b) — 대화창(이름·인사말)과 지금 쪽의 목록.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NpcScreen {
+    pub(crate) name: String,
+    /// 인사말 — 지금은 `display.ron` 의 프로필 글. 대사(R9)가 생기면 그 대사.
+    pub(crate) profile: String,
+    /// 지금 쪽의 제목.
+    pub(crate) page: String,
+    pub(crate) rows: Vec<NpcRow>,
+}
+
 /// 거래 창이 그리는 것 (R4).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TradeView {
@@ -249,6 +309,201 @@ pub(crate) struct LevelLinks {
 /// 포털 `travel` 번호의 시작 — NPC 텔레포트 번호(`GameData::travel_level`)와 겹치지 않게 띄운다.
 const PORTAL_TRAVEL_BASE: u32 = 100_000;
 
+/// NPC 창 한 쪽의 목록 (R4b). 메뉴에는 이 NPC 가 가진 기능만 나온다 — 기능이 곧 역할이다(R4).
+fn npc_rows(view: &TradeView, page: NpcPage) -> Vec<NpcRow> {
+    let row = |text: String, right: String, enabled: bool, act: NpcAct| NpcRow {
+        text,
+        right,
+        enabled,
+        act,
+    };
+    let go =
+        |text: &str, page: NpcPage| row(text.to_owned(), String::new(), true, NpcAct::Page(page));
+    let many = |base: &str, n: usize, i: usize| {
+        if n > 1 {
+            format!("{base} {}", i + 1)
+        } else {
+            base.to_owned()
+        }
+    };
+    match page {
+        NpcPage::Menu => {
+            let mut out = Vec::new();
+            if !view.quests.is_empty() {
+                let ready = view
+                    .quests
+                    .iter()
+                    .filter(|q| q.state == QuestState::Ready)
+                    .count();
+                let mut r = go("퀘스트", NpcPage::Quests);
+                if ready > 0 {
+                    r.right = format!("보고 {ready}");
+                }
+                out.push(r);
+            }
+            for (i, s) in view.shops.iter().enumerate() {
+                out.push(go(&many("사기", view.shops.len(), i), NpcPage::Buy(s.shop)));
+                out.push(go(
+                    &many("팔기", view.shops.len(), i),
+                    NpcPage::Sell(s.shop),
+                ));
+            }
+            for (i, c) in view.crafts.iter().enumerate() {
+                out.push(go(
+                    &many("제작", view.crafts.len(), i),
+                    NpcPage::Craft(c.craft),
+                ));
+            }
+            for (i, t) in view.teleports.iter().enumerate() {
+                out.push(go(
+                    &many("이동", view.teleports.len(), i),
+                    NpcPage::Teleport(t.teleport),
+                ));
+            }
+            if view.storage.is_some() {
+                out.push(go("창고에 맡기기", NpcPage::Deposit));
+                out.push(go("창고에서 찾기", NpcPage::Withdraw));
+            }
+            for (i, label) in &view.services {
+                out.push(row(
+                    label.clone(),
+                    String::new(),
+                    true,
+                    NpcAct::Trade(TradeAction::Service(*i)),
+                ));
+            }
+            out
+        }
+        NpcPage::Quests => view
+            .quests
+            .iter()
+            .map(|q| {
+                let (right, act) = match q.state {
+                    QuestState::Ready => ("보고하기", Some(TradeAction::TurnInQuest(q.quest))),
+                    QuestState::Active => ("진행 중", None),
+                    _ if q.can_accept => ("받기", Some(TradeAction::AcceptQuest(q.quest))),
+                    QuestState::Completed => ("완료", None),
+                    _ => ("아직 받을 수 없음", None),
+                };
+                row(
+                    q.title.clone(),
+                    right.to_owned(),
+                    act.is_some(),
+                    act.map_or(NpcAct::None, NpcAct::Trade),
+                )
+            })
+            .collect(),
+        NpcPage::Buy(shop) => view
+            .shops
+            .iter()
+            .filter(|s| s.shop == shop)
+            .flat_map(|s| {
+                s.goods.iter().map(move |(g, name, price, ok)| {
+                    row(
+                        name.clone(),
+                        price.clone(),
+                        *ok,
+                        NpcAct::Trade(TradeAction::Buy {
+                            shop,
+                            goods: *g,
+                            count: 1,
+                        }),
+                    )
+                })
+            })
+            .collect(),
+        NpcPage::Sell(shop) => view
+            .shops
+            .iter()
+            .filter(|s| s.shop == shop)
+            .flat_map(|s| {
+                s.sellable
+                    .iter()
+                    .map(move |(bag, slot, name, count, price)| {
+                        row(
+                            format!("{name} ×{count}"),
+                            format!("개당 {price}"),
+                            true,
+                            NpcAct::Trade(TradeAction::Sell {
+                                shop,
+                                bag: *bag,
+                                slot: *slot,
+                                count: 1,
+                            }),
+                        )
+                    })
+            })
+            .collect(),
+        NpcPage::Craft(craft) => view
+            .crafts
+            .iter()
+            .filter(|c| c.craft == craft)
+            .flat_map(|c| {
+                c.recipes.iter().map(move |(r, output, needs, ok)| {
+                    row(
+                        output.clone(),
+                        needs.clone(),
+                        *ok,
+                        NpcAct::Trade(TradeAction::Craft {
+                            craft,
+                            recipe: *r,
+                            times: 1,
+                        }),
+                    )
+                })
+            })
+            .collect(),
+        NpcPage::Teleport(teleport) => view
+            .teleports
+            .iter()
+            .filter(|t| t.teleport == teleport)
+            .flat_map(|t| {
+                t.destinations.iter().map(move |(d, name, price)| {
+                    row(
+                        name.clone(),
+                        price.clone(),
+                        true,
+                        NpcAct::Trade(TradeAction::Teleport { teleport, dest: *d }),
+                    )
+                })
+            })
+            .collect(),
+        NpcPage::Deposit => view
+            .storage
+            .iter()
+            .flat_map(|s| s.carried.iter())
+            .map(|(bag, slot, name, count)| {
+                row(
+                    format!("{name} ×{count}"),
+                    String::from("맡기기"),
+                    true,
+                    NpcAct::Trade(TradeAction::Deposit {
+                        bag: *bag,
+                        slot: *slot,
+                        count: *count,
+                    }),
+                )
+            })
+            .collect(),
+        NpcPage::Withdraw => view
+            .storage
+            .iter()
+            .flat_map(|s| s.stored.iter())
+            .map(|(slot, name, count)| {
+                row(
+                    format!("{name} ×{count}"),
+                    String::from("찾기"),
+                    true,
+                    NpcAct::Trade(TradeAction::Withdraw {
+                        slot: *slot,
+                        count: *count,
+                    }),
+                )
+            })
+            .collect(),
+    }
+}
+
 /// 조건 안에 `Cleared` 가 있는가 — 막힌 포털이 던전의 나가는 문인지 알아볼 때 (R6-2).
 fn mentions_cleared(c: &Condition) -> bool {
     match c {
@@ -291,6 +546,8 @@ pub(crate) struct PlaySession {
     revive_at: Option<Duration>,
     /// 거래 창을 연 NPC (R4) — 말을 걸면 열리고, 멀어지거나 닫으면 닫힌다.
     trading: Option<Entity>,
+    /// NPC 창의 지금 쪽 (R4b). 말을 걸 때마다 메뉴부터.
+    npc_page: NpcPage,
     /// 다른 레벨로 가는 텔레포트 요청 `(레벨, 도착 위치)` (R4-2) — 에디터가 꺼내 레벨을 연다.
     travel: Option<(String, Vec2)>,
     /// 포털이 가는 레벨 — `PORTAL_TRAVEL_BASE + 색인` 이 `travel` 번호다 (R6).
@@ -512,6 +769,7 @@ impl PlaySession {
             hotbar,
             revive_at: None,
             trading: None,
+            npc_page: NpcPage::Menu,
             travel: None,
             portal_levels,
             scripted_revive,
@@ -936,6 +1194,56 @@ impl PlaySession {
         self.auth.submit(intent);
     }
 
+    /// NPC 창이 열려 있는가 (R4b) — 화면 스택에 NPC 화면을 띄우고 내리는 기준.
+    pub(crate) fn is_trading(&self) -> bool {
+        self.trading.is_some()
+    }
+
+    /// NPC 창의 지금 쪽 (R4b) — 대화창과 목록. 말을 건 NPC 가 없으면 `None`.
+    pub(crate) fn npc_screen(&self) -> Option<NpcScreen> {
+        let view = self.trade_view()?;
+        let page = self.npc_page;
+        let mut rows = npc_rows(&view, page);
+        if rows.is_empty() {
+            rows.push(NpcRow {
+                text: String::from("(없음)"),
+                right: String::new(),
+                enabled: false,
+                act: NpcAct::None,
+            });
+        }
+        Some(NpcScreen {
+            name: view.npc_name,
+            profile: view.profile,
+            page: page.title().to_owned(),
+            rows,
+        })
+    }
+
+    /// NPC 창 목록의 `index` 번째 줄을 누른다 (R4b) — 쪽을 넘기거나 거래 Intent 를 낸다.
+    /// 흐린 줄·없는 줄은 아무 일도 없다.
+    pub(crate) fn npc_pick(&mut self, index: usize) {
+        let Some(row) = self
+            .npc_screen()
+            .and_then(|s| s.rows.into_iter().nth(index))
+        else {
+            return;
+        };
+        if !row.enabled {
+            return;
+        }
+        match row.act {
+            NpcAct::Page(page) => self.npc_page = page,
+            NpcAct::Trade(action) => self.trade(action),
+            NpcAct::None => {}
+        }
+    }
+
+    /// NPC 창을 처음 메뉴로 (R4b).
+    pub(crate) fn npc_back(&mut self) {
+        self.npc_page = NpcPage::Menu;
+    }
+
     /// 플레이어가 배운 스킬 — 스킬 창용 (R3). 직업이 없는 게임이면 단축키에 있는 스킬을 1레벨로 보인다.
     pub(crate) fn skill_lines(&self) -> Vec<SkillLine> {
         let world = self.world();
@@ -1318,6 +1626,7 @@ impl PlaySession {
                 && unit == self.player
             {
                 self.trading = Some(npc);
+                self.npc_page = NpcPage::Menu;
             }
             // 잊은 스킬은 단축키에서도 뺀다 (R3).
             if let Event::SkillForgotten { unit, skill } = event
@@ -3383,6 +3692,48 @@ mod tests {
         );
         assert!(!shop.goods[3].3, "마도서 1000 골드는 살 수 없다");
         assert!(s.log().any(|l| l == "상인 NPC 에게 말을 걸었다"));
+    }
+
+    /// NPC 창(R4b) — 메뉴에는 그 NPC 의 기능만, 고르면 그 쪽, 줄을 누르면 거래.
+    #[test]
+    fn the_npc_window_pages_from_the_menu_to_buying() {
+        let mut s = new_game(None, None);
+        assert!(s.npc_screen().is_none(), "말을 걸기 전에는 없다");
+        talk_to_merchant(&mut s);
+        assert!(s.is_trading());
+        let menu = s.npc_screen().unwrap();
+        assert_eq!(menu.name, "상인 NPC");
+        assert!(menu.profile.starts_with("마을 잡화점 주인"));
+        let texts: Vec<&str> = menu.rows.iter().map(|r| r.text.as_str()).collect();
+        for want in ["퀘스트", "사기", "팔기", "치료 — 20 골드"] {
+            assert!(texts.contains(&want), "{want} 없음 — {texts:?}");
+        }
+        assert!(
+            !texts.contains(&"제작") && !texts.contains(&"창고에 맡기기"),
+            "상인에게 없는 기능은 메뉴에 없다 — {texts:?}"
+        );
+
+        // 사기 쪽으로 — 빨간 포션 줄을 누르면 산다.
+        let buy = texts.iter().position(|t| *t == "사기").unwrap();
+        s.npc_pick(buy);
+        let page = s.npc_screen().unwrap();
+        assert_eq!(page.page, "사기");
+        assert_eq!(page.rows[0].text, "빨간 포션");
+        assert_eq!(page.rows[0].right, "50 골드");
+        let book = page.rows.iter().position(|r| !r.enabled).unwrap();
+        let gold = s.gold();
+        s.npc_pick(book); // 흐린 줄 — 아무 일도 없다
+        s.tick(DT, None);
+        assert_eq!(s.gold(), gold);
+        s.npc_pick(0);
+        s.tick(DT, None);
+        assert_eq!(s.gold(), gold - 50);
+        assert_eq!(s.npc_screen().unwrap().page, "사기", "산 뒤에도 같은 쪽");
+
+        s.npc_back();
+        assert_eq!(s.npc_screen().unwrap().page, "무엇을 도와줄까?");
+        s.trade(TradeAction::Close);
+        assert!(!s.is_trading() && s.npc_screen().is_none());
     }
 
     #[test]
