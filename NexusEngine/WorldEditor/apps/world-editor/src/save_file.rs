@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use nexus_core::Vec2;
-use nexus_sim::{ClassId, CurrencyId, FlagId, ItemId, SkillId};
+use nexus_sim::{ClassId, CurrencyId, FlagId, ItemId, QuestId, SkillId};
 use serde::{Deserialize, Serialize};
 
 use crate::scene::ActorId;
@@ -30,6 +30,9 @@ pub(crate) const FORMAT_VERSION: u32 = 1;
 pub(crate) const DEFAULT_SAVE: &str = "saves/player.save.ron";
 /// 저장 칸 수.
 pub(crate) const SLOTS: u8 = 3;
+
+/// 퀘스트 하나의 기록 `(퀘스트, 진행 중이면 (단계, 센 수), 완료 횟수)` (R5).
+pub(crate) type QuestRecord = (QuestId, Option<(u16, Vec<u32>)>, u32);
 
 /// 읽어 들인 저장 데이터 — 앱 안에서 쓰는 형태.
 #[derive(Clone, Debug, PartialEq)]
@@ -63,6 +66,8 @@ pub(crate) struct SaveData {
     pub(crate) wallet: Option<Vec<(CurrencyId, u64)>>,
     /// 창고 `(칸, 아이템, 개수)` (R4-2).
     pub(crate) storage: Vec<(u16, ItemId, u32)>,
+    /// 퀘스트 기록 (R5).
+    pub(crate) quests: Vec<QuestRecord>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -108,6 +113,21 @@ struct SaveFile {
     /// 창고 (R4-2) — 가방과 같은 모양.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     storage: Vec<SlotFile>,
+    /// 퀘스트 기록 (R5) — `번호: (stage: Some(1), counts: [2], completed: 0)`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    quests: BTreeMap<u32, QuestSaveFile>,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QuestSaveFile {
+    /// 진행 중이면 단계 (끝까지 채웠으면 단계 수 — 보고 가능).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stage: Option<u16>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    counts: Vec<u32>,
+    #[serde(default)]
+    completed: u32,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -161,6 +181,20 @@ pub(crate) fn to_ron(save: &SaveData) -> String {
                 slot,
                 item: item.0,
                 count,
+            })
+            .collect(),
+        quests: save
+            .quests
+            .iter()
+            .map(|(q, active, completed)| {
+                (
+                    q.0,
+                    QuestSaveFile {
+                        stage: active.as_ref().map(|a| a.0),
+                        counts: active.as_ref().map(|a| a.1.clone()).unwrap_or_default(),
+                        completed: *completed,
+                    },
+                )
             })
             .collect(),
     };
@@ -231,6 +265,11 @@ pub(crate) fn from_ron(text: &str) -> Result<SaveData, String> {
             .storage
             .iter()
             .map(|s| (s.slot, ItemId(s.item), s.count))
+            .collect(),
+        quests: file
+            .quests
+            .into_iter()
+            .map(|(q, f)| (QuestId(q), f.stage.map(|s| (s, f.counts)), f.completed))
             .collect(),
     })
 }
@@ -317,6 +356,7 @@ mod tests {
             world_flags: vec![(FlagId(30), -1)],
             wallet: Some(vec![(CurrencyId(1), 250)]),
             storage: vec![(4, ItemId(909), 30)],
+            quests: vec![(QuestId(1), Some((0, vec![2])), 0), (QuestId(2), None, 3)],
         }
     }
 

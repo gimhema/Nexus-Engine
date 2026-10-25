@@ -25,6 +25,8 @@ mod level;
 mod level_editor;
 mod palette;
 mod play;
+mod quest_designer;
+mod quest_file;
 mod ron_patch;
 mod rules_editor;
 mod save_file;
@@ -1262,6 +1264,9 @@ impl Editor {
         if let Some(action) = actions.trade {
             session.trade(action);
         }
+        if let Some(quest) = actions.abandon_quest {
+            session.abandon_quest(quest);
+        }
         if let Some(key) = actions.skill_key {
             session.use_skill(key);
         }
@@ -1800,6 +1805,11 @@ impl Editor {
             Step::StatDesigner => {
                 if let Some(ui) = self.ui.as_mut() {
                     ui.stat_designer_mut().open();
+                }
+            }
+            Step::QuestDesigner => {
+                if let Some(ui) = self.ui.as_mut() {
+                    ui.quest_designer_mut().open();
                 }
             }
             Step::Trash => {

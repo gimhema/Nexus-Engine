@@ -90,6 +90,13 @@
         2: ["마을", "샘플 존"],
     },
 
+    // 퀘스트 제목·설명 (R5). 번호는 rules.ron 의 quests.
+    quests: {
+        1: (title: "슬라임 소탕", description: "마을 길목의 슬라임이 늘었다. 세 마리만 잡아 달라."),
+        2: (title: "대장장이의 부탁", description: "상인에게 들러 안부를 전하고, 젤리 다섯 개를 구해 오라."),
+        3: (title: "광장 구경", description: "마을 광장에 가 보자."),
+    },
+
     // 재화의 이름 (R4). 번호는 rules.ron 의 currencies 와 같다.
     currencies: {
         1: (name: "골드"),

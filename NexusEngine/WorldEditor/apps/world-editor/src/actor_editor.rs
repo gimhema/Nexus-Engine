@@ -585,6 +585,10 @@ fn services_form(ui: &mut egui::Ui, services: &mut Vec<crate::trade_file::Servic
                 ServiceFile::Storage => {
                     ui.label("창고");
                 }
+                ServiceFile::Quest(id) => {
+                    ui.label("퀘스트 #");
+                    ui.add(egui::DragValue::new(id).range(1..=99_999));
+                }
             }
             if ui.small_button("×").clicked() {
                 remove = Some(i);
@@ -602,6 +606,7 @@ fn services_form(ui: &mut egui::Ui, services: &mut Vec<crate::trade_file::Servic
             ("제작", ServiceFile::Craft(1)),
             ("텔레포트", ServiceFile::Teleport(1)),
             ("창고", ServiceFile::Storage),
+            ("퀘스트", ServiceFile::Quest(1)),
         ] {
             if ui.small_button(label).clicked() {
                 services.push(s);

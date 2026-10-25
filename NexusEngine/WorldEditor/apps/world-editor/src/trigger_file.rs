@@ -100,11 +100,42 @@ pub(crate) enum ConditionFile {
         cmp: CmpFile,
         value: u32,
     },
+    /// 대상의 퀘스트 상태 (R5) — `Quest(quest: 1, state: Completed)`.
+    Quest {
+        quest: u32,
+        state: QuestStateFile,
+    },
+    /// 대상의 지갑에 그 재화가 `amount` 이상 (R4).
+    HasCurrency {
+        currency: u32,
+        amount: u64,
+    },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+/// 퀘스트 상태 (R5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) enum QuestStateFile {
+    NotStarted,
+    Active,
+    Ready,
+    Completed,
+}
+
+impl From<QuestStateFile> for nexus_sim::QuestState {
+    fn from(s: QuestStateFile) -> Self {
+        match s {
+            QuestStateFile::NotStarted => Self::NotStarted,
+            QuestStateFile::Active => Self::Active,
+            QuestStateFile::Ready => Self::Ready,
+            QuestStateFile::Completed => Self::Completed,
+        }
+    }
+}
+
+/// 효과 — 트리거의 `then` 과 퀘스트의 단계 효과·보상이 같은 형식을 쓴다 (R5).
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-enum EffectFile {
+pub(crate) enum EffectFile {
     SetFlag {
         scope: ScopeFile,
         flag: u32,
@@ -133,6 +164,19 @@ enum EffectFile {
     RemoveSkill {
         skill: u32,
     },
+    /// 퀘스트를 시작한다 (R5) — 월드 퀘스트의 입구.
+    StartQuest(u32),
+    /// 드롭 표를 굴려 가방에 (R5) — 보상에 드롭 표를 다시 쓴다.
+    GiveLoot(u32),
+    /// 재화 (R4).
+    GiveCurrency {
+        currency: u32,
+        amount: u32,
+    },
+    TakeCurrency {
+        currency: u32,
+        amount: u32,
+    },
 }
 
 fn one() -> u32 {
@@ -158,14 +202,43 @@ pub(crate) enum CmpFile {
 /// 조건 중첩 상한 — 손으로 쓰는 표에서 이보다 깊으면 실수다 (그리고 판정이 재귀다).
 const MAX_DEPTH: u32 = 8;
 
-/// 트리거 표를 검증한다. `item_exists`·`actor_exists` 는 같은 파일의 표를 본다.
+/// "이 번호가 있나" — 같은 파일의 표들. 조건·효과를 검사하는 곳(트리거·스킬·레시피·퀘스트)이 함께 쓴다 (R5).
+pub(crate) struct Known<'a> {
+    pub(crate) item: &'a dyn Fn(u32) -> bool,
+    pub(crate) actor: &'a dyn Fn(u32) -> bool,
+    pub(crate) skill: &'a dyn Fn(u32) -> bool,
+    pub(crate) quest: &'a dyn Fn(u32) -> bool,
+    pub(crate) loot: &'a dyn Fn(u32) -> bool,
+}
+
+/// 효과 하나를 검사한다 — 트리거의 `then` 과 퀘스트의 단계 효과·보상이 같은 것을 쓴다 (R5). 오류는 `then: …` 꼴.
+pub(crate) fn check_effect(e: &EffectFile, known: &Known<'_>, err: &mut impl FnMut(String)) {
+    match *e {
+        EffectFile::GiveItem { item, count } | EffectFile::TakeItem { item, count } => {
+            if !(known.item)(item) {
+                err(format!("then: 없는 아이템 {item}"));
+            }
+            if count == 0 {
+                err(String::from("then: 아이템 개수가 0"));
+            }
+        }
+        EffectFile::GiveExp(0) => err(String::from("then: GiveExp 가 0")),
+        EffectFile::GrantSkill { skill, .. } | EffectFile::RemoveSkill { skill }
+            if !(known.skill)(skill) =>
+        {
+            err(format!("then: 없는 스킬 {skill}"));
+        }
+        EffectFile::StartQuest(q) if !(known.quest)(q) => err(format!("then: 없는 퀘스트 {q}")),
+        EffectFile::GiveLoot(t) if !(known.loot)(t) => err(format!("then: 없는 드롭 표 {t}")),
+        _ => {}
+    }
+}
+
+/// 트리거 표를 검증한다. 번호는 같은 파일의 표(`known`)를 본다.
 /// 오류는 `트리거 N: …` 꼴로 모아 돌려준다 — 다른 표의 검증과 같은 방식.
-pub(crate) fn validate(
-    triggers: &BTreeMap<u32, TriggerFile>,
-    item_exists: impl Fn(u32) -> bool,
-    actor_exists: impl Fn(u32) -> bool,
-    skill_exists: impl Fn(u32) -> bool,
-) -> Vec<String> {
+pub(crate) fn validate(triggers: &BTreeMap<u32, TriggerFile>, known: &Known<'_>) -> Vec<String> {
+    let item_exists = known.item;
+    let actor_exists = known.actor;
     let mut errors = Vec::new();
     for (id, t) in triggers {
         let mut err = |msg: String| errors.push(format!("트리거 {id}: {msg}"));
@@ -189,35 +262,12 @@ pub(crate) fn validate(
             }
             _ => {}
         }
-        check_condition(
-            &t.when,
-            0,
-            &item_exists,
-            &actor_exists,
-            &skill_exists,
-            &mut err,
-        );
+        check_condition(&t.when, 0, known, &mut err);
         if t.then.is_empty() {
             err(String::from("then 이 비어 있음 — 하는 일이 없는 트리거"));
         }
         for e in &t.then {
-            match *e {
-                EffectFile::GiveItem { item, count } | EffectFile::TakeItem { item, count } => {
-                    if !item_exists(item) {
-                        err(format!("then: 없는 아이템 {item}"));
-                    }
-                    if count == 0 {
-                        err(String::from("then: 아이템 개수가 0"));
-                    }
-                }
-                EffectFile::GiveExp(0) => err(String::from("then: GiveExp 가 0")),
-                EffectFile::GrantSkill { skill, .. } | EffectFile::RemoveSkill { skill }
-                    if !skill_exists(skill) =>
-                {
-                    err(format!("then: 없는 스킬 {skill}"));
-                }
-                _ => {}
-            }
+            check_effect(e, known, &mut err);
         }
     }
     errors
@@ -227,9 +277,7 @@ pub(crate) fn validate(
 pub(crate) fn check_condition(
     c: &ConditionFile,
     depth: u32,
-    item_exists: &impl Fn(u32) -> bool,
-    actor_exists: &impl Fn(u32) -> bool,
-    skill_exists: &impl Fn(u32) -> bool,
+    known: &Known<'_>,
     err: &mut impl FnMut(String),
 ) {
     if depth > MAX_DEPTH {
@@ -237,21 +285,22 @@ pub(crate) fn check_condition(
         return;
     }
     match c {
-        ConditionFile::HasItem { item, .. } if !item_exists(*item) => {
+        ConditionFile::HasItem { item, .. } if !(known.item)(*item) => {
             err(format!("when: 없는 아이템 {item}"));
         }
-        ConditionFile::Actor(a) if !actor_exists(*a) => err(format!("when: 없는 액터 {a}")),
-        ConditionFile::SkillLevel { skill, .. } if !skill_exists(*skill) => {
+        ConditionFile::Actor(a) if !(known.actor)(*a) => err(format!("when: 없는 액터 {a}")),
+        ConditionFile::SkillLevel { skill, .. } if !(known.skill)(*skill) => {
             err(format!("when: 없는 스킬 {skill}"));
+        }
+        ConditionFile::Quest { quest, .. } if !(known.quest)(*quest) => {
+            err(format!("when: 없는 퀘스트 {quest}"));
         }
         ConditionFile::All(list) | ConditionFile::Any(list) => {
             for c in list {
-                check_condition(c, depth + 1, item_exists, actor_exists, skill_exists, err);
+                check_condition(c, depth + 1, known, err);
             }
         }
-        ConditionFile::Not(c) => {
-            check_condition(c, depth + 1, item_exists, actor_exists, skill_exists, err);
-        }
+        ConditionFile::Not(c) => check_condition(c, depth + 1, known, err),
         _ => {}
     }
 }
@@ -277,17 +326,27 @@ pub(crate) fn refs(t: &TriggerFile) -> Refs {
     }
     condition_refs(&t.when, &mut r);
     for e in &t.then {
-        match *e {
-            EffectFile::GiveItem { item, .. } | EffectFile::TakeItem { item, .. } => {
-                r.items.insert(item);
-            }
-            EffectFile::GrantSkill { skill, .. } | EffectFile::RemoveSkill { skill } => {
-                r.skills.insert(skill);
-            }
-            _ => {}
-        }
+        add_effect_refs(e, &mut r);
     }
     r
+}
+
+/// 효과 하나가 가리키는 번호를 더한다 — 퀘스트의 단계 효과·보상도 쓴다 (R5).
+pub(crate) fn add_effect_refs(e: &EffectFile, r: &mut Refs) {
+    match *e {
+        EffectFile::GiveItem { item, .. } | EffectFile::TakeItem { item, .. } => {
+            r.items.insert(item);
+        }
+        EffectFile::GrantSkill { skill, .. } | EffectFile::RemoveSkill { skill } => {
+            r.skills.insert(skill);
+        }
+        _ => {}
+    }
+}
+
+/// 조건 하나가 가리키는 번호를 더한다 (R5).
+pub(crate) fn add_condition_refs(c: &ConditionFile, r: &mut Refs) {
+    condition_refs(c, r);
 }
 
 /// 조건 하나가 가리키는 번호 (스킬의 `requires` 용, R3).
@@ -386,6 +445,14 @@ impl From<&ConditionFile> for Condition {
                 cmp: (*cmp).into(),
                 value: *value,
             },
+            ConditionFile::Quest { quest, state } => Condition::Quest {
+                quest: nexus_sim::QuestId(*quest),
+                state: (*state).into(),
+            },
+            ConditionFile::HasCurrency { currency, amount } => Condition::HasCurrency {
+                currency: nexus_sim::CurrencyId(*currency),
+                amount: *amount,
+            },
         }
     }
 }
@@ -418,6 +485,16 @@ impl From<EffectFile> for Effect {
             },
             EffectFile::RemoveSkill { skill } => Effect::RemoveSkill {
                 skill: SkillId(skill),
+            },
+            EffectFile::StartQuest(q) => Effect::StartQuest(nexus_sim::QuestId(q)),
+            EffectFile::GiveLoot(t) => Effect::GiveLoot(nexus_sim::LootTableId(t)),
+            EffectFile::GiveCurrency { currency, amount } => Effect::GiveCurrency {
+                currency: nexus_sim::CurrencyId(currency),
+                amount,
+            },
+            EffectFile::TakeCurrency { currency, amount } => Effect::TakeCurrency {
+                currency: nexus_sim::CurrencyId(currency),
+                amount,
             },
         }
     }
@@ -456,9 +533,13 @@ mod tests {
     fn errors(text: &str) -> Vec<String> {
         validate(
             &parse(text),
-            |i| i == 501,
-            |a| a == 1 || a == 100,
-            |s| s == 5,
+            &Known {
+                item: &|i| i == 501,
+                actor: &|a| a == 1 || a == 100,
+                skill: &|s| s == 5,
+                quest: &|q| q == 1,
+                loot: &|t| t == 1,
+            },
         )
     }
 

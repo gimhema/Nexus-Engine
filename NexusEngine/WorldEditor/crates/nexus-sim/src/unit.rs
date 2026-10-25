@@ -187,6 +187,8 @@ pub struct Unit {
     pub(crate) wallet: crate::trade::Wallet,
     /// 창고 (R4-2) — 종류를 가리지 않는 가방 하나. 창고 기능이 있는 NPC 곁에서만 넣고 뺀다.
     pub(crate) storage: crate::item::Bag,
+    /// 퀘스트 기록 (R5).
+    pub(crate) quests: crate::quest::QuestLog,
 }
 
 impl Unit {
@@ -217,7 +219,14 @@ impl Unit {
             skills: std::collections::BTreeMap::new(),
             wallet: crate::trade::Wallet::default(),
             storage: crate::item::Bag::default(),
+            quests: crate::quest::QuestLog::default(),
         }
+    }
+
+    /// 퀘스트 기록 (R5).
+    #[must_use]
+    pub fn quests(&self) -> &crate::quest::QuestLog {
+        &self.quests
     }
 
     /// 창고 (R4-2).

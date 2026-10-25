@@ -109,9 +109,7 @@ pub(crate) fn validate(
     skill: &SkillLevelRef<'_>,
     stats: &[String],
     class_exists: impl Fn(u32) -> bool,
-    item_exists: &impl Fn(u32) -> bool,
-    actor_exists: &impl Fn(u32) -> bool,
-    skill_exists: &impl Fn(u32) -> bool,
+    known: &crate::trigger_file::Known<'_>,
 ) -> Vec<String> {
     let id = skill.id;
     let mut errors = Vec::new();
@@ -130,14 +128,7 @@ pub(crate) fn validate(
         }
     }
     let mut err = |m: String| errors.push(format!("스킬 {id}: requires — {m}"));
-    crate::trigger_file::check_condition(
-        skill.requires,
-        0,
-        item_exists,
-        actor_exists,
-        skill_exists,
-        &mut err,
-    );
+    crate::trigger_file::check_condition(skill.requires, 0, known, &mut err);
     errors
 }
 
@@ -210,9 +201,13 @@ mod tests {
             &s,
             &[String::from("int")],
             |_| false,
-            &|_| true,
-            &|_| true,
-            &|id| id == 9,
+            &crate::trigger_file::Known {
+                item: &|_| true,
+                actor: &|_| true,
+                skill: &|id| id == 9,
+                quest: &|_| true,
+                loot: &|_| true,
+            },
         );
         for want in [
             "스킬 9: max_level 은",

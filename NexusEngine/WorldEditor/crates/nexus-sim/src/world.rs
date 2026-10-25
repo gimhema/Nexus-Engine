@@ -27,6 +27,7 @@ use crate::item::{
 };
 use crate::loot::{self, LootEntry, LootTableId, Rng};
 use crate::progress::Progress;
+use crate::quest::{Active, Objective, QuestDef, QuestId, QuestState};
 use crate::skills::{SkillRules, to_u32};
 use crate::stats::{ClassDef, ClassId, EquipRules, EquipTotals, Formula, StatRules};
 use crate::tilemap::TileMap;
@@ -92,6 +93,8 @@ pub struct SimWorld {
     crafts: HashMap<CraftId, CraftDef>,
     /// 텔레포트 목적지 표 (R4-2).
     teleports: HashMap<TeleportId, TeleportDef>,
+    /// 퀘스트 (R5).
+    quests: HashMap<QuestId, QuestDef>,
 }
 
 impl SimWorld {
@@ -123,6 +126,346 @@ impl SimWorld {
             interact_range: DEFAULT_INTERACT_RANGE,
             crafts: HashMap::new(),
             teleports: HashMap::new(),
+            quests: HashMap::new(),
+        }
+    }
+
+    /// 퀘스트를 등록한다 (설정 작업, R5).
+    pub fn define_quest(&mut self, id: QuestId, def: QuestDef) {
+        self.quests.insert(id, def);
+    }
+
+    #[must_use]
+    pub fn quest_def(&self, id: QuestId) -> Option<&QuestDef> {
+        self.quests.get(&id)
+    }
+
+    /// 그 유닛의 퀘스트 상태 (R5).
+    #[must_use]
+    pub fn quest_state(&self, unit: Entity, quest: QuestId) -> QuestState {
+        let stages = self.quests.get(&quest).map_or(0, |d| d.stages.len());
+        self.unit(unit)
+            .map_or(QuestState::NotStarted, |u| u.quests.state(quest, stages))
+    }
+
+    /// 퀘스트 기록을 그대로 심는다 (설정 작업 — 저장 파일에서 되살릴 때, R5). 없는 퀘스트는 무시한다.
+    pub fn set_quest(
+        &mut self,
+        unit: Entity,
+        quest: QuestId,
+        active: Option<(u16, Vec<u32>)>,
+        completed: u32,
+    ) {
+        let Some(def) = self.quests.get(&quest) else {
+            return;
+        };
+        let active = active.map(|(stage, mut counts)| {
+            let stage = stage.min(u16::try_from(def.stages.len()).unwrap_or(u16::MAX));
+            let n = def
+                .stages
+                .get(usize::from(stage))
+                .map_or(0, |s| s.objectives.len());
+            counts.resize(n, 0);
+            Active { stage, counts }
+        });
+        if let Some(u) = self.unit_mut(unit) {
+            u.quests
+                .0
+                .insert(quest, crate::quest::QuestEntry { active, completed });
+        }
+    }
+
+    /// 지금 받을 수 있는가 (R5) — UI 가 "받기" 단추를 켤 때도 쓴다.
+    #[must_use]
+    pub fn can_start_quest(&self, unit: Entity, quest: QuestId) -> bool {
+        self.quest_startable(unit, quest).is_ok()
+    }
+
+    fn quest_startable(&self, unit: Entity, quest: QuestId) -> Result<(), Rejection> {
+        let def = self.quests.get(&quest).ok_or(Rejection::QuestUnavailable)?;
+        let u = self.unit(unit).ok_or(Rejection::UnknownEntity)?;
+        if let Some(e) = u.quests.entry(quest)
+            && (e.active.is_some() || (e.completed > 0 && !def.repeatable))
+        {
+            return Err(Rejection::QuestUnavailable);
+        }
+        if !self.check(&def.requires, unit) {
+            return Err(Rejection::QuestUnavailable);
+        }
+        Ok(())
+    }
+
+    /// 퀘스트를 시작한다 — NPC 에게 받든 트리거가 주든 **같은 문** (R5).
+    fn start_quest(
+        &mut self,
+        unit: Entity,
+        quest: QuestId,
+        events: &mut Vec<Event>,
+    ) -> Result<(), Rejection> {
+        self.quest_startable(unit, quest)?;
+        let n = self.quests[&quest]
+            .stages
+            .first()
+            .map_or(0, |s| s.objectives.len());
+        if let Some(u) = self.unit_mut(unit) {
+            let entry = u.quests.0.entry(quest).or_default();
+            entry.active = Some(Active {
+                stage: 0,
+                counts: vec![0; n],
+            });
+        }
+        events.push(Event::QuestAccepted { unit, quest });
+        Ok(())
+    }
+
+    pub(crate) fn accept_quest(
+        &mut self,
+        unit: Entity,
+        npc: Entity,
+        quest: QuestId,
+        events: &mut Vec<Event>,
+    ) -> Result<(), Rejection> {
+        self.near_npc(unit, npc)?;
+        if !self.services_of(npc).contains(&Service::Quest(quest)) {
+            return Err(Rejection::NoService);
+        }
+        self.start_quest(unit, quest, events)
+    }
+
+    pub(crate) fn turn_in_quest(
+        &mut self,
+        unit: Entity,
+        npc: Entity,
+        quest: QuestId,
+        events: &mut Vec<Event>,
+    ) -> Result<(), Rejection> {
+        self.near_npc(unit, npc)?;
+        if !self.services_of(npc).contains(&Service::Quest(quest)) {
+            return Err(Rejection::NoService);
+        }
+        if self.quest_state(unit, quest) != QuestState::Ready || !self.final_items_ok(unit, quest) {
+            return Err(Rejection::QuestNotReady);
+        }
+        self.complete_quest(unit, quest, events);
+        Ok(())
+    }
+
+    pub(crate) fn abandon_quest(
+        &mut self,
+        unit: Entity,
+        quest: QuestId,
+        events: &mut Vec<Event>,
+    ) -> Result<(), Rejection> {
+        let u = self.unit_mut(unit).ok_or(Rejection::UnknownEntity)?;
+        let entry = u.quests.0.get_mut(&quest).ok_or(Rejection::QuestNotReady)?;
+        if entry.active.take().is_none() {
+            return Err(Rejection::QuestNotReady);
+        }
+        events.push(Event::QuestAbandoned { unit, quest });
+        Ok(())
+    }
+
+    /// 마지막 단계의 수집 목표를 **지금도** 채우고 있는가 — 보고 사이에 팔았을 수 있다.
+    fn final_items_ok(&self, unit: Entity, quest: QuestId) -> bool {
+        let Some(u) = self.unit(unit) else {
+            return false;
+        };
+        self.quests
+            .get(&quest)
+            .and_then(|d| d.stages.last())
+            .is_none_or(|s| {
+                s.objectives.iter().all(|o| match o {
+                    Objective::Collect { item, count, .. } => Self::carried(u, *item) >= *count,
+                    _ => true,
+                })
+            })
+    }
+
+    /// 끝낸다 — 마지막 단계의 `take` 수집 아이템을 가져가고 보상을 준다.
+    fn complete_quest(&mut self, unit: Entity, quest: QuestId, events: &mut Vec<Event>) {
+        let Some(def) = self.quests.get(&quest).cloned() else {
+            return;
+        };
+        if let Some(last) = def.stages.last() {
+            for o in &last.objectives {
+                if let Objective::Collect {
+                    item,
+                    count,
+                    take: true,
+                } = *o
+                {
+                    self.apply_effect(Effect::TakeItem { item, count }, unit, events);
+                }
+            }
+        }
+        if let Some(u) = self.unit_mut(unit) {
+            let entry = u.quests.0.entry(quest).or_default();
+            entry.active = None;
+            entry.completed = entry.completed.saturating_add(1);
+        }
+        events.push(Event::QuestCompleted { unit, quest });
+        for effect in def.rewards {
+            self.apply_effect(effect, unit, events);
+        }
+    }
+
+    /// 목표 하나를 지금 채우고 있는가.
+    fn objective_done(&self, unit: Entity, o: &Objective, count: u32) -> bool {
+        match o {
+            Objective::Collect { item, count: n, .. } => self
+                .unit(unit)
+                .is_some_and(|u| Self::carried(u, *item) >= *n),
+            Objective::Check(c) => self.check(c, unit),
+            counted => counted.target().is_some_and(|t| count >= t),
+        }
+    }
+
+    /// 이번 tick 의 일로 퀘스트 목표를 세고, 채운 단계를 넘긴다 (R5) — `step`·트리거 뒤에 부른다.
+    pub(crate) fn run_quests(&mut self, events: &mut Vec<Event>) {
+        let holders: Vec<Entity> = self
+            .units()
+            .filter(|(_, u)| u.quests.0.values().any(|e| e.active.is_some()))
+            .map(|(e, _)| e)
+            .collect();
+        if holders.is_empty() {
+            return;
+        }
+        // 1. 세는 목표 — 처치·도달·대화.
+        let mut happenings: Vec<Happening> = holders
+            .iter()
+            .filter_map(|e| {
+                let u = self.unit(*e)?;
+                (u.prev_pos != u.pos).then_some(Happening::Moved {
+                    unit: *e,
+                    from: u.prev_pos,
+                    to: u.pos,
+                })
+            })
+            .collect();
+        let snapshot = events.clone();
+        happenings.extend(snapshot.iter().filter_map(|e| self.happening(e, &snapshot)));
+        for h in happenings {
+            let who = match h {
+                Happening::Killed { killer, .. } => killer,
+                Happening::Moved { unit, .. } | Happening::Talked { unit, .. } => unit,
+                _ => continue,
+            };
+            if !holders.contains(&who) {
+                continue;
+            }
+            let active: Vec<(QuestId, u16)> = self.unit(who).map_or_else(Vec::new, |u| {
+                u.quests
+                    .iter()
+                    .filter_map(|(q, e)| Some((q, e.active.as_ref()?.stage)))
+                    .collect()
+            });
+            for (quest, stage) in active {
+                let Some(objectives) = self
+                    .quests
+                    .get(&quest)
+                    .and_then(|d| d.stages.get(usize::from(stage)))
+                    .map(|s| s.objectives.clone())
+                else {
+                    continue;
+                };
+                for (i, o) in objectives.iter().enumerate() {
+                    let hit = match (o, h) {
+                        (Objective::Kill { actor, .. }, Happening::Killed { victim, .. }) => {
+                            actor.is_none_or(|a| victim == Some(a))
+                        }
+                        (
+                            Objective::Reach { center, radius },
+                            Happening::Moved { from, to, .. },
+                        ) => {
+                            let r2 = radius * radius;
+                            from.distance_squared(*center) > r2
+                                && to.distance_squared(*center) <= r2
+                        }
+                        (Objective::Talk { actor }, Happening::Talked { actor: met, .. }) => {
+                            *actor == met
+                        }
+                        _ => false,
+                    };
+                    let Some(target) = o.target().filter(|_| hit) else {
+                        continue;
+                    };
+                    let Some(u) = self.unit_mut(who) else {
+                        continue;
+                    };
+                    let Some(a) = u.quests.0.get_mut(&quest).and_then(|e| e.active.as_mut()) else {
+                        continue;
+                    };
+                    if let Some(c) = a.counts.get_mut(i)
+                        && *c < target
+                    {
+                        *c += 1;
+                        events.push(Event::QuestProgressed {
+                            unit: who,
+                            quest,
+                            objective: u16::try_from(i).unwrap_or(u16::MAX),
+                            count: *c,
+                        });
+                    }
+                }
+            }
+        }
+        // 2. 채운 단계를 넘긴다 — 상태 목표(수집·조건)도 여기서 본다.
+        for who in holders {
+            let quests: Vec<QuestId> = self.unit(who).map_or_else(Vec::new, |u| {
+                u.quests
+                    .iter()
+                    .filter(|(_, e)| e.active.is_some())
+                    .map(|(q, _)| q)
+                    .collect()
+            });
+            for quest in quests {
+                let Some(def) = self.quests.get(&quest).cloned() else {
+                    continue;
+                };
+                while let Some(a) = self
+                    .unit(who)
+                    .and_then(|u| u.quests.entry(quest))
+                    .and_then(|e| e.active.clone())
+                {
+                    let Some(stage) = def.stages.get(usize::from(a.stage)) else {
+                        break; // 이미 보고 가능
+                    };
+                    let done = stage.objectives.iter().enumerate().all(|(i, o)| {
+                        self.objective_done(who, o, a.counts.get(i).copied().unwrap_or(0))
+                    });
+                    if !done {
+                        break;
+                    }
+                    let next = a.stage + 1;
+                    let n = def
+                        .stages
+                        .get(usize::from(next))
+                        .map_or(0, |s| s.objectives.len());
+                    if let Some(u) = self.unit_mut(who)
+                        && let Some(active) =
+                            u.quests.0.get_mut(&quest).and_then(|e| e.active.as_mut())
+                    {
+                        active.stage = next;
+                        active.counts = vec![0; n];
+                    }
+                    events.push(Event::QuestStageDone {
+                        unit: who,
+                        quest,
+                        stage: a.stage,
+                    });
+                    for effect in &stage.then {
+                        self.apply_effect(*effect, who, events);
+                    }
+                    if usize::from(next) >= def.stages.len() {
+                        if def.auto_complete {
+                            self.complete_quest(who, quest, events);
+                        } else {
+                            events.push(Event::QuestReady { unit: who, quest });
+                        }
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -619,10 +962,12 @@ impl SimWorld {
             .get(usize::from(index))
             .ok_or(Rejection::NoService)?;
         match service {
-            // 상점·제작·텔레포트·창고는 각자의 Intent 로 쓴다.
-            Service::Shop(_) | Service::Craft(_) | Service::Teleport(_) | Service::Storage => {
-                Err(Rejection::NoService)
-            }
+            // 상점·제작·텔레포트·창고·퀘스트는 각자의 Intent 로 쓴다.
+            Service::Shop(_)
+            | Service::Craft(_)
+            | Service::Teleport(_)
+            | Service::Storage
+            | Service::Quest(_) => Err(Rejection::NoService),
             Service::Heal { price } => {
                 let cost = u64::from(price.amount);
                 if !self.pay_out(unit, price.currency, cost, events) {
@@ -879,6 +1224,7 @@ impl SimWorld {
             Condition::All(all) => all.iter().all(|c| self.check(c, subject)),
             Condition::Any(any) => any.iter().any(|c| self.check(c, subject)),
             Condition::Not(c) => !self.check(c, subject),
+            Condition::Quest { quest, state } => self.quest_state(subject, *quest) == *state,
             Condition::HasCurrency { currency, amount } => {
                 unit.is_some_and(|u| u.wallet.get(*currency) >= *amount)
             }
@@ -1822,6 +2168,10 @@ impl SimWorld {
                 unit,
                 item: stack.item,
             }),
+            Event::Interacted { unit, npc } => Some(Happening::Talked {
+                unit,
+                actor: self.unit(npc)?.def.actor,
+            }),
             _ => None,
         }
     }
@@ -1882,6 +2232,19 @@ impl SimWorld {
                 let _ = self.learn(subject, skill, levels, events);
             }
             Effect::RemoveSkill { skill } => self.forget(subject, skill, events),
+            Effect::StartQuest(quest) => {
+                let _ = self.start_quest(subject, quest, events);
+            }
+            Effect::GiveLoot(table) => {
+                let rolled = self
+                    .loot_tables
+                    .get(&table)
+                    .map(|entries| loot::roll(entries, &mut self.rng))
+                    .unwrap_or_default();
+                for (item, count) in rolled {
+                    self.apply_effect(Effect::GiveItem { item, count }, subject, events);
+                }
+            }
             Effect::GiveCurrency { currency, amount } => {
                 self.pay_in(subject, currency, u64::from(amount), events);
             }

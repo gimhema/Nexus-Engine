@@ -22,7 +22,8 @@ use nexus_render::{DEPTH_LAYER, RenderCommand, SpriteAnchor, TextureId, UvRect};
 use nexus_script::RhaiHost;
 use nexus_sim::{
     Authority, BagKind, ClassId, CraftId, EquipSlot, Event, Intent, ItemStack, LocalAuthority,
-    Price, Progress, Rejection, Relation, Service, ShopId, SimWorld, SkillId, TeleportId, Unit,
+    Price, Progress, QuestId, QuestState, Rejection, Relation, Service, ShopId, SimWorld, SkillId,
+    TeleportId, Unit,
 };
 
 use crate::game_data::{ActorLook, GameData};
@@ -118,6 +119,9 @@ pub(crate) enum TradeAction {
         slot: u16,
         count: u32,
     },
+    /// 퀘스트 받기·보고 (R5).
+    AcceptQuest(QuestId),
+    TurnInQuest(QuestId),
     Close,
 }
 
@@ -136,6 +140,29 @@ pub(crate) struct TradeView {
     pub(crate) teleports: Vec<TeleportView>,
     /// 창고 기능이 있으면.
     pub(crate) storage: Option<StorageView>,
+    /// 이 NPC 의 퀘스트 (R5).
+    pub(crate) quests: Vec<QuestOffer>,
+}
+
+/// NPC 창의 퀘스트 한 줄 (R5).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct QuestOffer {
+    pub(crate) quest: QuestId,
+    pub(crate) title: String,
+    pub(crate) description: String,
+    pub(crate) state: QuestState,
+    /// 지금 받을 수 있나 (조건·반복).
+    pub(crate) can_accept: bool,
+}
+
+/// 퀘스트 목록 한 줄 (R5) — 플레이 패널.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct QuestLine {
+    pub(crate) quest: QuestId,
+    pub(crate) title: String,
+    pub(crate) state: QuestState,
+    /// 지금 단계의 목표 글 `(글, 채웠나)`.
+    pub(crate) goals: Vec<(String, bool)>,
 }
 
 /// 제작 표 하나 (R4-2).
@@ -498,6 +525,7 @@ impl PlaySession {
         let mut crafts = Vec::new();
         let mut teleports = Vec::new();
         let mut storage = None;
+        let mut quests = Vec::new();
         for (i, service) in world.services_of(npc).iter().enumerate() {
             let index = u16::try_from(i).unwrap_or(u16::MAX);
             match *service {
@@ -614,6 +642,15 @@ impl PlaySession {
                         destinations,
                     });
                 }
+                Service::Quest(quest) => {
+                    quests.push(QuestOffer {
+                        quest,
+                        title: self.data.quest_title(quest),
+                        description: self.data.quest_description(quest).to_owned(),
+                        state: world.quest_state(self.player, quest),
+                        can_accept: world.can_start_quest(self.player, quest),
+                    });
+                }
                 Service::Storage => {
                     let carried = [BagKind::Consumable, BagKind::Equipment]
                         .into_iter()
@@ -658,7 +695,81 @@ impl PlaySession {
             crafts,
             teleports,
             storage,
+            quests,
         })
+    }
+
+    /// 퀘스트 목록 (R5) — 진행 중(보고 가능 포함)인 것만, 번호 순.
+    pub(crate) fn quest_lines(&self) -> Vec<QuestLine> {
+        let world = self.world();
+        let Some(me) = world.unit(self.player) else {
+            return Vec::new();
+        };
+        me.quests()
+            .iter()
+            .filter_map(|(quest, entry)| {
+                let active = entry.active.as_ref()?;
+                let def = world.quest_def(quest)?;
+                let goals = def
+                    .stages
+                    .get(usize::from(active.stage))
+                    .map(|stage| {
+                        stage
+                            .objectives
+                            .iter()
+                            .enumerate()
+                            .map(|(i, o)| {
+                                self.goal_text(o, active.counts.get(i).copied().unwrap_or(0))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Some(QuestLine {
+                    quest,
+                    title: self.data.quest_title(quest),
+                    state: world.quest_state(self.player, quest),
+                    goals,
+                })
+            })
+            .collect()
+    }
+
+    /// 목표 하나의 글과 채웠는지.
+    fn goal_text(&self, o: &nexus_sim::Objective, count: u32) -> (String, bool) {
+        use nexus_sim::Objective;
+        let world = self.world();
+        match o {
+            Objective::Kill { actor, count: n } => {
+                let who =
+                    actor.map_or_else(|| String::from("적"), |a| self.data.actor_type_name(a));
+                (format!("{who} 처치 {}/{n}", count.min(*n)), count >= *n)
+            }
+            Objective::Collect { item, count: n, .. } => {
+                let have = world.unit(self.player).map_or(0, |u| {
+                    let inv = u.inventory();
+                    inv.bag(BagKind::Consumable).count_of(*item)
+                        + inv.bag(BagKind::Equipment).count_of(*item)
+                });
+                (
+                    format!("{} 모으기 {}/{n}", self.data.item_name(*item), have.min(*n)),
+                    have >= *n,
+                )
+            }
+            Objective::Reach { .. } => (String::from("목표 지점에 가기"), count >= 1),
+            Objective::Talk { actor } => (
+                format!("{} 에게 말 걸기", self.data.actor_type_name(*actor)),
+                count >= 1,
+            ),
+            Objective::Check(c) => (String::from("조건 맞추기"), world.check(c, self.player)),
+        }
+    }
+
+    /// 퀘스트 포기 (R5) — 어디서나.
+    pub(crate) fn abandon_quest(&mut self, quest: QuestId) {
+        self.auth.submit(Intent::AbandonQuest {
+            unit: self.player,
+            quest,
+        });
     }
 
     /// 거래 창 조작 (R4) — Intent 로 바꿔 낸다. 판정은 권한자가 한다.
@@ -722,6 +833,8 @@ impl PlaySession {
                 slot,
                 count,
             },
+            TradeAction::AcceptQuest(quest) => Intent::AcceptQuest { unit, npc, quest },
+            TradeAction::TurnInQuest(quest) => Intent::TurnInQuest { unit, npc, quest },
         };
         self.auth.submit(intent);
     }
@@ -811,6 +924,20 @@ impl PlaySession {
             hotbar: Some(self.hotbar.clone()),
             flags: u.map(|u| u.flags().iter().collect()).unwrap_or_default(),
             wallet: u.map(|u| u.wallet().iter().collect()),
+            quests: u
+                .map(|u| {
+                    u.quests()
+                        .iter()
+                        .map(|(q, e)| {
+                            (
+                                q,
+                                e.active.as_ref().map(|a| (a.stage, a.counts.clone())),
+                                e.completed,
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             storage: u
                 .map(|u| {
                     u.storage()
@@ -1383,6 +1510,21 @@ impl PlaySession {
             Event::Deposited { unit, item, count } if unit == self.player => {
                 format!("맡겼다: {} ×{count}", self.data.item_name(item))
             }
+            Event::QuestAccepted { unit, quest } if unit == self.player => {
+                format!("퀘스트를 받았다: {}", self.data.quest_title(quest))
+            }
+            Event::QuestStageDone { unit, quest, .. } if unit == self.player => {
+                format!("{} — 다음 단계로", self.data.quest_title(quest))
+            }
+            Event::QuestReady { unit, quest } if unit == self.player => {
+                format!("{} — 보고할 수 있다", self.data.quest_title(quest))
+            }
+            Event::QuestCompleted { unit, quest } if unit == self.player => {
+                format!("퀘스트 완료: {}", self.data.quest_title(quest))
+            }
+            Event::QuestAbandoned { unit, quest } if unit == self.player => {
+                format!("퀘스트를 포기했다: {}", self.data.quest_title(quest))
+            }
             Event::Withdrew { unit, item, count } if unit == self.player => {
                 format!("찾았다: {} ×{count}", self.data.item_name(item))
             }
@@ -1855,6 +1997,8 @@ mod text {
             Rejection::NotSellable => "그 상점은 이 물건을 사지 않습니다",
             Rejection::MissingMaterials => "재료가 모자랍니다",
             Rejection::RequirementNotMet => "조건이 맞지 않습니다",
+            Rejection::QuestUnavailable => "받을 수 없는 퀘스트입니다",
+            Rejection::QuestNotReady => "아직 보고할 수 없습니다",
         }
     }
 }
@@ -1884,6 +2028,10 @@ fn restore(world: &mut SimWorld, player: Entity, save: &SaveData) {
     }
     for &(flag, value) in &save.world_flags {
         world.set_world_flag(flag, value);
+    }
+    // 퀘스트 기록 (R5).
+    for (quest, active, completed) in &save.quests {
+        world.set_quest(player, *quest, active.clone(), *completed);
     }
     // 창고 (R4-2) — 칸 번호 그대로.
     for &(slot, item, count) in &save.storage {
@@ -3283,5 +3431,145 @@ mod tests {
             "다른 레벨은 에디터가 연다"
         );
         assert!(s.log().any(|l| l == "다른 곳으로 떠난다…"));
+    }
+
+    // ── 퀘스트 (R5) ──────────────────────────────────────────────────────────
+
+    /// 플레이어 옆에 슬라임(액터 100)을 세우고 그 tick 에 쓰러뜨린다.
+    fn slay_slime(s: &mut PlaySession) {
+        let me = s.player();
+        let near = s.world().unit(me).unwrap().pos() + Vec2::new(1.0, 0.0);
+        let def = nexus_sim::UnitDef {
+            actor: nexus_sim::ActorType(100),
+            faction: nexus_sim::FactionId(201),
+            exp_reward: 60,
+            ..nexus_sim::UnitDef::default()
+        };
+        let slime = s.auth.world_mut().spawn_unit(near, 0.0, def);
+        // 기본 공격 쿨타임이 있으니 쓰러질 때까지 다시 낸다.
+        for _ in 0..40 {
+            s.auth.submit(Intent::Attack {
+                unit: me,
+                target: slime,
+                skill: SkillId(1),
+            });
+            s.tick(DT, None);
+            if !s.world().unit(slime).unwrap().is_alive() {
+                return;
+            }
+        }
+        panic!("슬라임을 쓰러뜨리지 못했다: {:?}", s.log);
+    }
+
+    #[test]
+    fn accept_slay_and_report_the_slime_quest() {
+        // R5 끝나는 조건: 받기 → 처치 → 보고 → 보상.
+        let mut s = new_game(None, None);
+        talk_to(&mut s, "상인 NPC");
+        let offer = &s.trade_view().unwrap().quests[0];
+        assert_eq!(
+            (offer.title.as_str(), offer.can_accept),
+            ("슬라임 소탕", true)
+        );
+        s.trade(TradeAction::AcceptQuest(QuestId(1)));
+        s.tick(DT, None);
+        assert!(s.log().any(|l| l == "퀘스트를 받았다: 슬라임 소탕"));
+        assert_eq!(
+            s.quest_lines()[0].goals,
+            [(String::from("슬라임 처치 0/3"), false)]
+        );
+        for _ in 0..3 {
+            slay_slime(&mut s);
+        }
+        assert_eq!(s.quest_lines()[0].state, QuestState::Ready);
+        assert!(s.log().any(|l| l == "슬라임 소탕 — 보고할 수 있다"));
+
+        // 보고 — 상인에게 다시 말을 걸어 (멀어졌을 수 있다).
+        talk_to(&mut s, "상인 NPC");
+        let gold = s.gold();
+        let exp_before = s.world().unit(s.player()).unwrap().progress();
+        s.trade(TradeAction::TurnInQuest(QuestId(1)));
+        s.tick(DT, None);
+        assert!(s.log().any(|l| l == "퀘스트 완료: 슬라임 소탕"));
+        assert_eq!(s.gold(), gold + 100);
+        assert_ne!(
+            s.world().unit(s.player()).unwrap().progress(),
+            exp_before,
+            "경험치 80"
+        );
+        assert!(
+            s.quest_lines().iter().all(|q| q.quest != QuestId(1)),
+            "끝난 퀘스트는 목록에서 빠진다"
+        );
+        // 보상 경험치로 레벨 2 — 트리거 4 가 월드 퀘스트 '광장 구경' 을 준다 (데이터가 맞물린다).
+        assert!(s.quest_lines().iter().any(|q| q.quest == QuestId(3)));
+        let view = s.trade_view().unwrap();
+        assert_eq!(view.quests[0].state, QuestState::Completed);
+        assert!(!view.quests[0].can_accept, "반복 불가");
+    }
+
+    #[test]
+    fn quest_progress_is_saved_and_the_sequel_needs_the_first() {
+        let mut s = village();
+        talk_to(&mut s, "대장장이");
+        let sequel = &s.trade_view().unwrap().quests[0];
+        assert_eq!(sequel.title, "대장장이의 부탁");
+        assert!(!sequel.can_accept, "슬라임 소탕을 끝내야 받는다");
+
+        talk_to(&mut s, "상인 NPC");
+        s.trade(TradeAction::AcceptQuest(QuestId(1)));
+        s.tick(DT, None);
+        slay_slime(&mut s);
+        let save = s.save_data(String::new());
+        assert_eq!(save.quests, [(QuestId(1), Some((0, vec![1])), 0)]);
+        let scene =
+            crate::zone_file::from_ron(include_str!("../../../zones/village.zone.ron")).unwrap();
+        let back = PlaySession::start(
+            &scene,
+            Camera2d::default(),
+            GameData::embedded(),
+            PlayOptions {
+                spawn: None,
+                save: Some(save),
+                class: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            back.quest_lines()[0].goals,
+            [(String::from("슬라임 처치 1/3"), false)],
+            "이어 하기에 센 수가 남는다"
+        );
+    }
+
+    #[test]
+    fn reaching_level_two_starts_the_plaza_world_quest() {
+        let mut s = new_game(None, None);
+        let me = s.player();
+        // 레벨 1 → 2 (100) 직전까지 채우고 슬라임 하나(60)로 넘긴다.
+        s.auth.world_mut().set_progress(me, Progress::new(1, 99));
+        slay_slime(&mut s);
+        assert!(
+            s.log().any(|l| l == "퀘스트를 받았다: 광장 구경"),
+            "{:?}",
+            s.log
+        );
+        assert_eq!(
+            s.quest_lines()[0].goals,
+            [(String::from("목표 지점에 가기"), false)]
+        );
+        // 광장(0, 0)으로 걸어가면 보고 없이 끝난다.
+        s.auth.world_mut().set_position(me, Vec2::new(6.0, 0.0));
+        let gold = s.gold();
+        s.click(Vec2::ZERO, 0.01);
+        for _ in 0..200 {
+            s.tick(DT, None);
+        }
+        assert!(
+            s.log().any(|l| l == "퀘스트 완료: 광장 구경"),
+            "{:?}",
+            s.log
+        );
+        assert_eq!(s.gold(), gold + 20);
     }
 }

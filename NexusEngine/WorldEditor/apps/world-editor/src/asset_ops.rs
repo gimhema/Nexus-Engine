@@ -269,6 +269,13 @@ fn plan_actor(root: &Path, op: &FileOp) -> Result<Plan, String> {
                     trigger_list(&triggers)
                 ));
             }
+            let quests = crate::game_data::quests_using(&rules, None, Some(id))?;
+            if !quests.is_empty() {
+                return Err(format!(
+                    "이 액터를 쓰는 퀘스트가 있어 지우지 않습니다 — {}",
+                    quest_list(&quests)
+                ));
+            }
             let (rules2, gone_rules) = crate::ron_patch::remove_entry(&rules, "actors", id)?;
             let (display2, gone_display) = crate::ron_patch::remove_entry(&display, "actors", id)?;
             GameData::parse(&rules2, &display2)?;
@@ -349,26 +356,48 @@ fn plan_actor(root: &Path, op: &FileOp) -> Result<Plan, String> {
                 .push(format!("#{id} {} → #{new_id} (두 표)", op.asset.name));
             // 트리거 (R1) — `Killed(actor: Some(N))` 와 `Actor(N)` 두 모양뿐이다. 닫는 괄호까지 넣어
             // 바꾸므로 10 을 바꾸다 100 을 건드리지 않는다. 다른 모양으로 적힌 것이 남으면 거부한다.
+            // 퀘스트 (R5) — `Kill(actor: N, …)`·`Kill(actor: N)`·`Talk(actor: N)` 도 같은 방식으로.
             let triggers = crate::game_data::triggers_using(&rules2, None, Some(id))?;
-            if !triggers.is_empty() {
+            let quests = crate::game_data::quests_using(&rules2, None, Some(id))?;
+            if !triggers.is_empty() || !quests.is_empty() {
                 for (from, to) in [
                     (
                         format!("actor: Some({id})"),
                         format!("actor: Some({new_id})"),
                     ),
                     (format!("Actor({id})"), format!("Actor({new_id})")),
+                    (
+                        format!("Kill(actor: {id},"),
+                        format!("Kill(actor: {new_id},"),
+                    ),
+                    (
+                        format!("Kill(actor: {id})"),
+                        format!("Kill(actor: {new_id})"),
+                    ),
+                    (
+                        format!("Talk(actor: {id})"),
+                        format!("Talk(actor: {new_id})"),
+                    ),
                 ] {
                     rules2 = rules2.replace(&from, &to);
                 }
                 let left = crate::game_data::triggers_using(&rules2, None, Some(id))?;
-                if !left.is_empty() {
+                let left_quests = crate::game_data::quests_using(&rules2, None, Some(id))?;
+                if !left.is_empty() || !left_quests.is_empty() {
                     return Err(format!(
-                        "{} 안의 #{id} 를 고쳐 쓰지 못했습니다 (적힌 모양이 다름) — 손으로 고친 뒤 다시 하세요",
-                        trigger_list(&left)
+                        "{} {} 안의 #{id} 를 고쳐 쓰지 못했습니다 (적힌 모양이 다름) — 손으로 고친 뒤 다시 하세요",
+                        trigger_list(&left),
+                        quest_list(&left_quests)
                     ));
                 }
-                p.steps
-                    .push(format!("고쳐 씀: {} (rules.ron)", trigger_list(&triggers)));
+                if !triggers.is_empty() {
+                    p.steps
+                        .push(format!("고쳐 씀: {} (rules.ron)", trigger_list(&triggers)));
+                }
+                if !quests.is_empty() {
+                    p.steps
+                        .push(format!("고쳐 씀: {} (rules.ron)", quest_list(&quests)));
+                }
             }
             // 마커 종류의 기본 액터.
             let mut settings = crate::game_data::settings_form(&rules2)?;
@@ -515,6 +544,10 @@ fn table_users(
             if !triggers.is_empty() {
                 out.push(trigger_list(&triggers));
             }
+            let quests = crate::game_data::quests_using(rules, Some(id), None)?;
+            if !quests.is_empty() {
+                out.push(quest_list(&quests));
+            }
         }
         Tab::Skills => {
             for (a, f) in &actors {
@@ -551,6 +584,12 @@ fn table_users(
         }
     }
     Ok(out)
+}
+
+/// `퀘스트 #1, #2` — 사람이 읽을 목록 (R5).
+fn quest_list(ids: &[u32]) -> String {
+    let list: Vec<String> = ids.iter().map(|i| format!("#{i}")).collect();
+    format!("퀘스트 {}", list.join(", "))
 }
 
 /// `트리거 #1, #2` — 사람이 읽을 목록.
@@ -947,6 +986,10 @@ mod tests {
         assert!(sb.read(RULES_PATH).contains("Monster: 110,"));
         // 트리거가 가리키는 번호도 따라간다 (R1).
         assert!(sb.read(RULES_PATH).contains("Killed(actor: Some(110))"));
+        assert!(
+            sb.read(RULES_PATH).contains("Kill(actor: 110, count: 3)"),
+            "퀘스트 목표도 (R5)"
+        );
         assert!(!sb.read(RULES_PATH).contains("Some(100)"));
 
         // 플레이어 1 → 2 — 저장 파일의 조작 액터와 Player 기본값.

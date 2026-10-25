@@ -111,7 +111,7 @@
             defense: 10,
             immortal: true,
             faction: 100,
-            services: [Shop(1), Heal(price: 20), Teleport(2)],
+            services: [Shop(1), Heal(price: 20), Teleport(2), Quest(1)],
         ),
         // 대장장이 (R4-2) — 제작 · 창고 · 마을 안 텔레포트.
         12: (
@@ -121,7 +121,7 @@
             defense: 10,
             immortal: true,
             faction: 100,
-            services: [Craft(1), Storage, Teleport(1)],
+            services: [Craft(1), Storage, Teleport(1), Quest(2)],
         ),
         // 서버 MonsterEntityData 기본값처럼 공격형.
         100: (
@@ -262,6 +262,34 @@
         ),
     },
 
+    // 퀘스트 (R5) — stages 를 차례로 채우고, 마지막 단계를 채우면 담당 NPC(기능 Quest(N))에게 보고한다.
+    // 목표: Kill(actor, count — actor 0 = 아무나) · Collect(item, count, take — 보고할 때 가져갈지) ·
+    //       Reach(center, radius) · Talk(actor) · Check(조건). then(단계 효과)·rewards·requires 는 트리거와 같은 형식.
+    // auto_complete 면 보고 없이 그 자리에서 끝난다(담당 NPC 가 없는 월드 퀘스트 — 트리거 StartQuest 로 시작).
+    // 제목·설명은 display.ron 의 quests.
+    quests: {
+        // 상인 — 마을 근처의 슬라임을 줄여 달라.
+        1: (
+            stages: [(objectives: [Kill(actor: 100, count: 3)])],
+            rewards: [GiveCurrency(currency: 1, amount: 100), GiveExp(80), GiveLoot(1)],
+        ),
+        // 대장장이 — 상인에게 들러 젤리를 모아 온다. 1 을 끝내야 받는다.
+        2: (
+            requires: Quest(quest: 1, state: Completed),
+            stages: [
+                (objectives: [Talk(actor: 11)]),
+                (objectives: [Collect(item: 909, count: 5, take: true)]),
+            ],
+            rewards: [GiveItem(item: 3001, count: 1), GiveCurrency(currency: 1, amount: 50)],
+        ),
+        // 월드 퀘스트 — 레벨 2 가 되면 트리거 4 가 준다. 광장에 가면 그 자리에서 끝난다.
+        3: (
+            stages: [(objectives: [Reach(center: (0.0, 0.0), radius: 2.0)])],
+            rewards: [GiveCurrency(currency: 1, amount: 20)],
+            auto_complete: true,
+        ),
+    },
+
     // 경험치 곡선 (R3) — 레벨 level 에서 다음 레벨까지 필요한 경험치. 변수는 level 하나.
     // 적지 않으면 이 식(서버 CharacterEntityData 와 같다).
     exp_curve: "level * level * 100",
@@ -325,6 +353,12 @@
             on: LevelReached(3),
             when: Actor(1),
             then: [GrantSkill(skill: 9)],
+        ),
+        // 레벨 2 가 되면 월드 퀘스트 3 (R5).
+        4: (
+            on: LevelReached(2),
+            when: Actor(1),
+            then: [StartQuest(3)],
         ),
     },
 )

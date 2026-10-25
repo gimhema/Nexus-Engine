@@ -20,6 +20,7 @@ use crate::ai;
 use crate::combat::SkillId;
 use crate::item::{BagKind, EquipSlot, ItemId, ItemStack};
 use crate::progress::Progress;
+use crate::quest::QuestId;
 use crate::script::ScriptHost;
 use crate::trade::{CraftId, CurrencyId, ShopId, TeleportId};
 use crate::trigger::{FlagId, TriggerId};
@@ -102,6 +103,20 @@ pub enum Intent {
         slot: u16,
         count: u32,
     },
+    /// `npc` 에게서 퀘스트를 받는다 (R5).
+    AcceptQuest {
+        unit: Entity,
+        npc: Entity,
+        quest: QuestId,
+    },
+    /// `npc` 에게 퀘스트를 보고한다 — 마지막 단계까지 채웠어야 한다 (R5).
+    TurnInQuest {
+        unit: Entity,
+        npc: Entity,
+        quest: QuestId,
+    },
+    /// 진행 중인 퀘스트를 포기한다 (R5). 어디서나 된다.
+    AbandonQuest { unit: Entity, quest: QuestId },
     /// 창고의 `slot` 에서 `count` 개를 찾는다 (R4-2).
     Withdraw {
         unit: Entity,
@@ -143,7 +158,10 @@ impl Intent {
             | Self::Craft { unit, .. }
             | Self::Teleport { unit, .. }
             | Self::Deposit { unit, .. }
-            | Self::Withdraw { unit, .. } => unit,
+            | Self::Withdraw { unit, .. }
+            | Self::AcceptQuest { unit, .. }
+            | Self::TurnInQuest { unit, .. }
+            | Self::AbandonQuest { unit, .. } => unit,
         }
     }
 }
@@ -203,6 +221,10 @@ pub enum Rejection {
     MissingMaterials,
     /// 조건이 맞지 않는다 — 레시피의 `requires` 등 (R4-2).
     RequirementNotMet,
+    /// 받을 수 없는 퀘스트 — 없거나, 진행 중이거나, 다시 받을 수 없거나, 조건이 맞지 않는다 (R5).
+    QuestUnavailable,
+    /// 아직 보고할 수 없다 — 진행 중이 아니거나 목표를 다 채우지 않았다 (R5).
+    QuestNotReady,
 }
 
 /// tick 동안 일어난 일.
@@ -316,6 +338,27 @@ pub enum Event {
         item: ItemId,
         count: u32,
     },
+    /// 퀘스트를 받았다 (R5).
+    QuestAccepted { unit: Entity, quest: QuestId },
+    /// 목표 하나가 늘었다 (R5) — 세는 목표만. `count` 는 늘어난 뒤의 수.
+    QuestProgressed {
+        unit: Entity,
+        quest: QuestId,
+        objective: u16,
+        count: u32,
+    },
+    /// 단계 하나를 채웠다 (R5) — 그 단계의 효과를 적용했다.
+    QuestStageDone {
+        unit: Entity,
+        quest: QuestId,
+        stage: u16,
+    },
+    /// 마지막 단계까지 채웠다 — 보고만 남았다 (R5).
+    QuestReady { unit: Entity, quest: QuestId },
+    /// 퀘스트를 끝냈다 — 보상을 적용했다 (R5).
+    QuestCompleted { unit: Entity, quest: QuestId },
+    /// 퀘스트를 포기했다 (R5).
+    QuestAbandoned { unit: Entity, quest: QuestId },
     /// 창고에서 찾았다 (R4-2).
     Withdrew {
         unit: Entity,
@@ -439,6 +482,8 @@ impl Authority for LocalAuthority {
         // 트리거는 맨 끝 — 이번 tick 에 일어난 일이 전부 모인 뒤에 본다 (R1). 이동은 step 이
         // 위치를 바꾼 뒤라야 "들어왔다" 를 판정할 수 있다.
         self.world.run_triggers(&mut events);
+        // 퀘스트 목표도 같은 tick 끝의 같은 이벤트로 센다 (R5).
+        self.world.run_quests(&mut events);
         self.ticks += 1;
         if self.scripts.is_some() {
             self.last_events.clone_from(&events);
@@ -509,6 +554,9 @@ fn apply(world: &mut SimWorld, intent: Intent, events: &mut Vec<Event>) -> Resul
             slot,
             count,
         } => world.withdraw(unit, npc, slot, count, events),
+        Intent::AcceptQuest { unit, npc, quest } => world.accept_quest(unit, npc, quest, events),
+        Intent::TurnInQuest { unit, npc, quest } => world.turn_in_quest(unit, npc, quest, events),
+        Intent::AbandonQuest { unit, quest } => world.abandon_quest(unit, quest, events),
         Intent::Revive {
             unit,
             at,

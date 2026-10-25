@@ -144,6 +144,11 @@ pub enum Condition {
     /// 하나라도 참 (빈 목록은 거짓).
     Any(Vec<Condition>),
     Not(Box<Condition>),
+    /// 대상의 그 퀘스트 상태가 `state` 다 (R5) — 선행 퀘스트·진행 중 분기.
+    Quest {
+        quest: crate::quest::QuestId,
+        state: crate::quest::QuestState,
+    },
     /// 대상의 지갑에 그 재화가 `amount` 이상 (R4).
     HasCurrency {
         currency: crate::trade::CurrencyId,
@@ -188,6 +193,10 @@ pub enum Effect {
     },
     /// 스킬을 잊는다 (R3).
     RemoveSkill { skill: crate::combat::SkillId },
+    /// 퀘스트를 시작한다 (R5) — 담당 NPC 가 없는 월드 퀘스트의 입구. 받을 수 없으면 조용히 지나간다.
+    StartQuest(crate::quest::QuestId),
+    /// 드롭 표를 굴려 대상의 가방에 넣는다 (R5) — 보상에 드롭 표를 다시 쓴다. 가방이 차면 발밑에.
+    GiveLoot(crate::loot::LootTableId),
     /// 재화를 준다 (R4) — 퀘스트 보상 등.
     GiveCurrency {
         currency: crate::trade::CurrencyId,
@@ -246,6 +255,11 @@ pub(crate) enum Happening {
         unit: Entity,
         from: Vec2,
         to: Vec2,
+    },
+    /// NPC 에게 말을 걸었다 — 퀘스트 대화 목표용 (R5). 트리거에는 아직 맞는 `On` 이 없다.
+    Talked {
+        unit: Entity,
+        actor: ActorType,
     },
 }
 

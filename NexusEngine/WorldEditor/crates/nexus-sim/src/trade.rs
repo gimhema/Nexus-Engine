@@ -123,6 +123,8 @@ pub enum Service {
     Teleport(TeleportId),
     /// 창고 — `Intent::Deposit`/`Withdraw` (R4-2). 창고는 캐릭터마다 하나이고 어느 창고지기에게서나 같다.
     Storage,
+    /// 퀘스트를 주고 보고를 받는다 — `Intent::AcceptQuest`/`TurnInQuest` (R5).
+    Quest(crate::quest::QuestId),
 }
 
 /// 제작 표 번호. 서버와 같은 ID 공간.

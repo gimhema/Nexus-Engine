@@ -37,6 +37,7 @@ use nexus_sim::{
 use serde::Deserialize;
 
 use crate::class_file::{self, ClassFile, ClassLookFile, EquipRef, StatsFile};
+use crate::quest_file::{self, QuestFile, QuestLookFile};
 use crate::scene::{ActorId, ItemKind};
 use crate::skill_file::{self, NumOr, SkillLevelRef};
 use crate::trade_file::{self, CraftFile, ServiceFile, ShopFile, TeleportFile, TradeRefs};
@@ -133,6 +134,9 @@ struct RulesFile {
     /// 텔레포트 목적지 표 (R4-2).
     #[serde(default)]
     teleports: BTreeMap<u32, TeleportFile>,
+    /// 퀘스트 (R5) — 형식은 `quest_file` 모듈 doc.
+    #[serde(default)]
+    quests: BTreeMap<u32, QuestFile>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -452,6 +456,9 @@ struct DisplayFile {
     /// 텔레포트 목적지 이름 (R4-2) — `{1: ["광장", "샘플 존"]}`, `rules.ron` 의 목적지 순서대로.
     #[serde(default)]
     teleports: BTreeMap<u32, Vec<String>>,
+    /// 퀘스트 제목·설명 (R5).
+    #[serde(default)]
+    quests: BTreeMap<u32, QuestLookFile>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -594,6 +601,10 @@ pub(crate) struct GameData {
     travel_levels: Vec<String>,
     /// 목적지 이름 (`display.ron`).
     destination_names: BTreeMap<u32, Vec<String>>,
+    /// 퀘스트 (R5).
+    quests: Vec<(nexus_sim::QuestId, nexus_sim::QuestDef)>,
+    /// 퀘스트 제목·설명 (`display.ron`).
+    quest_looks: BTreeMap<u32, QuestLookFile>,
 }
 
 impl GameData {
@@ -874,28 +885,32 @@ impl GameData {
                 "표시 스탯 '{name}': rules.ron 의 stats.base 에 없음"
             ));
         }
-        errors.extend(trigger_file::validate(
-            &r.triggers,
-            |i| r.items.contains_key(&i),
-            |a| r.actors.contains_key(&a),
-            |s| r.skills.contains_key(&s),
-        ));
+        // 조건·효과가 가리키는 번호 — 트리거·스킬·레시피·퀘스트가 함께 본다.
+        let item_exists = |i: u32| r.items.contains_key(&i);
+        let actor_exists = |a: u32| r.actors.contains_key(&a);
+        let skill_exists = |s: u32| r.skills.contains_key(&s);
+        let quest_exists = |q: u32| r.quests.contains_key(&q);
+        let loot_exists = |t: u32| r.loot.contains_key(&t);
+        let known = trigger_file::Known {
+            item: &item_exists,
+            actor: &actor_exists,
+            skill: &skill_exists,
+            quest: &quest_exists,
+            loot: &loot_exists,
+        };
+        errors.extend(trigger_file::validate(&r.triggers, &known));
+        errors.extend(quest_file::validate(&r.quests, &known));
         // 스킬의 R3 칸 — 레벨 수식·부착 규칙.
         let stat_names: Vec<String> = r
             .stats_block()
             .map(|s| s.names().to_vec())
             .unwrap_or_default();
-        let item_exists = |i: u32| r.items.contains_key(&i);
-        let actor_exists = |a: u32| r.actors.contains_key(&a);
-        let skill_exists = |s: u32| r.skills.contains_key(&s);
         for (id, s) in &r.skills {
             errors.extend(skill_file::validate(
                 &s.level_ref(*id),
                 &stat_names,
                 |c| r.classes.contains_key(&c),
-                &item_exists,
-                &actor_exists,
-                &skill_exists,
+                &known,
             ));
         }
         for (id, item) in &r.items {
@@ -920,19 +935,13 @@ impl GameData {
             shops: &r.shops,
             crafts: &r.crafts,
             teleports: &r.teleports,
+            quest_exists: &|q| r.quests.contains_key(&q),
         };
         for (id, craft) in &r.crafts {
             for (i, recipe) in craft.recipes.iter().enumerate() {
                 let mut err =
                     |m: String| errors.push(format!("제작 {id}: 레시피 {i}: requires — {m}"));
-                trigger_file::check_condition(
-                    &recipe.requires,
-                    0,
-                    &|i| r.items.contains_key(&i),
-                    &|a| r.actors.contains_key(&a),
-                    &|s| r.skills.contains_key(&s),
-                    &mut err,
-                );
+                trigger_file::check_condition(&recipe.requires, 0, &known, &mut err);
             }
         }
         let uses_default = r.starting_currency > 0
@@ -943,6 +952,9 @@ impl GameData {
         }));
         for (id, u) in &r.actors {
             errors.extend(trade_file::validate_services(*id, &u.services, &trade));
+        }
+        for id in d.quests.keys().filter(|q| !r.quests.contains_key(q)) {
+            errors.push(format!("표시 퀘스트 {id}: rules.ron 에 없는 퀘스트"));
         }
         for id in d.currencies.keys().filter(|c| !r.currencies.contains(c)) {
             errors.push(format!("표시 재화 {id}: rules.ron 의 currencies 에 없음"));
@@ -1181,6 +1193,8 @@ impl GameData {
                 .collect(),
             travel_levels: travel_levels.clone(),
             destination_names: d.teleports.clone(),
+            quests: quest_file::to_sim(&r.quests),
+            quest_looks: d.quests.clone(),
             equip_rules: equipment
                 .iter()
                 .filter(|e| !e.stats.is_empty() || !e.classes.is_empty())
@@ -1275,6 +1289,30 @@ impl GameData {
         for (id, def) in &self.teleports {
             world.define_teleport(*id, def.clone());
         }
+        for (id, def) in &self.quests {
+            world.define_quest(*id, def.clone());
+        }
+    }
+
+    /// 퀘스트 제목 — 표시 파일에 없으면 `퀘스트 #N` (R5).
+    pub(crate) fn quest_title(&self, id: nexus_sim::QuestId) -> String {
+        self.quest_looks
+            .get(&id.0)
+            .map_or_else(|| format!("퀘스트 #{}", id.0), |l| l.title.clone())
+    }
+
+    /// 퀘스트 설명 (없으면 빈 문자열).
+    pub(crate) fn quest_description(&self, id: nexus_sim::QuestId) -> &str {
+        self.quest_looks
+            .get(&id.0)
+            .map_or("", |l| l.description.as_str())
+    }
+
+    /// 액터 타입 이름 — 목표 글("슬라임 처치")에 쓴다.
+    pub(crate) fn actor_type_name(&self, actor: nexus_sim::ActorType) -> String {
+        self.actor_looks
+            .get(&ActorId::new(actor.0))
+            .map_or_else(|| format!("액터 #{}", actor.0), |l| l.name.clone())
     }
 
     /// `Event::Traveled` 의 `travel` 번호가 가리키는 레벨 이름 (R4-2).
@@ -2698,6 +2736,24 @@ pub(crate) fn triggers_using(
         .collect())
 }
 
+/// `rules.ron` 의 퀘스트 중 그 아이템(`item`)이나 액터(`actor`)를 가리키는 것의 번호 (R5).
+pub(crate) fn quests_using(
+    rules: &str,
+    item: Option<u32>,
+    actor: Option<u32>,
+) -> Result<Vec<u32>, String> {
+    let r: RulesFile = ron::from_str(rules).map_err(|e| format!("{RULES_PATH}: {e}"))?;
+    Ok(r.quests
+        .iter()
+        .filter(|(_, q)| {
+            let refs = quest_file::refs(q);
+            item.is_some_and(|i| refs.items.contains(&i))
+                || actor.is_some_and(|a| refs.actors.contains(&a))
+        })
+        .map(|(id, _)| *id)
+        .collect())
+}
+
 /// 스킬 `skill` 을 쓰는 곳 (R3) — 지우기 전에 사람이 읽을 이유로. 액터·플레이어 공격은 부르는 쪽이 따로 본다.
 pub(crate) fn skill_users(rules: &str, skill: u32) -> Result<Vec<String>, String> {
     let r: RulesFile = ron::from_str(rules).map_err(|e| format!("{RULES_PATH}: {e}"))?;
@@ -2729,6 +2785,12 @@ pub(crate) fn skill_users(rules: &str, skill: u32) -> Result<Vec<String>, String
         .collect();
     if !triggers.is_empty() {
         out.push(format!("트리거 {}", triggers.join(", ")));
+    }
+    // 퀘스트의 보상·단계 효과·조건 (R5).
+    for (id, q) in &r.quests {
+        if quest_file::refs(q).skills.contains(&skill) {
+            out.push(format!("퀘스트 #{id}"));
+        }
     }
     Ok(out)
 }
@@ -2788,6 +2850,58 @@ pub(crate) fn patch_stat_form(
     form: &class_file::StatForm,
 ) -> Result<(String, String), String> {
     let (rules, display) = form.patch(rules, display)?;
+    GameData::parse(&rules, &display)?;
+    Ok((rules, display))
+}
+
+/// 퀘스트 디자이너의 폼 (R5) — 번호 → 폼.
+pub(crate) fn quest_forms(
+    rules: &str,
+    display: &str,
+) -> Result<BTreeMap<u32, quest_file::QuestForm>, String> {
+    let r: RulesFile = ron::from_str(rules).map_err(|e| format!("{RULES_PATH}: {e}"))?;
+    let d: DisplayFile = ron::from_str(display).map_err(|e| format!("{DISPLAY_PATH}: {e}"))?;
+    Ok(r.quests
+        .iter()
+        .map(|(id, q)| (*id, quest_file::QuestForm::from_file(q, d.quests.get(id))))
+        .collect())
+}
+
+/// 퀘스트 하나를 두 파일에 끼우고 **게임과 같은 검사**로 다시 읽어 본다 (R5).
+pub(crate) fn patch_quest(
+    rules: &str,
+    display: &str,
+    id: u32,
+    form: &quest_file::QuestForm,
+) -> Result<(String, String), String> {
+    use crate::ron_patch::{ensure_map_block, upsert_entry};
+    let rules = upsert_entry(
+        &ensure_map_block(rules, "quests")?,
+        "quests",
+        id,
+        &form.rules_entry(id)?,
+    )?;
+    let display = upsert_entry(
+        &ensure_map_block(display, "quests")?,
+        "quests",
+        id,
+        &form.display_entry(id),
+    )?;
+    GameData::parse(&rules, &display)?;
+    Ok((rules, display))
+}
+
+/// 퀘스트 하나를 두 파일에서 뺀다 (R5) — 쓰는 곳(NPC 기능·조건·효과)이 있으면 검사가 막는다.
+pub(crate) fn remove_quest(
+    rules: &str,
+    display: &str,
+    id: u32,
+) -> Result<(String, String), String> {
+    let (rules, _) = crate::ron_patch::remove_entry(rules, "quests", id)?;
+    let display = match crate::ron_patch::remove_entry(display, "quests", id) {
+        Ok((text, _)) => text,
+        Err(_) => display.to_owned(), // 제목이 없던 퀘스트
+    };
     GameData::parse(&rules, &display)?;
     Ok((rules, display))
 }

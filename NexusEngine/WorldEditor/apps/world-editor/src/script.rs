@@ -29,6 +29,7 @@
 //! skill 번호                  단축키 스킬 (숫자키 1~9 와 같다, 플레이 중)
 //! hotbar 칸 스킬번호          단축키 배치 (R3, 칸 0 = 그 스킬 빼기) — 스킬 창의 칸 고르기와 같다
 //! trade tp 표 목적지 | trade craft 표 레시피   NPC 창의 텔레포트·제작 단추 (R4-2, 말을 건 뒤)
+//! trade accept 퀘스트 | trade turnin 퀘스트     NPC 창의 퀘스트 받기·보고 (R5)
 //! uiedit | uiscreen 번호      위젯 편집기 열고 닫기 / 편집할 화면 바꾸기 (P7)
 //! uipick 이름 | uidrag dx dy  위젯 고르기 / 고른 위젯 옮기기
 //! uisave                      화면 파일(ui/<번호>.ui.ron) 저장
@@ -42,6 +43,7 @@
 //! contentmenu                 브라우저 빈 곳 오른쪽 클릭 메뉴 열기 (새로 만들기)
 //! trash                       휴지통 창 열기 (P20)
 //! statdesigner                스탯·직업 디자이너 열기 (R2)
+//! questdesigner               퀘스트 디자이너 열기 (R5)
 //! contentop delete|duplicate|rename [새이름]  고른 항목에 파일 작업 확인 창 (P9)
 //! contentconfirm              확인 창의 "실행"
 //! ```
@@ -160,6 +162,8 @@ pub(crate) enum Step {
     ContentToggle,
     /// 스탯·직업 디자이너 열기 (R2).
     StatDesigner,
+    /// 퀘스트 디자이너 열기 (R5).
+    QuestDesigner,
     /// 휴지통 창 열기 (P20).
     Trash,
     /// 콘텐츠 브라우저에서 항목 고르기 — 경로 또는 `actor:번호`.
@@ -320,7 +324,17 @@ fn parse_step(text: &str) -> Result<Step, String> {
                     recipe: u16::try_from(r).unwrap_or(u16::MAX),
                     times: 1,
                 },
-                _ => return Err(format!("'{text}': trade tp 표 목적지 | trade craft 표 레시피")),
+                (Some("accept"), Some(q), _) => {
+                    crate::play::TradeAction::AcceptQuest(nexus_sim::QuestId(q))
+                }
+                (Some("turnin"), Some(q), _) => {
+                    crate::play::TradeAction::TurnInQuest(nexus_sim::QuestId(q))
+                }
+                _ => {
+                    return Err(format!(
+                        "'{text}': trade tp 표 목적지 | trade craft 표 레시피 | trade accept|turnin 퀘스트"
+                    ));
+                }
             };
             return Ok(Step::Trade(action));
         }
@@ -332,6 +346,7 @@ fn parse_step(text: &str) -> Result<Step, String> {
         "content" => return Ok(Step::ContentToggle),
         "trash" => return Ok(Step::Trash),
         "statdesigner" => return Ok(Step::StatDesigner),
+        "questdesigner" => return Ok(Step::QuestDesigner),
         "contentopen" => return Ok(Step::ContentOpen),
         "contentmenu" => return Ok(Step::ContentMenu),
         "contentconfirm" => return Ok(Step::ContentConfirm),

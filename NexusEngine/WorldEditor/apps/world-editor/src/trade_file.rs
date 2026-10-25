@@ -77,6 +77,8 @@ pub(crate) enum ServiceFile {
     Teleport(u32),
     /// 창고 (R4-2).
     Storage,
+    /// 퀘스트를 주고 보고를 받는다 (R5).
+    Quest(u32),
 }
 
 /// 제작 표 (R4-2).
@@ -144,6 +146,7 @@ impl ServiceFile {
             Self::Craft(id) => format!("Craft({id})"),
             Self::Teleport(id) => format!("Teleport({id})"),
             Self::Storage => String::from("Storage"),
+            Self::Quest(id) => format!("Quest({id})"),
         }
     }
 }
@@ -155,6 +158,8 @@ pub(crate) struct TradeRefs<'a> {
     pub(crate) shops: &'a BTreeMap<u32, ShopFile>,
     pub(crate) crafts: &'a BTreeMap<u32, CraftFile>,
     pub(crate) teleports: &'a BTreeMap<u32, TeleportFile>,
+    /// 퀘스트가 있는가 (R5).
+    pub(crate) quest_exists: &'a dyn Fn(u32) -> bool,
 }
 
 impl TradeRefs<'_> {
@@ -301,6 +306,9 @@ pub(crate) fn validate_services(
             ServiceFile::Teleport(id) if !t.teleports.contains_key(&id) => {
                 errors.push(format!("액터 {actor}: 기능 {i}: 없는 텔레포트 표 {id}"));
             }
+            ServiceFile::Quest(id) if !(t.quest_exists)(id) => {
+                errors.push(format!("액터 {actor}: 기능 {i}: 없는 퀘스트 {id}"));
+            }
             _ => {}
         }
         if services[..i].contains(s) {
@@ -349,6 +357,7 @@ pub(crate) fn services(list: &[ServiceFile], default_currency: Option<u32>) -> V
             ServiceFile::Craft(id) => Service::Craft(CraftId(id)),
             ServiceFile::Teleport(id) => Service::Teleport(TeleportId(id)),
             ServiceFile::Storage => Service::Storage,
+            ServiceFile::Quest(id) => Service::Quest(nexus_sim::QuestId(id)),
         })
         .collect()
 }
@@ -370,6 +379,7 @@ mod tests {
             shops: &shops,
             crafts: &none,
             teleports: &BTreeMap::new(),
+            quest_exists: &|_| true,
         };
         let mut e = validate(&t, true, |i| i == 501);
         e.extend(validate_services(

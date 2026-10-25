@@ -182,6 +182,8 @@ pub(crate) struct UiActions {
     pub(crate) hotbar: Option<(nexus_sim::SkillId, Option<usize>)>,
     /// 플레이 중 거래 창 조작 (R4).
     pub(crate) trade: Option<crate::play::TradeAction>,
+    /// 플레이 패널에서 퀘스트 포기 (R5).
+    pub(crate) abandon_quest: Option<nexus_sim::QuestId>,
     pub(crate) reset_view: bool,
     /// 선택 항목(없으면 전체 마커)이 화면에 들어오도록 카메라를 맞춘다.
     pub(crate) frame_selection: bool,
@@ -212,6 +214,8 @@ pub(crate) struct UiActions {
     open_scripts: Option<Option<String>>,
     /// 스탯·직업 디자이너를 연다 (UI 내부에서 소비, R2).
     open_stat_designer: bool,
+    /// 퀘스트 디자이너를 연다 (UI 내부에서 소비, R5).
+    open_quest_designer: bool,
     /// 게임 규칙 설정 창을 연다 (UI 내부에서 소비).
     open_rules: bool,
     /// 팔레트 창에서 고른 그림 조각 — 편집기가 `terrain.ron` 에 추가하고 붓으로 삼는다.
@@ -265,6 +269,7 @@ pub(crate) struct EditorUi {
     /// 휴지통 (P20).
     trash: crate::trash::TrashWindow,
     stat_designer: crate::stat_designer::StatDesigner,
+    quest_designer: crate::quest_designer::QuestDesigner,
 }
 
 /// 존 열기 / 다른 이름으로 저장 창.
@@ -336,6 +341,7 @@ impl EditorUi {
             rules: RulesEditor::default(),
             trash: crate::trash::TrashWindow::default(),
             stat_designer: crate::stat_designer::StatDesigner::default(),
+            quest_designer: crate::quest_designer::QuestDesigner::default(),
         }
     }
 
@@ -357,6 +363,11 @@ impl EditorUi {
     /// 콘텐츠 브라우저 — 자동 검증의 `content*` 단계가 쓴다.
     pub(crate) fn content_mut(&mut self) -> &mut ContentBrowser {
         &mut self.content
+    }
+
+    /// 퀘스트 디자이너 — 자동 검증 스크립트(`questdesigner`)가 연다 (R5).
+    pub(crate) fn quest_designer_mut(&mut self) -> &mut crate::quest_designer::QuestDesigner {
+        &mut self.quest_designer
     }
 
     /// 스탯·직업 디자이너 — 자동 검증 스크립트(`statdesigner`)가 연다.
@@ -483,11 +494,15 @@ impl EditorUi {
         let rules = &mut self.rules;
         let trash = &mut self.trash;
         let stat_designer = &mut self.stat_designer;
+        let quest_designer = &mut self.quest_designer;
 
         let output = self.ctx.run_ui(raw, |ui| {
             menu_bar(ui, model, &mut actions);
             if std::mem::take(&mut actions.open_stat_designer) {
                 stat_designer.open();
+            }
+            if std::mem::take(&mut actions.open_quest_designer) {
+                quest_designer.open();
             }
             if std::mem::take(&mut actions.open_rules) {
                 rules.open();
@@ -522,6 +537,7 @@ impl EditorUi {
             tables.show(ui);
             rules.show(ui);
             stat_designer.show(ui);
+            quest_designer.show(ui);
             trash.show(ui.ctx());
             if actions.toggle_content {
                 content.toggle();
@@ -568,6 +584,10 @@ impl EditorUi {
                 content.refresh();
             }
             if stat_designer.take_saved() {
+                actions.reload_data = true;
+                content.refresh();
+            }
+            if quest_designer.take_saved() {
                 actions.reload_data = true;
                 content.refresh();
             }
@@ -775,6 +795,9 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
             ui.menu_button("데이터", |ui| {
                 if ui.button("스탯·직업 디자이너…").clicked() {
                     actions.open_stat_designer = true;
+                }
+                if ui.button("퀘스트 디자이너…").clicked() {
+                    actions.open_quest_designer = true;
                 }
                 if ui.button("게임 규칙 설정…").clicked() {
                     actions.open_rules = true;
@@ -1456,6 +1479,41 @@ fn trade_window(ui: &mut egui::Ui, play: &PlaySession, actions: &mut UiActions) 
                 }
             }
             egui::ScrollArea::vertical().show(ui, |ui| {
+                // 퀘스트 (R5) — 받기·보고.
+                if !view.quests.is_empty() {
+                    ui.add_space(6.0);
+                    ui.strong("퀘스트");
+                }
+                for offer in &view.quests {
+                    use nexus_sim::QuestState;
+                    ui.horizontal(|ui| {
+                        ui.label(&offer.title).on_hover_text(&offer.description);
+                        match offer.state {
+                            QuestState::Ready => {
+                                if ui.button("보고하기").clicked() {
+                                    actions.trade = Some(TradeAction::TurnInQuest(offer.quest));
+                                }
+                            }
+                            QuestState::Active => {
+                                ui.weak("진행 중");
+                            }
+                            QuestState::NotStarted | QuestState::Completed => {
+                                if offer.can_accept {
+                                    if ui.button("받기").clicked() {
+                                        actions.trade = Some(TradeAction::AcceptQuest(offer.quest));
+                                    }
+                                } else if offer.state == QuestState::Completed {
+                                    ui.weak("완료");
+                                } else {
+                                    ui.weak("아직 받을 수 없음");
+                                }
+                            }
+                        }
+                    });
+                    if !offer.description.is_empty() && offer.state == QuestState::NotStarted {
+                        ui.weak(&offer.description);
+                    }
+                }
                 // 텔레포트 (R4-2).
                 for tp in &view.teleports {
                     ui.add_space(6.0);
@@ -1655,6 +1713,31 @@ fn play_inspector(ui: &mut egui::Ui, play: &PlaySession, actions: &mut UiActions
                 .response
                 .on_hover_text("단축키 칸 — 그 칸에 있던 스킬은 밀려난다");
         });
+    }
+
+    // 퀘스트 (R5) — 진행 중인 것과 지금 단계의 목표.
+    let quests = play.quest_lines();
+    if !quests.is_empty() {
+        ui.add_space(6.0);
+        ui.strong("퀘스트");
+    }
+    for q in quests {
+        ui.horizontal(|ui| {
+            let ready = q.state == nexus_sim::QuestState::Ready;
+            let title = if ready {
+                format!("{} — 보고 가능", q.title)
+            } else {
+                q.title.clone()
+            };
+            ui.label(egui::RichText::new(title).strong());
+            if ui.small_button("포기").clicked() {
+                actions.abandon_quest = Some(q.quest);
+            }
+        });
+        for (text, done) in q.goals {
+            let mark = if done { "✓" } else { "·" };
+            ui.label(format!("  {mark} {text}"));
+        }
     }
 
     ui.add_space(6.0);

@@ -18,6 +18,7 @@ mod faction;
 mod item;
 mod loot;
 mod progress;
+mod quest;
 mod script;
 mod skills;
 mod stats;
@@ -35,6 +36,7 @@ pub use item::{
 };
 pub use loot::{LootEntry, LootTableId};
 pub use progress::{Growth, Progress, exp_to_next};
+pub use quest::{Active, Objective, QuestDef, QuestEntry, QuestId, QuestLog, QuestState, Stage};
 pub use script::{ScriptHost, ScriptLog};
 pub use skills::{SKILL_LEVEL_VAR, SkillRules, skill_variables};
 pub use stats::{
