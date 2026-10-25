@@ -339,32 +339,21 @@ fn file_name(name: &str) -> String {
 impl ZoneFile {
     fn from_scene(scene: &Scene) -> Self {
         let tiles = &scene.tiles;
-        let mut runs: Vec<RunFile> = Vec::new();
-        for y in 0..tiles.height() {
-            let mut x = 0;
-            while x < tiles.width() {
-                let tile = tiles
-                    .get(TileCoord::new(x as i32, y as i32))
-                    .unwrap_or_default();
-                let mut len = 1;
-                while x + len < tiles.width()
-                    && tiles.get(TileCoord::new((x + len) as i32, y as i32)) == Some(tile)
-                {
-                    len += 1;
-                }
-                if tile != Tile::default() {
-                    runs.push(RunFile {
-                        y,
-                        x,
-                        len,
-                        walkable: tile.walkable,
-                        level: tile.level,
-                        ramp: tile.ramp,
-                    });
-                }
-                x += len;
-            }
-        }
+        // 칠한 칸만 훑는다 — 칠하지 않은 청크는 건너뛰므로 2km 존도 칠한 양에 비례한다 (R6-3).
+        // 맵은 늘 기본 타일로 채워 만든다 (`into_scene`·`Scene::server_default`) — fill 이 기본 타일이다.
+        debug_assert_eq!(tiles.fill(), Tile::default());
+        let runs: Vec<RunFile> = tiles
+            .runs()
+            .into_iter()
+            .map(|(y, x, len, tile)| RunFile {
+                y,
+                x,
+                len,
+                walkable: tile.walkable,
+                level: tile.level,
+                ramp: tile.ramp,
+            })
+            .collect();
 
         Self {
             version: FORMAT_VERSION,
@@ -831,6 +820,80 @@ mod tests {
                 "{name} — `cargo test -p world-editor -- --ignored regenerate_committed_zones` 로 갱신하라"
             );
         }
+    }
+
+    /// 2km 존 전체를 1m 타일로 덮은 씬(경계 끝 칸까지 2001칸) — 기본 씬(±1000m)에 맞춰 늘리고 띠 모양으로 칠한다 (R6-3).
+    fn whole_zone_scene() -> Scene {
+        let mut scene = Scene::server_default();
+        scene.fit_tiles_to_zone().expect("존 전체로 늘어난다");
+        assert_eq!((scene.tiles.width(), scene.tiles.height()), (2001, 2001));
+        let wall = Tile {
+            walkable: false,
+            ..Tile::default()
+        };
+        // 가로 띠 20줄 × 1500칸 — 3만 칸.
+        for y in (0..2000).step_by(100) {
+            for x in 200..1700 {
+                scene.tiles.set(TileCoord::new(x, y), wall);
+            }
+        }
+        scene
+    }
+
+    #[test]
+    fn a_whole_zone_map_saves_and_loads_what_was_painted() {
+        let scene = whole_zone_scene();
+        let text = to_ron(&scene);
+        let back = from_ron(&text).unwrap();
+        assert_eq!((back.tiles.width(), back.tiles.height()), (2001, 2001));
+        assert_eq!(back.tiles.runs(), scene.tiles.runs());
+        // 띠 20줄 + 기본 씬이 원래 칠해 둔 지형(벽·고지대).
+        assert!(back.tiles.runs().iter().filter(|r| r.2 == 1500).count() == 20);
+        // 칠한 곳이 지나는 청크만 생긴다 — 63×63 = 3969 청크 중 띠 20줄 × 48 + 기본 지형 몇 개.
+        assert!(
+            back.tiles.chunk_count() <= 20 * 48 + 16,
+            "{}",
+            back.tiles.chunk_count()
+        );
+        assert_eq!(to_ron(&back), text, "두 번 저장해도 같은 바이트");
+    }
+
+    /// 큰 존의 열기·저장·플레이 준비·길찾기 시간 — `cargo test --release -p world-editor -- --ignored
+    /// --nocapture whole_zone_timings` 로 본다 (R6-3 의 끝나는 조건). 시간은 기계마다 달라 단언하지 않는다.
+    #[test]
+    #[ignore = "시간을 재서 찍기만 한다"]
+    fn whole_zone_timings() {
+        use std::time::Instant;
+        let t = Instant::now();
+        let scene = whole_zone_scene();
+        println!("만들기·칠하기 3만 칸: {:?}", t.elapsed());
+        let t = Instant::now();
+        let text = to_ron(&scene);
+        println!("저장(to_ron, {} KB): {:?}", text.len() / 1024, t.elapsed());
+        let t = Instant::now();
+        let back = from_ron(&text).unwrap();
+        println!("열기(from_ron): {:?}", t.elapsed());
+        let t = Instant::now();
+        let world = nexus_sim::SimWorld::new(back.tiles.clone());
+        println!("플레이 준비(타일맵 복제): {:?}", t.elapsed());
+        let t = Instant::now();
+        let path = world
+            .tiles()
+            .find_path(TileCoord::new(1000, 50), TileCoord::new(1000, 250));
+        println!(
+            "길찾기(띠 둘을 돌아 200m, {}걸음): {:?}",
+            path.map_or(0, |p| p.len()),
+            t.elapsed()
+        );
+        let t = Instant::now();
+        let short = world
+            .tiles()
+            .find_path(TileCoord::new(1000, 50), TileCoord::new(1010, 55));
+        println!(
+            "짧은 길찾기(10m, {}걸음): {:?}",
+            short.map_or(0, |p| p.len()),
+            t.elapsed()
+        );
     }
 
     const COMMITTED_ZONES: &[(&str, &str)] = &[

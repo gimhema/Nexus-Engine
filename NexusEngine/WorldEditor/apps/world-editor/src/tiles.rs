@@ -70,30 +70,40 @@ pub(crate) fn build(
 
     let size = Vec2::splat(map.tile_size());
     let mut drawn = 0usize;
-    for y in y0..=y1 {
-        for x in x0..=x1 {
-            let at = TileCoord::new(x, y);
-            let Some(color) = map.get(at).and_then(tile_color) else {
-                continue;
-            };
-            if covered.is_some_and(|art| art.contains_key(&at)) {
-                continue;
-            }
-            if drawn >= MAX_TILES_PER_FRAME {
-                return;
-            }
-            drawn += 1;
-            out.push(RenderCommand::DrawRect {
-                center: map.tile_center(at),
-                size,
-                rotation: 0.0,
-                z: 0.0,
-                depth_bias,
-                color,
-                uv: UvRect::FULL,
-                texture: TextureId::WHITE,
-            });
+    // 기본 타일은 그리지 않으므로 칠한 칸만 훑는다 — 칠하지 않은 청크는 건너뛴다 (R6-3).
+    // 맵의 바탕(fill)이 그릴 타일이면 예전처럼 보이는 칸을 전부 본다.
+    let cells: Box<dyn Iterator<Item = (TileCoord, nexus_sim::Tile)>> =
+        if tile_color(map.fill()).is_none() {
+            Box::new(map.painted_in(TileCoord::new(x0, y0), TileCoord::new(x1, y1)))
+        } else {
+            Box::new((y0..=y1).flat_map(move |y| {
+                (x0..=x1).filter_map(move |x| {
+                    let at = TileCoord::new(x, y);
+                    Some((at, map.get(at)?))
+                })
+            }))
+        };
+    for (at, tile) in cells {
+        let Some(color) = tile_color(tile) else {
+            continue;
+        };
+        if covered.is_some_and(|art| art.contains_key(&at)) {
+            continue;
         }
+        if drawn >= MAX_TILES_PER_FRAME {
+            return;
+        }
+        drawn += 1;
+        out.push(RenderCommand::DrawRect {
+            center: map.tile_center(at),
+            size,
+            rotation: 0.0,
+            z: 0.0,
+            depth_bias,
+            color,
+            uv: UvRect::FULL,
+            texture: TextureId::WHITE,
+        });
     }
 }
 
