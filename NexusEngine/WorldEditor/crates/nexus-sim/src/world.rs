@@ -30,10 +30,11 @@ use crate::progress::Progress;
 use crate::skills::{SkillRules, to_u32};
 use crate::stats::{ClassDef, ClassId, EquipRules, EquipTotals, Formula, StatRules};
 use crate::tilemap::TileMap;
+use crate::trade::{self, CurrencyId, DEFAULT_INTERACT_RANGE, Price, Service, ShopDef, ShopId};
 use crate::trigger::{
     Condition, Effect, FlagId, FlagScope, Flags, Happening, MAX_ROUNDS, TriggerDef, TriggerId,
 };
-use crate::unit::{AiKind, AiState, Unit, UnitDef};
+use crate::unit::{ActorType, AiKind, AiState, Unit, UnitDef};
 
 /// 도착 판정 거리 (m). 부동소수 오차로 경유점 바로 앞에서 멈추지 않게 한다.
 const ARRIVE_EPSILON: f32 = 1e-4;
@@ -77,6 +78,13 @@ pub struct SimWorld {
     exp_curve: Option<Formula>,
     /// 스킬 부착 규칙·레벨 수식 (R3). 없는 스킬은 "누구나, 1레벨, 숫자 그대로".
     skill_rules: HashMap<SkillId, SkillRules>,
+    /// 상점 (R4).
+    shops: HashMap<ShopId, ShopDef>,
+    /// 액터 타입별 NPC 기능 (R4) — 순서가 기능 번호다.
+    services: HashMap<ActorType, Vec<Service>>,
+    /// 아이템 기본 값 (R4) — 상점이 사들일 때의 기준. 없으면 팔 수 없다.
+    item_prices: HashMap<ItemId, Price>,
+    interact_range: f32,
 }
 
 impl SimWorld {
@@ -102,6 +110,286 @@ impl SimWorld {
             equip_rules: HashMap::new(),
             exp_curve: None,
             skill_rules: HashMap::new(),
+            shops: HashMap::new(),
+            services: HashMap::new(),
+            item_prices: HashMap::new(),
+            interact_range: DEFAULT_INTERACT_RANGE,
+        }
+    }
+
+    /// 상점을 등록한다 (설정 작업, R4).
+    pub fn define_shop(&mut self, id: ShopId, def: ShopDef) {
+        self.shops.insert(id, def);
+    }
+
+    #[must_use]
+    pub fn shop(&self, id: ShopId) -> Option<&ShopDef> {
+        self.shops.get(&id)
+    }
+
+    /// 액터 타입의 NPC 기능을 정한다 (설정 작업, R4). 순서가 기능 번호다.
+    pub fn define_services(&mut self, actor: ActorType, services: Vec<Service>) {
+        self.services.insert(actor, services);
+    }
+
+    /// 그 유닛의 기능 목록 (없으면 빈 목록) — 앱이 기능 메뉴를 그릴 때.
+    #[must_use]
+    pub fn services_of(&self, npc: Entity) -> &[Service] {
+        self.unit(npc)
+            .and_then(|u| self.services.get(&u.def.actor))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// 아이템의 기본 값 (설정 작업, R4) — 상점이 사들일 때의 기준.
+    pub fn define_item_price(&mut self, item: ItemId, price: Price) {
+        self.item_prices.insert(item, price);
+    }
+
+    #[must_use]
+    pub fn item_price(&self, item: ItemId) -> Option<Price> {
+        self.item_prices.get(&item).copied()
+    }
+
+    /// 상점이 이 아이템 한 개를 사들이는 값 — 사지 않으면 `None`.
+    #[must_use]
+    pub fn sell_price(&self, shop: ShopId, item: ItemId) -> Option<Price> {
+        let rate = self.shops.get(&shop)?.buy_rate_per_mille;
+        let base = self.item_prices.get(&item)?;
+        let amount = u64::from(base.amount) * u64::from(rate) / 1000;
+        (rate > 0).then_some(Price {
+            currency: base.currency,
+            amount: u32::try_from(amount).unwrap_or(u32::MAX),
+        })
+    }
+
+    pub fn set_interact_range(&mut self, meters: f32) {
+        self.interact_range = if meters.is_finite() && meters > 0.0 {
+            meters
+        } else {
+            DEFAULT_INTERACT_RANGE
+        };
+    }
+
+    #[must_use]
+    pub fn interact_range(&self) -> f32 {
+        self.interact_range
+    }
+
+    /// 지갑을 그대로 심는다 (설정 작업 — 시작 재화, 저장 파일에서 되살릴 때).
+    pub fn set_currency(&mut self, unit: Entity, currency: CurrencyId, amount: u64) {
+        if let Some(u) = self.unit_mut(unit) {
+            u.wallet.set(currency, amount);
+        }
+    }
+
+    /// 지갑에 더하고 이벤트를 낸다.
+    fn pay_in(&mut self, unit: Entity, currency: CurrencyId, amount: u64, events: &mut Vec<Event>) {
+        if amount == 0 {
+            return;
+        }
+        if let Some(u) = self.unit_mut(unit) {
+            let total = u.wallet.add(currency, amount);
+            events.push(Event::CurrencyChanged {
+                unit,
+                currency,
+                delta: i64::try_from(amount).unwrap_or(i64::MAX),
+                total,
+            });
+        }
+    }
+
+    /// 지갑에서 빼고 이벤트를 낸다 — 모자라면 아무것도 빼지 않고 `false`.
+    fn pay_out(
+        &mut self,
+        unit: Entity,
+        currency: CurrencyId,
+        amount: u64,
+        events: &mut Vec<Event>,
+    ) -> bool {
+        let Some(u) = self.unit_mut(unit) else {
+            return false;
+        };
+        let Some(total) = u.wallet.take(currency, amount) else {
+            return false;
+        };
+        if amount > 0 {
+            events.push(Event::CurrencyChanged {
+                unit,
+                currency,
+                delta: -i64::try_from(amount).unwrap_or(i64::MAX),
+                total,
+            });
+        }
+        true
+    }
+
+    /// `unit` 이 `npc` 와 거래할 수 있는가 — 둘 다 있고, 살아 있고, 거리 안이고, 적대가 아니다.
+    fn near_npc(&self, unit: Entity, npc: Entity) -> Result<(), Rejection> {
+        let u = self.living(unit)?;
+        let n = self.unit(npc).ok_or(Rejection::UnknownEntity)?;
+        if !n.is_alive() {
+            return Err(Rejection::TargetDead);
+        }
+        if unit == npc || self.factions.get(u.def.faction, n.def.faction) == Relation::Hostile {
+            return Err(Rejection::InvalidTarget);
+        }
+        if u.pos.distance_squared(n.pos) > self.interact_range * self.interact_range {
+            return Err(Rejection::OutOfRange);
+        }
+        Ok(())
+    }
+
+    /// 그 NPC 가 `shop` 을 여는가.
+    fn has_shop(&self, npc: Entity, shop: ShopId) -> bool {
+        self.services_of(npc).contains(&Service::Shop(shop)) && self.shops.contains_key(&shop)
+    }
+
+    pub(crate) fn interact(
+        &mut self,
+        unit: Entity,
+        npc: Entity,
+        events: &mut Vec<Event>,
+    ) -> Result<(), Rejection> {
+        self.near_npc(unit, npc)?;
+        if self.services_of(npc).is_empty() {
+            return Err(Rejection::NoService);
+        }
+        events.push(Event::Interacted { unit, npc });
+        Ok(())
+    }
+
+    pub(crate) fn buy(
+        &mut self,
+        unit: Entity,
+        npc: Entity,
+        shop: ShopId,
+        goods: u16,
+        count: u32,
+        events: &mut Vec<Event>,
+    ) -> Result<(), Rejection> {
+        self.near_npc(unit, npc)?;
+        if !self.has_shop(npc, shop) {
+            return Err(Rejection::NoService);
+        }
+        let g = *self.shops[&shop]
+            .goods
+            .get(usize::from(goods))
+            .ok_or(Rejection::UnknownItem)?;
+        let def = *self.items.get(&g.item).ok_or(Rejection::UnknownItem)?;
+        let count = count.max(1);
+        let cost = trade::total(g.price, count).ok_or(Rejection::NotEnoughCurrency)?;
+        let u = self.unit(unit).ok_or(Rejection::UnknownEntity)?;
+        if u.wallet.get(g.price.currency) < cost {
+            return Err(Rejection::NotEnoughCurrency);
+        }
+        if !u
+            .inventory
+            .bag(def.bag())
+            .fits(g.item, count, def.stack_limit())
+        {
+            return Err(Rejection::InventoryFull);
+        }
+        self.pay_out(unit, g.price.currency, cost, events);
+        if let Some(u) = self.unit_mut(unit) {
+            u.inventory
+                .bag_mut(def.bag())
+                .add(g.item, count, def.stack_limit());
+        }
+        events.push(Event::Bought {
+            unit,
+            item: g.item,
+            count,
+        });
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn sell(
+        &mut self,
+        unit: Entity,
+        npc: Entity,
+        shop: ShopId,
+        bag: BagKind,
+        slot: u16,
+        count: u32,
+        events: &mut Vec<Event>,
+    ) -> Result<(), Rejection> {
+        self.near_npc(unit, npc)?;
+        if !self.has_shop(npc, shop) {
+            return Err(Rejection::NoService);
+        }
+        let u = self.unit(unit).ok_or(Rejection::UnknownEntity)?;
+        let stack = u
+            .inventory
+            .bag(bag)
+            .get(usize::from(slot))
+            .ok_or(Rejection::EmptySlot)?;
+        let price = self
+            .sell_price(shop, stack.item)
+            .ok_or(Rejection::NotSellable)?;
+        // 칸에 있는 것보다 많이 팔지 않는다.
+        let count = count.clamp(1, stack.count);
+        if let Some(u) = self.unit_mut(unit) {
+            let left = stack.count - count;
+            u.inventory.bag_mut(bag).put(
+                usize::from(slot),
+                (left > 0).then_some(ItemStack {
+                    item: stack.item,
+                    count: left,
+                }),
+            );
+        }
+        events.push(Event::Sold {
+            unit,
+            item: stack.item,
+            count,
+        });
+        let earned = trade::total(price, count).unwrap_or(u64::MAX);
+        self.pay_in(unit, price.currency, earned, events);
+        Ok(())
+    }
+
+    pub(crate) fn use_service(
+        &mut self,
+        unit: Entity,
+        npc: Entity,
+        index: u16,
+        events: &mut Vec<Event>,
+    ) -> Result<(), Rejection> {
+        self.near_npc(unit, npc)?;
+        let service = *self
+            .services_of(npc)
+            .get(usize::from(index))
+            .ok_or(Rejection::NoService)?;
+        match service {
+            // 상점은 Buy/Sell 로 쓴다.
+            Service::Shop(_) => Err(Rejection::NoService),
+            Service::Heal { price } => {
+                let cost = u64::from(price.amount);
+                if !self.pay_out(unit, price.currency, cost, events) {
+                    return Err(Rejection::NotEnoughCurrency);
+                }
+                let Some(u) = self.unit_mut(unit) else {
+                    return Ok(());
+                };
+                let (hp, mp) = (u.hp, u.mp);
+                u.hp = u.max_hp();
+                u.mp = u.max_mp();
+                let (now_hp, now_mp) = (u.hp, u.mp);
+                events.push(Event::Healed {
+                    unit,
+                    amount: now_hp - hp,
+                    remaining_hp: now_hp,
+                });
+                if now_mp > mp {
+                    events.push(Event::ManaRestored {
+                        unit,
+                        amount: now_mp - mp,
+                        remaining_mp: now_mp,
+                    });
+                }
+                Ok(())
+            }
         }
     }
 
@@ -332,6 +620,9 @@ impl SimWorld {
             Condition::All(all) => all.iter().all(|c| self.check(c, subject)),
             Condition::Any(any) => any.iter().any(|c| self.check(c, subject)),
             Condition::Not(c) => !self.check(c, subject),
+            Condition::HasCurrency { currency, amount } => {
+                unit.is_some_and(|u| u.wallet.get(*currency) >= *amount)
+            }
             Condition::SkillLevel { skill, cmp, value } => {
                 unit.is_some_and(|u| cmp.test(i64::from(u.skill_level(*skill)), i64::from(*value)))
             }
@@ -792,13 +1083,20 @@ impl SimWorld {
             t.waypoints.clear();
             t.ai = AiState::default();
             t.died_at = Some(now);
-            let (corpse, table, reward) = (t.pos, t.def.loot, t.def.exp_reward);
+            let (corpse, table, reward, bounty) =
+                (t.pos, t.def.loot, t.def.exp_reward, t.def.bounty);
             events.push(Event::Died {
                 unit: target,
                 killer: attacker,
             });
             self.drop_loot(table, corpse, events);
             self.grant_exp(attacker, reward, events);
+            // 처치 보상 재화 (R4) — 경험치처럼 바로 지갑으로.
+            if let Some(b) = bounty
+                && self.unit(attacker).is_some_and(Unit::is_alive)
+            {
+                self.pay_in(attacker, b.currency, u64::from(b.amount), events);
+            }
         } else if t.def.ai != AiKind::Passive && t.ai.target.is_none() && !t.ai.returning {
             // 반격 — 싸우는 상대가 없을 때만 갈아탄다. 귀환 중에는 받지 않는다.
             t.ai.target = Some(attacker);
@@ -1325,6 +1623,12 @@ impl SimWorld {
                 let _ = self.learn(subject, skill, levels, events);
             }
             Effect::RemoveSkill { skill } => self.forget(subject, skill, events),
+            Effect::GiveCurrency { currency, amount } => {
+                self.pay_in(subject, currency, u64::from(amount), events);
+            }
+            Effect::TakeCurrency { currency, amount } => {
+                self.pay_out(subject, currency, u64::from(amount), events);
+            }
         }
     }
 

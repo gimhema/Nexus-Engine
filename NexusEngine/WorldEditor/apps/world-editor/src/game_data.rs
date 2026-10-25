@@ -30,12 +30,16 @@ use nexus_sim::{
     ActorType, AiKind, EquipSlot, FactionId, Growth, ItemDef, ItemId, ItemKind as SimItemKind,
     LootEntry, LootTableId, Relation, SimWorld, SkillDef, SkillId, TriggerDef, TriggerId, UnitDef,
 };
-use nexus_sim::{ClassDef, ClassId, EquipRules, Formula, SkillRules, StatRules};
+use nexus_sim::{
+    ClassDef, ClassId, CurrencyId, EquipRules, Formula, Price, Service, ShopDef, ShopId,
+    SkillRules, StatRules,
+};
 use serde::Deserialize;
 
 use crate::class_file::{self, ClassFile, ClassLookFile, EquipRef, StatsFile};
 use crate::scene::{ActorId, ItemKind};
 use crate::skill_file::{self, NumOr, SkillLevelRef};
+use crate::trade_file::{self, ServiceFile, ShopFile, TradeRefs};
 use crate::trigger_file::{self, ConditionFile, TriggerFile};
 
 /// 지금 읽을 수 있는 형식 번호.
@@ -111,6 +115,18 @@ struct RulesFile {
     /// 경험치 곡선 (R3) — 변수 `level`. 적지 않으면 서버와 같은 `level * level * 100`.
     #[serde(default)]
     exp_curve: String,
+    /// 쓰는 재화 번호 (R4). 이름은 `display.ron` 의 `currencies`.
+    #[serde(default)]
+    currencies: Vec<u32>,
+    /// 값만 적은 곳(아이템 `value`·상점 `price`·처치 `bounty`·시작 재화)의 재화 (R4). 0 = 정하지 않음.
+    #[serde(default)]
+    default_currency: u32,
+    /// 새 게임의 기본 재화 (R4).
+    #[serde(default)]
+    starting_currency: u32,
+    /// 상점 (R4) — 형식은 `trade_file` 모듈 doc.
+    #[serde(default)]
+    shops: BTreeMap<u32, ShopFile>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -236,8 +252,13 @@ enum ItemFile {
         #[serde(default)]
         mana: u32,
         max_stack: u32,
+        /// 기본 값 (R4, 기본 재화) — 상점이 사들일 때의 기준. 0 이면 팔 수 없다.
+        #[serde(default)]
+        value: u32,
     },
     Equipment {
+        #[serde(default)]
+        value: u32,
         slot: SlotFile,
         attack: u32,
         defense: u32,
@@ -253,6 +274,8 @@ enum ItemFile {
         skill: u32,
         #[serde(default = "one_u32")]
         max_stack: u32,
+        #[serde(default)]
+        value: u32,
     },
 }
 
@@ -264,6 +287,15 @@ impl RulesFile {
 }
 
 impl ItemFile {
+    /// 기본 값 (R4). 0 이면 팔 수 없다.
+    fn value(&self) -> u32 {
+        match self {
+            Self::Consumable { value, .. }
+            | Self::Equipment { value, .. }
+            | Self::SkillBook { value, .. } => *value,
+        }
+    }
+
     fn equip_ref(&self, item: u32) -> Option<EquipRef<'_>> {
         match self {
             Self::Equipment { stats, classes, .. } => Some(EquipRef {
@@ -352,6 +384,12 @@ struct UnitFile {
     /// 죽은 뒤 리스폰까지 (ms). 적지 않으면 0 — 리스폰하지 않고 시체로 남는다.
     #[serde(default)]
     respawn_ms: u32,
+    /// 이 액터를 쓰러뜨린 쪽이 받는 재화 (R4, 기본 재화).
+    #[serde(default)]
+    bounty: u32,
+    /// NPC 기능 (R4) — `[Shop(1), Heal(price: 20)]`. 이것이 붙으면 상호작용할 수 있다.
+    #[serde(default)]
+    services: Vec<ServiceFile>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
@@ -402,6 +440,9 @@ struct DisplayFile {
     /// 기본 스탯의 화면 이름 (R2) — `{"str": (name: "힘")}`. 없으면 규칙 이름 그대로.
     #[serde(default)]
     stats: BTreeMap<String, SkillLookFile>,
+    /// 재화 이름 (R4) — `{1: (name: "골드")}`. 번호는 `rules.ron` 의 `currencies`.
+    #[serde(default)]
+    currencies: BTreeMap<u32, SkillLookFile>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -519,6 +560,18 @@ pub(crate) struct GameData {
     skill_rules: Vec<(SkillId, SkillRules)>,
     /// 경험치 곡선 (R3). `None` 이면 기본 곡선.
     exp_curve: Option<Formula>,
+    /// 상점 (R4).
+    shops: Vec<(ShopId, ShopDef)>,
+    /// 액터 타입별 NPC 기능 (R4).
+    services: BTreeMap<ActorId, Vec<Service>>,
+    /// 아이템 기본 값 (R4).
+    item_prices: Vec<(ItemId, Price)>,
+    /// 새 게임의 시작 재화 (R4).
+    starting_currency: Option<Price>,
+    /// 기본 재화 (R4) — HUD `{gold}`·상점 표시.
+    default_currency: Option<CurrencyId>,
+    /// 재화 이름 (`display.ron`).
+    currency_names: BTreeMap<u32, String>,
 }
 
 impl GameData {
@@ -837,6 +890,25 @@ impl GameData {
                 None
             }
         };
+        // 재화·상점·NPC 기능 (R4).
+        let default_currency = (r.default_currency != 0).then_some(r.default_currency);
+        let trade = TradeRefs {
+            currencies: &r.currencies,
+            default_currency,
+            shops: &r.shops,
+        };
+        let uses_default = r.starting_currency > 0
+            || r.items.values().any(|i| i.value() > 0)
+            || r.actors.values().any(|u| u.bounty > 0);
+        errors.extend(trade_file::validate(&trade, uses_default, |i| {
+            r.items.contains_key(&i)
+        }));
+        for (id, u) in &r.actors {
+            errors.extend(trade_file::validate_services(*id, &u.services, &trade));
+        }
+        for id in d.currencies.keys().filter(|c| !r.currencies.contains(c)) {
+            errors.push(format!("표시 재화 {id}: rules.ron 의 currencies 에 없음"));
+        }
         if !errors.is_empty() {
             return Err(format!("게임 데이터 오류 — {}", errors.join(" / ")));
         }
@@ -896,6 +968,8 @@ impl GameData {
                 .map(|(id, u)| {
                     let def = UnitDef {
                         actor: ActorType(*id),
+                        bounty: (u.bounty > 0)
+                            .then(|| trade_file::price(default_currency, u.bounty)),
                         ..u.into()
                     };
                     (ActorId::new(*id), def)
@@ -1006,6 +1080,36 @@ impl GameData {
                 })
                 .collect(),
             exp_curve,
+            shops: r
+                .shops
+                .iter()
+                .map(|(id, s)| (ShopId(*id), trade_file::shop(s, default_currency)))
+                .collect(),
+            services: r
+                .actors
+                .iter()
+                .filter(|(_, u)| !u.services.is_empty())
+                .map(|(id, u)| {
+                    (
+                        ActorId::new(*id),
+                        trade_file::services(&u.services, default_currency),
+                    )
+                })
+                .collect(),
+            item_prices: r
+                .items
+                .iter()
+                .filter(|(_, i)| i.value() > 0)
+                .map(|(id, i)| (ItemId(*id), trade_file::price(default_currency, i.value())))
+                .collect(),
+            starting_currency: (r.starting_currency > 0)
+                .then(|| trade_file::price(default_currency, r.starting_currency)),
+            default_currency: default_currency.map(CurrencyId),
+            currency_names: d
+                .currencies
+                .iter()
+                .map(|(id, l)| (*id, l.name.clone()))
+                .collect(),
             equip_rules: equipment
                 .iter()
                 .filter(|e| !e.stats.is_empty() || !e.classes.is_empty())
@@ -1085,6 +1189,33 @@ impl GameData {
         if let Some(curve) = &self.exp_curve {
             world.set_exp_curve(curve.clone());
         }
+        for (id, shop) in &self.shops {
+            world.define_shop(*id, shop.clone());
+        }
+        for (actor, list) in &self.services {
+            world.define_services(ActorType(actor.raw()), list.clone());
+        }
+        for &(item, price) in &self.item_prices {
+            world.define_item_price(item, price);
+        }
+    }
+
+    /// 기본 재화 (R4). 없으면 재화가 없는 게임.
+    pub(crate) fn default_currency(&self) -> Option<CurrencyId> {
+        self.default_currency
+    }
+
+    /// 재화 이름 — 표시 파일에 없으면 번호로.
+    pub(crate) fn currency_name(&self, id: CurrencyId) -> String {
+        self.currency_names
+            .get(&id.0)
+            .cloned()
+            .unwrap_or_else(|| format!("재화 #{}", id.0))
+    }
+
+    /// 값을 사람이 읽을 글로 — `30 골드`.
+    pub(crate) fn price_text(&self, price: Price) -> String {
+        format!("{} {}", price.amount, self.currency_name(price.currency))
     }
 
     /// 직업 번호 — 번호 순 (R2). 비어 있으면 직업이 없는 게임이다.
@@ -1171,6 +1302,14 @@ impl GameData {
             if !world.give_item(player, item, count) {
                 eprintln!("시작 소지품 {} ×{count} 가 가방에 들어가지 않음", item.0);
             }
+        }
+        self.give_starting_currency(world, player);
+    }
+
+    /// 시작 재화 (R4) — 새 게임, 그리고 재화가 생기기 전의 저장으로 이어 할 때.
+    pub(crate) fn give_starting_currency(&self, world: &mut SimWorld, player: Entity) {
+        if let Some(p) = self.starting_currency {
+            world.set_currency(player, p.currency, u64::from(p.amount));
         }
     }
 
@@ -1311,6 +1450,7 @@ impl From<ItemFile> for ItemDef {
                 heal,
                 mana,
                 max_stack,
+                ..
             } => Self {
                 kind: SimItemKind::Consumable { heal, mana },
                 max_stack,
@@ -1328,7 +1468,9 @@ impl From<ItemFile> for ItemDef {
                 },
                 max_stack: 1,
             },
-            ItemFile::SkillBook { skill, max_stack } => Self {
+            ItemFile::SkillBook {
+                skill, max_stack, ..
+            } => Self {
                 kind: SimItemKind::SkillBook {
                     skill: SkillId(skill),
                 },
@@ -1344,6 +1486,8 @@ impl From<&UnitFile> for UnitDef {
         Self {
             actor: ActorType::default(),
             class: None,
+            // 처치 보상은 기본 재화가 필요해 표를 읽는 쪽이 채운다.
+            bounty: None,
             move_speed: u.move_speed,
             max_hp: u.max_hp,
             max_mp: u.max_mp,
@@ -1408,6 +1552,10 @@ pub(crate) struct ActorForm {
     pub(crate) growth_mp: u32,
     /// 리스폰까지 (ms). 0 = 리스폰하지 않음.
     pub(crate) respawn_ms: u32,
+    /// 처치 보상 재화 (R4, 기본 재화).
+    pub(crate) bounty: u32,
+    /// NPC 기능 (R4) — 편집기가 고치지 않아도 저장할 때 그대로 다시 쓴다.
+    pub(crate) services: Vec<ServiceFile>,
     // 표시 반쪽 (display.ron)
     pub(crate) name: String,
     pub(crate) sheet: String,
@@ -1476,6 +1624,8 @@ impl ActorForm {
             growth: (0, 0, 0),
             growth_mp: 0,
             respawn_ms: 0,
+            bounty: 0,
+            services: Vec::new(),
             name: name.to_owned(),
             sheet: String::new(),
             tint: (1.0, 1.0, 1.0),
@@ -1534,6 +1684,13 @@ impl ActorForm {
         }
         if self.respawn_ms != 0 {
             line(format!("respawn_ms: {}", self.respawn_ms));
+        }
+        if self.bounty != 0 {
+            line(format!("bounty: {}", self.bounty));
+        }
+        if !self.services.is_empty() {
+            let list: Vec<String> = self.services.iter().map(ServiceFile::ron).collect();
+            line(format!("services: [{}]", list.join(", ")));
         }
         let (hp, atk, def) = self.growth;
         let mp = self.growth_mp;
@@ -1605,6 +1762,8 @@ pub(crate) fn actor_forms(rules: &str, display: &str) -> Result<BTreeMap<u32, Ac
                 growth: (u.growth.max_hp, u.growth.attack, u.growth.defense),
                 growth_mp: u.growth.max_mp,
                 respawn_ms: u.respawn_ms,
+                bounty: u.bounty,
+                services: u.services.clone(),
                 ..ActorForm::new("")
             },
         );
@@ -1640,6 +1799,8 @@ pub(crate) struct ItemForm {
     pub(crate) name: String,
     /// 땅에 떨어졌을 때의 색 (sRGB).
     pub(crate) color: (f32, f32, f32),
+    /// 기본 값 (R4, 기본 재화) — 상점이 사들일 때의 기준. 0 이면 팔 수 없다.
+    pub(crate) value: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1751,11 +1912,21 @@ impl ItemForm {
             },
             name: name.to_owned(),
             color: (0.9, 0.9, 0.9),
+            value: 0,
         }
     }
 
     /// `rules.ron` 의 `items` 항목 — 손으로 쓴 것과 같은 한 줄.
     pub(crate) fn rules_entry(&self, id: u32) -> String {
+        let line = self.kind_entry(id);
+        // 값은 있을 때만 — 예전 항목이 바이트 그대로 남게 (R4).
+        match line.strip_suffix("),") {
+            Some(head) if self.value > 0 => format!("{head}, value: {}),", self.value),
+            _ => line,
+        }
+    }
+
+    fn kind_entry(&self, id: u32) -> String {
         match &self.kind {
             ItemKindForm::Consumable {
                 heal,
@@ -1949,6 +2120,7 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
                     heal,
                     mana,
                     max_stack,
+                    ..
                 } => ItemKindForm::Consumable {
                     heal,
                     mana,
@@ -1960,6 +2132,7 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
                     defense,
                     ref stats,
                     ref classes,
+                    ..
                 } => ItemKindForm::Equipment {
                     slot: slot.into(),
                     attack,
@@ -1969,9 +2142,9 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
                         classes: classes.clone(),
                     },
                 },
-                ItemFile::SkillBook { skill, max_stack } => {
-                    ItemKindForm::SkillBook { skill, max_stack }
-                }
+                ItemFile::SkillBook {
+                    skill, max_stack, ..
+                } => ItemKindForm::SkillBook { skill, max_stack },
             };
             let look = d.items.get(id);
             (
@@ -1980,6 +2153,7 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
                     kind,
                     name: look.map(|l| l.name.clone()).unwrap_or_default(),
                     color: look.map_or((0.9, 0.9, 0.9), |l| l.color),
+                    value: it.value(),
                 },
             )
         })

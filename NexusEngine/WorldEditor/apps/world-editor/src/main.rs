@@ -41,6 +41,7 @@ mod stat_designer;
 mod table_editor;
 mod terrain;
 mod tiles;
+mod trade_file;
 mod trash;
 mod trigger_file;
 mod ui;
@@ -1235,6 +1236,9 @@ impl Editor {
         }
         if let Some((skill, slot)) = actions.hotbar {
             session.assign_hotbar(skill, slot);
+        }
+        if let Some(action) = actions.trade {
+            session.trade(action);
         }
         if let Some(key) = actions.skill_key {
             session.use_skill(key);

@@ -322,6 +322,9 @@ impl Pick {
     }
 }
 
+/// 기본 씬의 "상인 NPC" 가 쓰는 액터 타입 (R4) — `rules.ron` 의 상점·치료 기능이 붙은 NPC.
+const MERCHANT_ACTOR: u32 = 11;
+
 /// 액터 타입 번호 — `data/rules.ron` 의 `actors` 를 가리킨다. 0 은 "마커 종류의 기본값".
 ///
 /// **서버 테이블과 같은 번호 공간**이다 (`ItemId`·`SkillId` 와 같은 규칙).
@@ -467,6 +470,10 @@ impl Scene {
             );
             if let Some(item) = scene.item_mut(e) {
                 item.orientation = orientation;
+                // 상인은 상점·치료 기능이 붙은 액터 타입 (R4) — 나머지는 종류별 기본 액터.
+                if name == "상인 NPC" {
+                    item.actor = ActorId::new(MERCHANT_ACTOR);
+                }
             }
         }
         scene

@@ -694,7 +694,12 @@ mod tests {
     #[test]
     fn a_marker_without_an_actor_field_uses_the_kind_default() {
         // P1 이전에 저장한 존 파일에는 `actor` 가 없다 — 그래도 열려야 한다.
-        let text = to_ron(&Scene::server_default()).replace("            actor: 0,\n", "");
+        // 기본 씬의 상인은 액터 11 이다 (R4) — 옛 파일 흉내를 내려고 모든 actor 줄을 지운다.
+        let text = to_ron(&Scene::server_default())
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("actor:"))
+            .map(|l| format!("{l}\n"))
+            .collect::<String>();
         assert!(
             !text.contains("actor:"),
             "시험 전제: actor 필드를 지웠어야 한다"

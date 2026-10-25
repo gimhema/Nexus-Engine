@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use nexus_core::Vec2;
-use nexus_sim::{ClassId, FlagId, ItemId, SkillId};
+use nexus_sim::{ClassId, CurrencyId, FlagId, ItemId, SkillId};
 use serde::{Deserialize, Serialize};
 
 use crate::scene::ActorId;
@@ -59,6 +59,8 @@ pub(crate) struct SaveData {
     pub(crate) flags: Vec<(FlagId, i32)>,
     /// 월드 범위 진행 플래그 (R1). 싱글에서는 캐릭터와 같은 파일에 둔다 — MMO 에서는 서버 몫이다.
     pub(crate) world_flags: Vec<(FlagId, i32)>,
+    /// 지갑 (R4). `None` = 재화가 생기기 전의 저장 — 시작 재화로 이어 한다.
+    pub(crate) wallet: Option<Vec<(CurrencyId, u64)>>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -98,6 +100,9 @@ struct SaveFile {
     flags: BTreeMap<u32, i32>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     world_flags: BTreeMap<u32, i32>,
+    /// 지갑 `재화: 금액` (R4). 없는 예전 파일도 읽힌다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    wallet: Option<BTreeMap<u32, u64>>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -140,6 +145,10 @@ pub(crate) fn to_ron(save: &SaveData) -> String {
         equipped: save.equipped.iter().map(|i| i.0).collect(),
         flags: save.flags.iter().map(|(f, v)| (f.0, *v)).collect(),
         world_flags: save.world_flags.iter().map(|(f, v)| (f.0, *v)).collect(),
+        wallet: save
+            .wallet
+            .as_ref()
+            .map(|w| w.iter().map(|(c, a)| (c.0, *a)).collect()),
     };
     let config = ron::ser::PrettyConfig::new()
         .new_line("\n")
@@ -201,6 +210,9 @@ pub(crate) fn from_ron(text: &str) -> Result<SaveData, String> {
         // 0 은 "없음" 과 같다 — 손으로 적은 0 은 버린다.
         flags: flag_list(&file.flags),
         world_flags: flag_list(&file.world_flags),
+        wallet: file
+            .wallet
+            .map(|w| w.into_iter().map(|(c, a)| (CurrencyId(c), a)).collect()),
     })
 }
 
@@ -284,6 +296,7 @@ mod tests {
             equipped: vec![ItemId(1101)],
             flags: vec![(FlagId(1), 4), (FlagId(2), 1)],
             world_flags: vec![(FlagId(30), -1)],
+            wallet: Some(vec![(CurrencyId(1), 250)]),
         }
     }
 

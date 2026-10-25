@@ -21,6 +21,7 @@ use crate::combat::SkillId;
 use crate::item::{BagKind, EquipSlot, ItemId, ItemStack};
 use crate::progress::Progress;
 use crate::script::ScriptHost;
+use crate::trade::{CurrencyId, ShopId};
 use crate::trigger::{FlagId, TriggerId};
 use crate::world::SimWorld;
 
@@ -52,6 +53,32 @@ pub enum Intent {
     Equip { unit: Entity, slot: u16 },
     /// `slot` 자리의 장비를 벗는다.
     Unequip { unit: Entity, slot: EquipSlot },
+    /// NPC 에게 말을 건다 (R4) — 상호작용 거리 안이어야 하고 그 NPC 에게 기능이 있어야 한다.
+    /// 받아들이면 `Event::Interacted` — 기능 메뉴를 여는 것은 앱의 일이다. 다가가는 것은 내는 쪽의 일.
+    Interact { unit: Entity, npc: Entity },
+    /// `npc` 의 상점 `shop` 에서 `goods` 번째 물건을 `count` 개 산다 (R4).
+    Buy {
+        unit: Entity,
+        npc: Entity,
+        shop: ShopId,
+        goods: u16,
+        count: u32,
+    },
+    /// `npc` 의 상점 `shop` 에 가방 `bag` 의 `slot` 에서 `count` 개를 판다 (R4).
+    Sell {
+        unit: Entity,
+        npc: Entity,
+        shop: ShopId,
+        bag: BagKind,
+        slot: u16,
+        count: u32,
+    },
+    /// `npc` 의 `index` 번째 기능을 쓴다 — 상점이 아닌 것(치료 등, R4).
+    UseService {
+        unit: Entity,
+        npc: Entity,
+        index: u16,
+    },
     /// 쓰러진 유닛을 `at` 에서 일으킨다 — HP·MP 를 최대치의 `hp_per_mille`(천분율)만큼 채우고,
     /// 지금 레벨에서 모은 경험치의 `exp_loss_per_mille` 를 잃는다 (레벨은 내려가지 않는다).
     /// 기본 부활은 입력 쪽(플레이)이, 맞춤 부활은 액터 스크립트(`on_dead`)가 낸다.
@@ -78,7 +105,11 @@ impl Intent {
             | Self::UseItem { unit, .. }
             | Self::Equip { unit, .. }
             | Self::Unequip { unit, .. }
-            | Self::Revive { unit, .. } => unit,
+            | Self::Revive { unit, .. }
+            | Self::Interact { unit, .. }
+            | Self::Buy { unit, .. }
+            | Self::Sell { unit, .. }
+            | Self::UseService { unit, .. } => unit,
         }
     }
 }
@@ -128,6 +159,12 @@ pub enum Rejection {
     SkillMaxed,
     /// 배울 수 없는 스킬 — 직업이 맞지 않거나 습득 조건이 맞지 않는다 (R3).
     SkillRequirement,
+    /// 그 NPC 에게 그런 기능이 없다 (기능이 없는 유닛에게 말 걸기 포함, R4).
+    NoService,
+    /// 재화가 모자란다 (R4).
+    NotEnoughCurrency,
+    /// 그 상점이 사지 않는 아이템 — 값이 없거나 상점이 사들이지 않는다 (R4).
+    NotSellable,
 }
 
 /// tick 동안 일어난 일.
@@ -200,6 +237,27 @@ pub enum Event {
     },
     /// 스킬을 잊었다 (R3).
     SkillForgotten { unit: Entity, skill: SkillId },
+    /// NPC 에게 말을 걸었다 (R4) — 앱이 그 NPC 의 기능 메뉴를 연다.
+    Interacted { unit: Entity, npc: Entity },
+    /// 지갑이 바뀌었다 (R4). `total` 은 바뀐 뒤의 금액.
+    CurrencyChanged {
+        unit: Entity,
+        currency: CurrencyId,
+        delta: i64,
+        total: u64,
+    },
+    /// 상점에서 샀다 (R4).
+    Bought {
+        unit: Entity,
+        item: ItemId,
+        count: u32,
+    },
+    /// 상점에 팔았다 (R4).
+    Sold {
+        unit: Entity,
+        item: ItemId,
+        count: u32,
+    },
     /// 트리거가 일어났다 (R1) — 조건이 맞아 효과를 적용했다. `subject` 는 대상 유닛.
     TriggerFired { trigger: TriggerId, subject: Entity },
     /// 진행 플래그가 바뀌었다 (R1). `unit` 이 `None` 이면 월드 플래그다.
@@ -344,6 +402,23 @@ fn apply(world: &mut SimWorld, intent: Intent, events: &mut Vec<Event>) -> Resul
         Intent::UseItem { unit, slot } => world.use_item(unit, slot, events),
         Intent::Equip { unit, slot } => world.equip(unit, slot, events),
         Intent::Unequip { unit, slot } => world.unequip(unit, slot, events),
+        Intent::Interact { unit, npc } => world.interact(unit, npc, events),
+        Intent::Buy {
+            unit,
+            npc,
+            shop,
+            goods,
+            count,
+        } => world.buy(unit, npc, shop, goods, count, events),
+        Intent::Sell {
+            unit,
+            npc,
+            shop,
+            bag,
+            slot,
+            count,
+        } => world.sell(unit, npc, shop, bag, slot, count, events),
+        Intent::UseService { unit, npc, index } => world.use_service(unit, npc, index, events),
         Intent::Revive {
             unit,
             at,

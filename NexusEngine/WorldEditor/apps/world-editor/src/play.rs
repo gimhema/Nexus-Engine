@@ -21,8 +21,8 @@ use nexus_core::{Camera2d, Entity, Vec2, Vec3};
 use nexus_render::{DEPTH_LAYER, RenderCommand, SpriteAnchor, TextureId, UvRect};
 use nexus_script::RhaiHost;
 use nexus_sim::{
-    Authority, BagKind, ClassId, EquipSlot, Event, Intent, ItemStack, LocalAuthority, Progress,
-    Rejection, Relation, SimWorld, SkillId, Unit,
+    Authority, BagKind, ClassId, EquipSlot, Event, Intent, ItemStack, LocalAuthority, Price,
+    Progress, Rejection, Relation, Service, ShopId, SimWorld, SkillId, Unit,
 };
 
 use crate::game_data::{ActorLook, GameData};
@@ -77,6 +77,47 @@ enum Order {
     },
     /// 다가가서 줍는다.
     PickUp(Entity),
+    /// 다가가서 말을 건다 — 기능이 있는 NPC (R4).
+    Talk(Entity),
+}
+
+/// 거래 창 조작 (R4) — UI 가 돌려주면 세션이 Intent 로 바꿔 낸다.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TradeAction {
+    Buy {
+        shop: ShopId,
+        goods: u16,
+        count: u32,
+    },
+    Sell {
+        shop: ShopId,
+        bag: BagKind,
+        slot: u16,
+        count: u32,
+    },
+    /// 상점이 아닌 기능 (치료 등) — 기능 번호.
+    Service(u16),
+    Close,
+}
+
+/// 거래 창이 그리는 것 (R4).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TradeView {
+    pub(crate) npc_name: String,
+    /// 지갑 — 기본 재화 금액과 그 이름.
+    pub(crate) purse: String,
+    pub(crate) shops: Vec<ShopView>,
+    /// 상점이 아닌 기능 `(기능 번호, 단추 글)`.
+    pub(crate) services: Vec<(u16, String)>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ShopView {
+    pub(crate) shop: ShopId,
+    /// `(물건 번호, 이름, 값 글, 살 수 있나)`.
+    pub(crate) goods: Vec<(u16, String, String, bool)>,
+    /// 팔 수 있는 가방 칸 `(가방, 칸, 이름, 개수, 한 개 값 글)`.
+    pub(crate) sellable: Vec<(BagKind, u16, String, u32, String)>,
 }
 
 /// 시뮬레이션 유닛의 이름과 색 — 씬 마커에서 가져온다.
@@ -140,6 +181,8 @@ pub(crate) struct PlaySession {
     hotbar: Vec<Option<SkillId>>,
     /// 플레이어가 기본 부활할 시각 (시뮬레이션 시계). 쓰러져 있는 동안만 있다.
     revive_at: Option<Duration>,
+    /// 거래 창을 연 NPC (R4) — 말을 걸면 열리고, 멀어지거나 닫으면 닫힌다.
+    trading: Option<Entity>,
     /// 조작하는 액터의 스크립트가 `on_dead` 를 정의했다 — 부활은 스크립트가 맡고 기본 부활은 하지 않는다.
     scripted_revive: bool,
     /// 주문을 위해 마지막으로 경로를 잡은 지점.
@@ -248,7 +291,13 @@ impl PlaySession {
                 if is_player {
                     // 이어 하기면 저장한 소지품이 들어오므로 시작 소지품은 주지 않는다.
                     match options.save.as_ref() {
-                        Some(save) => restore(&mut world, unit, save),
+                        Some(save) => {
+                            restore(&mut world, unit, save);
+                            // 재화가 생기기 전의 저장 — 시작 재화로 이어 한다 (R4).
+                            if save.wallet.is_none() {
+                                data.give_starting_currency(&mut world, unit);
+                            }
+                        }
                         None => data.give_starting_kit(&mut world, unit),
                     }
                     player = Some(unit);
@@ -302,6 +351,7 @@ impl PlaySession {
             order: Order::Idle,
             hotbar,
             revive_at: None,
+            trading: None,
             scripted_revive,
             chase_goal: None,
             log: VecDeque::new(),
@@ -361,6 +411,126 @@ impl PlaySession {
             .zip(&sheet.base)
             .map(|(key, v)| (self.data.stat_name(key).to_owned(), *v))
             .collect()
+    }
+
+    /// 기본 재화 금액 (R4) — HUD `{gold}`. 재화가 없는 게임이면 0.
+    pub(crate) fn gold(&self) -> u64 {
+        let (Some(u), Some(c)) = (self.world().unit(self.player), self.data.default_currency())
+        else {
+            return 0;
+        };
+        u.wallet().get(c)
+    }
+
+    /// 거래 창 (R4) — 말을 건 NPC 가 있으면 그 기능들.
+    pub(crate) fn trade_view(&self) -> Option<TradeView> {
+        let npc = self.trading?;
+        let world = self.world();
+        let me = world.unit(self.player)?;
+        let purse = self.data.default_currency().map_or_else(String::new, |c| {
+            self.data.price_text(Price {
+                currency: c,
+                amount: u32::try_from(me.wallet().get(c)).unwrap_or(u32::MAX),
+            })
+        });
+        let mut shops = Vec::new();
+        let mut services = Vec::new();
+        for (i, service) in world.services_of(npc).iter().enumerate() {
+            let index = u16::try_from(i).unwrap_or(u16::MAX);
+            match *service {
+                Service::Shop(id) => {
+                    let Some(def) = world.shop(id) else { continue };
+                    let goods = def
+                        .goods
+                        .iter()
+                        .enumerate()
+                        .map(|(g, goods)| {
+                            (
+                                u16::try_from(g).unwrap_or(u16::MAX),
+                                self.data.item_name(goods.item),
+                                self.data.price_text(goods.price),
+                                me.wallet().get(goods.price.currency)
+                                    >= u64::from(goods.price.amount),
+                            )
+                        })
+                        .collect();
+                    let sellable = [BagKind::Consumable, BagKind::Equipment]
+                        .into_iter()
+                        .flat_map(|bag| {
+                            me.inventory()
+                                .bag(bag)
+                                .iter()
+                                .map(move |(slot, s)| (bag, slot, s))
+                                .collect::<Vec<_>>()
+                        })
+                        .filter_map(|(bag, slot, s)| {
+                            let price = world.sell_price(id, s.item)?;
+                            Some((
+                                bag,
+                                u16::try_from(slot).ok()?,
+                                self.data.item_name(s.item),
+                                s.count,
+                                self.data.price_text(price),
+                            ))
+                        })
+                        .collect();
+                    shops.push(ShopView {
+                        shop: id,
+                        goods,
+                        sellable,
+                    });
+                }
+                Service::Heal { price } => {
+                    let label = if price.amount == 0 {
+                        String::from("치료 (무료)")
+                    } else {
+                        format!("치료 — {}", self.data.price_text(price))
+                    };
+                    services.push((index, label));
+                }
+            }
+        }
+        Some(TradeView {
+            npc_name: self.name(npc).to_owned(),
+            purse,
+            shops,
+            services,
+        })
+    }
+
+    /// 거래 창 조작 (R4) — Intent 로 바꿔 낸다. 판정은 권한자가 한다.
+    pub(crate) fn trade(&mut self, action: TradeAction) {
+        let (Some(npc), unit) = (self.trading, self.player) else {
+            return;
+        };
+        let intent = match action {
+            TradeAction::Close => {
+                self.trading = None;
+                return;
+            }
+            TradeAction::Buy { shop, goods, count } => Intent::Buy {
+                unit,
+                npc,
+                shop,
+                goods,
+                count,
+            },
+            TradeAction::Sell {
+                shop,
+                bag,
+                slot,
+                count,
+            } => Intent::Sell {
+                unit,
+                npc,
+                shop,
+                bag,
+                slot,
+                count,
+            },
+            TradeAction::Service(index) => Intent::UseService { unit, npc, index },
+        };
+        self.auth.submit(intent);
     }
 
     /// 플레이어가 배운 스킬 — 스킬 창용 (R3). 직업이 없는 게임이면 단축키에 있는 스킬을 1레벨로 보인다.
@@ -447,6 +617,7 @@ impl PlaySession {
             skills: Some(u.map(|u| u.learned_skills().collect()).unwrap_or_default()),
             hotbar: Some(self.hotbar.clone()),
             flags: u.map(|u| u.flags().iter().collect()).unwrap_or_default(),
+            wallet: u.map(|u| u.wallet().iter().collect()),
             world_flags: self.world().world_flags().iter().collect(),
         }
     }
@@ -491,7 +662,18 @@ impl PlaySession {
             .min_by(|a, b| a.1.total_cmp(&b.1));
 
         self.chase_goal = None;
+        let hostile = |t: Entity| {
+            world
+                .unit(t)
+                .is_some_and(|u| world.relation(my_faction, u.def().faction) == Relation::Hostile)
+        };
         if let Some((target, _)) = nearest_unit
+            && !world.services_of(target).is_empty()
+            && !hostile(target)
+        {
+            // 기능이 있는 NPC 는 치지 않고 말을 건다 (R4).
+            self.order = Order::Talk(target);
+        } else if let Some((target, _)) = nearest_unit
             && world
                 .unit(target)
                 .is_some_and(|t| world.relation(my_faction, t.def().faction) != Relation::Friendly)
@@ -685,6 +867,12 @@ impl PlaySession {
         let events = self.auth.tick(dt);
         let cues = AnimCue::collect(&events);
         for event in events {
+            // 말을 걸면 거래 창이 열린다 (R4).
+            if let Event::Interacted { unit, npc } = event
+                && unit == self.player
+            {
+                self.trading = Some(npc);
+            }
             // 잊은 스킬은 단축키에서도 뺀다 (R3).
             if let Event::SkillForgotten { unit, skill } = event
                 && unit == self.player
@@ -696,6 +884,21 @@ impl PlaySession {
                 }
             }
             self.on_event(event);
+        }
+        // 거래 창은 멀어지거나 상대·내가 쓰러지면 닫는다 (R4).
+        if let Some(npc) = self.trading {
+            let world = self.world();
+            let near = match (world.unit(self.player), world.unit(npc)) {
+                (Some(me), Some(n)) => {
+                    me.is_alive()
+                        && n.is_alive()
+                        && me.pos().distance(n.pos()) <= world.interact_range() + 0.5
+                }
+                _ => false,
+            };
+            if !near {
+                self.trading = None;
+            }
         }
         // 깜빡임은 tick 으로 센다 — 렌더 프레임으로 세면 fps 에 따라 길이가 달라진다.
         self.hit_flash.retain(|_, left| {
@@ -773,6 +976,14 @@ impl PlaySession {
                 };
                 (g.pos, world.pickup_range())
             }
+            Order::Talk(npc) => {
+                let Some(n) = world.unit(npc).filter(|n| n.is_alive()) else {
+                    self.order = Order::Idle;
+                    return Vec::new();
+                };
+                // 거리 끝에서 멈추면 한 걸음 차이로 거절될 수 있어 조금 안쪽까지.
+                (n.pos(), world.interact_range() * 0.8)
+            }
         };
 
         let mut out = Vec::new();
@@ -796,7 +1007,11 @@ impl PlaySession {
                     out.push(Intent::PickUp { unit: me, item });
                     self.order = Order::Idle;
                 }
-                _ => {}
+                Order::Talk(npc) => {
+                    out.push(Intent::Interact { unit: me, npc });
+                    self.order = Order::Idle;
+                }
+                Order::Idle => {}
             }
         } else if self
             .chase_goal
@@ -942,6 +1157,24 @@ impl PlaySession {
             }
             Event::SkillForgotten { unit, skill } if unit == self.player => {
                 format!("스킬을 잊었다: {}", self.data.skill_name(skill))
+            }
+            Event::Interacted { unit, npc } if unit == self.player => {
+                format!("{} 에게 말을 걸었다", self.name(npc))
+            }
+            Event::Bought { unit, item, count } if unit == self.player => {
+                format!("샀다: {} ×{count}", self.data.item_name(item))
+            }
+            Event::Sold { unit, item, count } if unit == self.player => {
+                format!("팔았다: {} ×{count}", self.data.item_name(item))
+            }
+            Event::CurrencyChanged {
+                unit,
+                currency,
+                delta,
+                total,
+            } if unit == self.player => {
+                let name = self.data.currency_name(currency);
+                format!("{name} {delta:+} ({name} {total})")
             }
             // 플레이어는 이름 없이 (포션·회복 스킬), 다른 유닛은 이름을 붙인다 (범위 회복).
             Event::Healed {
@@ -1392,6 +1625,9 @@ mod text {
             Rejection::SkillNotLearned => "배우지 않은 스킬입니다",
             Rejection::SkillMaxed => "이미 최대 레벨인 스킬입니다",
             Rejection::SkillRequirement => "배울 수 없는 스킬입니다 (직업·조건)",
+            Rejection::NoService => "그런 일은 하지 않는 NPC 입니다",
+            Rejection::NotEnoughCurrency => "돈이 모자랍니다",
+            Rejection::NotSellable => "그 상점은 이 물건을 사지 않습니다",
         }
     }
 }
@@ -1421,6 +1657,12 @@ fn restore(world: &mut SimWorld, player: Entity, save: &SaveData) {
     }
     for &(flag, value) in &save.world_flags {
         world.set_world_flag(flag, value);
+    }
+    // 지갑 (R4) — 재화가 생기기 전의 저장이면 시작 재화를 그대로 둔다.
+    if let Some(wallet) = &save.wallet {
+        for &(currency, amount) in wallet {
+            world.set_currency(player, currency, amount);
+        }
     }
 }
 #[cfg(test)]
@@ -2563,5 +2805,114 @@ mod tests {
             ("강베기", 1, 5)
         );
         assert_eq!(lines[0].slot, Some(0));
+    }
+
+    // ── 상점·재화 (R4) ───────────────────────────────────────────────────────
+
+    /// 상인에게 걸어가 말을 걸 때까지 돌린다.
+    fn talk_to_merchant(s: &mut PlaySession) -> Entity {
+        let merchant = find(s, "상인 NPC");
+        let at = s.world().unit(merchant).unwrap().pos();
+        s.click(at, 0.01);
+        for _ in 0..600 {
+            s.tick(DT, None);
+            if s.trade_view().is_some() {
+                return merchant;
+            }
+        }
+        panic!("상인에게 닿지 못했다: {:?}", s.log);
+    }
+
+    #[test]
+    fn clicking_the_merchant_talks_instead_of_attacking() {
+        let mut s = new_game(None, None);
+        assert_eq!(s.gold(), 100, "rules.ron: starting_currency");
+        let merchant = talk_to_merchant(&mut s);
+        assert!(s.attack_target().is_none());
+        assert_eq!(s.world().unit(merchant).unwrap().hp(), 300, "치지 않았다");
+        let view = s.trade_view().unwrap();
+        assert_eq!(view.npc_name, "상인 NPC");
+        assert_eq!(view.purse, "100 골드");
+        assert_eq!(view.services, [(1, String::from("치료 — 20 골드"))]);
+        let shop = &view.shops[0];
+        assert_eq!(
+            shop.goods[0],
+            (0, String::from("빨간 포션"), String::from("50 골드"), true)
+        );
+        assert!(!shop.goods[3].3, "마도서 1000 골드는 살 수 없다");
+        assert!(s.log().any(|l| l == "상인 NPC 에게 말을 걸었다"));
+    }
+
+    #[test]
+    fn buying_selling_and_healing_at_the_merchant() {
+        let mut s = new_game(None, None);
+        talk_to_merchant(&mut s);
+        let me = s.player();
+        let potions = |s: &PlaySession| {
+            let u = s.world().unit(me).unwrap();
+            u.inventory().bag(BagKind::Consumable).count_of(ItemId(501))
+        };
+        let before = potions(&s);
+        s.trade(TradeAction::Buy {
+            shop: ShopId(1),
+            goods: 0,
+            count: 1,
+        });
+        s.tick(DT, None);
+        assert_eq!((potions(&s), s.gold()), (before + 1, 50));
+        assert!(s.log().any(|l| l == "샀다: 빨간 포션 ×1"));
+        // 물약 2개를 판다 — 기본 값 40 의 반값 20 × 2.
+        let slot = s.trade_view().unwrap().shops[0]
+            .sellable
+            .iter()
+            .find(|line| line.2 == "빨간 포션")
+            .unwrap()
+            .1;
+        s.trade(TradeAction::Sell {
+            shop: ShopId(1),
+            bag: BagKind::Consumable,
+            slot,
+            count: 2,
+        });
+        s.tick(DT, None);
+        assert_eq!((potions(&s), s.gold()), (before - 1, 90));
+        // 치료 20 골드.
+        s.auth.world_mut().set_hp(me, 10);
+        s.trade(TradeAction::Service(1));
+        s.tick(DT, None);
+        let u = s.world().unit(me).unwrap();
+        assert_eq!((u.hp(), s.gold()), (u.max_hp(), 70));
+        // 저장 → 이어 하기에 지갑이 남는다.
+        let back = new_game(None, Some(s.save_data(String::new())));
+        assert_eq!(back.gold(), 70);
+    }
+
+    #[test]
+    fn slimes_pay_a_bounty_and_old_saves_start_with_the_starting_gold() {
+        let mut s = session();
+        let slime = find(&s, "슬라임");
+        s.click(s.world().unit(slime).unwrap().pos(), 0.01);
+        for _ in 0..900 {
+            s.tick(DT, None);
+            if !s.world().unit(slime).unwrap().is_alive() {
+                break;
+            }
+        }
+        assert_eq!(s.gold(), 115, "시작 100 + 슬라임 15");
+        let mut old = s.save_data(String::new());
+        old.wallet = None;
+        assert_eq!(new_game(None, Some(old)).gold(), 100);
+    }
+
+    #[test]
+    fn walking_away_closes_the_trade_window() {
+        let mut s = new_game(None, None);
+        let merchant = talk_to_merchant(&mut s);
+        let away = s.world().unit(merchant).unwrap().pos() + Vec2::new(12.0, 0.0);
+        s.click(away, 0.01);
+        for _ in 0..200 {
+            s.tick(DT, None);
+        }
+        assert!(s.trade_view().is_none());
     }
 }

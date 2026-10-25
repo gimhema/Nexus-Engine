@@ -180,6 +180,8 @@ pub(crate) struct UiActions {
     pub(crate) inventory: Option<InventoryAction>,
     /// 플레이 중 스킬 창에서 단축키 배치 `(스킬, 칸)` — 칸이 `None` 이면 뺀다 (R3).
     pub(crate) hotbar: Option<(nexus_sim::SkillId, Option<usize>)>,
+    /// 플레이 중 거래 창 조작 (R4).
+    pub(crate) trade: Option<crate::play::TradeAction>,
     pub(crate) reset_view: bool,
     /// 선택 항목(없으면 전체 마커)이 화면에 들어오도록 카메라를 맞춘다.
     pub(crate) frame_selection: bool,
@@ -496,6 +498,9 @@ impl EditorUi {
             }
             file_dialog(ui, dialog, model.dirty, &mut actions);
             continue_window(ui, model, &mut actions);
+            if let Some(play) = model.play {
+                trade_window(ui, play, &mut actions);
+            }
             palette.show(ui, &mut actions);
             // 위젯 편집기 — 창이 직접 model.screen_editor 를 고친다 (액션을 거치지 않는다).
             {
@@ -1422,6 +1427,91 @@ fn play_units(ui: &mut egui::Ui, play: &PlaySession) {
     if items > 0 {
         ui.add_space(8.0);
         ui.weak(format!("땅에 떨어진 아이템 {items}개"));
+    }
+}
+
+/// 거래 창 (R4) — NPC 에게 말을 걸면 뜬다. 사고팔기는 `TradeAction` 으로 돌려준다(판정은 권한자).
+fn trade_window(ui: &mut egui::Ui, play: &PlaySession, actions: &mut UiActions) {
+    use crate::play::TradeAction;
+    let Some(view) = play.trade_view() else {
+        return;
+    };
+    let mut open = true;
+    egui::Window::new(format!("{} — 거래", view.npc_name))
+        .id(egui::Id::new("trade_window"))
+        .open(&mut open)
+        .default_size([360.0, 420.0])
+        .resizable(true)
+        .show(ui.ctx(), |ui| {
+            if !view.purse.is_empty() {
+                ui.strong(format!("가진 돈: {}", view.purse));
+            }
+            for (i, label) in &view.services {
+                if ui.button(label).clicked() {
+                    actions.trade = Some(TradeAction::Service(*i));
+                }
+            }
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for shop in &view.shops {
+                    ui.add_space(6.0);
+                    ui.strong("사기");
+                    egui::Grid::new(("trade-buy", shop.shop.0))
+                        .num_columns(4)
+                        .striped(true)
+                        .show(ui, |ui| {
+                            for (g, name, price, affordable) in &shop.goods {
+                                ui.label(name);
+                                ui.monospace(price);
+                                for count in [1, 5] {
+                                    if ui
+                                        .add_enabled(
+                                            *affordable,
+                                            egui::Button::new(format!("{count}개")),
+                                        )
+                                        .clicked()
+                                    {
+                                        actions.trade = Some(TradeAction::Buy {
+                                            shop: shop.shop,
+                                            goods: *g,
+                                            count,
+                                        });
+                                    }
+                                }
+                                ui.end_row();
+                            }
+                        });
+                    ui.add_space(6.0);
+                    ui.strong("팔기");
+                    if shop.sellable.is_empty() {
+                        ui.weak("이 상점이 사는 물건이 없습니다");
+                    }
+                    egui::Grid::new(("trade-sell", shop.shop.0))
+                        .num_columns(4)
+                        .striped(true)
+                        .show(ui, |ui| {
+                            for (bag, slot, name, count, price) in &shop.sellable {
+                                ui.label(format!("{name} ×{count}"));
+                                ui.monospace(format!("개당 {price}"));
+                                let sell = |n: u32| TradeAction::Sell {
+                                    shop: shop.shop,
+                                    bag: *bag,
+                                    slot: *slot,
+                                    count: n,
+                                };
+                                if ui.button("1개").clicked() {
+                                    actions.trade = Some(sell(1));
+                                }
+                                if ui.button("모두").clicked() {
+                                    actions.trade = Some(sell(*count));
+                                }
+                                ui.end_row();
+                            }
+                        });
+                }
+            });
+        });
+    if !open {
+        actions.trade = Some(TradeAction::Close);
     }
 }
 

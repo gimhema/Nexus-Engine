@@ -144,6 +144,11 @@ pub enum Condition {
     /// 하나라도 참 (빈 목록은 거짓).
     Any(Vec<Condition>),
     Not(Box<Condition>),
+    /// 대상의 지갑에 그 재화가 `amount` 이상 (R4).
+    HasCurrency {
+        currency: crate::trade::CurrencyId,
+        amount: u64,
+    },
     /// 대상이 그 스킬을 `value` 레벨과 비교해 (배우지 않았으면 0, R3).
     SkillLevel {
         skill: crate::combat::SkillId,
@@ -183,6 +188,16 @@ pub enum Effect {
     },
     /// 스킬을 잊는다 (R3).
     RemoveSkill { skill: crate::combat::SkillId },
+    /// 재화를 준다 (R4) — 퀘스트 보상 등.
+    GiveCurrency {
+        currency: crate::trade::CurrencyId,
+        amount: u32,
+    },
+    /// 재화를 받는다 (R4). 모자라면 아무것도 빼지 않는다 — `HasCurrency` 조건으로 먼저 막을 것.
+    TakeCurrency {
+        currency: crate::trade::CurrencyId,
+        amount: u32,
+    },
 }
 
 /// 언제 — 이 tick 에 일어난 일 중 무엇에 반응하는가. 반응한 유닛이 **대상**이 된다.

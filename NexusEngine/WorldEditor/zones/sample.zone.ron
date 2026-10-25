@@ -259,7 +259,7 @@
         (
             name: "상인 NPC",
             kind: Npc,
-            actor: 0,
+            actor: 11,
             pos: (-8.0, 12.0),
             size: 0.8,
             orientation: 1.5,

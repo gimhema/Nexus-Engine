@@ -123,6 +123,7 @@ pub(crate) const PLACEHOLDERS: &[&str] = &[
     "loading",
     "revive",
     "class",
+    "gold",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -592,6 +593,8 @@ pub(crate) struct Values {
     pub(crate) revive_in: Option<f32>,
     /// 플레이어 직업 이름 (`{class}`, R2). 직업이 없는 게임이면 빈 글자.
     pub(crate) class: String,
+    /// 기본 재화 금액 (`{gold}`, R4).
+    pub(crate) gold: u64,
 }
 
 impl Values {
@@ -614,6 +617,7 @@ impl Values {
             down: !u.is_alive(),
             revive_in: play.revive_in(),
             class: play.class_name(),
+            gold: play.gold(),
         })
     }
 
@@ -654,6 +658,7 @@ impl Values {
             down: false,
             revive_in: Some(2.4),
             class: String::from("전사"),
+            gold: 1250,
         }
     }
 
@@ -1666,7 +1671,7 @@ pub(crate) fn to_ron(screen: &ScreenFile) -> String {
 // 메뉴 UI → 위젯 편집기. 저장하면 이 파일이 통째로 다시 쓰이므로 주석은 남지 않는다.
 //
 // pos·size 는 UI 픽셀(테마의 scale 을 곱하기 전)이고, anchor 기준점에서 오른쪽·아래가 +다.
-// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {mp} {max_mp} {level} {exp} {exp_to_next} {loading}(로딩 %) {revive}(부활까지 초) {class}(직업)
+// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {mp} {max_mp} {level} {exp} {exp_to_next} {loading}(로딩 %) {revive}(부활까지 초) {class}(직업) {gold}(기본 재화)
 // Image 위젯의 path 는 작업 디렉터리 기준 PNG (소문자·'/'), region 은 그림의 픽셀 사각형이다.
 ";
     format!("{header}{body}\n")
@@ -1715,6 +1720,7 @@ fn fill(format: &str, v: &Values) -> String {
         .map_or(String::new(), |s| format!("{:.1}", s.max(0.0)));
     out.replace("{revive}", &revive)
         .replace("{class}", &v.class)
+        .replace("{gold}", &v.gold.to_string())
 }
 
 /// 위젯 트리 검사 — 빈 이름, 이름 중복(트리 전체), 없는 값 이름, 0 크기, 너무 깊은 트리.

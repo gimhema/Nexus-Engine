@@ -76,6 +76,8 @@ pub struct UnitDef {
     /// 죽은 뒤 이만큼(ms) 지나면 시체를 치우고 **스폰 지점에 새로** 나타난다. 0 이면 리스폰하지 않고
     /// 시체로 남는다 (플레이어·보스).
     pub respawn_ms: u32,
+    /// 이 유닛을 쓰러뜨린 쪽이 받는 재화 (R4). 경험치처럼 바로 지갑에 들어간다.
+    pub bounty: Option<crate::trade::Price>,
 }
 
 impl Default for UnitDef {
@@ -100,6 +102,7 @@ impl Default for UnitDef {
             exp_reward: 0,
             growth: Growth::default(),
             respawn_ms: 0,
+            bounty: None,
         }
     }
 }
@@ -180,6 +183,8 @@ pub struct Unit {
     pub(crate) sheet: Option<StatSheet>,
     /// 배운 스킬과 그 레벨 (R3). 순서 있는 맵이라 저장·UI 순서가 결정적이다.
     pub(crate) skills: std::collections::BTreeMap<SkillId, u32>,
+    /// 재화 지갑 (R4).
+    pub(crate) wallet: crate::trade::Wallet,
 }
 
 impl Unit {
@@ -208,7 +213,14 @@ impl Unit {
             flags: Flags::default(),
             sheet: None,
             skills: std::collections::BTreeMap::new(),
+            wallet: crate::trade::Wallet::default(),
         }
+    }
+
+    /// 재화 지갑 (R4).
+    #[must_use]
+    pub fn wallet(&self) -> &crate::trade::Wallet {
+        &self.wallet
     }
 
     /// 배운 스킬의 레벨 — 0 이면 배우지 않았다 (R3).

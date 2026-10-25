@@ -22,6 +22,7 @@ mod script;
 mod skills;
 mod stats;
 mod tilemap;
+mod trade;
 mod trigger;
 mod unit;
 mod world;
@@ -41,6 +42,9 @@ pub use stats::{
     MAX_STATS, RESERVED, StatRules, StatSheet,
 };
 pub use tilemap::{Tile, TileCoord, TileMap};
+pub use trade::{
+    CurrencyId, DEFAULT_INTERACT_RANGE, Goods, Price, Service, ShopDef, ShopId, Wallet,
+};
 pub use trigger::{
     Cmp, Condition, Effect, FlagId, FlagScope, Flags, MAX_ROUNDS, On, TriggerDef, TriggerId,
 };
