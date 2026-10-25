@@ -1313,6 +1313,58 @@ impl GameData {
         }
     }
 
+    // ── 재화 매니저용 읽기 (R7) — 표를 고치지 않고 보기만 한다 ────────────────
+
+    pub(crate) fn shops(&self) -> &[(ShopId, ShopDef)] {
+        &self.shops
+    }
+
+    pub(crate) fn crafts(&self) -> &[(CraftId, CraftDef)] {
+        &self.crafts
+    }
+
+    pub(crate) fn teleports(&self) -> &[(TeleportId, TeleportDef)] {
+        &self.teleports
+    }
+
+    /// 액터 타입별 NPC 기능.
+    pub(crate) fn services(&self) -> &BTreeMap<ActorId, Vec<Service>> {
+        &self.services
+    }
+
+    pub(crate) fn quests(&self) -> &[(nexus_sim::QuestId, nexus_sim::QuestDef)] {
+        &self.quests
+    }
+
+    pub(crate) fn triggers(&self) -> &[(TriggerId, TriggerDef)] {
+        &self.triggers
+    }
+
+    /// 스킬 부착 규칙 — 스토리보드가 습득 조건을 읽는다 (R8).
+    pub(crate) fn skill_rules(&self) -> &[(SkillId, SkillRules)] {
+        &self.skill_rules
+    }
+
+    pub(crate) fn loot_table(&self, id: LootTableId) -> Option<&[LootEntry]> {
+        self.loot
+            .iter()
+            .find(|(t, _)| *t == id)
+            .map(|(_, rows)| rows.as_slice())
+    }
+
+    /// 아이템 기본 값 — 상점이 사들일 때의 기준. 없으면 팔 수 없다.
+    pub(crate) fn item_price(&self, item: ItemId) -> Option<Price> {
+        self.item_prices
+            .iter()
+            .find(|(i, _)| *i == item)
+            .map(|(_, p)| *p)
+    }
+
+    /// 새 게임의 시작 재화.
+    pub(crate) fn starting_currency(&self) -> Option<Price> {
+        self.starting_currency
+    }
+
     /// 퀘스트 제목 — 표시 파일에 없으면 `퀘스트 #N` (R5).
     pub(crate) fn quest_title(&self, id: nexus_sim::QuestId) -> String {
         self.quest_looks

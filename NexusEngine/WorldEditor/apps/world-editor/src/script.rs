@@ -44,6 +44,8 @@
 //! trash                       휴지통 창 열기 (P20)
 //! statdesigner                스탯·직업 디자이너 열기 (R2)
 //! questdesigner               퀘스트 디자이너 열기 (R5)
+//! economy | economyrun        재화 매니저 열기 / 레벨마다 경제 시뮬레이션까지 돌리기 (R7)
+//! storyboard                  스토리보드 열기 — 퀘스트 선행·플래그를 켜는 곳/읽는 곳 그래프 (R8)
 //! contentop delete|duplicate|rename [새이름]  고른 항목에 파일 작업 확인 창 (P9)
 //! contentconfirm              확인 창의 "실행"
 //! ```
@@ -164,6 +166,12 @@ pub(crate) enum Step {
     StatDesigner,
     /// 퀘스트 디자이너 열기 (R5).
     QuestDesigner,
+    /// 스토리보드 열기 (R8).
+    Storyboard,
+    /// 재화 매니저 열기 — `run` 이면 시뮬레이션까지 돌린다 (R7).
+    Economy {
+        run: bool,
+    },
     /// 휴지통 창 열기 (P20).
     Trash,
     /// 콘텐츠 브라우저에서 항목 고르기 — 경로 또는 `actor:번호`.
@@ -347,6 +355,9 @@ fn parse_step(text: &str) -> Result<Step, String> {
         "trash" => return Ok(Step::Trash),
         "statdesigner" => return Ok(Step::StatDesigner),
         "questdesigner" => return Ok(Step::QuestDesigner),
+        "storyboard" => return Ok(Step::Storyboard),
+        "economy" => return Ok(Step::Economy { run: false }),
+        "economyrun" => return Ok(Step::Economy { run: true }),
         "contentopen" => return Ok(Step::ContentOpen),
         "contentmenu" => return Ok(Step::ContentMenu),
         "contentconfirm" => return Ok(Step::ContentConfirm),
@@ -575,6 +586,8 @@ mod tests {
         assert!(parse("spawnarea 5").is_err());
         assert_eq!(parse("reloadart").unwrap(), [Step::ReloadArt]);
         assert_eq!(parse("slot 2").unwrap(), [Step::SaveSlot(2)]);
+        assert_eq!(parse("economyrun").unwrap(), [Step::Economy { run: true }]);
+        assert_eq!(parse("storyboard").unwrap(), [Step::Storyboard]);
         assert!(parse("slot 9").is_err());
         assert_eq!(
             parse("askplay; continue new").unwrap(),

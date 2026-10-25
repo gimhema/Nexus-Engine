@@ -219,6 +219,8 @@ pub(crate) struct UiActions {
     open_stat_designer: bool,
     /// 퀘스트 디자이너를 연다 (UI 내부에서 소비, R5).
     open_quest_designer: bool,
+    open_economy: bool,
+    open_storyboard: bool,
     /// 게임 규칙 설정 창을 연다 (UI 내부에서 소비).
     open_rules: bool,
     /// 팔레트 창에서 고른 그림 조각 — 편집기가 `terrain.ron` 에 추가하고 붓으로 삼는다.
@@ -275,6 +277,8 @@ pub(crate) struct EditorUi {
     trash: crate::trash::TrashWindow,
     stat_designer: crate::stat_designer::StatDesigner,
     quest_designer: crate::quest_designer::QuestDesigner,
+    economy: crate::economy::EconomyManager,
+    storyboard: crate::storyboard::StoryboardWindow,
 }
 
 /// 존 열기 / 다른 이름으로 저장 창.
@@ -347,6 +351,8 @@ impl EditorUi {
             trash: crate::trash::TrashWindow::default(),
             stat_designer: crate::stat_designer::StatDesigner::default(),
             quest_designer: crate::quest_designer::QuestDesigner::default(),
+            economy: crate::economy::EconomyManager::default(),
+            storyboard: crate::storyboard::StoryboardWindow::default(),
         }
     }
 
@@ -373,6 +379,14 @@ impl EditorUi {
     /// 퀘스트 디자이너 — 자동 검증 스크립트(`questdesigner`)가 연다 (R5).
     pub(crate) fn quest_designer_mut(&mut self) -> &mut crate::quest_designer::QuestDesigner {
         &mut self.quest_designer
+    }
+
+    pub(crate) fn economy_mut(&mut self) -> &mut crate::economy::EconomyManager {
+        &mut self.economy
+    }
+
+    pub(crate) fn storyboard_mut(&mut self) -> &mut crate::storyboard::StoryboardWindow {
+        &mut self.storyboard
     }
 
     /// 스탯·직업 디자이너 — 자동 검증 스크립트(`statdesigner`)가 연다.
@@ -500,6 +514,8 @@ impl EditorUi {
         let trash = &mut self.trash;
         let stat_designer = &mut self.stat_designer;
         let quest_designer = &mut self.quest_designer;
+        let economy = &mut self.economy;
+        let storyboard = &mut self.storyboard;
 
         let output = self.ctx.run_ui(raw, |ui| {
             menu_bar(ui, model, &mut actions);
@@ -508,6 +524,12 @@ impl EditorUi {
             }
             if std::mem::take(&mut actions.open_quest_designer) {
                 quest_designer.open();
+            }
+            if std::mem::take(&mut actions.open_economy) {
+                economy.open();
+            }
+            if std::mem::take(&mut actions.open_storyboard) {
+                storyboard.open();
             }
             if std::mem::take(&mut actions.open_rules) {
                 rules.open();
@@ -543,6 +565,8 @@ impl EditorUi {
             rules.show(ui);
             stat_designer.show(ui);
             quest_designer.show(ui);
+            economy.show(ui);
+            storyboard.show(ui);
             trash.show(ui.ctx());
             if actions.toggle_content {
                 content.toggle();
@@ -808,6 +832,12 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
                 }
                 if ui.button("퀘스트 디자이너…").clicked() {
                     actions.open_quest_designer = true;
+                }
+                if ui.button("재화 매니저…").clicked() {
+                    actions.open_economy = true;
+                }
+                if ui.button("스토리보드…").clicked() {
+                    actions.open_storyboard = true;
                 }
                 if ui.button("게임 규칙 설정…").clicked() {
                     actions.open_rules = true;

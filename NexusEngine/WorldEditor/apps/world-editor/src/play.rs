@@ -320,7 +320,17 @@ impl PlaySession {
         data: GameData,
         options: PlayOptions,
     ) -> Result<Self, String> {
-        let mut world = SimWorld::new(scene.tiles.clone());
+        // 플레이용 맵은 **존 전체**를 덮는다 — 에디터 씬의 맵이 존보다 작아도(칠한 곳 주변만) 존 안은
+        // 어디든 걸을 수 있게. 늘어난 칸은 기본 타일이고, 청크라 칠하지 않은 곳은 메모리를 쓰지 않는다 (R6-3).
+        // 씬·존 파일은 건드리지 않는다: 화면은 씬의 맵으로 그리고, 시뮬레이션과는 월드 미터로만 이어진다.
+        let mut tiles = scene.tiles.clone();
+        tiles.grow_to_cover(
+            scene.zone.min,
+            scene.zone.max,
+            nexus_sim::Tile::default(),
+            crate::zone_file::MAX_TILEMAP_SIDE,
+        );
+        let mut world = SimWorld::new(tiles);
         data.install(&mut world);
 
         // 액터 스크립트 (P2) — 플레이 시작마다 새로 컴파일한다. 문법 오류면 플레이를 막는다
@@ -1106,6 +1116,11 @@ impl PlaySession {
                 target: at,
             });
         }
+    }
+
+    /// 하던 주문(치기·줍기·말 걸기)이 있는가 — 경제 시뮬레이터의 봇이 다음 할 일을 고를 때 (R7).
+    pub(crate) fn busy(&self) -> bool {
+        !matches!(self.order, Order::Idle)
     }
 
     /// 지금 치고 있는 대상.
@@ -3456,6 +3471,52 @@ mod tests {
             PlayOptions::default(),
         )
         .unwrap()
+    }
+
+    /// 플레이용 맵은 존 전체를 덮는다 — 씬의 맵(마을은 64×64)은 그대로다 (R6-3, A안).
+    #[test]
+    fn the_play_map_covers_the_whole_zone_but_the_scene_does_not_change() {
+        let scene = crate::zone_file::from_ron(include_str!("../../../zones/village.zone.ron"))
+            .expect("마을 존");
+        let before = (
+            scene.tiles.width(),
+            scene.tiles.origin(),
+            scene.tiles.runs(),
+        );
+        let mut s = PlaySession::start(
+            &scene,
+            Camera2d::default(),
+            GameData::embedded(),
+            PlayOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                scene.tiles.width(),
+                scene.tiles.origin(),
+                scene.tiles.runs()
+            ),
+            before,
+            "씬은 그대로"
+        );
+        let tiles = s.world().tiles();
+        let (lo, hi) = tiles.world_bounds();
+        assert!(lo.cmple(scene.zone.min).all() && hi.cmpge(scene.zone.max).all());
+        // 같은 월드 자리는 같은 타일 — 칠한 지형이 따라온다.
+        for (y, x, _, tile) in scene.tiles.runs() {
+            let at = scene
+                .tiles
+                .tile_center(nexus_sim::TileCoord::new(x as i32, y as i32));
+            assert_eq!(tiles.get(tiles.world_to_tile(at)), Some(tile));
+        }
+        // 씬의 맵(-32~32m) 밖으로 걸어 나간다.
+        let goal = Vec2::new(0.0, 60.0);
+        s.click(goal, 0.01);
+        let arrived = (0..1500).any(|_| {
+            s.tick(DT, None);
+            s.world().unit(s.player()).unwrap().pos().distance(goal) < 0.1
+        });
+        assert!(arrived, "{:?}", s.log);
     }
 
     // ── 포털 (R6) ─────────────────────────────────────────────────────────

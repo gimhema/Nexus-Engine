@@ -18,6 +18,7 @@ mod actor_editor;
 mod asset_ops;
 mod class_file;
 mod content;
+mod economy;
 mod edit;
 mod game_data;
 mod grid;
@@ -40,6 +41,7 @@ mod sheet_viewer;
 mod skill_file;
 mod sprites;
 mod stat_designer;
+mod storyboard;
 mod table_editor;
 mod terrain;
 mod tiles;
@@ -1839,6 +1841,20 @@ impl Editor {
             Step::QuestDesigner => {
                 if let Some(ui) = self.ui.as_mut() {
                     ui.quest_designer_mut().open();
+                }
+            }
+            Step::Storyboard => {
+                if let Some(ui) = self.ui.as_mut() {
+                    ui.storyboard_mut().open();
+                }
+            }
+            Step::Economy { run } => {
+                if let Some(ui) = self.ui.as_mut() {
+                    if run {
+                        ui.economy_mut().run_all();
+                    } else {
+                        ui.economy_mut().open();
+                    }
                 }
             }
             Step::Trash => {
