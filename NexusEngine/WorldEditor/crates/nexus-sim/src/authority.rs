@@ -334,6 +334,10 @@ pub enum Event {
     },
     /// 포털에 들어왔지만 입장 조건이 맞지 않았다 (R6). `portal` 은 놓은 순서.
     PortalBlocked { unit: Entity, portal: u16 },
+    /// 클리어 목표 하나가 늘었다 (R6-2) — 세는 목표만. `count` 는 늘어난 뒤의 수.
+    ClearProgressed { objective: u16, count: u32 },
+    /// 지금 존의 클리어 목표를 다 채웠다 (R6-2) — 보상을 적용했다. 존마다 한 번.
+    DungeonCleared,
     /// 창고에 맡겼다 (R4-2).
     Deposited {
         unit: Entity,
@@ -369,8 +373,9 @@ pub enum Event {
     },
     /// 트리거가 일어났다 (R1) — 조건이 맞아 효과를 적용했다. `subject` 는 대상 유닛.
     TriggerFired { trigger: TriggerId, subject: Entity },
-    /// 진행 플래그가 바뀌었다 (R1). `unit` 이 `None` 이면 월드 플래그다.
+    /// 진행 플래그가 바뀌었다 (R1). `unit` 은 캐릭터 플래그일 때만 있다.
     FlagChanged {
+        scope: crate::FlagScope,
         unit: Option<Entity>,
         flag: FlagId,
         value: i32,
@@ -486,6 +491,8 @@ impl Authority for LocalAuthority {
         self.world.run_triggers(&mut events);
         // 퀘스트 목표도 같은 tick 끝의 같은 이벤트로 센다 (R5).
         self.world.run_quests(&mut events);
+        // 던전 클리어도 같은 이벤트로 센다 — 포털보다 먼저라야 깬 그 tick 에 나가는 문이 열린다 (R6-2).
+        self.world.run_clear(&mut events);
         // 포털은 맨 마지막 — 포털 자리의 도달 목표를 먼저 센 뒤에 넘긴다 (R6).
         self.world.run_portals(&mut events);
         self.ticks += 1;

@@ -610,6 +610,23 @@ pub(crate) struct GameData {
 }
 
 impl GameData {
+    /// 레벨의 던전 클리어가 가리키는 번호를 이 데이터로 검사한다 (R6-2) — 레벨 파일은 게임 데이터와
+    /// 따로 읽히므로, 플레이를 시작할 때·레벨 편집기가 저장할 때 이것으로 본다.
+    pub(crate) fn check_clear(&self, clear: &crate::level::ClearFile) -> Vec<String> {
+        let item = |i: u32| self.items.iter().any(|(id, _)| id.0 == i);
+        let actor = |a: u32| self.actors.contains_key(&ActorId::new(a));
+        let skill = |s: u32| self.skills.iter().any(|(id, _)| id.0 == s);
+        let quest = |q: u32| self.quests.iter().any(|(id, _)| id.0 == q);
+        let loot = |t: u32| self.loot.iter().any(|(id, _)| id.0 == t);
+        clear.check_refs(&trigger_file::Known {
+            item: &item,
+            actor: &actor,
+            skill: &skill,
+            quest: &quest,
+            loot: &loot,
+        })
+    }
+
     /// `data/` 에 파일이 있으면 그것을, 없으면 실행 파일에 든 것을 읽는다.
     pub(crate) fn load() -> Result<Self, String> {
         let rules = read_or_embedded(Path::new(RULES_PATH), EMBEDDED_RULES)?;

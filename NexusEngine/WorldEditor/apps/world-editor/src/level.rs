@@ -23,7 +23,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::trigger_file::ConditionFile;
+use crate::quest_file::{self, ObjectiveFile};
+use crate::trigger_file::{self, ConditionFile, EffectFile, Known};
 
 /// 프로젝트 설정 (작업 디렉터리 기준).
 pub(crate) const PROJECT_PATH: &str = "data/project.ron";
@@ -38,6 +39,7 @@ const EMBEDDED_LEVELS: &[(&str, &str)] = &[
     ("village", include_str!("../../../levels/village.level.ron")),
     ("sample", include_str!("../../../levels/sample.level.ron")),
     ("house", include_str!("../../../levels/house.level.ron")),
+    ("dungeon", include_str!("../../../levels/dungeon.level.ron")),
 ];
 
 const FORMAT_VERSION: u32 = 1;
@@ -114,6 +116,129 @@ pub(crate) struct LevelFile {
     /// 트리거의 `when` 과 같은 형식이다. 없으면 누구나.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) requires: Option<ConditionFile>,
+    /// 던전 클리어 (R6-2) — 목표를 다 채우면 보상을 주고 `Cleared` 조건이 참이 된다
+    /// (나가는 문 포털의 `requires: Some(Cleared)`). 없으면 클리어가 없는 레벨.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) clear: Option<ClearFile>,
+}
+
+/// 던전 클리어 (R6-2). 목표는 퀘스트 목표, 보상은 트리거 효과와 **같은 형식**이다.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ClearFile {
+    pub(crate) objectives: Vec<ObjectiveFile>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) rewards: Vec<EffectFile>,
+}
+
+impl ClearFile {
+    /// 시뮬레이션 타입으로.
+    pub(crate) fn to_sim(&self) -> nexus_sim::ClearDef {
+        nexus_sim::ClearDef {
+            objectives: self.objectives.iter().map(quest_file::objective).collect(),
+            rewards: self.rewards.iter().map(|e| (*e).into()).collect(),
+        }
+    }
+
+    /// 다른 표를 보지 않는 검사 — 레벨 파일을 읽을 때. 번호가 있는지는 [`Self::check_refs`].
+    fn check_shape(&self) -> Result<(), String> {
+        if self.objectives.is_empty() {
+            return Err(String::from(
+                "clear: 목표가 없음 — 클리어가 없는 레벨이면 clear 를 지운다",
+            ));
+        }
+        for (i, o) in self.objectives.iter().enumerate() {
+            let bad = match o {
+                ObjectiveFile::Kill { count, .. } | ObjectiveFile::Collect { count, .. } => {
+                    *count == 0
+                }
+                ObjectiveFile::Reach { center, radius } => {
+                    !(center.0.is_finite()
+                        && center.1.is_finite()
+                        && radius.is_finite()
+                        && *radius > 0.0)
+                }
+                ObjectiveFile::Talk { .. } | ObjectiveFile::Check(_) => false,
+            };
+            if bad {
+                return Err(format!(
+                    "clear: 목표 {i} — 개수는 1 이상, 도달 반경은 0 보다 커야 함"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// 다른 표의 번호 검사 — 게임 데이터를 읽은 쪽이 부른다. 오류는 `목표 N: …` / `보상: …` 꼴.
+    pub(crate) fn check_refs(&self, known: &Known<'_>) -> Vec<String> {
+        let mut errors = Vec::new();
+        for (i, o) in self.objectives.iter().enumerate() {
+            let mut err = |m: String| errors.push(format!("목표 {i}: {m}"));
+            match o {
+                ObjectiveFile::Kill { actor, .. } if *actor != 0 && !(known.actor)(*actor) => {
+                    err(format!("없는 액터 {actor}"));
+                }
+                ObjectiveFile::Talk { actor } if !(known.actor)(*actor) => {
+                    err(format!("없는 액터 {actor}"));
+                }
+                ObjectiveFile::Collect { item, .. } if !(known.item)(*item) => {
+                    err(format!("없는 아이템 {item}"));
+                }
+                ObjectiveFile::Check(c) => trigger_file::check_condition(c, 0, known, &mut err),
+                _ => {}
+            }
+        }
+        for e in &self.rewards {
+            trigger_file::check_effect(e, known, &mut |m| errors.push(format!("보상: {m}")));
+        }
+        errors
+    }
+
+    /// 액터 번호를 바꾼다 — 액터 번호 바꾸기가 레벨 파일을 따라 고쳐 쓸 때 (P21). 바꾼 곳이 있으면 `true`.
+    pub(crate) fn renumber_actor(&mut self, from: u32, to: u32) -> bool {
+        fn cond(c: &mut ConditionFile, from: u32, to: u32) -> bool {
+            match c {
+                ConditionFile::Actor(a) if *a == from => {
+                    *a = to;
+                    true
+                }
+                ConditionFile::All(list) | ConditionFile::Any(list) => list
+                    .iter_mut()
+                    .fold(false, |hit, c| cond(c, from, to) | hit),
+                ConditionFile::Not(c) => cond(c, from, to),
+                _ => false,
+            }
+        }
+        let mut hit = false;
+        for o in &mut self.objectives {
+            match o {
+                ObjectiveFile::Kill { actor, .. } | ObjectiveFile::Talk { actor }
+                    if *actor == from =>
+                {
+                    *actor = to;
+                    hit = true;
+                }
+                ObjectiveFile::Check(c) => hit |= cond(c, from, to),
+                _ => {}
+            }
+        }
+        hit
+    }
+
+    /// 가리키는 다른 표의 번호 — 지우기 거부용.
+    pub(crate) fn refs(&self) -> trigger_file::Refs {
+        let quest = crate::quest_file::QuestFile {
+            requires: ConditionFile::Always,
+            stages: vec![crate::quest_file::StageFile {
+                objectives: self.objectives.clone(),
+                then: self.rewards.clone(),
+            }],
+            rewards: Vec::new(),
+            repeatable: false,
+            auto_complete: false,
+        };
+        quest_file::refs(&quest)
+    }
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -213,6 +338,14 @@ impl Levels {
             .collect()
     }
 
+    /// 그 레벨의 던전 클리어 (R6-2) — 존을 열 때 sim 에 등록한다.
+    pub(crate) fn clear_of(&self, id: &str) -> Option<nexus_sim::ClearDef> {
+        self.levels
+            .get(id)
+            .and_then(|l| l.clear.as_ref())
+            .map(ClearFile::to_sim)
+    }
+
     /// 이 존 파일을 쓰는 레벨 — F5(지금 레벨 플레이)가 어느 레벨인지 알아내는 데 쓴다.
     pub(crate) fn find_by_zone(&self, zone: Option<&Path>) -> Option<&str> {
         let zone = zone?;
@@ -272,6 +405,12 @@ pub(crate) fn read_level(text: &str) -> Result<LevelFile, String> {
     }
     if file.loading.as_deref().is_some_and(|s| s.trim().is_empty()) {
         return Err(String::from("loading 화면 번호가 비어 있음"));
+    }
+    if let Some(clear) = &file.clear {
+        if file.zone.is_none() {
+            return Err(String::from("clear 는 존이 있는 레벨에만 둘 수 있음"));
+        }
+        clear.check_shape()?;
     }
     if file.zone.is_none() && file.on_enter.is_none() {
         return Err(String::from(
@@ -354,6 +493,8 @@ pub(crate) fn to_ron(level: &LevelFile) -> String {
 // (전부 ui/<번호>.ui.ron). loading_ms = 로딩 화면을 최소로 보여 줄 시간(ms).
 // instance = 인스턴스 정책(Shared·Personal·Party — 단계 1 에서는 기록만),
 // requires = 들어올 수 있는 조건(이 레벨로 가는 포털이 본다, 트리거의 when 과 같은 형식).
+// clear = 던전 클리어 — objectives(퀘스트 목표 형식)를 다 채우면 rewards(트리거 효과 형식)를 주고
+// Cleared 조건이 참이 된다(나가는 문 포털의 requires: Some(Cleared)).
 ";
     format!("{header}{body}\n")
 }

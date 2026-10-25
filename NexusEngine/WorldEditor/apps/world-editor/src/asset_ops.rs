@@ -276,6 +276,13 @@ fn plan_actor(root: &Path, op: &FileOp) -> Result<Plan, String> {
                     quest_list(&quests)
                 ));
             }
+            let levels = level_clears_using(root, None, Some(id));
+            if !levels.is_empty() {
+                return Err(format!(
+                    "이 액터를 던전 클리어 목표로 쓰는 레벨이 있어 지우지 않습니다 — {}",
+                    levels.join(", ")
+                ));
+            }
             let (rules2, gone_rules) = crate::ron_patch::remove_entry(&rules, "actors", id)?;
             let (display2, gone_display) = crate::ron_patch::remove_entry(&display, "actors", id)?;
             GameData::parse(&rules2, &display2)?;
@@ -436,6 +443,21 @@ fn plan_actor(root: &Path, op: &FileOp) -> Result<Plan, String> {
                 }
                 p.writes.push((file, text));
             }
+            // 레벨의 던전 클리어 목표 (R6-2) — 레벨 파일은 편집기가 소유하므로 읽어서 고친 뒤 통째로 다시 쓴다.
+            for file in level_clears_using(root, None, Some(id)) {
+                let mut level = crate::level::read_level(&read(root, &file)?)?;
+                if let Some(clear) = level.clear.as_mut() {
+                    clear.renumber_actor(id, new_id);
+                    if clear.refs().actors.contains(&id) {
+                        return Err(format!(
+                            "{file} 의 던전 클리어 안의 #{id} 를 고쳐 쓰지 못했습니다 — 손으로 고친 뒤 다시 하세요"
+                        ));
+                    }
+                }
+                p.steps.push(format!("고쳐 씀: {file} (던전 클리어)"));
+                p.touched.levels = true;
+                p.writes.push((file, crate::level::to_ron(&level)));
+            }
         }
     }
     Ok(p)
@@ -469,7 +491,7 @@ fn plan_table(root: &Path, op: &FileOp) -> Result<Plan, String> {
     match op.kind {
         OpKind::Delete => {
             // 검증도 막지만, 이유를 사람이 읽을 수 있게 먼저 찾아 알린다.
-            let users = table_users(&rules, &display, tab, id)?;
+            let users = table_users(root, &rules, &display, tab, id)?;
             if !users.is_empty() {
                 return Err(format!(
                     "쓰는 곳이 있어 지우지 않습니다 — {}",
@@ -521,6 +543,7 @@ fn plan_table(root: &Path, op: &FileOp) -> Result<Plan, String> {
 /// 이 표 항목을 쓰는 곳 — 드롭 표·시작 소지품(아이템) / 액터의 기본 공격·플레이어 공격(스킬) /
 /// 액터(드롭 표).
 fn table_users(
+    root: &Path,
     rules: &str,
     display: &str,
     tab: crate::table_editor::Tab,
@@ -547,6 +570,9 @@ fn table_users(
             let quests = crate::game_data::quests_using(rules, Some(id), None)?;
             if !quests.is_empty() {
                 out.push(quest_list(&quests));
+            }
+            for level in level_clears_using(root, Some(id), None) {
+                out.push(format!("{level} 의 던전 클리어"));
             }
         }
         Tab::Skills => {
@@ -590,6 +616,26 @@ fn table_users(
 fn quest_list(ids: &[u32]) -> String {
     let list: Vec<String> = ids.iter().map(|i| format!("#{i}")).collect();
     format!("퀘스트 {}", list.join(", "))
+}
+
+/// 던전 클리어(레벨 파일의 `clear`)가 그 아이템·액터를 가리키는 레벨 파일 (R6-2).
+/// 읽을 수 없는 레벨 파일은 건너뛴다 — 그 레벨은 게임에서도 빠진다.
+fn level_clears_using(root: &Path, item: Option<u32>, actor: Option<u32>) -> Vec<String> {
+    scan_files(root, "levels", ".level.ron")
+        .into_iter()
+        .filter(|file| {
+            let Some(clear) = read(root, file)
+                .ok()
+                .and_then(|t| crate::level::read_level(&t).ok())
+                .and_then(|l| l.clear)
+            else {
+                return false;
+            };
+            let refs = clear.refs();
+            item.is_some_and(|i| refs.items.contains(&i))
+                || actor.is_some_and(|a| refs.actors.contains(&a))
+        })
+        .collect()
 }
 
 /// `트리거 #1, #2` — 사람이 읽을 목록.
@@ -1028,6 +1074,27 @@ mod tests {
             let err = plan(&sb.0, &rename("actor:2", to)).unwrap_err();
             assert!(err.contains(why), "{to}: {err}");
         }
+
+        // 던전 클리어 목표로만 쓰이는 액터(마커는 없음)는 지우지 않는다 (R6-2).
+        std::fs::write(
+            sb.0.join("levels/cave.level.ron"),
+            "(version: 1, name: \"동굴\", zone: Some(\"zones/dungeon.zone.ron\"), \
+             clear: Some((objectives: [Kill(actor: 103)])))\n",
+        )
+        .unwrap();
+        let delete = op(OpKind::Delete, AssetKind::Actor, "actor:103", "");
+        let err = plan(&sb.0, &delete).unwrap_err();
+        assert!(
+            err.contains("던전 클리어") && err.contains("levels/cave.level.ron"),
+            "{err}"
+        );
+        // 던전 보스 104 — 레벨의 던전 클리어 목표를 따라 고쳐 쓴다.
+        let p = plan(&sb.0, &rename("actor:104", "120")).unwrap();
+        assert!(p.touched.levels);
+        apply(&sb.0, &p).unwrap();
+        let level = crate::level::read_level(&sb.read("levels/dungeon.level.ron")).unwrap();
+        let refs = level.clear.unwrap().refs();
+        assert!(refs.actors.contains(&120) && !refs.actors.contains(&104));
     }
 
     #[test]

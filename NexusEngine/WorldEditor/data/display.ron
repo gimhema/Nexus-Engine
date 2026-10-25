@@ -51,6 +51,12 @@
         103: (
             name: "테스트액터",
         ),
+        104: (
+            name: "슬라임 왕",
+            sheet: "assets/third_party/slime-garakh/monster.sheet.ron",
+            tint: (1.0, 0.8, 0.45),
+            profile: "동굴 깊은 곳의 우두머리. 쓰러뜨리면 나가는 문이 열린다.",
+        ),
     },
 
     items: {

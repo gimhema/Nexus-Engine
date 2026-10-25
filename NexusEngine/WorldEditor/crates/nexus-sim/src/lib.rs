@@ -14,6 +14,7 @@
 mod ai;
 mod authority;
 mod combat;
+mod dungeon;
 mod faction;
 mod item;
 mod loot;
@@ -31,6 +32,7 @@ mod world;
 
 pub use authority::{Authority, Event, Intent, LocalAuthority, Rejection};
 pub use combat::{SkillDef, SkillId, damage};
+pub use dungeon::ClearDef;
 pub use faction::{FactionId, FactionTable, Relation};
 pub use item::{
     BAG_SLOTS, Bag, BagKind, EquipSlot, GroundItem, Inventory, ItemDef, ItemId, ItemKind, ItemStack,

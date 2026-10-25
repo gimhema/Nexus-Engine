@@ -226,7 +226,7 @@ pub(crate) fn to_sim(quests: &BTreeMap<u32, QuestFile>) -> Vec<(QuestId, QuestDe
         .collect()
 }
 
-fn objective(o: &ObjectiveFile) -> Objective {
+pub(crate) fn objective(o: &ObjectiveFile) -> Objective {
     match o {
         ObjectiveFile::Kill { actor, count } => Objective::Kill {
             actor: (*actor != 0).then_some(ActorType(*actor)),

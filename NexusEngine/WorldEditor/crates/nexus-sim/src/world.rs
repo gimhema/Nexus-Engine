@@ -21,6 +21,7 @@ use nexus_core::{Entity, Vec2, World};
 
 use crate::authority::{Event, Rejection};
 use crate::combat::{self, SkillDef, SkillId};
+use crate::dungeon::{ClearDef, ClearState};
 use crate::faction::{FactionId, FactionTable, Relation};
 use crate::item::{
     BAG_SLOTS, BagKind, EquipSlot, GroundItem, ItemDef, ItemId, ItemKind, ItemStack,
@@ -98,6 +99,10 @@ pub struct SimWorld {
     quests: HashMap<QuestId, QuestDef>,
     /// 포털 (R6) — 등록 순서가 번호다.
     portals: Vec<PortalDef>,
+    /// 인스턴스 범위 플래그 (R6-2) — 저장하지 않는다.
+    instance_flags: Flags,
+    /// 던전 클리어 정의와 진행 (R6-2). 없으면 클리어가 없는 존.
+    clear: Option<(ClearDef, ClearState)>,
 }
 
 impl SimWorld {
@@ -131,6 +136,153 @@ impl SimWorld {
             teleports: HashMap::new(),
             quests: HashMap::new(),
             portals: Vec::new(),
+            instance_flags: Flags::default(),
+            clear: None,
+        }
+    }
+
+    /// 이 존의 클리어 목표를 등록한다 (설정 작업, R6-2). 목표가 비면 클리어가 없는 존이다.
+    pub fn set_clear(&mut self, def: ClearDef) {
+        self.clear = (!def.objectives.is_empty()).then(|| {
+            let counts = vec![0; def.objectives.len()];
+            (
+                def,
+                ClearState {
+                    counts,
+                    done: false,
+                },
+            )
+        });
+    }
+
+    #[must_use]
+    pub fn clear_def(&self) -> Option<&ClearDef> {
+        self.clear.as_ref().map(|(d, _)| d)
+    }
+
+    /// 클리어 목표별 센 수 (R6-2) — 상태 목표 자리는 0. 클리어가 없는 존이면 `None`.
+    #[must_use]
+    pub fn clear_counts(&self) -> Option<&[u32]> {
+        self.clear.as_ref().map(|(_, s)| s.counts.as_slice())
+    }
+
+    /// 클리어 목표 하나를 **지금** 채우고 있는가 — UI 가 목표 줄에 체크를 그릴 때도 쓴다.
+    #[must_use]
+    pub fn clear_objective_done(&self, index: usize) -> bool {
+        let Some((def, state)) = &self.clear else {
+            return false;
+        };
+        if state.done {
+            return true;
+        }
+        let Some(o) = def.objectives.get(index) else {
+            return false;
+        };
+        let count = state.counts.get(index).copied().unwrap_or(0);
+        match o.target() {
+            Some(target) => count >= target,
+            None => self.player_units().any(|p| self.objective_done(p, o, 0)),
+        }
+    }
+
+    /// 지금 존을 클리어했는가 (R6-2).
+    #[must_use]
+    pub fn is_cleared(&self) -> bool {
+        self.clear.as_ref().is_some_and(|(_, s)| s.done)
+    }
+
+    /// 인스턴스 범위 플래그 전부 (R6-2).
+    #[must_use]
+    pub fn instance_flags(&self) -> &Flags {
+        &self.instance_flags
+    }
+
+    /// 플레이어(직업이 있는 유닛) — 포털·클리어 판정의 "사람".
+    fn player_units(&self) -> impl Iterator<Item = Entity> + '_ {
+        self.units()
+            .filter(|(_, u)| u.def.class.is_some())
+            .map(|(e, _)| e)
+    }
+
+    /// 이번 tick 의 일로 클리어 목표를 세고, 다 채웠으면 보상을 준다 (R6-2) — 퀘스트 뒤, 포털 앞.
+    /// 규칙은 `dungeon` 모듈 doc.
+    pub(crate) fn run_clear(&mut self, events: &mut Vec<Event>) {
+        let Some((def, state)) = &self.clear else {
+            return;
+        };
+        if state.done {
+            return;
+        }
+        let objectives = def.objectives.clone();
+        let players: Vec<Entity> = self.player_units().collect();
+        // 1. 세는 목표 — 처치(누가 쓰러뜨렸든)·도달·대화(플레이어만).
+        let mut happenings: Vec<Happening> = players
+            .iter()
+            .filter_map(|e| {
+                let u = self.unit(*e)?;
+                (u.prev_pos != u.pos).then_some(Happening::Moved {
+                    unit: *e,
+                    from: u.prev_pos,
+                    to: u.pos,
+                })
+            })
+            .collect();
+        let snapshot = events.clone();
+        happenings.extend(snapshot.iter().filter_map(|e| self.happening(e, &snapshot)));
+        let mut bumps = Vec::new();
+        for h in happenings {
+            for (i, o) in objectives.iter().enumerate() {
+                let hit = match (o, h) {
+                    (Objective::Kill { actor, .. }, Happening::Killed { victim, .. }) => {
+                        actor.is_none_or(|a| victim == Some(a))
+                    }
+                    (Objective::Reach { center, radius }, Happening::Moved { from, to, .. }) => {
+                        let r2 = radius * radius;
+                        from.distance_squared(*center) > r2 && to.distance_squared(*center) <= r2
+                    }
+                    (Objective::Talk { actor }, Happening::Talked { unit, actor: met }) => {
+                        *actor == met && players.contains(&unit)
+                    }
+                    _ => false,
+                };
+                if hit {
+                    bumps.push(i);
+                }
+            }
+        }
+        if let Some((_, state)) = self.clear.as_mut() {
+            for i in bumps {
+                let Some(target) = objectives[i].target() else {
+                    continue;
+                };
+                if let Some(c) = state.counts.get_mut(i)
+                    && *c < target
+                {
+                    *c += 1;
+                    events.push(Event::ClearProgressed {
+                        objective: u16::try_from(i).unwrap_or(u16::MAX),
+                        count: *c,
+                    });
+                }
+            }
+        }
+        // 2. 전부 채웠나 — 상태 목표(수집·조건)는 플레이어 중 하나라도.
+        let done = (0..objectives.len()).all(|i| self.clear_objective_done(i));
+        if !done {
+            return;
+        }
+        let rewards = match self.clear.as_mut() {
+            Some((def, state)) => {
+                state.done = true;
+                def.rewards.clone()
+            }
+            None => return,
+        };
+        events.push(Event::DungeonCleared);
+        for player in players {
+            for effect in &rewards {
+                self.apply_effect(*effect, player, events);
+            }
         }
     }
 
@@ -483,7 +635,6 @@ impl SimWorld {
         self.crafts.get(&id)
     }
 
-    /// 텔레포트 목적지 표를 등록한다 (설정 작업, R4-2).
     /// 포털을 놓는다 (R6, 설정 작업). 번호는 놓은 순서 — `Event::PortalBlocked` 가 가리킨다.
     pub fn add_portal(&mut self, def: PortalDef) {
         self.portals.push(def);
@@ -540,6 +691,7 @@ impl SimWorld {
         }
     }
 
+    /// 텔레포트 목적지 표를 등록한다 (설정 작업, R4-2).
     pub fn define_teleport(&mut self, id: TeleportId, def: TeleportDef) {
         self.teleports.insert(id, def);
     }
@@ -1267,6 +1419,7 @@ impl SimWorld {
                         None => return false,
                     },
                     FlagScope::World => self.world_flags.get(*flag),
+                    FlagScope::Instance => self.instance_flags.get(*flag),
                 };
                 cmp.test(i64::from(have), i64::from(*value))
             }
@@ -1291,6 +1444,7 @@ impl SimWorld {
             Condition::SkillLevel { skill, cmp, value } => {
                 unit.is_some_and(|u| cmp.test(i64::from(u.skill_level(*skill)), i64::from(*value)))
             }
+            Condition::Cleared => self.is_cleared(),
         }
     }
 
@@ -2328,12 +2482,18 @@ impl SimWorld {
                 None => return,
             },
             FlagScope::World => (&mut self.world_flags, None),
+            FlagScope::Instance => (&mut self.instance_flags, None),
         };
         let old = flags.get(flag);
         let value = f(old);
         if value != old {
             flags.set(flag, value);
-            events.push(Event::FlagChanged { unit, flag, value });
+            events.push(Event::FlagChanged {
+                scope,
+                unit,
+                flag,
+                value,
+            });
         }
     }
 

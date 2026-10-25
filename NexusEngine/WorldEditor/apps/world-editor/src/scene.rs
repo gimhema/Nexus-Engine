@@ -107,6 +107,8 @@ pub(crate) struct PortalLink {
     pub(crate) level: String,
     /// 도착 위치 (m).
     pub(crate) to: Vec2,
+    /// 이 포털만의 조건 (R6-2) — 던전의 나가는 문 `Cleared` 등. 도착 레벨의 입장 조건과 **둘 다** 맞아야 넘어간다.
+    pub(crate) requires: Option<crate::trigger_file::ConditionFile>,
 }
 
 /// 스폰 영역 — 마커 하나가 세우는 무리. 배치의 성질이라 액터 타입이 아니라 마커에 둔다.
@@ -576,6 +578,7 @@ impl Scene {
             portal: PortalLink {
                 level: String::new(),
                 to: pos + Vec2::new(0.0, -3.0),
+                requires: None,
             },
         }
     }

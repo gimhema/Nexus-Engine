@@ -110,6 +110,8 @@ pub(crate) enum ConditionFile {
         currency: u32,
         amount: u64,
     },
+    /// 지금 존의 클리어 목표를 다 채웠다 (R6-2) — 던전의 나가는 문 `requires: Some(Cleared)`.
+    Cleared,
 }
 
 /// 퀘스트 상태 (R5).
@@ -187,6 +189,8 @@ fn one() -> u32 {
 pub(crate) enum ScopeFile {
     Character,
     World,
+    /// 지금 존(인스턴스)의 것 — 저장하지 않는다 (R6-2).
+    Instance,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
@@ -453,6 +457,7 @@ impl From<&ConditionFile> for Condition {
                 currency: nexus_sim::CurrencyId(*currency),
                 amount: *amount,
             },
+            ConditionFile::Cleared => Condition::Cleared,
         }
     }
 }
@@ -505,6 +510,7 @@ impl From<ScopeFile> for FlagScope {
         match s {
             ScopeFile::Character => FlagScope::Character,
             ScopeFile::World => FlagScope::World,
+            ScopeFile::Instance => FlagScope::Instance,
         }
     }
 }

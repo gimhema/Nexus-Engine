@@ -11,6 +11,7 @@
 //! │ 로딩 화면 [loading ▼]  최소 [800 ms]        │
 //! │ 인스턴스  [공유 ▼]                         │
 //! │ 입장 조건 [Level(cmp: Ge, value: 3)]       │
+//! │ 던전 클리어 목표 / 보상 (한 줄에 하나)     │
 //! │ ★ 시작 레벨 / [시작 레벨로 지정]           │
 //! │ [저장] [원래대로] [이 레벨 플레이]          │
 //! └──────────────────────────────────────────┘
@@ -26,7 +27,9 @@ use std::path::Path;
 
 use nexus_render_wgpu::egui;
 
-use crate::level::{InstancePolicy, LevelFile, PROJECT_PATH, level_path, read_level, read_project};
+use crate::level::{
+    ClearFile, InstancePolicy, LevelFile, PROJECT_PATH, level_path, read_level, read_project,
+};
 use crate::trigger_file::ConditionFile;
 
 #[derive(Debug, Default)]
@@ -50,6 +53,9 @@ pub(crate) struct LevelEditor {
     play: Option<String>,
     /// 입장 조건 글 (R6) — 트리거의 `when` 과 같은 RON 한 줄. 읽히면 `edit.requires` 에 들어간다.
     requires_text: String,
+    /// 던전 클리어 (R6-2) — 목표·보상을 한 줄에 하나씩 RON 글로. 읽히면 `edit.clear` 에 들어간다.
+    clear_objectives: String,
+    clear_rewards: String,
 }
 
 /// 입장 조건 → 한 줄 글.
@@ -69,6 +75,66 @@ fn parse_requires(text: &str) -> Result<Option<ConditionFile>, String> {
     ron::from_str(text).map(Some).map_err(|e| e.to_string())
 }
 
+/// 던전 클리어 → 한 줄에 하나씩인 글 `(목표들, 보상들)`.
+fn clear_text(level: Option<&LevelFile>) -> (String, String) {
+    let Some(clear) = level.and_then(|l| l.clear.as_ref()) else {
+        return (String::new(), String::new());
+    };
+    let lines = |v: Vec<String>| {
+        v.join(
+            "
+",
+        )
+    };
+    (
+        lines(
+            clear
+                .objectives
+                .iter()
+                .map(|o| ron::to_string(o).unwrap_or_default())
+                .collect(),
+        ),
+        lines(
+            clear
+                .rewards
+                .iter()
+                .map(|e| ron::to_string(e).unwrap_or_default())
+                .collect(),
+        ),
+    )
+}
+
+/// 글 → 던전 클리어. 목표가 비면 클리어 없음 (보상만 있으면 오류). 오류는 몇째 줄인지와 이유.
+fn parse_clear(objectives: &str, rewards: &str) -> Result<Option<ClearFile>, String> {
+    let lines = |t: &str| -> Vec<String> {
+        t.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_owned)
+            .collect()
+    };
+    let (objectives, rewards) = (lines(objectives), lines(rewards));
+    if objectives.is_empty() {
+        return if rewards.is_empty() {
+            Ok(None)
+        } else {
+            Err(String::from("목표 없이 보상만 있습니다"))
+        };
+    }
+    let mut clear = ClearFile::default();
+    for (i, l) in objectives.iter().enumerate() {
+        clear
+            .objectives
+            .push(ron::from_str(l).map_err(|e| format!("목표 {}째 줄 — {e}", i + 1))?);
+    }
+    for (i, l) in rewards.iter().enumerate() {
+        clear
+            .rewards
+            .push(ron::from_str(l).map_err(|e| format!("보상 {}째 줄 — {e}", i + 1))?);
+    }
+    Ok(Some(clear))
+}
+
 impl LevelEditor {
     /// 이 레벨을 연다. 저장하지 않은 변경이 있으면 막는다.
     pub(crate) fn open_level(&mut self, id: &str) {
@@ -86,6 +152,7 @@ impl LevelEditor {
             Ok(level) => {
                 self.current = id.to_owned();
                 self.requires_text = requires_text(Some(&level));
+                (self.clear_objectives, self.clear_rewards) = clear_text(Some(&level));
                 self.edit = Some(level.clone());
                 self.saved = Some(level);
                 self.status = None;
@@ -243,6 +310,8 @@ impl LevelEditor {
         });
         self.saved = None;
         self.requires_text.clear();
+        self.clear_objectives.clear();
+        self.clear_rewards.clear();
         self.new_id.clear();
         self.status = Some((false, format!("새 레벨 '{id}' — 저장하면 파일이 생깁니다")));
     }
@@ -336,6 +405,47 @@ impl LevelEditor {
                 format!("⚠ 입장 조건: {e}"),
             );
         }
+
+        // 던전 클리어 (R6-2) — 목표는 퀘스트 목표, 보상은 트리거 효과와 같은 형식. 한 줄에 하나.
+        ui.add_space(4.0);
+        ui.strong("던전 클리어");
+        let mut changed = false;
+        ui.label("목표 (한 줄에 하나 — 다 채우면 클리어)");
+        changed |= ui
+            .add_enabled(
+                level.zone.is_some(),
+                egui::TextEdit::multiline(&mut self.clear_objectives)
+                    .hint_text("예: Kill(actor: 103, count: 1)")
+                    .desired_rows(2)
+                    .desired_width(300.0)
+                    .font(egui::TextStyle::Monospace),
+            )
+            .changed();
+        ui.label("보상 (한 줄에 하나 — 클리어한 플레이어마다)");
+        changed |= ui
+            .add_enabled(
+                level.zone.is_some(),
+                egui::TextEdit::multiline(&mut self.clear_rewards)
+                    .hint_text("예: GiveExp(200)")
+                    .desired_rows(2)
+                    .desired_width(300.0)
+                    .font(egui::TextStyle::Monospace),
+            )
+            .changed();
+        match parse_clear(&self.clear_objectives, &self.clear_rewards) {
+            Ok(clear) => {
+                if changed {
+                    level.clear = clear;
+                }
+            }
+            Err(e) => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(240, 110, 100),
+                    format!("⚠ 던전 클리어: {e}"),
+                );
+            }
+        }
+        ui.weak("클리어하면 Cleared 조건이 참이 됩니다 — 나가는 문 포털의 조건(인스펙터)에 Cleared 를 적으면 그때 열립니다.");
         ui.weak("인스턴스 정책은 단계 1 에서는 기록만 합니다 — 레벨은 열 때마다 처음 상태입니다.");
         ui.weak("입장 조건은 이 레벨로 가는 포털이 봅니다 (트리거의 when 과 같은 형식).");
         ui.weak("존이 없으면 UI 만 있는 레벨(메인 화면)입니다 — '들어갈 때' 화면이 바탕이 됩니다.");
@@ -374,6 +484,7 @@ impl LevelEditor {
             {
                 self.edit = self.saved.clone();
                 self.requires_text = requires_text(self.edit.as_ref());
+                (self.clear_objectives, self.clear_rewards) = clear_text(self.edit.as_ref());
                 if self.edit.is_none() {
                     self.current.clear();
                 }
@@ -404,6 +515,13 @@ impl LevelEditor {
             self.status = Some((
                 true,
                 format!("입장 조건을 읽을 수 없어 저장하지 않았습니다 — {e}"),
+            ));
+            return;
+        }
+        if let Err(e) = parse_clear(&self.clear_objectives, &self.clear_rewards) {
+            self.status = Some((
+                true,
+                format!("던전 클리어를 읽을 수 없어 저장하지 않았습니다 — {e}"),
             ));
             return;
         }
@@ -502,5 +620,43 @@ mod tests {
         // 파일 이름이 될 수 없는 번호.
         assert!(save_level(&dir, "Cave/../x", &level).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_clear_lines_round_trip_and_name_the_bad_line() {
+        let clear = parse_clear(
+            "Kill(actor: 103)\n\n  Reach(center: (1.0, 2.0), radius: 1.5)  ",
+            "GiveExp(200)",
+        )
+        .unwrap()
+        .expect("목표가 있으면 클리어가 있다");
+        assert_eq!(clear.objectives.len(), 2, "빈 줄은 건너뛴다");
+        let level = LevelFile {
+            version: 1,
+            name: String::from("던전"),
+            zone: Some(String::from("zones/dungeon.zone.ron")),
+            clear: Some(clear.clone()),
+            ..LevelFile::default()
+        };
+        let (o, r) = clear_text(Some(&level));
+        assert_eq!(parse_clear(&o, &r).unwrap(), Some(clear));
+        assert_eq!(parse_clear("", "").unwrap(), None);
+        assert!(
+            parse_clear("", "GiveExp(1)")
+                .unwrap_err()
+                .contains("보상만")
+        );
+        assert!(
+            parse_clear("Kill(actor: 1)\nKil(actor: 2)", "")
+                .unwrap_err()
+                .contains("목표 2째 줄")
+        );
+        // 존이 없는 레벨에는 둘 수 없다.
+        let ui_level = LevelFile {
+            zone: None,
+            on_enter: Some(String::from("main_menu")),
+            ..level
+        };
+        assert!(read_level(&crate::level::to_ron(&ui_level)).is_err());
     }
 }

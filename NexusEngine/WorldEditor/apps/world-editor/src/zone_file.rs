@@ -143,6 +143,9 @@ struct PortalFile {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     level: String,
     to: [f32; 2],
+    /// 이 포털만의 조건 (R6-2). 없으면 도착 레벨의 입장 조건만 본다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    requires: Option<crate::trigger_file::ConditionFile>,
 }
 
 fn one() -> u32 {
@@ -399,6 +402,7 @@ impl ZoneFile {
                     portal: (item.kind == ItemKind::Portal).then(|| PortalFile {
                         level: item.portal.level.clone(),
                         to: item.portal.to.to_array(),
+                        requires: item.portal.requires.clone(),
                     }),
                 })
                 .collect(),
@@ -484,6 +488,7 @@ impl ZoneFile {
                 (Some(p), ItemKind::Portal) => crate::scene::PortalLink {
                     level: p.level.trim().to_owned(),
                     to: finite2(p.to, &format!("markers[{i}].portal.to"))?,
+                    requires: p.requires.clone(),
                 },
                 (None, ItemKind::Portal) => {
                     return Err(format!("markers[{i}] — 포털인데 portal(목적지)이 없음"));
@@ -818,12 +823,30 @@ mod tests {
     fn committed_zones_are_in_the_editor_format() {
         // 손으로 고친 존 파일도 에디터가 저장하는 모양과 바이트까지 같아야 한다 —
         // 에디터에서 한 번 열어 저장하면 diff 가 생기는 일이 없게 (R6 의 집 안 존이 손으로 쓴 것이다).
-        for (name, text) in [
-            ("village", include_str!("../../../zones/village.zone.ron")),
-            ("house", include_str!("../../../zones/house.zone.ron")),
-        ] {
+        for (name, text) in COMMITTED_ZONES {
             let scene = from_ron(text).unwrap_or_else(|e| panic!("{name}: {e}"));
-            assert_eq!(to_ron(&scene), text, "{name}");
+            assert_eq!(
+                to_ron(&scene),
+                *text,
+                "{name} — `cargo test -p world-editor -- --ignored regenerate_committed_zones` 로 갱신하라"
+            );
+        }
+    }
+
+    const COMMITTED_ZONES: &[(&str, &str)] = &[
+        ("village", include_str!("../../../zones/village.zone.ron")),
+        ("house", include_str!("../../../zones/house.zone.ron")),
+        ("dungeon", include_str!("../../../zones/dungeon.zone.ron")),
+    ];
+
+    /// 손으로 쓴 존 파일을 에디터 저장 모양으로 다시 쓴다 (R6-2 의 던전 존이 손으로 쓴 것이다).
+    #[test]
+    #[ignore = "저장소의 존 파일을 덮어쓴다 — 필요할 때만 직접 실행"]
+    fn regenerate_committed_zones() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../zones");
+        for (name, text) in COMMITTED_ZONES {
+            let scene = from_ron(text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            std::fs::write(root.join(format!("{name}.zone.ron")), to_ron(&scene)).unwrap();
         }
     }
 
@@ -834,12 +857,18 @@ mod tests {
         scene.item_mut(e).unwrap().portal = crate::scene::PortalLink {
             level: String::from("house"),
             to: Vec2::new(0.0, -2.0),
+            requires: Some(crate::trigger_file::ConditionFile::Cleared),
         };
         let back = from_ron(&to_ron(&scene)).unwrap();
         let portal = back.items.iter().find(|i| i.name == "문").unwrap();
         assert_eq!(portal.kind, ItemKind::Portal);
         assert_eq!(portal.portal.level, "house");
         assert_eq!(portal.portal.to, Vec2::new(0.0, -2.0));
+        assert_eq!(
+            portal.portal.requires,
+            Some(crate::trigger_file::ConditionFile::Cleared),
+            "포털만의 조건도 남는다 (R6-2)"
+        );
 
         // 목적지 없는 포털, 포털이 아닌데 목적지가 있는 마커는 거절한다.
         let text = to_ron(&scene);

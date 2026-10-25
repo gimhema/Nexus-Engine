@@ -1294,6 +1294,7 @@ impl Editing {
             } else {
                 item.portal.to
             },
+            requires: link.requires,
         };
         if finished {
             let to = item.portal.clone();

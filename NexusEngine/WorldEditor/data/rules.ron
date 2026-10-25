@@ -180,6 +180,21 @@
             attack: 5,
             defense: 0,
         ),
+        // 던전 보스 (R6-2) — 리스폰하지 않는다 (respawn_ms 없음). levels/dungeon.level.ron 의 클리어 목표다.
+        104: (
+            move_speed: 1.8,
+            max_hp: 600,
+            attack: 30,
+            defense: 8,
+            faction: 201,
+            ai: Aggressive,
+            aggro_range: 7.0,
+            leash_range: 20.0,
+            basic_attack: Some(2),
+            loot: Some(1),
+            exp_reward: 400,
+            bounty: 100,
+        ),
     },
 
     // 마커 종류별 기본 액터 — 마커가 타입을 정하지 않았을 때(예전 존 파일 포함) 쓴다.

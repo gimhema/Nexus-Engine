@@ -80,7 +80,7 @@ jobs:
         run: |
           # cargo tree 결과를 먼저 받아 둔다. 파이프 안에서 실패하면 `if` 가 삼켜
           # 없는 크레이트 이름도 조용히 통과했다 (nexus-render-vulkan 이 그랬다).
-          for crate in nexus-core nexus-platform nexus-render nexus-render-wgpu nexus-assets nexus-sim; do
+          for crate in nexus-core nexus-platform nexus-render nexus-render-wgpu nexus-assets nexus-sim nexus-script; do
             tree=$(cargo tree -p "$crate" --locked --prefix none --no-dedupe)
             if grep -qE '^nexus-(net|protocol)\b' <<< "$tree"; then
               echo "::error::$crate 가 네트워크 계층에 의존합니다 — 경계 위반"

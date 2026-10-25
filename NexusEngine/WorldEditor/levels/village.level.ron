@@ -6,6 +6,8 @@
 // (전부 ui/<번호>.ui.ron). loading_ms = 로딩 화면을 최소로 보여 줄 시간(ms).
 // instance = 인스턴스 정책(Shared·Personal·Party — 단계 1 에서는 기록만),
 // requires = 들어올 수 있는 조건(이 레벨로 가는 포털이 본다, 트리거의 when 과 같은 형식).
+// clear = 던전 클리어 — objectives(퀘스트 목표 형식)를 다 채우면 rewards(트리거 효과 형식)를 주고
+// Cleared 조건이 참이 된다(나가는 문 포털의 requires: Some(Cleared)).
 (
     version: 1,
     name: "마을",

@@ -712,16 +712,33 @@ impl Editor {
                 false,
             );
         }
+        let here = self
+            .levels
+            .find_by_zone(self.zone_path.as_deref())
+            .unwrap_or_default()
+            .to_owned();
+        // 던전 클리어가 없는 번호를 가리키면 플레이를 막는다 — 고친 것이 적용되지 않은 채 모르고
+        // 지나가지 않게 (데이터 파일과 같은 규칙, R6-2).
+        if let Some(clear) = self.levels.level(&here).and_then(|l| l.clear.as_ref()) {
+            let errors = data.check_clear(clear);
+            if !errors.is_empty() {
+                self.notify(
+                    format!(
+                        "플레이할 수 없음: 레벨 '{here}' 의 던전 클리어 — {}",
+                        errors.join(" · ")
+                    ),
+                    true,
+                );
+                return;
+            }
+        }
         let options = PlayOptions {
             spawn: self.selected_player_spawn(),
             save,
             class: new_game,
             links: play::LevelLinks {
-                here: self
-                    .levels
-                    .find_by_zone(self.zone_path.as_deref())
-                    .unwrap_or_default()
-                    .to_owned(),
+                clear: self.levels.clear_of(&here),
+                here,
                 requires: self.levels.entry_conditions(),
             },
         };

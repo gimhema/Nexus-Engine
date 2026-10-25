@@ -1726,6 +1726,20 @@ fn play_inspector(ui: &mut egui::Ui, play: &PlaySession, actions: &mut UiActions
         });
     }
 
+    // 던전 클리어 (R6-2) — 이 존의 목표.
+    if let Some((cleared, goals)) = play.clear_lines() {
+        ui.add_space(6.0);
+        if cleared {
+            ui.strong("던전 — 클리어!");
+        } else {
+            ui.strong("던전 목표");
+        }
+        for (text, done) in goals {
+            let mark = if done { "✓" } else { "·" };
+            ui.label(format!("  {mark} {text}"));
+        }
+    }
+
     // 퀘스트 (R5) — 진행 중인 것과 지금 단계의 목표.
     let quests = play.quest_lines();
     if !quests.is_empty() {
@@ -1940,6 +1954,7 @@ fn portal_section(ui: &mut egui::Ui, model: &UiModel<'_>, item: &Item, actions: 
                                 PortalLink {
                                     level: id,
                                     to: link.to,
+                                    requires: link.requires.clone(),
                                 },
                                 true,
                             ));
@@ -1961,20 +1976,76 @@ fn portal_section(ui: &mut egui::Ui, model: &UiModel<'_>, item: &Item, actions: 
                         PortalLink {
                             level: link.level.clone(),
                             to,
+                            requires: link.requires.clone(),
                         },
                         finished,
                     ));
                 }
             });
             ui.end_row();
+
+            // 이 포털만의 조건 (R6-2) — 트리거의 when 과 같은 RON 한 줄. 던전의 나가는 문은 `Cleared`.
+            // 고치는 동안의 글은 egui 메모리에 두고, 읽히는 글만 포털에 넣는다 (커서가 떠나면 포털 값으로 돌아온다).
+            ui.label("조건");
+            let id = ui.id().with(("portal-requires", item.entity));
+            let current = link
+                .requires
+                .as_ref()
+                .map(|c| ron::to_string(c).unwrap_or_default())
+                .unwrap_or_default();
+            let mut text = ui
+                .data_mut(|d| d.get_temp::<String>(id))
+                .unwrap_or_else(|| current.clone());
+            let edit = ui.add(
+                egui::TextEdit::singleline(&mut text)
+                    .hint_text("없음 — 예: Cleared")
+                    .desired_width(180.0),
+            );
+            let parsed = parse_condition_line(&text);
+            if edit.has_focus() {
+                ui.data_mut(|d| d.insert_temp(id, text.clone()));
+            } else {
+                ui.data_mut(|d| d.remove::<String>(id));
+            }
+            if let Ok(requires) = &parsed
+                && (edit.changed() || edit.lost_focus())
+                && *requires != link.requires
+            {
+                actions.portal = Some((
+                    item.entity,
+                    PortalLink {
+                        level: link.level.clone(),
+                        to: link.to,
+                        requires: requires.clone(),
+                    },
+                    true,
+                ));
+            }
+            ui.end_row();
+            if let (Err(e), true) = (&parsed, edit.has_focus()) {
+                ui.label("");
+                ui.colored_label(egui::Color32::from_rgb(230, 90, 90), e);
+                ui.end_row();
+            }
         });
     ui.weak(format!(
         "구역 지름 {:.1} m — 밟고 들어오는 순간 넘어간다 (플레이어만).",
         item.size
     ));
     if !link.level.is_empty() {
-        ui.weak("입장 조건은 도착 레벨의 설정을 따른다 (레벨 편집기).");
+        ui.weak("도착 레벨의 입장 조건(레벨 편집기)과 이 포털의 조건이 둘 다 맞아야 넘어간다.");
     }
+}
+
+/// 조건 한 줄 — 비면 없음 (R6-2). 트리거의 `when` 과 같은 형식.
+fn parse_condition_line(text: &str) -> Result<Option<crate::trigger_file::ConditionFile>, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    ron::from_str(text)
+        .map(Some)
+        .map_err(|e| format!("읽을 수 없음 — {e}"))
 }
 
 /// 스폰 영역 — 몇 마리를 어느 반경에 흩어 세울지. 플레이어 스폰에는 없다 (조작할 한 명이다).

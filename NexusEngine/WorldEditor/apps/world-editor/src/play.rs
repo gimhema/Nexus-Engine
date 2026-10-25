@@ -242,10 +242,22 @@ pub(crate) struct LevelLinks {
     pub(crate) here: String,
     /// 레벨별 입장 조건 (레벨 파일의 `requires`). 없으면 누구나.
     pub(crate) requires: HashMap<String, Condition>,
+    /// 지금 레벨의 던전 클리어 (R6-2). 없으면 클리어가 없는 존.
+    pub(crate) clear: Option<nexus_sim::ClearDef>,
 }
 
 /// 포털 `travel` 번호의 시작 — NPC 텔레포트 번호(`GameData::travel_level`)와 겹치지 않게 띄운다.
 const PORTAL_TRAVEL_BASE: u32 = 100_000;
+
+/// 조건 안에 `Cleared` 가 있는가 — 막힌 포털이 던전의 나가는 문인지 알아볼 때 (R6-2).
+fn mentions_cleared(c: &Condition) -> bool {
+    match c {
+        Condition::Cleared => true,
+        Condition::All(list) | Condition::Any(list) => list.iter().any(mentions_cleared),
+        Condition::Not(c) => mentions_cleared(c),
+        _ => false,
+    }
+}
 
 /// 스킬 창 한 줄 (R3).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -360,13 +372,20 @@ impl PlaySession {
                 radius: item.size * 0.5,
                 travel,
                 pos: link.to,
-                requires: options
-                    .links
-                    .requires
-                    .get(level)
-                    .cloned()
-                    .unwrap_or(Condition::Always),
+                // 도착 레벨의 입장 조건 + 이 포털만의 조건(나가는 문의 `Cleared` 등, R6-2) — 둘 다 맞아야 한다.
+                requires: match (
+                    options.links.requires.get(level).cloned(),
+                    link.requires.as_ref().map(Condition::from),
+                ) {
+                    (Some(a), Some(b)) => Condition::All(vec![a, b]),
+                    (Some(c), None) | (None, Some(c)) => c,
+                    (None, None) => Condition::Always,
+                },
             });
+        }
+        // 던전 클리어 (R6-2) — 존(인스턴스)의 목표. 레벨을 열 때마다 처음부터다.
+        if let Some(clear) = options.links.clear.clone() {
+            world.set_clear(clear);
         }
         for item in scene.items.iter().filter(|i| i.kind.spawns_actor()) {
             let is_player =
@@ -783,6 +802,23 @@ impl PlaySession {
                 })
             })
             .collect()
+    }
+
+    /// 던전 클리어 목표 (R6-2) — `(클리어했나, 목표 글들)`. 클리어가 없는 존이면 `None`.
+    pub(crate) fn clear_lines(&self) -> Option<(bool, Vec<(String, bool)>)> {
+        let world = self.world();
+        let def = world.clear_def()?;
+        let counts = world.clear_counts().unwrap_or_default();
+        let goals = def
+            .objectives
+            .iter()
+            .enumerate()
+            .map(|(i, o)| {
+                let (text, _) = self.goal_text(o, counts.get(i).copied().unwrap_or(0));
+                (text, world.clear_objective_done(i))
+            })
+            .collect();
+        Some((world.is_cleared(), goals))
     }
 
     /// 목표 하나의 글과 채웠는지.
@@ -1567,9 +1603,30 @@ impl PlaySession {
                 format!("만들었다: {} ×{count}", self.data.item_name(item))
             }
             Event::Teleported { unit, .. } if unit == self.player => String::from("순간이동했다"),
-            Event::PortalBlocked { unit, .. } if unit == self.player => {
-                String::from("아직 들어갈 수 없다 — 입장 조건이 맞지 않는다")
+            Event::PortalBlocked { unit, portal } if unit == self.player => {
+                // 던전의 나가는 문이면 무엇이 남았는지 말해 준다 (R6-2).
+                let waits_clear = self
+                    .world()
+                    .portals()
+                    .get(usize::from(portal))
+                    .is_some_and(|p| mentions_cleared(&p.requires))
+                    && !self.world().is_cleared();
+                if waits_clear {
+                    String::from("아직 나갈 수 없다 — 던전 목표를 먼저 채워야 한다")
+                } else {
+                    String::from("아직 들어갈 수 없다 — 입장 조건이 맞지 않는다")
+                }
             }
+            Event::ClearProgressed { objective, count } => {
+                let goal = self
+                    .world()
+                    .clear_def()
+                    .and_then(|d| d.objectives.get(usize::from(objective)))
+                    .map(|o| self.goal_text(o, count).0)
+                    .unwrap_or_default();
+                format!("던전 목표 — {goal}")
+            }
+            Event::DungeonCleared => String::from("던전 클리어! — 보상을 받았다"),
             Event::Traveled { unit, .. } if unit == self.player => {
                 String::from("다른 곳으로 떠난다…")
             }
@@ -3413,6 +3470,7 @@ mod tests {
             PlayOptions {
                 links: LevelLinks {
                     here: here.to_owned(),
+                    clear: None,
                     requires: requires
                         .iter()
                         .map(|(l, c)| ((*l).to_owned(), c.clone()))
@@ -3477,6 +3535,83 @@ mod tests {
         assert_eq!(walk_until_travel(&mut s, Vec2::new(-6.5, 4.5)), None);
         let pos = s.world().unit(s.player()).unwrap().pos();
         assert!(pos.distance(Vec2::new(0.0, -2.0)) < 0.01, "{pos}");
+    }
+
+    /// R6-2 끝나는 조건: 던전 입장 → 나가는 문이 닫혀 있음 → 보스 처치 → 클리어·보상 → 나가는 문 열림.
+    #[test]
+    fn the_dungeon_exit_opens_when_the_boss_falls() {
+        let (levels, warnings) = crate::level::Levels::load();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let clear = levels.clear_of("dungeon").expect("던전 레벨의 클리어");
+        let data = GameData::embedded();
+        let file = levels
+            .level("dungeon")
+            .and_then(|l| l.clear.as_ref())
+            .unwrap();
+        assert!(
+            data.check_clear(file).is_empty(),
+            "{:?}",
+            data.check_clear(file)
+        );
+        let scene = crate::zone_file::from_ron(include_str!("../../../zones/dungeon.zone.ron"))
+            .expect("던전 존");
+        let mut s = PlaySession::start(
+            &scene,
+            Camera2d::default(),
+            data,
+            PlayOptions {
+                links: LevelLinks {
+                    here: String::from("dungeon"),
+                    requires: levels.entry_conditions(),
+                    clear: Some(clear),
+                },
+                ..PlayOptions::default()
+            },
+        )
+        .unwrap();
+        let (cleared, goals) = s.clear_lines().unwrap();
+        assert!(!cleared);
+        assert_eq!(goals, [(String::from("슬라임 왕 처치 0/1"), false)]);
+
+        // 깨기 전에는 나가는 문이 닫혀 있다.
+        let exit = Vec2::new(0.0, -5.5);
+        s.click(exit, 0.01);
+        let blocked = (0..200).any(|_| {
+            s.tick(DT, None);
+            assert_eq!(s.take_travel(), None);
+            s.log.iter().any(|l| l.contains("던전 목표를 먼저 채워야"))
+        });
+        assert!(blocked, "{:?}", s.log);
+
+        // 보스를 한 방 거리로 — 수치 싸움은 이 시험의 일이 아니다.
+        let boss = find(&s, "슬라임 왕");
+        s.auth.world_mut().set_hp(boss, 1);
+        let at = s.world().unit(boss).unwrap().pos();
+        s.click(at, 0.01);
+        let won = (0..600).any(|_| {
+            s.tick(DT, None);
+            s.log.iter().any(|l| l.contains("던전 클리어"))
+        });
+        assert!(won, "{:?}", s.log);
+        assert!(
+            s.log
+                .iter()
+                .any(|l| l.contains("던전 목표 — 슬라임 왕 처치 1/1"))
+        );
+        let (cleared, goals) = s.clear_lines().unwrap();
+        assert!(cleared && goals.iter().all(|(_, done)| *done));
+        assert!(
+            s.world()
+                .unit(s.player())
+                .unwrap()
+                .wallet()
+                .get(nexus_sim::CurrencyId(1))
+                >= 150
+        );
+
+        // 이제 열린다 — 마을로.
+        let back = walk_until_travel(&mut s, exit);
+        assert_eq!(back, Some((String::from("village"), Vec2::new(8.0, -8.0))));
     }
 
     /// 이름으로 NPC 에게 걸어가 말을 건다.

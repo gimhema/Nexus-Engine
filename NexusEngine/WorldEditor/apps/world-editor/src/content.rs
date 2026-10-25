@@ -1643,6 +1643,16 @@ fn details(root: &Path, asset: &Asset, assets: &[Asset], forms: &Forms) -> Detai
                     "일시정지",
                     level.pause.clone().unwrap_or_else(|| String::from("—")),
                 );
+                if let Some(clear) = &level.clear {
+                    row(
+                        "던전 클리어",
+                        format!(
+                            "목표 {}개 · 보상 {}개",
+                            clear.objectives.len(),
+                            clear.rewards.len()
+                        ),
+                    );
+                }
             }
         }
         AssetKind::Screen => {
