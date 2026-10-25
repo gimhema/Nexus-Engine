@@ -289,6 +289,16 @@ impl ActorEditor {
                 }
             });
             ui.end_row();
+
+            // NPC 프로필 (R4-2) — 표시 데이터. NPC 창 머리에 보인다.
+            ui.label("프로필");
+            ui.add(
+                egui::TextEdit::multiline(&mut f.profile)
+                    .hint_text("NPC 설정 글 — 말을 걸면 창 머리에 보인다")
+                    .desired_rows(2)
+                    .desired_width(220.0),
+            );
+            ui.end_row();
         });
         // 명시한 색만 넘긴다 — 흰색이면 "정하지 않음" (게임의 색 규칙과 같다, sprites::tint_of).
         let tint = (f.tint != (1.0, 1.0, 1.0)).then_some([f.tint.0, f.tint.1, f.tint.2]);
@@ -404,7 +414,12 @@ impl ActorEditor {
                     ui.add(egui::DragValue::new(&mut f.growth.2).prefix("방 "));
                 });
                 ui.end_row();
+                ui.label("처치 보상 재화")
+                    .on_hover_text("쓰러뜨린 쪽이 받는 기본 재화 (R4)");
+                ui.add(egui::DragValue::new(&mut f.bounty).range(0..=100_000_000));
+                ui.end_row();
             });
+        services_form(ui, &mut f.services);
         ui.weak("스킬·드롭 표 번호는 rules.ron 의 skills·loot 에 있어야 합니다 (저장할 때 검사).");
     }
 
@@ -536,6 +551,63 @@ fn patch_actor(
     let display = crate::ron_patch::upsert_entry(display, "actors", id, &form.display_entry(id))?;
     GameData::parse(&rules, &display)?;
     Ok((rules, display))
+}
+
+/// NPC 기능 목록 (R4, R4-2) — 이것이 붙으면 클릭했을 때 치지 않고 말을 건다.
+/// 표 번호(상점·제작·텔레포트)는 데이터 표 편집기에서 만든다. 저장할 때 없는 번호는 검사가 막는다.
+fn services_form(ui: &mut egui::Ui, services: &mut Vec<crate::trade_file::ServiceFile>) {
+    use crate::trade_file::ServiceFile;
+    ui.add_space(6.0);
+    ui.strong("NPC 기능");
+    if services.is_empty() {
+        ui.weak("없음 — 말을 걸 수 없는 액터");
+    }
+    let mut remove = None;
+    for (i, s) in services.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            match s {
+                ServiceFile::Shop(id) => {
+                    ui.label("상점 #");
+                    ui.add(egui::DragValue::new(id).range(1..=99_999));
+                }
+                ServiceFile::Heal { price } => {
+                    ui.label("치료 — 값");
+                    ui.add(egui::DragValue::new(price).range(0..=100_000_000));
+                }
+                ServiceFile::Craft(id) => {
+                    ui.label("제작 #");
+                    ui.add(egui::DragValue::new(id).range(1..=99_999));
+                }
+                ServiceFile::Teleport(id) => {
+                    ui.label("텔레포트 #");
+                    ui.add(egui::DragValue::new(id).range(1..=99_999));
+                }
+                ServiceFile::Storage => {
+                    ui.label("창고");
+                }
+            }
+            if ui.small_button("×").clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        services.remove(i);
+    }
+    ui.horizontal(|ui| {
+        ui.label("+");
+        for (label, s) in [
+            ("상점", ServiceFile::Shop(1)),
+            ("치료", ServiceFile::Heal { price: 0 }),
+            ("제작", ServiceFile::Craft(1)),
+            ("텔레포트", ServiceFile::Teleport(1)),
+            ("창고", ServiceFile::Storage),
+        ] {
+            if ui.small_button(label).clicked() {
+                services.push(s);
+            }
+        }
+    });
 }
 
 #[cfg(test)]

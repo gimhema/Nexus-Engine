@@ -61,6 +61,8 @@ pub(crate) struct SaveData {
     pub(crate) world_flags: Vec<(FlagId, i32)>,
     /// 지갑 (R4). `None` = 재화가 생기기 전의 저장 — 시작 재화로 이어 한다.
     pub(crate) wallet: Option<Vec<(CurrencyId, u64)>>,
+    /// 창고 `(칸, 아이템, 개수)` (R4-2).
+    pub(crate) storage: Vec<(u16, ItemId, u32)>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -103,6 +105,9 @@ struct SaveFile {
     /// 지갑 `재화: 금액` (R4). 없는 예전 파일도 읽힌다.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     wallet: Option<BTreeMap<u32, u64>>,
+    /// 창고 (R4-2) — 가방과 같은 모양.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    storage: Vec<SlotFile>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -149,6 +154,15 @@ pub(crate) fn to_ron(save: &SaveData) -> String {
             .wallet
             .as_ref()
             .map(|w| w.iter().map(|(c, a)| (c.0, *a)).collect()),
+        storage: save
+            .storage
+            .iter()
+            .map(|&(slot, item, count)| SlotFile {
+                slot,
+                item: item.0,
+                count,
+            })
+            .collect(),
     };
     let config = ron::ser::PrettyConfig::new()
         .new_line("\n")
@@ -213,6 +227,11 @@ pub(crate) fn from_ron(text: &str) -> Result<SaveData, String> {
         wallet: file
             .wallet
             .map(|w| w.into_iter().map(|(c, a)| (CurrencyId(c), a)).collect()),
+        storage: file
+            .storage
+            .iter()
+            .map(|s| (s.slot, ItemId(s.item), s.count))
+            .collect(),
     })
 }
 
@@ -297,6 +316,7 @@ mod tests {
             flags: vec![(FlagId(1), 4), (FlagId(2), 1)],
             world_flags: vec![(FlagId(30), -1)],
             wallet: Some(vec![(CurrencyId(1), 250)]),
+            storage: vec![(4, ItemId(909), 30)],
         }
     }
 

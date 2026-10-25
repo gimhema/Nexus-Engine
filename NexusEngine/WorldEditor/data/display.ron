@@ -22,6 +22,12 @@
         11: (
             name: "상인",
             sheet: "assets/third_party/zelda-like-armm1998/npc.sheet.ron",
+            profile: "마을 잡화점 주인. 물약과 마도서를 팔고, 먼 곳으로 가는 길도 안다.",
+        ),
+        12: (
+            name: "대장장이",
+            sheet: "assets/third_party/zelda-like-armm1998/npc.sheet.ron",
+            profile: "젤리만 넉넉하면 뭐든 만들어 준다. 짐도 맡아 준다.",
         ),
         100: (
             name: "슬라임",
@@ -76,6 +82,12 @@
         1: (name: "플레이어"),
         100: (name: "마을"),
         201: (name: "야생 몬스터"),
+    },
+
+    // 텔레포트 목적지 이름 (R4-2) — rules.ron 의 목적지 순서대로.
+    teleports: {
+        1: ["마을 광장"],
+        2: ["마을", "샘플 존"],
     },
 
     // 재화의 이름 (R4). 번호는 rules.ron 의 currencies 와 같다.

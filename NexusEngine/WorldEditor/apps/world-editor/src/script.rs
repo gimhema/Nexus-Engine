@@ -28,6 +28,7 @@
 //! items | panels              HUD 인벤토리 창 / 에디터 패널 숨기기 (P5)
 //! skill 번호                  단축키 스킬 (숫자키 1~9 와 같다, 플레이 중)
 //! hotbar 칸 스킬번호          단축키 배치 (R3, 칸 0 = 그 스킬 빼기) — 스킬 창의 칸 고르기와 같다
+//! trade tp 표 목적지 | trade craft 표 레시피   NPC 창의 텔레포트·제작 단추 (R4-2, 말을 건 뒤)
 //! uiedit | uiscreen 번호      위젯 편집기 열고 닫기 / 편집할 화면 바꾸기 (P7)
 //! uipick 이름 | uidrag dx dy  위젯 고르기 / 고른 위젯 옮기기
 //! uisave                      화면 파일(ui/<번호>.ui.ron) 저장
@@ -128,6 +129,8 @@ pub(crate) enum Step {
         key: usize,
         skill: u32,
     },
+    /// NPC 창 단추 (R4-2) — 말을 건 NPC 에게.
+    Trade(crate::play::TradeAction),
     /// 에디터 패널 숨기기 (F9).
     TogglePanels,
     /// 그림 다시 읽기 (보기 메뉴).
@@ -304,6 +307,22 @@ fn parse_step(text: &str) -> Result<Step, String> {
                 key,
                 skill: u32::try_from(skill).unwrap_or(u32::MAX),
             });
+        }
+        "trade" => {
+            let num = |i: usize| words.get(i).and_then(|w| w.parse::<u32>().ok());
+            let action = match (words.get(1).copied(), num(2), num(3)) {
+                (Some("tp"), Some(t), Some(d)) => crate::play::TradeAction::Teleport {
+                    teleport: nexus_sim::TeleportId(t),
+                    dest: u16::try_from(d).unwrap_or(u16::MAX),
+                },
+                (Some("craft"), Some(c), Some(r)) => crate::play::TradeAction::Craft {
+                    craft: nexus_sim::CraftId(c),
+                    recipe: u16::try_from(r).unwrap_or(u16::MAX),
+                    times: 1,
+                },
+                _ => return Err(format!("'{text}': trade tp 표 목적지 | trade craft 표 레시피")),
+            };
+            return Ok(Step::Trade(action));
         }
         "panels" => return Ok(Step::TogglePanels),
         "reloadart" => return Ok(Step::ReloadArt),

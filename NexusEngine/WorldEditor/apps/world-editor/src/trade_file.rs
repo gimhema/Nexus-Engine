@@ -9,13 +9,30 @@
 //!     1: (goods: [(item: 501, price: 30), (item: 3002, price: 500)], buy_rate: 500),
 //! },
 //! actors: { 11: (…, services: [Shop(1), Heal(price: 20)]) },          // 이 NPC 가 하는 일
+//! // R4-2
+//! crafts: {
+//!     1: (recipes: [(inputs: [(item: 909, count: 3)], fee: 10, output: 501)]),
+//! },
+//! teleports: {
+//!     // level 을 비우면 지금 존 안, 적으면 그 레벨을 열고 pos 에 선다.
+//!     1: (destinations: [(pos: (20.0, 0.0), price: 30), (level: "sample", pos: (0.0, 0.0))]),
+//! },
+//! actors: { 12: (…, services: [Craft(1), Teleport(1), Storage]) },
 //! ```
+//!
+//! 목적지 이름은 표시 데이터라 `display.ron` 의 `teleports: { 1: ["광장", "샘플 존"] }`(순서대로)에 있다.
 //!
 //! 규칙은 `nexus_sim::trade` 에 있다 — 여기는 파일 모양과 검증뿐이다.
 
 use std::collections::BTreeMap;
 
-use nexus_sim::{CurrencyId, Goods, ItemId, Price, Service, ShopDef, ShopId};
+use nexus_core::Vec2;
+use nexus_sim::{
+    CraftDef, CraftId, CurrencyId, Destination, Goods, ItemId, Price, Recipe, Service, ShopDef,
+    ShopId, TeleportDef, TeleportId,
+};
+
+use crate::trigger_file::ConditionFile;
 use serde::Deserialize;
 
 /// 상점 하나.
@@ -54,6 +71,67 @@ pub(crate) enum ServiceFile {
         #[serde(default)]
         price: u32,
     },
+    /// 제작 표 (R4-2).
+    Craft(u32),
+    /// 텔레포트 목적지 표 (R4-2).
+    Teleport(u32),
+    /// 창고 (R4-2).
+    Storage,
+}
+
+/// 제작 표 (R4-2).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CraftFile {
+    #[serde(default)]
+    pub(crate) recipes: Vec<RecipeFile>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RecipeFile {
+    pub(crate) inputs: Vec<InputFile>,
+    /// 수수료 (기본 재화). 0 이면 무료.
+    #[serde(default)]
+    pub(crate) fee: u32,
+    pub(crate) output: u32,
+    #[serde(default = "one")]
+    pub(crate) count: u32,
+    /// 만들 수 있는 조건 — 트리거 `when` 과 같은 형식.
+    #[serde(default = "crate::trigger_file::always")]
+    pub(crate) requires: ConditionFile,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InputFile {
+    pub(crate) item: u32,
+    #[serde(default = "one")]
+    pub(crate) count: u32,
+}
+
+fn one() -> u32 {
+    1
+}
+
+/// 텔레포트 목적지 표 (R4-2).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TeleportFile {
+    #[serde(default)]
+    pub(crate) destinations: Vec<DestFile>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DestFile {
+    /// 비우면 지금 존 안. 적으면 그 레벨(`levels/<번호>.level.ron`)을 열고 도착한다.
+    #[serde(default)]
+    pub(crate) level: String,
+    pub(crate) pos: (f32, f32),
+    /// 비용 (기본 재화). 0 이면 무료.
+    #[serde(default)]
+    pub(crate) price: u32,
 }
 
 impl ServiceFile {
@@ -63,6 +141,9 @@ impl ServiceFile {
             Self::Shop(id) => format!("Shop({id})"),
             Self::Heal { price: 0 } => String::from("Heal()"),
             Self::Heal { price } => format!("Heal(price: {price})"),
+            Self::Craft(id) => format!("Craft({id})"),
+            Self::Teleport(id) => format!("Teleport({id})"),
+            Self::Storage => String::from("Storage"),
         }
     }
 }
@@ -72,6 +153,8 @@ pub(crate) struct TradeRefs<'a> {
     pub(crate) currencies: &'a [u32],
     pub(crate) default_currency: Option<u32>,
     pub(crate) shops: &'a BTreeMap<u32, ShopFile>,
+    pub(crate) crafts: &'a BTreeMap<u32, CraftFile>,
+    pub(crate) teleports: &'a BTreeMap<u32, TeleportFile>,
 }
 
 impl TradeRefs<'_> {
@@ -122,7 +205,77 @@ pub(crate) fn validate(
             }
         }
     }
+    let mut fee_needs_currency = false;
+    for (id, craft) in t.crafts {
+        for (i, r) in craft.recipes.iter().enumerate() {
+            if r.inputs.is_empty() {
+                errors.push(format!("제작 {id}: 레시피 {i}: 재료가 없음"));
+            }
+            for input in &r.inputs {
+                if !item_exists(input.item) {
+                    errors.push(format!("제작 {id}: 레시피 {i}: 없는 아이템 {}", input.item));
+                }
+            }
+            if !item_exists(r.output) {
+                errors.push(format!("제작 {id}: 레시피 {i}: 없는 결과물 {}", r.output));
+            }
+            fee_needs_currency |= r.fee > 0;
+        }
+    }
+    for (id, tp) in t.teleports {
+        for (i, d) in tp.destinations.iter().enumerate() {
+            if !(d.pos.0.is_finite() && d.pos.1.is_finite()) {
+                errors.push(format!("텔레포트 {id}: 목적지 {i}: pos 가 수가 아님"));
+            }
+            fee_needs_currency |= d.price > 0;
+        }
+    }
+    if fee_needs_currency && t.default_currency.is_none() {
+        errors.push(String::from(
+            "제작 수수료·텔레포트 비용을 쓰려면 default_currency 가 있어야 함",
+        ));
+    }
     errors
+}
+
+/// 제작 표 하나를 시뮬레이션 타입으로 (R4-2). 조건은 검증을 마쳤다.
+pub(crate) fn craft(def: &CraftFile, default_currency: Option<u32>) -> CraftDef {
+    CraftDef {
+        recipes: def
+            .recipes
+            .iter()
+            .map(|r| Recipe {
+                inputs: r.inputs.iter().map(|i| (ItemId(i.item), i.count)).collect(),
+                fee: (r.fee > 0).then(|| price(default_currency, r.fee)),
+                output: ItemId(r.output),
+                count: r.count,
+                requires: (&r.requires).into(),
+            })
+            .collect(),
+    }
+}
+
+/// 텔레포트 표 하나를 시뮬레이션 타입으로 (R4-2). `travel` 은 레벨 이름 → 번호(1부터).
+pub(crate) fn teleport(
+    def: &TeleportFile,
+    default_currency: Option<u32>,
+    travel: impl Fn(&str) -> u32,
+) -> TeleportDef {
+    TeleportDef {
+        destinations: def
+            .destinations
+            .iter()
+            .map(|d| Destination {
+                pos: Vec2::new(d.pos.0, d.pos.1),
+                travel: if d.level.trim().is_empty() {
+                    0
+                } else {
+                    travel(d.level.trim())
+                },
+                price: (d.price > 0).then(|| price(default_currency, d.price)),
+            })
+            .collect(),
+    }
 }
 
 /// 액터 하나의 기능 목록 검증.
@@ -141,6 +294,12 @@ pub(crate) fn validate_services(
                 errors.push(format!(
                     "액터 {actor}: 기능 {i}: 유료 치료는 default_currency 가 있어야 함"
                 ));
+            }
+            ServiceFile::Craft(id) if !t.crafts.contains_key(&id) => {
+                errors.push(format!("액터 {actor}: 기능 {i}: 없는 제작 표 {id}"));
+            }
+            ServiceFile::Teleport(id) if !t.teleports.contains_key(&id) => {
+                errors.push(format!("액터 {actor}: 기능 {i}: 없는 텔레포트 표 {id}"));
             }
             _ => {}
         }
@@ -187,6 +346,9 @@ pub(crate) fn services(list: &[ServiceFile], default_currency: Option<u32>) -> V
             ServiceFile::Heal { price: p } => Service::Heal {
                 price: price(default_currency, p),
             },
+            ServiceFile::Craft(id) => Service::Craft(CraftId(id)),
+            ServiceFile::Teleport(id) => Service::Teleport(TeleportId(id)),
+            ServiceFile::Storage => Service::Storage,
         })
         .collect()
 }
@@ -201,10 +363,13 @@ mod tests {
             "{ 1: (goods: [(item: 7, price: 3), (item: 501, price: 3, currency: 9)], buy_rate: 2000) }",
         )
         .unwrap();
+        let none = BTreeMap::new();
         let t = TradeRefs {
             currencies: &[1, 1, 0],
             default_currency: Some(4),
             shops: &shops,
+            crafts: &none,
+            teleports: &BTreeMap::new(),
         };
         let mut e = validate(&t, true, |i| i == 501);
         e.extend(validate_services(

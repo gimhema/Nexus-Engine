@@ -5,7 +5,16 @@
 //!          ──Buy(상점, 물건 번호, 개수)──▶ 지갑 −  가방 +     Event::Bought · CurrencyChanged
 //!          ──Sell(상점, 가방 칸, 개수)──▶ 가방 −  지갑 +      Event::Sold · CurrencyChanged
 //!          ──UseService(기능 번호)──▶ 치료 등                 Event::Healed …
+//!          ──Craft(제작 표, 레시피, 횟수)──▶ 재료·수수료 − 결과물 +   Event::Crafted (R4-2)
+//!          ──Teleport(목적지 표, 목적지)──▶ 비용 − 위치 이동          Event::Teleported / Traveled (R4-2)
+//!          ──Deposit / Withdraw──▶ 가방 ↔ 창고                      Event::Deposited / Withdrew (R4-2)
 //! ```
+//!
+//! # 다른 레벨로 가는 텔레포트
+//!
+//! 시뮬레이션은 **지금 존 하나만 안다.** 목적지가 다른 레벨이면(`travel` ≠ 0) 비용만 받고
+//! `Event::Traveled { travel, pos }` 를 낸다 — 레벨을 열고 그 자리에 세우는 것은 앱의 일이다.
+//! `travel` 은 앱이 레벨 이름과 짝지은 번호다(시뮬레이션은 문자열을 모른다). 단계 2 에서는 서버가 존을 옮긴다.
 //!
 //! # NPC 역할은 종류가 아니라 기능의 조합
 //!
@@ -108,6 +117,56 @@ pub enum Service {
     Shop(ShopId),
     /// 값을 받고 HP·MP 를 가득 채운다 (`Intent::UseService`). 값이 0 이면 무료.
     Heal { price: Price },
+    /// 제작 표를 연다 — `Intent::Craft` (R4-2).
+    Craft(CraftId),
+    /// 텔레포트 목적지 표를 연다 — `Intent::Teleport` (R4-2).
+    Teleport(TeleportId),
+    /// 창고 — `Intent::Deposit`/`Withdraw` (R4-2). 창고는 캐릭터마다 하나이고 어느 창고지기에게서나 같다.
+    Storage,
+}
+
+/// 제작 표 번호. 서버와 같은 ID 공간.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CraftId(pub u32);
+
+/// 레시피 하나 — 재료(와 수수료)를 내고 결과물을 받는다.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Recipe {
+    /// `(아이템, 개수)` — 두 가방을 합쳐 센다.
+    pub inputs: Vec<(ItemId, u32)>,
+    /// 수수료. `None` 이면 무료.
+    pub fee: Option<Price>,
+    pub output: ItemId,
+    pub count: u32,
+    /// 만들 수 있는 조건 (R1 Condition) — 만드는 쪽이 대상.
+    pub requires: crate::trigger::Condition,
+}
+
+/// 제작 표 — 레시피 목록. **목록 순서가 레시피 번호**다.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CraftDef {
+    pub recipes: Vec<Recipe>,
+}
+
+/// 텔레포트 목적지 표 번호.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct TeleportId(pub u32);
+
+/// 목적지 하나.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Destination {
+    /// 도착 위치 (m).
+    pub pos: nexus_core::Vec2,
+    /// 0 이면 지금 존 안. 그 밖은 앱이 레벨과 짝지은 번호 — 시뮬레이션은 이동하지 않고 `Traveled` 를 낸다.
+    pub travel: u32,
+    /// 비용. `None` 이면 무료.
+    pub price: Option<Price>,
+}
+
+/// 텔레포트 목적지 표 — **목록 순서가 목적지 번호**다.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TeleportDef {
+    pub destinations: Vec<Destination>,
 }
 
 /// 상호작용 거리 기본값 (m) — 줍기보다 조금 넓다. [`SimWorld::set_interact_range`] 로 바꾼다.
@@ -422,6 +481,193 @@ mod tests {
         );
         // 처치 보상 15 → 115, 트리거가 그것을 보고 1000 더.
         assert_eq!(purse(&auth, me), 1115);
+    }
+
+    // ── 제작·텔레포트·창고 (R4-2) ────────────────────────────────────────────
+
+    const SMITH: ActorType = ActorType(12);
+    const CRAFT: CraftId = CraftId(1);
+    const GATE: TeleportId = TeleportId(1);
+
+    /// 마을 상인 옆에 대장장이(제작 + 텔레포트 + 창고)를 세운다.
+    fn smithy() -> (LocalAuthority, Entity, Entity) {
+        let (mut auth, me, _) = town();
+        let w = auth.world_mut();
+        w.define_craft(
+            CRAFT,
+            CraftDef {
+                recipes: vec![
+                    // 젤리 3 + 10골드 → 물약 1
+                    Recipe {
+                        inputs: vec![(JELLY, 3)],
+                        fee: Some(gold(10)),
+                        output: POTION,
+                        count: 1,
+                        requires: Condition::Always,
+                    },
+                    // 레벨 5 부터
+                    Recipe {
+                        inputs: vec![(JELLY, 1)],
+                        fee: None,
+                        output: POTION,
+                        count: 5,
+                        requires: Condition::Level {
+                            cmp: crate::Cmp::Ge,
+                            value: 5,
+                        },
+                    },
+                ],
+            },
+        );
+        w.define_teleport(
+            GATE,
+            TeleportDef {
+                destinations: vec![
+                    Destination {
+                        pos: Vec2::new(20.5, 20.5),
+                        travel: 0,
+                        price: Some(gold(25)),
+                    },
+                    Destination {
+                        pos: Vec2::new(3.0, 4.0),
+                        travel: 7,
+                        price: None,
+                    },
+                ],
+            },
+        );
+        w.define_services(
+            SMITH,
+            vec![
+                Service::Craft(CRAFT),
+                Service::Teleport(GATE),
+                Service::Storage,
+            ],
+        );
+        let smith = w.spawn_unit(
+            Vec2::new(5.5, 7.5),
+            0.0,
+            UnitDef {
+                actor: SMITH,
+                faction: FactionId(100),
+                ..UnitDef::default()
+            },
+        );
+        (auth, me, smith)
+    }
+
+    #[test]
+    fn crafting_takes_materials_and_a_fee() {
+        let (mut auth, me, smith) = smithy();
+        assert!(auth.world_mut().give_item(me, JELLY, 7));
+        let craft = |recipe, times| Intent::Craft {
+            unit: me,
+            npc: smith,
+            craft: CRAFT,
+            recipe,
+            times,
+        };
+        let events = run(&mut auth, craft(0, 2));
+        assert!(events.contains(&Event::Crafted {
+            unit: me,
+            item: POTION,
+            count: 2
+        }));
+        let u = auth.world().unit(me).unwrap();
+        assert_eq!(u.inventory().bag(BagKind::Consumable).count_of(JELLY), 1);
+        assert_eq!((potions(&auth, me), purse(&auth, me)), (2, 80));
+        assert_eq!(
+            rejected(&run(&mut auth, craft(0, 1))),
+            Some(Rejection::MissingMaterials)
+        );
+        assert_eq!(
+            rejected(&run(&mut auth, craft(1, 1))),
+            Some(Rejection::RequirementNotMet),
+            "레벨 5 레시피"
+        );
+    }
+
+    #[test]
+    fn teleporting_inside_the_zone_or_to_another_level() {
+        let (mut auth, me, smith) = smithy();
+        let go = |dest| Intent::Teleport {
+            unit: me,
+            npc: smith,
+            teleport: GATE,
+            dest,
+        };
+        let here = run(&mut auth, go(0));
+        assert!(here.contains(&Event::Teleported {
+            unit: me,
+            pos: Vec2::new(20.5, 20.5)
+        }));
+        assert_eq!(auth.world().unit(me).unwrap().pos(), Vec2::new(20.5, 20.5));
+        assert_eq!(purse(&auth, me), 75);
+        // 멀어졌으니 다시 쓰려면 돌아와야 한다.
+        assert_eq!(
+            rejected(&run(&mut auth, go(1))),
+            Some(Rejection::OutOfRange)
+        );
+        auth.world_mut().set_position(me, Vec2::new(5.5, 6.5));
+        let away = run(&mut auth, go(1));
+        assert!(away.contains(&Event::Traveled {
+            unit: me,
+            travel: 7,
+            pos: Vec2::new(3.0, 4.0)
+        }));
+        assert_eq!(
+            auth.world().unit(me).unwrap().pos(),
+            Vec2::new(5.5, 6.5),
+            "다른 레벨은 앱이 옮긴다"
+        );
+    }
+
+    #[test]
+    fn storage_keeps_items_between_bags() {
+        let (mut auth, me, smith) = smithy();
+        assert!(auth.world_mut().give_item(me, POTION, 5));
+        let events = run(
+            &mut auth,
+            Intent::Deposit {
+                unit: me,
+                npc: smith,
+                bag: BagKind::Consumable,
+                slot: 0,
+                count: 3,
+            },
+        );
+        assert!(events.contains(&Event::Deposited {
+            unit: me,
+            item: POTION,
+            count: 3
+        }));
+        let u = auth.world().unit(me).unwrap();
+        assert_eq!((potions(&auth, me), u.storage().count_of(POTION)), (2, 3));
+        run(
+            &mut auth,
+            Intent::Withdraw {
+                unit: me,
+                npc: smith,
+                slot: 0,
+                count: 99,
+            },
+        );
+        let u = auth.world().unit(me).unwrap();
+        assert_eq!((potions(&auth, me), u.storage().count_of(POTION)), (5, 0));
+        // 상인에게는 창고가 없다.
+        let (mut auth, me, merchant) = town();
+        assert!(auth.world_mut().give_item(me, POTION, 1));
+        let refused = run(
+            &mut auth,
+            Intent::Deposit {
+                unit: me,
+                npc: merchant,
+                bag: BagKind::Consumable,
+                slot: 0,
+                count: 1,
+            },
+        );
+        assert_eq!(rejected(&refused), Some(Rejection::NoService));
     }
 
     #[test]

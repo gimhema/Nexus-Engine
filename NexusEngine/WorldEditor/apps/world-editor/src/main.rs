@@ -215,6 +215,8 @@ struct Editor {
     continue_prompt: Option<String>,
     /// 새 게임 버튼이 고른 직업 (R2) — 다음 플레이 시작이 꺼내 쓴다.
     new_game: Option<ClassId>,
+    /// 다른 레벨로 떠나는 텔레포트의 도착지 `(존 파일, 위치)` (R4-2) — 다음 저장이 꺼내 쓴다.
+    arrival: Option<(String, Vec2)>,
     /// 에디터가 보는 게임 데이터 — **액터 타입 목록**(인스펙터)과 마커 그림에 쓴다.
     ///
     /// 플레이는 시작할 때 자기 것을 새로 읽는다. 이쪽도 그때 함께 갱신해 에디터와 플레이가
@@ -285,6 +287,7 @@ impl Default for Editor {
             save_slot: 1,
             continue_prompt: None,
             new_game: None,
+            arrival: None,
             data: None,
             fixed_zoom: None,
             play: None,
@@ -582,8 +585,27 @@ impl Editor {
     }
 
     /// 진행 상황을 저장한다 (P3-4 — 수동 저장과 정상 종료).
+    /// 다른 레벨로 가는 텔레포트 (R4-2). 그 레벨의 존과 도착 위치를 맡겨 두고 레벨을 연다 —
+    /// 레벨을 열며 도는 정상 종료 저장이 **도착지로** 저장하고(`save_game`), 새 레벨이 그 저장으로 이어 한다.
+    fn travel_to(&mut self, level: &str, pos: Vec2) {
+        let Some(zone) = self.levels.level(level).and_then(|l| l.zone.clone()) else {
+            self.notify(
+                format!("'{level}' 레벨이 없거나 존이 없어 갈 수 없습니다"),
+                true,
+            );
+            return;
+        };
+        self.arrival = Some((zone, pos));
+        self.open_level(level);
+    }
+
     fn save_game(&mut self, session: &PlaySession) {
-        let data = session.save_data(self.zone_name());
+        let mut data = session.save_data(self.zone_name());
+        // 다른 레벨로 떠나는 중이면 도착지로 저장한다 (R4-2).
+        if let Some((zone, pos)) = self.arrival.take() {
+            data.zone = zone;
+            data.pos = Some(pos);
+        }
         let path = save_file::slot_path(self.save_slot);
         match save_file::save(&path, &data) {
             Ok(()) => self.notify(
@@ -1679,6 +1701,11 @@ impl Editor {
                     play.use_skill(key);
                 }
             }
+            Step::Trade(action) => {
+                if let Some(play) = self.play.as_mut() {
+                    play.trade(action);
+                }
+            }
             Step::Hotbar { key, skill } => {
                 if let Some(play) = self.play.as_mut() {
                     play.assign_hotbar(nexus_sim::SkillId(skill), key.checked_sub(1));
@@ -2366,12 +2393,17 @@ impl App for Editor {
             p.elapsed += dt;
         }
         let paused = self.shell.as_ref().is_some_and(|s| s.paused);
+        let mut travel = None;
         if let Some(play) = self.play.as_mut().filter(|_| !paused) {
             play.tick(dt, self.sprites.as_ref());
+            travel = play.take_travel();
             // 스크립트 오류는 콘솔만이 아니라 상태 바에도 — 창만 보는 사람도 알 수 있게.
             for alert in play.take_alerts() {
                 self.notify(alert, true);
             }
+        }
+        if let Some((level, pos)) = travel {
+            self.travel_to(&level, pos);
         }
     }
 

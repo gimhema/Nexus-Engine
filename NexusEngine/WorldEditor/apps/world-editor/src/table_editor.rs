@@ -1,4 +1,4 @@
-//! 데이터 표 편집기 — 아이템 · 스킬 · 드롭 표를 고친다 (단계 2 P10).
+//! 데이터 표 편집기 — 아이템 · 스킬 · 드롭 표 · 상점 · 제작 · 텔레포트를 고친다 (P10, R4-2).
 //!
 //! ```text
 //! ┌ 데이터 표 편집기 ─────────────────────────┐
@@ -23,6 +23,7 @@ use std::path::Path;
 
 use nexus_render_wgpu::egui;
 
+use crate::game_data::{CraftForm, DestForm, RecipeForm, ShopForm, TeleportForm};
 use crate::game_data::{
     DISPLAY_PATH, EquipBonusForm, GameData, ItemForm, ItemKindForm, LootRow, RULES_PATH, SkillForm,
     SlotChoice, TableForms, loot_entry, table_forms,
@@ -35,17 +36,36 @@ pub(crate) enum Tab {
     Items,
     Skills,
     Loot,
+    /// 상점·제작·텔레포트 (R4-2) — 이름이 없는 표다.
+    Shops,
+    Crafts,
+    Teleports,
 }
 
 impl Tab {
-    const ALL: [Self; 3] = [Self::Items, Self::Skills, Self::Loot];
+    const ALL: [Self; 6] = [
+        Self::Items,
+        Self::Skills,
+        Self::Loot,
+        Self::Shops,
+        Self::Crafts,
+        Self::Teleports,
+    ];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Items => "아이템",
             Self::Skills => "스킬",
             Self::Loot => "드롭 표",
+            Self::Shops => "상점",
+            Self::Crafts => "제작",
+            Self::Teleports => "텔레포트",
         }
+    }
+
+    /// 이름이 있는 표인가 — 새 항목을 만들 때 이름을 받는다.
+    fn named(self) -> bool {
+        matches!(self, Self::Items | Self::Skills)
     }
 }
 
@@ -55,6 +75,9 @@ enum Edit {
     Item(ItemForm),
     Skill(SkillForm),
     Loot(Vec<LootRow>),
+    Shop(ShopForm),
+    Craft(CraftForm),
+    Teleport(TeleportForm),
 }
 
 #[derive(Debug, Default)]
@@ -130,12 +153,19 @@ impl TableEditor {
         let _ = self.reload();
     }
 
-    fn select(&mut self, id: u32) {
-        let edit = match self.tab {
+    fn entry(&self, id: u32) -> Option<Edit> {
+        match self.tab {
             Tab::Items => self.saved.items.get(&id).cloned().map(Edit::Item),
             Tab::Skills => self.saved.skills.get(&id).cloned().map(Edit::Skill),
             Tab::Loot => self.saved.loot.get(&id).cloned().map(Edit::Loot),
-        };
+            Tab::Shops => self.saved.shops.get(&id).cloned().map(Edit::Shop),
+            Tab::Crafts => self.saved.crafts.get(&id).cloned().map(Edit::Craft),
+            Tab::Teleports => self.saved.teleports.get(&id).cloned().map(Edit::Teleport),
+        }
+    }
+
+    fn select(&mut self, id: u32) {
+        let edit = self.entry(id);
         match edit {
             Some(edit) => {
                 self.current = Some(id);
@@ -148,12 +178,7 @@ impl TableEditor {
     }
 
     fn saved_entry(&self) -> Option<Edit> {
-        let id = self.current?;
-        match self.tab {
-            Tab::Items => self.saved.items.get(&id).cloned().map(Edit::Item),
-            Tab::Skills => self.saved.skills.get(&id).cloned().map(Edit::Skill),
-            Tab::Loot => self.saved.loot.get(&id).cloned().map(Edit::Loot),
-        }
+        self.entry(self.current?)
     }
 
     fn is_dirty(&self) -> bool {
@@ -193,6 +218,27 @@ impl TableEditor {
                 .loot
                 .iter()
                 .map(|(id, rows)| (*id, format!("{}줄", rows.len())))
+                .collect(),
+            Tab::Shops => self
+                .saved
+                .shops
+                .iter()
+                .map(|(id, s)| (*id, format!("물건 {}", s.goods.len())))
+                .collect(),
+            Tab::Crafts => self
+                .saved
+                .crafts
+                .iter()
+                .map(|(id, c)| (*id, format!("레시피 {}", c.recipes.len())))
+                .collect(),
+            Tab::Teleports => self
+                .saved
+                .teleports
+                .iter()
+                .map(|(id, t)| {
+                    let names: Vec<&str> = t.destinations.iter().map(|d| d.name.as_str()).collect();
+                    (*id, names.join(" · "))
+                })
                 .collect(),
         }
     }
@@ -284,7 +330,7 @@ impl TableEditor {
                     .range(1..=999_999)
                     .prefix("#"),
             );
-            if self.tab != Tab::Loot {
+            if self.tab.named() {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.new_name)
                         .hint_text("이름")
@@ -303,7 +349,7 @@ impl TableEditor {
             return;
         }
         let name = self.new_name.trim().to_owned();
-        if self.tab != Tab::Loot && name.is_empty() {
+        if self.tab.named() && name.is_empty() {
             self.status = Some((true, String::from("이름을 적으세요")));
             return;
         }
@@ -316,6 +362,9 @@ impl TableEditor {
             Tab::Items => Edit::Item(ItemForm::new(&name)),
             Tab::Skills => Edit::Skill(SkillForm::new(&name)),
             Tab::Loot => Edit::Loot(Vec::new()),
+            Tab::Shops => Edit::Shop(ShopForm::new()),
+            Tab::Crafts => Edit::Craft(CraftForm::default()),
+            Tab::Teleports => Edit::Teleport(TeleportForm::default()),
         });
         self.is_new = true;
         self.new_name.clear();
@@ -349,6 +398,9 @@ impl TableEditor {
             Some(Edit::Item(f)) => item_form(ui, f, &skills),
             Some(Edit::Skill(f)) => skill_form(ui, f),
             Some(Edit::Loot(rows)) => loot_form(ui, rows, &items),
+            Some(Edit::Shop(f)) => shop_form(ui, f, &items),
+            Some(Edit::Craft(f)) => craft_form(ui, f, &items),
+            Some(Edit::Teleport(f)) => teleport_form(ui, f),
         }
     }
 
@@ -452,6 +504,18 @@ pub(crate) fn duplicate(
             forms.loot.get(&from).cloned().map(Edit::Loot),
             forms.loot.contains_key(&to),
         ),
+        Tab::Shops => (
+            forms.shops.get(&from).cloned().map(Edit::Shop),
+            forms.shops.contains_key(&to),
+        ),
+        Tab::Crafts => (
+            forms.crafts.get(&from).cloned().map(Edit::Craft),
+            forms.crafts.contains_key(&to),
+        ),
+        Tab::Teleports => (
+            forms.teleports.get(&from).cloned().map(Edit::Teleport),
+            forms.teleports.contains_key(&to),
+        ),
     };
     if taken {
         return Err(format!("{} #{to} 은(는) 이미 있습니다", tab.label()));
@@ -460,7 +524,9 @@ pub(crate) fn duplicate(
     let name = match &edit {
         Edit::Item(f) => f.name.clone(),
         Edit::Skill(f) => f.name.clone(),
-        Edit::Loot(_) => format!("드롭 표 #{to}"),
+        Edit::Loot(_) | Edit::Shop(_) | Edit::Craft(_) | Edit::Teleport(_) => {
+            format!("{} #{to}", tab.label())
+        }
     };
     let (rules, display) = patch(rules, display, to, &edit)?;
     Ok((rules, display, name))
@@ -468,7 +534,7 @@ pub(crate) fn duplicate(
 
 /// 두 텍스트에 항목을 끼우고 **게임이 읽는 것과 같은 검사**를 통과하는지 본다.
 fn patch(rules: &str, display: &str, id: u32, edit: &Edit) -> Result<(String, String), String> {
-    use crate::ron_patch::upsert_entry;
+    use crate::ron_patch::{ensure_map_block, upsert_entry};
     let (rules, display) = match edit {
         Edit::Item(f) => (
             upsert_entry(rules, "items", id, &f.rules_entry(id))?,
@@ -481,6 +547,39 @@ fn patch(rules: &str, display: &str, id: u32, edit: &Edit) -> Result<(String, St
         Edit::Loot(rows) => (
             upsert_entry(rules, "loot", id, &loot_entry(id, rows))?,
             display.to_owned(),
+        ),
+        // R4-2 — 표가 아직 없는 파일이면 빈 블록부터 만든다.
+        Edit::Shop(f) => (
+            upsert_entry(
+                &ensure_map_block(rules, "shops")?,
+                "shops",
+                id,
+                &f.rules_entry(id),
+            )?,
+            display.to_owned(),
+        ),
+        Edit::Craft(f) => (
+            upsert_entry(
+                &ensure_map_block(rules, "crafts")?,
+                "crafts",
+                id,
+                &f.rules_entry(id),
+            )?,
+            display.to_owned(),
+        ),
+        Edit::Teleport(f) => (
+            upsert_entry(
+                &ensure_map_block(rules, "teleports")?,
+                "teleports",
+                id,
+                &f.rules_entry(id),
+            )?,
+            upsert_entry(
+                &ensure_map_block(display, "teleports")?,
+                "teleports",
+                id,
+                &f.display_entry(id),
+            )?,
         ),
     };
     GameData::parse(&rules, &display)?;
@@ -735,6 +834,172 @@ fn skill_form(ui: &mut egui::Ui, f: &mut SkillForm) {
     ui.weak("MP 소모가 0 이면 MP 를 보지 않는다. MP 가 모자라면 거절되고 쿨타임도 걸리지 않는다.");
 }
 
+/// 아이템 고르기 콤보 — 번호와 이름.
+fn item_pick(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    item: &mut u32,
+    items: &[(u32, String)],
+) {
+    let name = items.iter().find(|(id, _)| id == item).map_or_else(
+        || format!("#{item} (없는 아이템)"),
+        |(id, n)| format!("#{id} {n}"),
+    );
+    egui::ComboBox::from_id_salt(salt)
+        .selected_text(name)
+        .width(150.0)
+        .show_ui(ui, |ui| {
+            for (id, n) in items {
+                ui.selectable_value(item, *id, format!("#{id} {n}"));
+            }
+        });
+}
+
+/// 상점 (R4-2) — 파는 물건과 사들이는 비율.
+fn shop_form(ui: &mut egui::Ui, f: &mut ShopForm, items: &[(u32, String)]) {
+    ui.weak("목록 순서가 물건 번호다. 값은 기본 재화 — 재화 칸이 0 이면 기본 재화.");
+    let mut remove = None;
+    egui::Grid::new("shop-form").num_columns(4).show(ui, |ui| {
+        ui.strong("물건");
+        ui.strong("값");
+        ui.strong("재화");
+        ui.label("");
+        ui.end_row();
+        for (i, (item, price, currency)) in f.goods.iter_mut().enumerate() {
+            item_pick(ui, ("shop-item", i), item, items);
+            ui.add(egui::DragValue::new(price).range(0..=100_000_000));
+            ui.add(egui::DragValue::new(currency).range(0..=99_999));
+            if ui.small_button("×").clicked() {
+                remove = Some(i);
+            }
+            ui.end_row();
+        }
+    });
+    if let Some(i) = remove {
+        f.goods.remove(i);
+    }
+    if ui.button("+ 물건").clicked() {
+        f.goods
+            .push((items.first().map_or(1, |(id, _)| *id), 10, 0));
+    }
+    ui.horizontal(|ui| {
+        ui.label("사들이는 비율 ‰");
+        ui.add(egui::DragValue::new(&mut f.buy_rate).range(0..=1000))
+            .on_hover_text(
+                "플레이어가 파는 물건을 아이템 value 의 이 천분율에 산다. 0 이면 사지 않는다",
+            );
+    });
+}
+
+/// 제작 표 (R4-2) — 레시피마다 재료·수수료·결과물·조건.
+fn craft_form(ui: &mut egui::Ui, f: &mut CraftForm, items: &[(u32, String)]) {
+    ui.weak("목록 순서가 레시피 번호다. 재료는 두 가방을 합쳐 센다. 수수료는 기본 재화.");
+    let mut remove = None;
+    for (i, r) in f.recipes.iter_mut().enumerate() {
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.strong(format!("레시피 {i}"));
+            if ui.small_button("이 레시피 빼기").clicked() {
+                remove = Some(i);
+            }
+        });
+        let mut gone = None;
+        for (j, (item, count)) in r.inputs.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label("재료");
+                item_pick(ui, ("craft-in", i, j), item, items);
+                ui.label("×");
+                ui.add(egui::DragValue::new(count).range(1..=9_999));
+                if ui.small_button("×").clicked() {
+                    gone = Some(j);
+                }
+            });
+        }
+        if let Some(j) = gone {
+            r.inputs.remove(j);
+        }
+        if ui.small_button("+ 재료").clicked() {
+            r.inputs.push((items.first().map_or(1, |(id, _)| *id), 1));
+        }
+        ui.horizontal(|ui| {
+            ui.label("결과물");
+            item_pick(ui, ("craft-out", i), &mut r.output, items);
+            ui.label("×");
+            ui.add(egui::DragValue::new(&mut r.count).range(1..=9_999));
+        });
+        ui.horizontal(|ui| {
+            ui.label("수수료");
+            ui.add(egui::DragValue::new(&mut r.fee).range(0..=100_000_000));
+            ui.label("조건");
+            ui.add(
+                egui::TextEdit::singleline(&mut r.requires)
+                    .hint_text("Level(cmp: Ge, value: 3)")
+                    .desired_width(180.0)
+                    .font(egui::TextStyle::Monospace),
+            );
+        });
+    }
+    if let Some(i) = remove {
+        f.recipes.remove(i);
+    }
+    if ui.button("+ 레시피").clicked() {
+        let first = items.first().map_or(1, |(id, _)| *id);
+        f.recipes.push(RecipeForm {
+            inputs: vec![(first, 1)],
+            fee: 0,
+            output: first,
+            count: 1,
+            requires: String::new(),
+        });
+    }
+}
+
+/// 텔레포트 목적지 표 (R4-2).
+fn teleport_form(ui: &mut egui::Ui, f: &mut TeleportForm) {
+    ui.weak(
+        "레벨을 비우면 지금 존 안에서 옮긴다. 적으면 그 레벨(levels/<번호>)을 열고 위치에 세운다.",
+    );
+    let mut remove = None;
+    egui::Grid::new("teleport-form")
+        .num_columns(5)
+        .show(ui, |ui| {
+            ui.strong("이름");
+            ui.strong("레벨");
+            ui.strong("위치 (m)");
+            ui.strong("비용");
+            ui.label("");
+            ui.end_row();
+            for (i, d) in f.destinations.iter_mut().enumerate() {
+                ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(90.0));
+                ui.add(
+                    egui::TextEdit::singleline(&mut d.level)
+                        .hint_text("(이 존)")
+                        .desired_width(70.0),
+                );
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut d.pos.0).speed(0.5));
+                    ui.add(egui::DragValue::new(&mut d.pos.1).speed(0.5));
+                });
+                ui.add(egui::DragValue::new(&mut d.price).range(0..=100_000_000));
+                if ui.small_button("×").clicked() {
+                    remove = Some(i);
+                }
+                ui.end_row();
+            }
+        });
+    if let Some(i) = remove {
+        f.destinations.remove(i);
+    }
+    if ui.button("+ 목적지").clicked() {
+        f.destinations.push(DestForm {
+            name: String::from("새 목적지"),
+            level: String::new(),
+            pos: (0.0, 0.0),
+            price: 0,
+        });
+    }
+}
+
 fn loot_form(ui: &mut egui::Ui, rows: &mut Vec<LootRow>, items: &[(u32, String)]) {
     ui.weak("줄마다 따로 굴립니다. 확률은 천분율 (1000 = 반드시).");
     let mut remove = None;
@@ -790,6 +1055,73 @@ mod tests {
             std::fs::read_to_string(root.join(RULES_PATH)).unwrap(),
             std::fs::read_to_string(root.join(DISPLAY_PATH)).unwrap(),
         )
+    }
+
+    /// 상점·제작·텔레포트 표 (R4-2) — 모든 항목을 그대로 다시 써도 같은 폼으로 읽힌다.
+    #[test]
+    fn trade_tables_round_trip_through_the_forms() {
+        let (rules, display) = repo_texts();
+        let forms = table_forms(&rules, &display).unwrap();
+        assert!(!forms.shops.is_empty() && !forms.crafts.is_empty() && !forms.teleports.is_empty());
+        let (mut r, mut d) = (rules.clone(), display.clone());
+        for (id, f) in &forms.shops {
+            (r, d) = patch(&r, &d, *id, &Edit::Shop(f.clone())).unwrap();
+        }
+        for (id, f) in &forms.crafts {
+            (r, d) = patch(&r, &d, *id, &Edit::Craft(f.clone())).unwrap();
+        }
+        for (id, f) in &forms.teleports {
+            (r, d) = patch(&r, &d, *id, &Edit::Teleport(f.clone())).unwrap();
+        }
+        let again = table_forms(&r, &d).unwrap();
+        assert_eq!(again.shops, forms.shops);
+        assert_eq!(again.crafts, forms.crafts);
+        assert_eq!(again.teleports, forms.teleports);
+        assert_eq!(
+            forms.crafts[&1].recipes[1].requires,
+            "Level(cmp:Ge,value:3)"
+        );
+        assert_eq!(forms.teleports[&2].destinations[1].name, "샘플 존");
+    }
+
+    #[test]
+    fn a_first_teleport_table_creates_its_blocks() {
+        // 표가 하나도 없는 파일에도 첫 항목을 넣는다 — 빈 블록부터 만든다 (검사 전 단계).
+        use crate::ron_patch::{ensure_map_block, upsert_entry};
+        let one = TeleportForm {
+            destinations: vec![DestForm {
+                name: String::from("광장"),
+                level: String::new(),
+                pos: (1.0, 2.0),
+                price: 5,
+            }],
+        };
+        let rules = "(\n    version: 1,\n)\n";
+        let r = upsert_entry(
+            &ensure_map_block(rules, "teleports").unwrap(),
+            "teleports",
+            1,
+            &one.rules_entry(1),
+        )
+        .unwrap();
+        assert!(
+            r.contains("    teleports: {\n        1: (\n            destinations: [\n"),
+            "{r}"
+        );
+        assert!(r.contains("(pos: (1.0, 2.0), price: 5),"), "{r}");
+        let d = upsert_entry(
+            &ensure_map_block(rules, "teleports").unwrap(),
+            "teleports",
+            1,
+            &one.display_entry(1),
+        )
+        .unwrap();
+        assert!(d.contains("        1: [\"광장\"],"), "{d}");
+        assert_eq!(
+            ensure_map_block(&r, "teleports").unwrap(),
+            r,
+            "있으면 그대로"
+        );
     }
 
     /// 모든 항목을 **바꾸지 않고** 다시 써도 같은 값으로 읽힌다 — 폼 ↔ 텍스트가 새지 않는다.

@@ -43,7 +43,8 @@ pub use stats::{
 };
 pub use tilemap::{Tile, TileCoord, TileMap};
 pub use trade::{
-    CurrencyId, DEFAULT_INTERACT_RANGE, Goods, Price, Service, ShopDef, ShopId, Wallet,
+    CraftDef, CraftId, CurrencyId, DEFAULT_INTERACT_RANGE, Destination, Goods, Price, Recipe,
+    Service, ShopDef, ShopId, TeleportDef, TeleportId, Wallet,
 };
 pub use trigger::{
     Cmp, Condition, Effect, FlagId, FlagScope, Flags, MAX_ROUNDS, On, TriggerDef, TriggerId,

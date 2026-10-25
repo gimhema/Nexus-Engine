@@ -31,15 +31,15 @@ use nexus_sim::{
     LootEntry, LootTableId, Relation, SimWorld, SkillDef, SkillId, TriggerDef, TriggerId, UnitDef,
 };
 use nexus_sim::{
-    ClassDef, ClassId, CurrencyId, EquipRules, Formula, Price, Service, ShopDef, ShopId,
-    SkillRules, StatRules,
+    ClassDef, ClassId, CraftDef, CraftId, CurrencyId, EquipRules, Formula, Price, Service, ShopDef,
+    ShopId, SkillRules, StatRules, TeleportDef, TeleportId,
 };
 use serde::Deserialize;
 
 use crate::class_file::{self, ClassFile, ClassLookFile, EquipRef, StatsFile};
 use crate::scene::{ActorId, ItemKind};
 use crate::skill_file::{self, NumOr, SkillLevelRef};
-use crate::trade_file::{self, ServiceFile, ShopFile, TradeRefs};
+use crate::trade_file::{self, CraftFile, ServiceFile, ShopFile, TeleportFile, TradeRefs};
 use crate::trigger_file::{self, ConditionFile, TriggerFile};
 
 /// 지금 읽을 수 있는 형식 번호.
@@ -127,6 +127,12 @@ struct RulesFile {
     /// 상점 (R4) — 형식은 `trade_file` 모듈 doc.
     #[serde(default)]
     shops: BTreeMap<u32, ShopFile>,
+    /// 제작 표 (R4-2).
+    #[serde(default)]
+    crafts: BTreeMap<u32, CraftFile>,
+    /// 텔레포트 목적지 표 (R4-2).
+    #[serde(default)]
+    teleports: BTreeMap<u32, TeleportFile>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -443,6 +449,9 @@ struct DisplayFile {
     /// 재화 이름 (R4) — `{1: (name: "골드")}`. 번호는 `rules.ron` 의 `currencies`.
     #[serde(default)]
     currencies: BTreeMap<u32, SkillLookFile>,
+    /// 텔레포트 목적지 이름 (R4-2) — `{1: ["광장", "샘플 존"]}`, `rules.ron` 의 목적지 순서대로.
+    #[serde(default)]
+    teleports: BTreeMap<u32, Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -465,6 +474,9 @@ struct ActorLookFile {
     /// 시트에 곱할 색 (sRGB). 같은 시트를 색만 바꿔 재사용할 때 쓴다. 기본은 흰색(그림 그대로).
     #[serde(default = "white")]
     tint: (f32, f32, f32),
+    /// NPC 프로필 — 설정 글 (R4-2). NPC 창 머리에 보인다. 표시 데이터라 여기에 있다.
+    #[serde(default)]
+    profile: String,
 }
 
 /// 색을 적지 않았을 때 — 그림 그대로.
@@ -499,6 +511,8 @@ pub(crate) struct ActorLook {
     pub(crate) sheet: Option<String>,
     /// 시트에 곱할 색 (sRGB). 흰색이면 **정하지 않음** — 무채색 시트는 마커 종류 색을 쓴다.
     tint: [f32; 4],
+    /// NPC 프로필 글 (R4-2). 없으면 빈 문자열.
+    pub(crate) profile: String,
 }
 
 impl ActorLook {
@@ -572,6 +586,14 @@ pub(crate) struct GameData {
     default_currency: Option<CurrencyId>,
     /// 재화 이름 (`display.ron`).
     currency_names: BTreeMap<u32, String>,
+    /// 제작 표 (R4-2).
+    crafts: Vec<(CraftId, CraftDef)>,
+    /// 텔레포트 표 (R4-2).
+    teleports: Vec<(TeleportId, TeleportDef)>,
+    /// 다른 레벨로 가는 목적지의 레벨 이름 — `travel` 번호 - 1 이 색인이다 (R4-2).
+    travel_levels: Vec<String>,
+    /// 목적지 이름 (`display.ron`).
+    destination_names: BTreeMap<u32, Vec<String>>,
 }
 
 impl GameData {
@@ -896,7 +918,23 @@ impl GameData {
             currencies: &r.currencies,
             default_currency,
             shops: &r.shops,
+            crafts: &r.crafts,
+            teleports: &r.teleports,
         };
+        for (id, craft) in &r.crafts {
+            for (i, recipe) in craft.recipes.iter().enumerate() {
+                let mut err =
+                    |m: String| errors.push(format!("제작 {id}: 레시피 {i}: requires — {m}"));
+                trigger_file::check_condition(
+                    &recipe.requires,
+                    0,
+                    &|i| r.items.contains_key(&i),
+                    &|a| r.actors.contains_key(&a),
+                    &|s| r.skills.contains_key(&s),
+                    &mut err,
+                );
+            }
+        }
         let uses_default = r.starting_currency > 0
             || r.items.values().any(|i| i.value() > 0)
             || r.actors.values().any(|u| u.bounty > 0);
@@ -913,6 +951,16 @@ impl GameData {
             return Err(format!("게임 데이터 오류 — {}", errors.join(" / ")));
         }
         let built = class_file::build(r.stats_block(), &r.classes);
+        // 다른 레벨로 가는 목적지의 레벨 이름 — 처음 나온 순서대로 1, 2, 3 … (R4-2).
+        let mut travel_levels: Vec<String> = Vec::new();
+        for t in r.teleports.values() {
+            for d in &t.destinations {
+                let level = d.level.trim();
+                if !level.is_empty() && !travel_levels.iter().any(|l| l == level) {
+                    travel_levels.push(level.to_owned());
+                }
+            }
+        }
 
         Ok(Self {
             seed: r.seed,
@@ -1011,6 +1059,7 @@ impl GameData {
                             name: l.name,
                             sheet: (!l.sheet.is_empty()).then_some(l.sheet),
                             tint: [r_, g, b, 1.0],
+                            profile: l.profile,
                         },
                     )
                 })
@@ -1110,6 +1159,28 @@ impl GameData {
                 .iter()
                 .map(|(id, l)| (*id, l.name.clone()))
                 .collect(),
+            crafts: r
+                .crafts
+                .iter()
+                .map(|(id, c)| (CraftId(*id), trade_file::craft(c, default_currency)))
+                .collect(),
+            teleports: r
+                .teleports
+                .iter()
+                .map(|(id, t)| {
+                    (
+                        TeleportId(*id),
+                        trade_file::teleport(t, default_currency, |level| {
+                            travel_levels
+                                .iter()
+                                .position(|l| l == level)
+                                .map_or(0, |i| u32::try_from(i + 1).unwrap_or(0))
+                        }),
+                    )
+                })
+                .collect(),
+            travel_levels: travel_levels.clone(),
+            destination_names: d.teleports.clone(),
             equip_rules: equipment
                 .iter()
                 .filter(|e| !e.stats.is_empty() || !e.classes.is_empty())
@@ -1198,6 +1269,27 @@ impl GameData {
         for &(item, price) in &self.item_prices {
             world.define_item_price(item, price);
         }
+        for (id, def) in &self.crafts {
+            world.define_craft(*id, def.clone());
+        }
+        for (id, def) in &self.teleports {
+            world.define_teleport(*id, def.clone());
+        }
+    }
+
+    /// `Event::Traveled` 의 `travel` 번호가 가리키는 레벨 이름 (R4-2).
+    pub(crate) fn travel_level(&self, travel: u32) -> Option<&str> {
+        let i = usize::try_from(travel.checked_sub(1)?).ok()?;
+        self.travel_levels.get(i).map(String::as_str)
+    }
+
+    /// 목적지 이름 — 표시 파일에 없으면 `목적지 N`.
+    pub(crate) fn destination_name(&self, teleport: TeleportId, index: usize) -> String {
+        self.destination_names
+            .get(&teleport.0)
+            .and_then(|names| names.get(index))
+            .cloned()
+            .unwrap_or_else(|| format!("목적지 {}", index + 1))
     }
 
     /// 기본 재화 (R4). 없으면 재화가 없는 게임.
@@ -1560,6 +1652,8 @@ pub(crate) struct ActorForm {
     pub(crate) name: String,
     pub(crate) sheet: String,
     pub(crate) tint: (f32, f32, f32),
+    /// NPC 프로필 글 (R4-2) — 표시 반쪽.
+    pub(crate) profile: String,
 }
 
 /// AI 종류 — 편집기 드롭다운용 (파일 형식 `AiFile` 과 같은 세 가지).
@@ -1629,6 +1723,7 @@ impl ActorForm {
             name: name.to_owned(),
             sheet: String::new(),
             tint: (1.0, 1.0, 1.0),
+            profile: String::new(),
         }
     }
 
@@ -1726,6 +1821,12 @@ impl ActorForm {
             let (r, g, b) = self.tint;
             s.push_str(&format!("    tint: ({r:?}, {g:?}, {b:?}),\n"));
         }
+        if !self.profile.trim().is_empty() {
+            s.push_str(&format!(
+                "    profile: {},\n",
+                crate::ron_patch::quote(self.profile.trim())
+            ));
+        }
         s.push_str("),");
         s
     }
@@ -1773,6 +1874,7 @@ pub(crate) fn actor_forms(rules: &str, display: &str) -> Result<BTreeMap<u32, Ac
         form.name = look.name;
         form.sheet = look.sheet;
         form.tint = look.tint;
+        form.profile = look.profile;
     }
     Ok(out)
 }
@@ -2102,9 +2204,142 @@ pub(crate) struct TableForms {
     pub(crate) items: BTreeMap<u32, ItemForm>,
     pub(crate) skills: BTreeMap<u32, SkillForm>,
     pub(crate) loot: BTreeMap<u32, Vec<LootRow>>,
+    /// 상점·제작·텔레포트 표 (R4-2).
+    pub(crate) shops: BTreeMap<u32, ShopForm>,
+    pub(crate) crafts: BTreeMap<u32, CraftForm>,
+    pub(crate) teleports: BTreeMap<u32, TeleportForm>,
     /// 참조 찾기용 — 시작 소지품의 아이템, 플레이어 공격 스킬.
     pub(crate) starting_kit: Vec<u32>,
     pub(crate) player_attack: u32,
+}
+
+/// 상점 하나 — 표 편집기 폼 (R4-2).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ShopForm {
+    /// `(아이템, 값, 재화 — 0 이면 기본 재화)`.
+    pub(crate) goods: Vec<(u32, u32, u32)>,
+    pub(crate) buy_rate: u32,
+}
+
+impl ShopForm {
+    pub(crate) fn new() -> Self {
+        Self {
+            goods: Vec::new(),
+            buy_rate: 500,
+        }
+    }
+
+    pub(crate) fn rules_entry(&self, id: u32) -> String {
+        let mut s = format!("{id}: (\n    goods: [\n");
+        for &(item, price, currency) in &self.goods {
+            let currency = if currency == 0 {
+                String::new()
+            } else {
+                format!(", currency: {currency}")
+            };
+            s.push_str(&format!(
+                "        (item: {item}, price: {price}{currency}),\n"
+            ));
+        }
+        s.push_str(&format!("    ],\n    buy_rate: {},\n),", self.buy_rate));
+        s
+    }
+}
+
+/// 레시피 하나 — 표 편집기 폼 (R4-2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RecipeForm {
+    /// `(아이템, 개수)`.
+    pub(crate) inputs: Vec<(u32, u32)>,
+    pub(crate) fee: u32,
+    pub(crate) output: u32,
+    pub(crate) count: u32,
+    /// 만들 수 있는 조건 — RON 텍스트. 비우면 늘 참.
+    pub(crate) requires: String,
+}
+
+/// 제작 표 하나 (R4-2).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CraftForm {
+    pub(crate) recipes: Vec<RecipeForm>,
+}
+
+impl CraftForm {
+    pub(crate) fn rules_entry(&self, id: u32) -> String {
+        let mut s = format!("{id}: (\n    recipes: [\n");
+        for r in &self.recipes {
+            let inputs: Vec<String> = r
+                .inputs
+                .iter()
+                .map(|(i, n)| format!("(item: {i}, count: {n})"))
+                .collect();
+            let mut line = format!("        (inputs: [{}]", inputs.join(", "));
+            if r.fee > 0 {
+                line.push_str(&format!(", fee: {}", r.fee));
+            }
+            line.push_str(&format!(", output: {}", r.output));
+            if r.count != 1 {
+                line.push_str(&format!(", count: {}", r.count));
+            }
+            if !r.requires.trim().is_empty() {
+                line.push_str(&format!(", requires: {}", r.requires.trim()));
+            }
+            line.push_str("),\n");
+            s.push_str(&line);
+        }
+        s.push_str("    ],\n),");
+        s
+    }
+}
+
+/// 텔레포트 목적지 하나 (R4-2).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DestForm {
+    /// 표시 이름 (`display.ron`).
+    pub(crate) name: String,
+    /// 비우면 지금 존 안.
+    pub(crate) level: String,
+    pub(crate) pos: (f32, f32),
+    pub(crate) price: u32,
+}
+
+/// 텔레포트 목적지 표 하나 (R4-2).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct TeleportForm {
+    pub(crate) destinations: Vec<DestForm>,
+}
+
+impl TeleportForm {
+    pub(crate) fn rules_entry(&self, id: u32) -> String {
+        let mut s = format!("{id}: (\n    destinations: [\n");
+        for d in &self.destinations {
+            let mut line = String::from("        (");
+            if !d.level.trim().is_empty() {
+                line.push_str(&format!(
+                    "level: {}, ",
+                    crate::ron_patch::quote(d.level.trim())
+                ));
+            }
+            line.push_str(&format!("pos: ({:?}, {:?})", d.pos.0, d.pos.1));
+            if d.price > 0 {
+                line.push_str(&format!(", price: {}", d.price));
+            }
+            line.push_str("),\n");
+            s.push_str(&line);
+        }
+        s.push_str("    ],\n),");
+        s
+    }
+
+    /// `display.ron` 의 `teleports` 항목 — 목적지 이름 목록.
+    pub(crate) fn display_entry(&self, id: u32) -> String {
+        let names: Vec<String> = self
+            .destinations
+            .iter()
+            .map(|d| crate::ron_patch::quote(d.name.trim()))
+            .collect();
+        format!("{id}: [{}],", names.join(", "))
+    }
 }
 
 /// 두 파일에서 아이템·스킬·드롭 표를 읽는다. 표시 반쪽이 없는 번호는 빈 이름으로 만든다.
@@ -2205,10 +2440,79 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
             )
         })
         .collect();
+    let shops = r
+        .shops
+        .iter()
+        .map(|(id, s)| {
+            (
+                *id,
+                ShopForm {
+                    goods: s
+                        .goods
+                        .iter()
+                        .map(|g| (g.item, g.price, g.currency))
+                        .collect(),
+                    buy_rate: s.buy_rate,
+                },
+            )
+        })
+        .collect();
+    let crafts = r
+        .crafts
+        .iter()
+        .map(|(id, c)| {
+            (
+                *id,
+                CraftForm {
+                    recipes: c
+                        .recipes
+                        .iter()
+                        .map(|rc| RecipeForm {
+                            inputs: rc.inputs.iter().map(|i| (i.item, i.count)).collect(),
+                            fee: rc.fee,
+                            output: rc.output,
+                            count: rc.count,
+                            requires: if rc.requires == ConditionFile::Always {
+                                String::new()
+                            } else {
+                                ron::to_string(&rc.requires).unwrap_or_default()
+                            },
+                        })
+                        .collect(),
+                },
+            )
+        })
+        .collect();
+    let teleports = r
+        .teleports
+        .iter()
+        .map(|(id, t)| {
+            let names = d.teleports.get(id);
+            (
+                *id,
+                TeleportForm {
+                    destinations: t
+                        .destinations
+                        .iter()
+                        .enumerate()
+                        .map(|(i, dest)| DestForm {
+                            name: names.and_then(|n| n.get(i)).cloned().unwrap_or_default(),
+                            level: dest.level.clone(),
+                            pos: dest.pos,
+                            price: dest.price,
+                        })
+                        .collect(),
+                },
+            )
+        })
+        .collect();
     Ok(TableForms {
         items,
         skills,
         loot,
+        shops,
+        crafts,
+        teleports,
         starting_kit: r.starting_kit.iter().map(|s| s.item).collect(),
         player_attack: r.player_attack,
     })

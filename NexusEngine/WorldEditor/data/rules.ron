@@ -111,7 +111,17 @@
             defense: 10,
             immortal: true,
             faction: 100,
-            services: [Shop(1), Heal(price: 20)],
+            services: [Shop(1), Heal(price: 20), Teleport(2)],
+        ),
+        // 대장장이 (R4-2) — 제작 · 창고 · 마을 안 텔레포트.
+        12: (
+            move_speed: 1.5,
+            max_hp: 300,
+            attack: 25,
+            defense: 10,
+            immortal: true,
+            faction: 100,
+            services: [Craft(1), Storage, Teleport(1)],
         ),
         // 서버 MonsterEntityData 기본값처럼 공격형.
         100: (
@@ -227,6 +237,28 @@
                 (item: 3002, price: 1000),
             ],
             buy_rate: 500,
+        ),
+    },
+
+    // 제작 표 (R4-2) — recipes 의 순서가 레시피 번호다. inputs 는 두 가방을 합쳐 센다.
+    // fee 는 수수료(기본 재화), count 는 결과물 개수(적지 않으면 1), requires 는 만들 수 있는 조건.
+    crafts: {
+        1: (
+            recipes: [
+                (inputs: [(item: 909, count: 5)], fee: 10, output: 501),
+                (inputs: [(item: 909, count: 10)], output: 1101, requires: Level(cmp: Ge, value: 3)),
+            ],
+        ),
+    },
+    // 텔레포트 목적지 표 (R4-2) — level 을 비우면 지금 존 안, 적으면 그 레벨(levels/<번호>)을 열고 pos 에 선다.
+    // price 는 기본 재화. 목적지 이름은 display.ron 의 teleports.
+    teleports: {
+        1: (destinations: [(pos: (0.0, 0.0), price: 10)]),
+        2: (
+            destinations: [
+                (level: "village", pos: (-6.0, 10.0)),
+                (level: "sample", pos: (-6.0, 10.0), price: 30),
+            ],
         ),
     },
 

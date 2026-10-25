@@ -1437,12 +1437,16 @@ fn trade_window(ui: &mut egui::Ui, play: &PlaySession, actions: &mut UiActions) 
         return;
     };
     let mut open = true;
-    egui::Window::new(format!("{} — 거래", view.npc_name))
+    egui::Window::new(view.npc_name.clone())
         .id(egui::Id::new("trade_window"))
         .open(&mut open)
         .default_size([360.0, 420.0])
         .resizable(true)
         .show(ui.ctx(), |ui| {
+            if !view.profile.is_empty() {
+                ui.label(egui::RichText::new(&view.profile).italics());
+                ui.separator();
+            }
             if !view.purse.is_empty() {
                 ui.strong(format!("가진 돈: {}", view.purse));
             }
@@ -1452,6 +1456,73 @@ fn trade_window(ui: &mut egui::Ui, play: &PlaySession, actions: &mut UiActions) 
                 }
             }
             egui::ScrollArea::vertical().show(ui, |ui| {
+                // 텔레포트 (R4-2).
+                for tp in &view.teleports {
+                    ui.add_space(6.0);
+                    ui.strong("이동");
+                    for (d, name, price) in &tp.destinations {
+                        if ui.button(format!("{name} — {price}")).clicked() {
+                            actions.trade = Some(TradeAction::Teleport {
+                                teleport: tp.teleport,
+                                dest: *d,
+                            });
+                        }
+                    }
+                }
+                // 제작 (R4-2).
+                for craft in &view.crafts {
+                    ui.add_space(6.0);
+                    ui.strong("제작");
+                    egui::Grid::new(("trade-craft", craft.craft.0))
+                        .num_columns(3)
+                        .striped(true)
+                        .show(ui, |ui| {
+                            for (r, output, needs, ok) in &craft.recipes {
+                                ui.label(output);
+                                ui.weak(needs);
+                                if ui.add_enabled(*ok, egui::Button::new("만들기")).clicked() {
+                                    actions.trade = Some(TradeAction::Craft {
+                                        craft: craft.craft,
+                                        recipe: *r,
+                                        times: 1,
+                                    });
+                                }
+                                ui.end_row();
+                            }
+                        });
+                }
+                // 창고 (R4-2).
+                if let Some(storage) = &view.storage {
+                    ui.add_space(6.0);
+                    ui.strong("창고");
+                    if storage.stored.is_empty() {
+                        ui.weak("맡긴 것이 없습니다");
+                    }
+                    for (slot, name, count) in &storage.stored {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{name} ×{count}"));
+                            if ui.small_button("찾기").clicked() {
+                                actions.trade = Some(TradeAction::Withdraw {
+                                    slot: *slot,
+                                    count: *count,
+                                });
+                            }
+                        });
+                    }
+                    ui.weak("가방");
+                    for (bag, slot, name, count) in &storage.carried {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{name} ×{count}"));
+                            if ui.small_button("맡기기").clicked() {
+                                actions.trade = Some(TradeAction::Deposit {
+                                    bag: *bag,
+                                    slot: *slot,
+                                    count: *count,
+                                });
+                            }
+                        });
+                    }
+                }
                 for shop in &view.shops {
                     ui.add_space(6.0);
                     ui.strong("사기");

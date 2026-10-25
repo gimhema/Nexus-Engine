@@ -21,8 +21,8 @@ use nexus_core::{Camera2d, Entity, Vec2, Vec3};
 use nexus_render::{DEPTH_LAYER, RenderCommand, SpriteAnchor, TextureId, UvRect};
 use nexus_script::RhaiHost;
 use nexus_sim::{
-    Authority, BagKind, ClassId, EquipSlot, Event, Intent, ItemStack, LocalAuthority, Price,
-    Progress, Rejection, Relation, Service, ShopId, SimWorld, SkillId, Unit,
+    Authority, BagKind, ClassId, CraftId, EquipSlot, Event, Intent, ItemStack, LocalAuthority,
+    Price, Progress, Rejection, Relation, Service, ShopId, SimWorld, SkillId, TeleportId, Unit,
 };
 
 use crate::game_data::{ActorLook, GameData};
@@ -97,6 +97,27 @@ pub(crate) enum TradeAction {
     },
     /// 상점이 아닌 기능 (치료 등) — 기능 번호.
     Service(u16),
+    /// 제작 (R4-2).
+    Craft {
+        craft: CraftId,
+        recipe: u16,
+        times: u32,
+    },
+    /// 텔레포트 (R4-2).
+    Teleport {
+        teleport: TeleportId,
+        dest: u16,
+    },
+    /// 창고에 맡기기 / 찾기 (R4-2).
+    Deposit {
+        bag: BagKind,
+        slot: u16,
+        count: u32,
+    },
+    Withdraw {
+        slot: u16,
+        count: u32,
+    },
     Close,
 }
 
@@ -109,6 +130,37 @@ pub(crate) struct TradeView {
     pub(crate) shops: Vec<ShopView>,
     /// 상점이 아닌 기능 `(기능 번호, 단추 글)`.
     pub(crate) services: Vec<(u16, String)>,
+    /// NPC 프로필 글 (R4-2). 없으면 빈 문자열.
+    pub(crate) profile: String,
+    pub(crate) crafts: Vec<CraftView>,
+    pub(crate) teleports: Vec<TeleportView>,
+    /// 창고 기능이 있으면.
+    pub(crate) storage: Option<StorageView>,
+}
+
+/// 제작 표 하나 (R4-2).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CraftView {
+    pub(crate) craft: CraftId,
+    /// `(레시피 번호, 결과 글, 재료 글, 만들 수 있나)`.
+    pub(crate) recipes: Vec<(u16, String, String, bool)>,
+}
+
+/// 텔레포트 표 하나 (R4-2).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TeleportView {
+    pub(crate) teleport: TeleportId,
+    /// `(목적지 번호, 이름, 비용 글)`.
+    pub(crate) destinations: Vec<(u16, String, String)>,
+}
+
+/// 창고 (R4-2).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct StorageView {
+    /// 맡길 수 있는 가방 칸 `(가방, 칸, 이름, 개수)`.
+    pub(crate) carried: Vec<(BagKind, u16, String, u32)>,
+    /// 창고 칸 `(칸, 이름, 개수)`.
+    pub(crate) stored: Vec<(u16, String, u32)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -183,6 +235,8 @@ pub(crate) struct PlaySession {
     revive_at: Option<Duration>,
     /// 거래 창을 연 NPC (R4) — 말을 걸면 열리고, 멀어지거나 닫으면 닫힌다.
     trading: Option<Entity>,
+    /// 다른 레벨로 가는 텔레포트 요청 `(레벨, 도착 위치)` (R4-2) — 에디터가 꺼내 레벨을 연다.
+    travel: Option<(String, Vec2)>,
     /// 조작하는 액터의 스크립트가 `on_dead` 를 정의했다 — 부활은 스크립트가 맡고 기본 부활은 하지 않는다.
     scripted_revive: bool,
     /// 주문을 위해 마지막으로 경로를 잡은 지점.
@@ -352,6 +406,7 @@ impl PlaySession {
             hotbar,
             revive_at: None,
             trading: None,
+            travel: None,
             scripted_revive,
             chase_goal: None,
             log: VecDeque::new(),
@@ -413,6 +468,11 @@ impl PlaySession {
             .collect()
     }
 
+    /// 다른 레벨로 가는 텔레포트 요청을 꺼낸다 (R4-2).
+    pub(crate) fn take_travel(&mut self) -> Option<(String, Vec2)> {
+        self.travel.take()
+    }
+
     /// 기본 재화 금액 (R4) — HUD `{gold}`. 재화가 없는 게임이면 0.
     pub(crate) fn gold(&self) -> u64 {
         let (Some(u), Some(c)) = (self.world().unit(self.player), self.data.default_currency())
@@ -435,6 +495,9 @@ impl PlaySession {
         });
         let mut shops = Vec::new();
         let mut services = Vec::new();
+        let mut crafts = Vec::new();
+        let mut teleports = Vec::new();
+        let mut storage = None;
         for (i, service) in world.services_of(npc).iter().enumerate() {
             let index = u16::try_from(i).unwrap_or(u16::MAX);
             match *service {
@@ -488,13 +551,113 @@ impl PlaySession {
                     };
                     services.push((index, label));
                 }
+                Service::Craft(id) => {
+                    let Some(def) = world.craft_def(id) else {
+                        continue;
+                    };
+                    let carried = |item| {
+                        let inv = me.inventory();
+                        inv.bag(BagKind::Consumable).count_of(item)
+                            + inv.bag(BagKind::Equipment).count_of(item)
+                    };
+                    let recipes = def
+                        .recipes
+                        .iter()
+                        .enumerate()
+                        .map(|(r, recipe)| {
+                            let mut parts: Vec<String> = recipe
+                                .inputs
+                                .iter()
+                                .map(|(item, n)| {
+                                    format!("{} {}/{n}", self.data.item_name(*item), carried(*item))
+                                })
+                                .collect();
+                            if let Some(fee) = recipe.fee {
+                                parts.push(self.data.price_text(fee));
+                            }
+                            let enough = recipe.inputs.iter().all(|(item, n)| carried(*item) >= *n)
+                                && recipe.fee.is_none_or(|f| {
+                                    me.wallet().get(f.currency) >= u64::from(f.amount)
+                                })
+                                && world.check(&recipe.requires, self.player);
+                            (
+                                u16::try_from(r).unwrap_or(u16::MAX),
+                                format!("{} ×{}", self.data.item_name(recipe.output), recipe.count),
+                                parts.join(" · "),
+                                enough,
+                            )
+                        })
+                        .collect();
+                    crafts.push(CraftView { craft: id, recipes });
+                }
+                Service::Teleport(id) => {
+                    let Some(def) = world.teleport_def(id) else {
+                        continue;
+                    };
+                    let destinations = def
+                        .destinations
+                        .iter()
+                        .enumerate()
+                        .map(|(d, dest)| {
+                            (
+                                u16::try_from(d).unwrap_or(u16::MAX),
+                                self.data.destination_name(id, d),
+                                dest.price.map_or_else(
+                                    || String::from("무료"),
+                                    |p| self.data.price_text(p),
+                                ),
+                            )
+                        })
+                        .collect();
+                    teleports.push(TeleportView {
+                        teleport: id,
+                        destinations,
+                    });
+                }
+                Service::Storage => {
+                    let carried = [BagKind::Consumable, BagKind::Equipment]
+                        .into_iter()
+                        .flat_map(|bag| {
+                            me.inventory()
+                                .bag(bag)
+                                .iter()
+                                .filter_map(move |(slot, s)| {
+                                    Some((bag, u16::try_from(slot).ok()?, s))
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .map(|(bag, slot, s)| (bag, slot, self.data.item_name(s.item), s.count))
+                        .collect();
+                    let stored = me
+                        .storage()
+                        .iter()
+                        .filter_map(|(slot, s)| {
+                            Some((
+                                u16::try_from(slot).ok()?,
+                                self.data.item_name(s.item),
+                                s.count,
+                            ))
+                        })
+                        .collect();
+                    storage = Some(StorageView { carried, stored });
+                }
             }
         }
+        let profile = self
+            .labels
+            .get(&npc)
+            .and_then(|l| self.data.actor_look(l.actor))
+            .map(|l| l.profile.clone())
+            .unwrap_or_default();
         Some(TradeView {
             npc_name: self.name(npc).to_owned(),
             purse,
             shops,
             services,
+            profile,
+            crafts,
+            teleports,
+            storage,
         })
     }
 
@@ -529,6 +692,36 @@ impl PlaySession {
                 count,
             },
             TradeAction::Service(index) => Intent::UseService { unit, npc, index },
+            TradeAction::Craft {
+                craft,
+                recipe,
+                times,
+            } => Intent::Craft {
+                unit,
+                npc,
+                craft,
+                recipe,
+                times,
+            },
+            TradeAction::Teleport { teleport, dest } => Intent::Teleport {
+                unit,
+                npc,
+                teleport,
+                dest,
+            },
+            TradeAction::Deposit { bag, slot, count } => Intent::Deposit {
+                unit,
+                npc,
+                bag,
+                slot,
+                count,
+            },
+            TradeAction::Withdraw { slot, count } => Intent::Withdraw {
+                unit,
+                npc,
+                slot,
+                count,
+            },
         };
         self.auth.submit(intent);
     }
@@ -618,6 +811,14 @@ impl PlaySession {
             hotbar: Some(self.hotbar.clone()),
             flags: u.map(|u| u.flags().iter().collect()).unwrap_or_default(),
             wallet: u.map(|u| u.wallet().iter().collect()),
+            storage: u
+                .map(|u| {
+                    u.storage()
+                        .iter()
+                        .map(|(slot, s)| (slot as u16, s.item, s.count))
+                        .collect()
+                })
+                .unwrap_or_default(),
             world_flags: self.world().world_flags().iter().collect(),
         }
     }
@@ -867,6 +1068,17 @@ impl PlaySession {
         let events = self.auth.tick(dt);
         let cues = AnimCue::collect(&events);
         for event in events {
+            // 다른 레벨로 가는 텔레포트 (R4-2) — 레벨을 여는 것은 에디터의 일.
+            if let Event::Traveled { unit, travel, pos } = event
+                && unit == self.player
+            {
+                match self.data.travel_level(travel) {
+                    Some(level) => self.travel = Some((level.to_owned(), pos)),
+                    None => self
+                        .alerts
+                        .push(format!("텔레포트 목적지 {travel} 의 레벨을 모릅니다")),
+                }
+            }
             // 말을 걸면 거래 창이 열린다 (R4).
             if let Event::Interacted { unit, npc } = event
                 && unit == self.player
@@ -1160,6 +1372,19 @@ impl PlaySession {
             }
             Event::Interacted { unit, npc } if unit == self.player => {
                 format!("{} 에게 말을 걸었다", self.name(npc))
+            }
+            Event::Crafted { unit, item, count } if unit == self.player => {
+                format!("만들었다: {} ×{count}", self.data.item_name(item))
+            }
+            Event::Teleported { unit, .. } if unit == self.player => String::from("순간이동했다"),
+            Event::Traveled { unit, .. } if unit == self.player => {
+                String::from("다른 곳으로 떠난다…")
+            }
+            Event::Deposited { unit, item, count } if unit == self.player => {
+                format!("맡겼다: {} ×{count}", self.data.item_name(item))
+            }
+            Event::Withdrew { unit, item, count } if unit == self.player => {
+                format!("찾았다: {} ×{count}", self.data.item_name(item))
             }
             Event::Bought { unit, item, count } if unit == self.player => {
                 format!("샀다: {} ×{count}", self.data.item_name(item))
@@ -1628,6 +1853,8 @@ mod text {
             Rejection::NoService => "그런 일은 하지 않는 NPC 입니다",
             Rejection::NotEnoughCurrency => "돈이 모자랍니다",
             Rejection::NotSellable => "그 상점은 이 물건을 사지 않습니다",
+            Rejection::MissingMaterials => "재료가 모자랍니다",
+            Rejection::RequirementNotMet => "조건이 맞지 않습니다",
         }
     }
 }
@@ -1657,6 +1884,10 @@ fn restore(world: &mut SimWorld, player: Entity, save: &SaveData) {
     }
     for &(flag, value) in &save.world_flags {
         world.set_world_flag(flag, value);
+    }
+    // 창고 (R4-2) — 칸 번호 그대로.
+    for &(slot, item, count) in &save.storage {
+        world.place_in_storage(player, slot, ItemStack { item, count });
     }
     // 지갑 (R4) — 재화가 생기기 전의 저장이면 시작 재화를 그대로 둔다.
     if let Some(wallet) = &save.wallet {
@@ -2914,5 +3145,143 @@ mod tests {
             s.tick(DT, None);
         }
         assert!(s.trade_view().is_none());
+    }
+
+    // ── 제작·텔레포트·창고 (R4-2) ────────────────────────────────────────────
+
+    /// 마을 존으로 새 게임.
+    fn village() -> PlaySession {
+        let scene = crate::zone_file::from_ron(include_str!("../../../zones/village.zone.ron"))
+            .expect("마을 존");
+        PlaySession::start(
+            &scene,
+            Camera2d::default(),
+            GameData::embedded(),
+            PlayOptions::default(),
+        )
+        .unwrap()
+    }
+
+    /// 이름으로 NPC 에게 걸어가 말을 건다.
+    fn talk_to(s: &mut PlaySession, name: &str) {
+        let npc = find(s, name);
+        let at = s.world().unit(npc).unwrap().pos();
+        s.click(at, 0.01);
+        for _ in 0..600 {
+            s.tick(DT, None);
+            if s.trade_view().is_some_and(|v| v.npc_name == name) {
+                return;
+            }
+        }
+        panic!("{name} 에게 닿지 못했다: {:?}", s.log);
+    }
+
+    #[test]
+    fn the_blacksmith_crafts_stores_and_teleports() {
+        let mut s = village();
+        let me = s.player();
+        assert!(s.auth.world_mut().give_item(me, ItemId(909), 7));
+        talk_to(&mut s, "대장장이");
+        let view = s.trade_view().unwrap();
+        assert!(view.profile.starts_with("젤리만 넉넉하면"));
+        let craft = &view.crafts[0];
+        assert_eq!(
+            craft.recipes[0],
+            (
+                0,
+                String::from("빨간 포션 ×1"),
+                String::from("젤리 7/5 · 10 골드"),
+                true
+            )
+        );
+        assert!(!craft.recipes[1].3, "숏소드는 레벨 3 부터");
+        assert_eq!(view.teleports[0].destinations[0].1, "마을 광장");
+
+        // 제작: 젤리 5 + 10 골드 → 빨간 포션.
+        let potions = |s: &PlaySession| {
+            s.world()
+                .unit(me)
+                .unwrap()
+                .inventory()
+                .bag(BagKind::Consumable)
+                .count_of(ItemId(501))
+        };
+        let before = potions(&s);
+        s.trade(TradeAction::Craft {
+            craft: CraftId(1),
+            recipe: 0,
+            times: 1,
+        });
+        s.tick(DT, None);
+        assert_eq!((potions(&s), s.gold()), (before + 1, 90));
+
+        // 창고: 빨간 포션을 맡기고 저장 → 이어 하기에 남는다.
+        let slot = s.trade_view().unwrap().storage.unwrap().carried[0].1;
+        s.trade(TradeAction::Deposit {
+            bag: BagKind::Consumable,
+            slot,
+            count: 2,
+        });
+        s.tick(DT, None);
+        let stored = s.trade_view().unwrap().storage.unwrap().stored;
+        assert_eq!(stored, [(0, String::from("빨간 포션"), 2)]);
+        let save = s.save_data(String::new());
+        assert_eq!(save.storage, [(0, ItemId(501), 2)]);
+        let scene =
+            crate::zone_file::from_ron(include_str!("../../../zones/village.zone.ron")).unwrap();
+        let back = PlaySession::start(
+            &scene,
+            Camera2d::default(),
+            GameData::embedded(),
+            PlayOptions {
+                spawn: None,
+                save: Some(save),
+                class: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            back.world()
+                .unit(back.player())
+                .unwrap()
+                .storage()
+                .count_of(ItemId(501)),
+            2
+        );
+
+        // 마을 안 텔레포트: 10 골드 → 광장(0, 0). 멀어지면 창이 닫힌다.
+        s.trade(TradeAction::Teleport {
+            teleport: TeleportId(1),
+            dest: 0,
+        });
+        s.tick(DT, None);
+        assert_eq!(s.world().unit(me).unwrap().pos(), Vec2::ZERO);
+        assert_eq!(s.gold(), 80);
+        assert!(s.trade_view().is_none());
+    }
+
+    #[test]
+    fn the_merchant_can_send_you_to_another_level() {
+        let mut s = new_game(None, None);
+        talk_to(&mut s, "상인 NPC");
+        let tp = &s.trade_view().unwrap().teleports[0];
+        assert_eq!(
+            tp.destinations,
+            [
+                (0, String::from("마을"), String::from("무료")),
+                (1, String::from("샘플 존"), String::from("30 골드"))
+            ]
+        );
+        s.trade(TradeAction::Teleport {
+            teleport: TeleportId(2),
+            dest: 0,
+        });
+        s.tick(DT, None);
+        assert_eq!(
+            s.take_travel(),
+            Some((String::from("village"), Vec2::new(-6.0, 10.0))),
+            "다른 레벨은 에디터가 연다"
+        );
+        assert!(s.log().any(|l| l == "다른 곳으로 떠난다…"));
     }
 }

@@ -535,6 +535,20 @@ fn table_users(
                 }
             }
         }
+        // R4-2 — 그 표를 여는 NPC 기능.
+        Tab::Shops | Tab::Crafts | Tab::Teleports => {
+            use crate::trade_file::ServiceFile;
+            let service = match tab {
+                Tab::Shops => ServiceFile::Shop(id),
+                Tab::Crafts => ServiceFile::Craft(id),
+                _ => ServiceFile::Teleport(id),
+            };
+            for (a, f) in &actors {
+                if f.services.contains(&service) {
+                    out.push(format!("액터 #{a} {} 의 기능", f.name));
+                }
+            }
+        }
     }
     Ok(out)
 }

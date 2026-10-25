@@ -95,6 +95,26 @@ fn trailing_comment(line: &str) -> Option<&str> {
 ///
 /// `entry` 는 들여쓰기 없이 쓴 항목 텍스트다 (`"102: (\n    name: \"고블린\",\n),"`).
 /// 각 줄에 블록 안쪽 들여쓰기를 붙여 끼운다.
+/// 맵 블록 `map: {` 이 없으면 파일 맨 끝 `)` 앞에 빈 블록을 만든다 (R4-2) — 아직 항목이 하나도 없는
+/// 표(`teleports` 등)에 첫 항목을 넣을 때. 있으면 그대로 돌려준다.
+pub(crate) fn ensure_map_block(text: &str, map: &str) -> Result<String, String> {
+    let lines: Vec<&str> = text.lines().collect();
+    if map_block(&lines, map).is_some() {
+        return Ok(text.to_owned());
+    }
+    let at = lines
+        .iter()
+        .rposition(|l| l.trim() == ")")
+        .ok_or_else(|| format!("'{map}' 을 넣을 자리(맨 끝 ')')를 찾지 못함"))?;
+    let mut out: Vec<String> = lines[..at].iter().map(|l| (*l).to_owned()).collect();
+    out.push(format!("    {map}: {{"));
+    out.push(String::from("    },"));
+    out.extend(lines[at..].iter().map(|l| (*l).to_owned()));
+    let mut text = out.join("\n");
+    text.push('\n');
+    Ok(text)
+}
+
 pub(crate) fn upsert_entry(text: &str, map: &str, id: u32, entry: &str) -> Result<String, String> {
     let lines: Vec<&str> = text.lines().collect();
     let block = map_block(&lines, map).ok_or_else(|| format!("'{map}: {{' 블록을 찾지 못함"))?;

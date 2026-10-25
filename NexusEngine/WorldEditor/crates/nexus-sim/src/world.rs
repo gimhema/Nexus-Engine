@@ -30,7 +30,10 @@ use crate::progress::Progress;
 use crate::skills::{SkillRules, to_u32};
 use crate::stats::{ClassDef, ClassId, EquipRules, EquipTotals, Formula, StatRules};
 use crate::tilemap::TileMap;
-use crate::trade::{self, CurrencyId, DEFAULT_INTERACT_RANGE, Price, Service, ShopDef, ShopId};
+use crate::trade::{
+    self, CraftDef, CraftId, CurrencyId, DEFAULT_INTERACT_RANGE, Price, Service, ShopDef, ShopId,
+    TeleportDef, TeleportId,
+};
 use crate::trigger::{
     Condition, Effect, FlagId, FlagScope, Flags, Happening, MAX_ROUNDS, TriggerDef, TriggerId,
 };
@@ -85,6 +88,10 @@ pub struct SimWorld {
     /// 아이템 기본 값 (R4) — 상점이 사들일 때의 기준. 없으면 팔 수 없다.
     item_prices: HashMap<ItemId, Price>,
     interact_range: f32,
+    /// 제작 표 (R4-2).
+    crafts: HashMap<CraftId, CraftDef>,
+    /// 텔레포트 목적지 표 (R4-2).
+    teleports: HashMap<TeleportId, TeleportDef>,
 }
 
 impl SimWorld {
@@ -114,7 +121,257 @@ impl SimWorld {
             services: HashMap::new(),
             item_prices: HashMap::new(),
             interact_range: DEFAULT_INTERACT_RANGE,
+            crafts: HashMap::new(),
+            teleports: HashMap::new(),
         }
+    }
+
+    /// 제작 표를 등록한다 (설정 작업, R4-2).
+    pub fn define_craft(&mut self, id: CraftId, def: CraftDef) {
+        self.crafts.insert(id, def);
+    }
+
+    #[must_use]
+    pub fn craft_def(&self, id: CraftId) -> Option<&CraftDef> {
+        self.crafts.get(&id)
+    }
+
+    /// 텔레포트 목적지 표를 등록한다 (설정 작업, R4-2).
+    pub fn define_teleport(&mut self, id: TeleportId, def: TeleportDef) {
+        self.teleports.insert(id, def);
+    }
+
+    #[must_use]
+    pub fn teleport_def(&self, id: TeleportId) -> Option<&TeleportDef> {
+        self.teleports.get(&id)
+    }
+
+    /// 창고의 그 칸에 그대로 넣는다 (설정 작업 — 저장 파일에서 되살릴 때, R4-2).
+    pub fn place_in_storage(&mut self, unit: Entity, slot: u16, stack: ItemStack) -> bool {
+        let Some(def) = self.items.get(&stack.item).copied() else {
+            return false;
+        };
+        let slot = usize::from(slot);
+        if slot >= BAG_SLOTS || stack.count == 0 || stack.count > def.stack_limit() {
+            return false;
+        }
+        let Some(u) = self.unit_mut(unit) else {
+            return false;
+        };
+        u.storage.put(slot, Some(stack));
+        true
+    }
+
+    /// 두 가방을 합친 개수.
+    fn carried(u: &Unit, item: ItemId) -> u32 {
+        u.inventory.bag(BagKind::Consumable).count_of(item)
+            + u.inventory.bag(BagKind::Equipment).count_of(item)
+    }
+
+    pub(crate) fn craft(
+        &mut self,
+        unit: Entity,
+        npc: Entity,
+        craft: CraftId,
+        recipe: u16,
+        times: u32,
+        events: &mut Vec<Event>,
+    ) -> Result<(), Rejection> {
+        self.near_npc(unit, npc)?;
+        if !self.services_of(npc).contains(&Service::Craft(craft)) {
+            return Err(Rejection::NoService);
+        }
+        let r = self
+            .crafts
+            .get(&craft)
+            .and_then(|c| c.recipes.get(usize::from(recipe)))
+            .cloned()
+            .ok_or(Rejection::UnknownItem)?;
+        let times = times.max(1);
+        let out_def = *self.items.get(&r.output).ok_or(Rejection::UnknownItem)?;
+        if !self.check(&r.requires, unit) {
+            return Err(Rejection::RequirementNotMet);
+        }
+        let u = self.unit(unit).ok_or(Rejection::UnknownEntity)?;
+        for &(item, count) in &r.inputs {
+            if u64::from(Self::carried(u, item)) < u64::from(count) * u64::from(times) {
+                return Err(Rejection::MissingMaterials);
+            }
+        }
+        let fee = r
+            .fee
+            .map(|p| (p.currency, trade::total(p, times).unwrap_or(u64::MAX)));
+        if let Some((c, cost)) = fee
+            && u.wallet.get(c) < cost
+        {
+            return Err(Rejection::NotEnoughCurrency);
+        }
+        let made = r.count.max(1).saturating_mul(times);
+        // 재료를 빼기 **전에** 자리를 본다 — 재료가 빠지며 생길 자리는 세지 않는다(보수적으로).
+        if !u
+            .inventory
+            .bag(out_def.bag())
+            .fits(r.output, made, out_def.stack_limit())
+        {
+            return Err(Rejection::InventoryFull);
+        }
+        for &(item, count) in &r.inputs {
+            let Some(def) = self.items.get(&item).copied() else {
+                continue;
+            };
+            if let Some(u) = self.unit_mut(unit) {
+                u.inventory
+                    .bag_mut(def.bag())
+                    .remove(item, count.saturating_mul(times));
+            }
+        }
+        if let Some((c, cost)) = fee {
+            self.pay_out(unit, c, cost, events);
+        }
+        if let Some(u) = self.unit_mut(unit) {
+            u.inventory
+                .bag_mut(out_def.bag())
+                .add(r.output, made, out_def.stack_limit());
+        }
+        events.push(Event::Crafted {
+            unit,
+            item: r.output,
+            count: made,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn teleport(
+        &mut self,
+        unit: Entity,
+        npc: Entity,
+        teleport: TeleportId,
+        dest: u16,
+        events: &mut Vec<Event>,
+    ) -> Result<(), Rejection> {
+        self.near_npc(unit, npc)?;
+        if !self.services_of(npc).contains(&Service::Teleport(teleport)) {
+            return Err(Rejection::NoService);
+        }
+        let d = *self
+            .teleports
+            .get(&teleport)
+            .and_then(|t| t.destinations.get(usize::from(dest)))
+            .ok_or(Rejection::NoService)?;
+        if d.travel == 0
+            && !self
+                .tiles
+                .get(self.tiles.world_to_tile(d.pos))
+                .is_some_and(|t| t.walkable)
+        {
+            return Err(Rejection::NoPath);
+        }
+        if let Some(p) = d.price
+            && !self.pay_out(unit, p.currency, u64::from(p.amount), events)
+        {
+            return Err(Rejection::NotEnoughCurrency);
+        }
+        if d.travel == 0 {
+            self.set_position(unit, d.pos);
+            events.push(Event::Teleported { unit, pos: d.pos });
+        } else {
+            events.push(Event::Traveled {
+                unit,
+                travel: d.travel,
+                pos: d.pos,
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn deposit(
+        &mut self,
+        unit: Entity,
+        npc: Entity,
+        bag: BagKind,
+        slot: u16,
+        count: u32,
+        events: &mut Vec<Event>,
+    ) -> Result<(), Rejection> {
+        self.near_npc(unit, npc)?;
+        if !self.services_of(npc).contains(&Service::Storage) {
+            return Err(Rejection::NoService);
+        }
+        let u = self.unit(unit).ok_or(Rejection::UnknownEntity)?;
+        let stack = u
+            .inventory
+            .bag(bag)
+            .get(usize::from(slot))
+            .ok_or(Rejection::EmptySlot)?;
+        let def = *self.items.get(&stack.item).ok_or(Rejection::UnknownItem)?;
+        let count = count.clamp(1, stack.count);
+        if !u.storage.fits(stack.item, count, def.stack_limit()) {
+            return Err(Rejection::InventoryFull);
+        }
+        if let Some(u) = self.unit_mut(unit) {
+            let left = stack.count - count;
+            u.inventory.bag_mut(bag).put(
+                usize::from(slot),
+                (left > 0).then_some(ItemStack {
+                    item: stack.item,
+                    count: left,
+                }),
+            );
+            u.storage.add(stack.item, count, def.stack_limit());
+        }
+        events.push(Event::Deposited {
+            unit,
+            item: stack.item,
+            count,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn withdraw(
+        &mut self,
+        unit: Entity,
+        npc: Entity,
+        slot: u16,
+        count: u32,
+        events: &mut Vec<Event>,
+    ) -> Result<(), Rejection> {
+        self.near_npc(unit, npc)?;
+        if !self.services_of(npc).contains(&Service::Storage) {
+            return Err(Rejection::NoService);
+        }
+        let u = self.unit(unit).ok_or(Rejection::UnknownEntity)?;
+        let stack = u
+            .storage
+            .get(usize::from(slot))
+            .ok_or(Rejection::EmptySlot)?;
+        let def = *self.items.get(&stack.item).ok_or(Rejection::UnknownItem)?;
+        let count = count.clamp(1, stack.count);
+        if !u
+            .inventory
+            .bag(def.bag())
+            .fits(stack.item, count, def.stack_limit())
+        {
+            return Err(Rejection::InventoryFull);
+        }
+        if let Some(u) = self.unit_mut(unit) {
+            let left = stack.count - count;
+            u.storage.put(
+                usize::from(slot),
+                (left > 0).then_some(ItemStack {
+                    item: stack.item,
+                    count: left,
+                }),
+            );
+            u.inventory
+                .bag_mut(def.bag())
+                .add(stack.item, count, def.stack_limit());
+        }
+        events.push(Event::Withdrew {
+            unit,
+            item: stack.item,
+            count,
+        });
+        Ok(())
     }
 
     /// 상점을 등록한다 (설정 작업, R4).
@@ -362,8 +619,10 @@ impl SimWorld {
             .get(usize::from(index))
             .ok_or(Rejection::NoService)?;
         match service {
-            // 상점은 Buy/Sell 로 쓴다.
-            Service::Shop(_) => Err(Rejection::NoService),
+            // 상점·제작·텔레포트·창고는 각자의 Intent 로 쓴다.
+            Service::Shop(_) | Service::Craft(_) | Service::Teleport(_) | Service::Storage => {
+                Err(Rejection::NoService)
+            }
             Service::Heal { price } => {
                 let cost = u64::from(price.amount);
                 if !self.pay_out(unit, price.currency, cost, events) {

@@ -1203,13 +1203,17 @@ impl ContentBrowser {
 
 /// 오른쪽 클릭 메뉴의 "새로 만들기" 항목 — 도구 줄의 *새로 만들기* 와 같은 목록이다.
 /// 파일 이름·번호는 각 편집기에서 정한다 (여기서는 편집기를 새 항목 상태로 열 뿐이다).
-fn create_items() -> [(&'static str, ContentAction); 5] {
+fn create_items() -> [(&'static str, ContentAction); 8] {
     [
         ("레벨…", ContentAction::NewLevel),
         ("액터…", ContentAction::NewActor),
         ("아이템…", ContentAction::NewTable(Tab::Items)),
         ("스킬…", ContentAction::NewTable(Tab::Skills)),
         ("드롭 표…", ContentAction::NewTable(Tab::Loot)),
+        // R4-2 — NPC 기능이 여는 표.
+        ("상점…", ContentAction::NewTable(Tab::Shops)),
+        ("제작 표…", ContentAction::NewTable(Tab::Crafts)),
+        ("텔레포트 표…", ContentAction::NewTable(Tab::Teleports)),
     ]
 }
 

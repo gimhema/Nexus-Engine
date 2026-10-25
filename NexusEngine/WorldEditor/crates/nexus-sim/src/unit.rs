@@ -185,6 +185,8 @@ pub struct Unit {
     pub(crate) skills: std::collections::BTreeMap<SkillId, u32>,
     /// 재화 지갑 (R4).
     pub(crate) wallet: crate::trade::Wallet,
+    /// 창고 (R4-2) — 종류를 가리지 않는 가방 하나. 창고 기능이 있는 NPC 곁에서만 넣고 뺀다.
+    pub(crate) storage: crate::item::Bag,
 }
 
 impl Unit {
@@ -214,7 +216,14 @@ impl Unit {
             sheet: None,
             skills: std::collections::BTreeMap::new(),
             wallet: crate::trade::Wallet::default(),
+            storage: crate::item::Bag::default(),
         }
+    }
+
+    /// 창고 (R4-2).
+    #[must_use]
+    pub fn storage(&self) -> &crate::item::Bag {
+        &self.storage
     }
 
     /// 재화 지갑 (R4).

@@ -21,7 +21,7 @@ use crate::combat::SkillId;
 use crate::item::{BagKind, EquipSlot, ItemId, ItemStack};
 use crate::progress::Progress;
 use crate::script::ScriptHost;
-use crate::trade::{CurrencyId, ShopId};
+use crate::trade::{CraftId, CurrencyId, ShopId, TeleportId};
 use crate::trigger::{FlagId, TriggerId};
 use crate::world::SimWorld;
 
@@ -79,6 +79,36 @@ pub enum Intent {
         npc: Entity,
         index: u16,
     },
+    /// `npc` 의 제작 표 `craft` 에서 `recipe` 번째 레시피를 `times` 번 만든다 (R4-2).
+    Craft {
+        unit: Entity,
+        npc: Entity,
+        craft: CraftId,
+        recipe: u16,
+        times: u32,
+    },
+    /// `npc` 의 목적지 표 `teleport` 의 `dest` 번째로 간다 (R4-2).
+    Teleport {
+        unit: Entity,
+        npc: Entity,
+        teleport: TeleportId,
+        dest: u16,
+    },
+    /// 가방 `bag` 의 `slot` 에서 `count` 개를 창고에 맡긴다 (R4-2) — 창고 기능이 있는 NPC 곁에서.
+    Deposit {
+        unit: Entity,
+        npc: Entity,
+        bag: BagKind,
+        slot: u16,
+        count: u32,
+    },
+    /// 창고의 `slot` 에서 `count` 개를 찾는다 (R4-2).
+    Withdraw {
+        unit: Entity,
+        npc: Entity,
+        slot: u16,
+        count: u32,
+    },
     /// 쓰러진 유닛을 `at` 에서 일으킨다 — HP·MP 를 최대치의 `hp_per_mille`(천분율)만큼 채우고,
     /// 지금 레벨에서 모은 경험치의 `exp_loss_per_mille` 를 잃는다 (레벨은 내려가지 않는다).
     /// 기본 부활은 입력 쪽(플레이)이, 맞춤 부활은 액터 스크립트(`on_dead`)가 낸다.
@@ -109,7 +139,11 @@ impl Intent {
             | Self::Interact { unit, .. }
             | Self::Buy { unit, .. }
             | Self::Sell { unit, .. }
-            | Self::UseService { unit, .. } => unit,
+            | Self::UseService { unit, .. }
+            | Self::Craft { unit, .. }
+            | Self::Teleport { unit, .. }
+            | Self::Deposit { unit, .. }
+            | Self::Withdraw { unit, .. } => unit,
         }
     }
 }
@@ -165,6 +199,10 @@ pub enum Rejection {
     NotEnoughCurrency,
     /// 그 상점이 사지 않는 아이템 — 값이 없거나 상점이 사들이지 않는다 (R4).
     NotSellable,
+    /// 제작 재료가 모자란다 (R4-2).
+    MissingMaterials,
+    /// 조건이 맞지 않는다 — 레시피의 `requires` 등 (R4-2).
+    RequirementNotMet,
 }
 
 /// tick 동안 일어난 일.
@@ -254,6 +292,32 @@ pub enum Event {
     },
     /// 상점에 팔았다 (R4).
     Sold {
+        unit: Entity,
+        item: ItemId,
+        count: u32,
+    },
+    /// 만들었다 (R4-2).
+    Crafted {
+        unit: Entity,
+        item: ItemId,
+        count: u32,
+    },
+    /// 같은 존 안에서 순간이동했다 (R4-2).
+    Teleported { unit: Entity, pos: Vec2 },
+    /// 다른 레벨로 가는 텔레포트 (R4-2) — 비용은 받았고, 레벨을 열어 `pos` 에 세우는 것은 앱의 일.
+    Traveled {
+        unit: Entity,
+        travel: u32,
+        pos: Vec2,
+    },
+    /// 창고에 맡겼다 (R4-2).
+    Deposited {
+        unit: Entity,
+        item: ItemId,
+        count: u32,
+    },
+    /// 창고에서 찾았다 (R4-2).
+    Withdrew {
         unit: Entity,
         item: ItemId,
         count: u32,
@@ -419,6 +483,32 @@ fn apply(world: &mut SimWorld, intent: Intent, events: &mut Vec<Event>) -> Resul
             count,
         } => world.sell(unit, npc, shop, bag, slot, count, events),
         Intent::UseService { unit, npc, index } => world.use_service(unit, npc, index, events),
+        Intent::Craft {
+            unit,
+            npc,
+            craft,
+            recipe,
+            times,
+        } => world.craft(unit, npc, craft, recipe, times, events),
+        Intent::Teleport {
+            unit,
+            npc,
+            teleport,
+            dest,
+        } => world.teleport(unit, npc, teleport, dest, events),
+        Intent::Deposit {
+            unit,
+            npc,
+            bag,
+            slot,
+            count,
+        } => world.deposit(unit, npc, bag, slot, count, events),
+        Intent::Withdraw {
+            unit,
+            npc,
+            slot,
+            count,
+        } => world.withdraw(unit, npc, slot, count, events),
         Intent::Revive {
             unit,
             at,
