@@ -9,6 +9,8 @@
 //! │ 들어갈 때 [없음 ▼]                        │
 //! │ 일시정지  [pause ▼]                       │
 //! │ 로딩 화면 [loading ▼]  최소 [800 ms]        │
+//! │ 인스턴스  [공유 ▼]                         │
+//! │ 입장 조건 [Level(cmp: Ge, value: 3)]       │
 //! │ ★ 시작 레벨 / [시작 레벨로 지정]           │
 //! │ [저장] [원래대로] [이 레벨 플레이]          │
 //! └──────────────────────────────────────────┘
@@ -24,7 +26,8 @@ use std::path::Path;
 
 use nexus_render_wgpu::egui;
 
-use crate::level::{LevelFile, PROJECT_PATH, level_path, read_level, read_project};
+use crate::level::{InstancePolicy, LevelFile, PROJECT_PATH, level_path, read_level, read_project};
+use crate::trigger_file::ConditionFile;
 
 #[derive(Debug, Default)]
 pub(crate) struct LevelEditor {
@@ -45,6 +48,25 @@ pub(crate) struct LevelEditor {
     saved_now: bool,
     /// "이 레벨 플레이" — 에디터가 레벨을 연다.
     play: Option<String>,
+    /// 입장 조건 글 (R6) — 트리거의 `when` 과 같은 RON 한 줄. 읽히면 `edit.requires` 에 들어간다.
+    requires_text: String,
+}
+
+/// 입장 조건 → 한 줄 글.
+fn requires_text(level: Option<&LevelFile>) -> String {
+    level
+        .and_then(|l| l.requires.as_ref())
+        .and_then(|c| ron::to_string(c).ok())
+        .unwrap_or_default()
+}
+
+/// 한 줄 글 → 입장 조건. 비면 없음.
+fn parse_requires(text: &str) -> Result<Option<ConditionFile>, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    ron::from_str(text).map(Some).map_err(|e| e.to_string())
 }
 
 impl LevelEditor {
@@ -63,6 +85,7 @@ impl LevelEditor {
         {
             Ok(level) => {
                 self.current = id.to_owned();
+                self.requires_text = requires_text(Some(&level));
                 self.edit = Some(level.clone());
                 self.saved = Some(level);
                 self.status = None;
@@ -219,6 +242,7 @@ impl LevelEditor {
             ..LevelFile::default()
         });
         self.saved = None;
+        self.requires_text.clear();
         self.new_id.clear();
         self.status = Some((false, format!("새 레벨 '{id}' — 저장하면 파일이 생깁니다")));
     }
@@ -229,6 +253,7 @@ impl LevelEditor {
             return;
         };
         let (zones, screens) = (&self.zones, &self.screens);
+        let requires_text = &mut self.requires_text;
         egui::Grid::new("level-form").num_columns(2).show(ui, |ui| {
             ui.label("이름");
             ui.add(egui::TextEdit::singleline(&mut level.name).desired_width(200.0));
@@ -279,7 +304,40 @@ impl LevelEditor {
                     .suffix(" ms"),
             );
             ui.end_row();
+
+            ui.label("인스턴스");
+            egui::ComboBox::from_id_salt("level-instance")
+                .width(200.0)
+                .selected_text(level.instance.label())
+                .show_ui(ui, |ui| {
+                    for p in InstancePolicy::ALL {
+                        ui.selectable_value(&mut level.instance, p, p.label());
+                    }
+                });
+            ui.end_row();
+
+            ui.label("입장 조건");
+            let r = ui.add(
+                egui::TextEdit::singleline(requires_text)
+                    .hint_text("비우면 누구나 — 예: Level(cmp: Ge, value: 3)")
+                    .desired_width(240.0)
+                    .font(egui::TextStyle::Monospace),
+            );
+            if r.changed()
+                && let Ok(c) = parse_requires(requires_text)
+            {
+                level.requires = c;
+            }
+            ui.end_row();
         });
+        if let Err(e) = parse_requires(requires_text) {
+            ui.colored_label(
+                egui::Color32::from_rgb(240, 110, 100),
+                format!("⚠ 입장 조건: {e}"),
+            );
+        }
+        ui.weak("인스턴스 정책은 단계 1 에서는 기록만 합니다 — 레벨은 열 때마다 처음 상태입니다.");
+        ui.weak("입장 조건은 이 레벨로 가는 포털이 봅니다 (트리거의 when 과 같은 형식).");
         ui.weak("존이 없으면 UI 만 있는 레벨(메인 화면)입니다 — '들어갈 때' 화면이 바탕이 됩니다.");
         ui.weak("로딩 화면은 이 레벨을 여는 동안 뜹니다 — 막대의 값을 '로딩 진행' 으로, 글자에 {loading} 을 쓰면 진행률이 보입니다.");
     }
@@ -315,6 +373,7 @@ impl LevelEditor {
                 .clicked()
             {
                 self.edit = self.saved.clone();
+                self.requires_text = requires_text(self.edit.as_ref());
                 if self.edit.is_none() {
                     self.current.clear();
                 }
@@ -341,6 +400,13 @@ impl LevelEditor {
         let Some(level) = self.edit.clone() else {
             return;
         };
+        if let Err(e) = parse_requires(&self.requires_text) {
+            self.status = Some((
+                true,
+                format!("입장 조건을 읽을 수 없어 저장하지 않았습니다 — {e}"),
+            ));
+            return;
+        }
         match save_level(Path::new("."), &self.current, &level) {
             Ok(path) => {
                 self.saved = Some(level);
@@ -408,8 +474,17 @@ mod tests {
             zone: Some(String::from("zones/cave.zone.ron")),
             hud: Some(String::from("hud")),
             pause: Some(String::from("pause")),
+            instance: InstancePolicy::Personal,
+            requires: parse_requires("Level(cmp: Ge, value: 3)").unwrap(),
             ..LevelFile::default()
         };
+        assert!(level.requires.is_some());
+        // 한 줄 글로 오가도 같은 조건이다 (편집기 칸).
+        assert_eq!(
+            parse_requires(&requires_text(Some(&level))).unwrap(),
+            level.requires
+        );
+        assert!(parse_requires("Level(oops)").is_err());
         let path = save_level(&dir, "cave", &level).unwrap();
         assert_eq!(path, "levels/cave.level.ron");
         let text = std::fs::read_to_string(dir.join(&path)).unwrap();

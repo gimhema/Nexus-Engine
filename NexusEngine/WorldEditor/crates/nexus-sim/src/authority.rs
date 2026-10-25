@@ -332,6 +332,8 @@ pub enum Event {
         travel: u32,
         pos: Vec2,
     },
+    /// 포털에 들어왔지만 입장 조건이 맞지 않았다 (R6). `portal` 은 놓은 순서.
+    PortalBlocked { unit: Entity, portal: u16 },
     /// 창고에 맡겼다 (R4-2).
     Deposited {
         unit: Entity,
@@ -484,6 +486,8 @@ impl Authority for LocalAuthority {
         self.world.run_triggers(&mut events);
         // 퀘스트 목표도 같은 tick 끝의 같은 이벤트로 센다 (R5).
         self.world.run_quests(&mut events);
+        // 포털은 맨 마지막 — 포털 자리의 도달 목표를 먼저 센 뒤에 넘긴다 (R6).
+        self.world.run_portals(&mut events);
         self.ticks += 1;
         if self.scripts.is_some() {
             self.last_events.clone_from(&events);

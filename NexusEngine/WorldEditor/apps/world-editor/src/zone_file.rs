@@ -103,6 +103,8 @@ enum MarkerKindFile {
     Player,
     Npc,
     Monster,
+    /// 포털 (R6) — 액터를 세우지 않는다. `size` 가 구역 지름, 목적지는 `portal`.
+    Portal,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -129,6 +131,18 @@ struct MarkerFile {
     count: u32,
     #[serde(default, skip_serializing_if = "is_zero")]
     radius: f32,
+    /// 포털의 목적지 (R6). 포털이 아니면 쓰지 않는다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    portal: Option<PortalFile>,
+}
+
+/// 포털 목적지 — `level` 이 비면 같은 존 안.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PortalFile {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    level: String,
+    to: [f32; 2],
 }
 
 fn one() -> u32 {
@@ -373,6 +387,7 @@ impl ZoneFile {
                         ItemKind::PlayerSpawn => MarkerKindFile::Player,
                         ItemKind::Npc => MarkerKindFile::Npc,
                         ItemKind::Monster => MarkerKindFile::Monster,
+                        ItemKind::Portal => MarkerKindFile::Portal,
                     },
                     actor: item.actor.raw(),
                     overrides: OverridesFile::of(&item.overrides),
@@ -381,6 +396,10 @@ impl ZoneFile {
                     orientation: item.orientation,
                     count: item.spawn.count,
                     radius: item.spawn.radius,
+                    portal: (item.kind == ItemKind::Portal).then(|| PortalFile {
+                        level: item.portal.level.clone(),
+                        to: item.portal.to.to_array(),
+                    }),
                 })
                 .collect(),
         }
@@ -459,6 +478,20 @@ impl ZoneFile {
                 MarkerKindFile::Player => ItemKind::PlayerSpawn,
                 MarkerKindFile::Npc => ItemKind::Npc,
                 MarkerKindFile::Monster => ItemKind::Monster,
+                MarkerKindFile::Portal => ItemKind::Portal,
+            };
+            let portal = match (&m.portal, kind) {
+                (Some(p), ItemKind::Portal) => crate::scene::PortalLink {
+                    level: p.level.trim().to_owned(),
+                    to: finite2(p.to, &format!("markers[{i}].portal.to"))?,
+                },
+                (None, ItemKind::Portal) => {
+                    return Err(format!("markers[{i}] — 포털인데 portal(목적지)이 없음"));
+                }
+                (Some(_), _) => {
+                    return Err(format!("markers[{i}] — 포털이 아닌 마커에 portal 이 있음"));
+                }
+                (None, _) => crate::scene::PortalLink::default(),
             };
             let overrides = m.overrides.into_overrides(&format!("markers[{i}]"))?;
             if !(1..=crate::scene::MAX_SPAWN_COUNT).contains(&m.count) {
@@ -485,6 +518,7 @@ impl ZoneFile {
                     count: m.count,
                     radius: m.radius,
                 };
+                item.portal = portal;
             }
         }
         Ok(scene)
@@ -778,6 +812,45 @@ mod tests {
         // 에디터에서 샘플을 다시 저장할 것 (파일 → 다른 이름으로 저장 → sample).
         let sample = include_str!("../../../zones/sample.zone.ron");
         assert_eq!(sample, to_ron(&Scene::server_default()));
+    }
+
+    #[test]
+    fn committed_zones_are_in_the_editor_format() {
+        // 손으로 고친 존 파일도 에디터가 저장하는 모양과 바이트까지 같아야 한다 —
+        // 에디터에서 한 번 열어 저장하면 diff 가 생기는 일이 없게 (R6 의 집 안 존이 손으로 쓴 것이다).
+        for (name, text) in [
+            ("village", include_str!("../../../zones/village.zone.ron")),
+            ("house", include_str!("../../../zones/house.zone.ron")),
+        ] {
+            let scene = from_ron(text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(to_ron(&scene), text, "{name}");
+        }
+    }
+
+    #[test]
+    fn portals_keep_their_destination() {
+        let mut scene = Scene::server_default();
+        let e = scene.add("문", ItemKind::Portal, Vec2::new(1.0, 2.0), 2.0);
+        scene.item_mut(e).unwrap().portal = crate::scene::PortalLink {
+            level: String::from("house"),
+            to: Vec2::new(0.0, -2.0),
+        };
+        let back = from_ron(&to_ron(&scene)).unwrap();
+        let portal = back.items.iter().find(|i| i.name == "문").unwrap();
+        assert_eq!(portal.kind, ItemKind::Portal);
+        assert_eq!(portal.portal.level, "house");
+        assert_eq!(portal.portal.to, Vec2::new(0.0, -2.0));
+
+        // 목적지 없는 포털, 포털이 아닌데 목적지가 있는 마커는 거절한다.
+        let text = to_ron(&scene);
+        let start = text.find("            portal: Some(").unwrap();
+        let end =
+            start + text[start..].find("            )),\n").unwrap() + "            )),\n".len();
+        let mut no_dest = text.clone();
+        no_dest.replace_range(start..end, "");
+        assert!(from_ron(&no_dest).unwrap_err().contains("목적지"));
+        let stray = text.replacen("kind: Portal", "kind: Npc", 1);
+        assert!(from_ron(&stray).unwrap_err().contains("portal"));
     }
 
     /// 샘플 파일 다시 만들기 — 기본 씬을 바꾼 뒤 한 번 돌린다.

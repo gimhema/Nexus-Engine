@@ -755,6 +755,20 @@ impl Spec {
                     format!("startup_level: \"{id}\""),
                     format!("startup_level: \"{new}\""),
                 ),
+                // 포털의 목적지 (R6) — 존 파일 마커의 `portal: Some((level: "id", …))`.
+                (
+                    "zones",
+                    ".zone.ron",
+                    format!("level: \"{id}\""),
+                    format!("level: \"{new}\""),
+                ),
+                // NPC 텔레포트 목적지 (R4-2) — `rules.ron` 의 `(level: "id", pos: …)`.
+                (
+                    "data",
+                    "rules.ron",
+                    format!("level: \"{id}\""),
+                    format!("level: \"{new}\""),
+                ),
             ],
             AssetKind::Zone => vec![(
                 "levels",
@@ -1157,6 +1171,15 @@ mod tests {
         std::fs::write(sb.0.join("ui/main_menu.ui.ron"), menu).unwrap();
         let project = crate::level::patch_startup(&sb.read("data/project.ron"), "town").unwrap();
         std::fs::write(sb.0.join("data/project.ron"), project).unwrap();
+        // 집 문 포털(R6)과 상인 텔레포트(R4-2)도 town 으로.
+        let zone = sb
+            .read("zones/village.zone.ron")
+            .replace("level: \"house\"", "level: \"town\"");
+        std::fs::write(sb.0.join("zones/village.zone.ron"), zone).unwrap();
+        let rules = sb
+            .read("data/rules.ron")
+            .replace("level: \"sample\"", "level: \"town\"");
+        std::fs::write(sb.0.join("data/rules.ron"), rules).unwrap();
 
         let ren = op(
             OpKind::Rename,
@@ -1176,6 +1199,13 @@ mod tests {
             "harbor"
         );
         assert!(sb.0.join("levels/harbor.level.ron").exists());
+        let zone = sb.read("zones/village.zone.ron");
+        assert!(zone.contains("level: \"harbor\""), "포털 목적지");
+        crate::zone_file::from_ron(&zone).expect("고쳐 쓴 존도 읽힌다");
+        assert!(
+            sb.read("data/rules.ron").contains("level: \"harbor\""),
+            "텔레포트 목적지"
+        );
     }
 
     #[test]

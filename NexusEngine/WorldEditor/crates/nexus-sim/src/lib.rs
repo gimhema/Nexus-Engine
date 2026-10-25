@@ -17,6 +17,7 @@ mod combat;
 mod faction;
 mod item;
 mod loot;
+mod portal;
 mod progress;
 mod quest;
 mod script;
@@ -35,6 +36,7 @@ pub use item::{
     BAG_SLOTS, Bag, BagKind, EquipSlot, GroundItem, Inventory, ItemDef, ItemId, ItemKind, ItemStack,
 };
 pub use loot::{LootEntry, LootTableId};
+pub use portal::PortalDef;
 pub use progress::{Growth, Progress, exp_to_next};
 pub use quest::{Active, Objective, QuestDef, QuestEntry, QuestId, QuestLog, QuestState, Stage};
 pub use script::{ScriptHost, ScriptLog};

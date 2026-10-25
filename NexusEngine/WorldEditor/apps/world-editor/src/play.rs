@@ -21,9 +21,9 @@ use nexus_core::{Camera2d, Entity, Vec2, Vec3};
 use nexus_render::{DEPTH_LAYER, RenderCommand, SpriteAnchor, TextureId, UvRect};
 use nexus_script::RhaiHost;
 use nexus_sim::{
-    Authority, BagKind, ClassId, CraftId, EquipSlot, Event, Intent, ItemStack, LocalAuthority,
-    Price, Progress, QuestId, QuestState, Rejection, Relation, Service, ShopId, SimWorld, SkillId,
-    TeleportId, Unit,
+    Authority, BagKind, ClassId, Condition, CraftId, EquipSlot, Event, Intent, ItemStack,
+    LocalAuthority, PortalDef, Price, Progress, QuestId, QuestState, Rejection, Relation, Service,
+    ShopId, SimWorld, SkillId, TeleportId, Unit,
 };
 
 use crate::game_data::{ActorLook, GameData};
@@ -47,6 +47,9 @@ const BIAS_BAR: f32 = 2.0 * DEPTH_LAYER;
 
 const PATH_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.55];
 const TARGET_COLOR: [f32; 4] = [1.0, 0.35, 0.30, 1.0];
+/// 포털 구역 (R6) — 들어갈 수 있음 / 입장 조건이 맞지 않음.
+const PORTAL_COLOR: [f32; 4] = [0.70, 0.50, 1.0, 0.9];
+const PORTAL_LOCKED_COLOR: [f32; 4] = [0.55, 0.55, 0.60, 0.7];
 const BAR_BACK: [f32; 4] = [0.05, 0.05, 0.07, 1.0];
 const BAR_HP: [f32; 4] = [0.30, 0.85, 0.40, 1.0];
 const BAR_HP_LOW: [f32; 4] = [0.95, 0.30, 0.25, 1.0];
@@ -228,7 +231,21 @@ pub(crate) struct PlayOptions {
     pub(crate) save: Option<SaveData>,
     /// 새 게임에서 고른 직업 (R2). 이어 하기면 저장한 직업이 이긴다. 둘 다 없으면 기본 직업.
     pub(crate) class: Option<ClassId>,
+    /// 포털이 가리키는 레벨들의 사정 (R6) — 지금 레벨과 입장 조건.
+    pub(crate) links: LevelLinks,
 }
+
+/// 포털을 sim 에 놓을 때 앱이 알려 주는 레벨 사정 (R6). 레벨 파일은 에디터가 읽으므로 여기로 건넨다.
+#[derive(Debug, Default)]
+pub(crate) struct LevelLinks {
+    /// 지금 레벨 번호 — 포털이 이 레벨을 가리키면 같은 존 안으로 옮긴다(레벨을 다시 열지 않는다).
+    pub(crate) here: String,
+    /// 레벨별 입장 조건 (레벨 파일의 `requires`). 없으면 누구나.
+    pub(crate) requires: HashMap<String, Condition>,
+}
+
+/// 포털 `travel` 번호의 시작 — NPC 텔레포트 번호(`GameData::travel_level`)와 겹치지 않게 띄운다.
+const PORTAL_TRAVEL_BASE: u32 = 100_000;
 
 /// 스킬 창 한 줄 (R3).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -264,6 +281,8 @@ pub(crate) struct PlaySession {
     trading: Option<Entity>,
     /// 다른 레벨로 가는 텔레포트 요청 `(레벨, 도착 위치)` (R4-2) — 에디터가 꺼내 레벨을 연다.
     travel: Option<(String, Vec2)>,
+    /// 포털이 가는 레벨 — `PORTAL_TRAVEL_BASE + 색인` 이 `travel` 번호다 (R6).
+    portal_levels: Vec<String>,
     /// 조작하는 액터의 스크립트가 `on_dead` 를 정의했다 — 부활은 스크립트가 맡고 기본 부활은 하지 않는다.
     scripted_revive: bool,
     /// 주문을 위해 마지막으로 경로를 잡은 지점.
@@ -318,7 +337,38 @@ impl PlaySession {
                 .iter()
                 .any(|i| i.entity == *e && i.kind == ItemKind::PlayerSpawn)
         });
-        for item in &scene.items {
+        // 포털 (R6) — 액터를 세우지 않고 구역만 놓는다. 다른 레벨이면 번호를 매겨 두고,
+        // `Traveled` 가 오면 그 번호로 레벨을 찾는다.
+        let mut portal_levels: Vec<String> = Vec::new();
+        for item in scene.items.iter().filter(|i| i.kind == ItemKind::Portal) {
+            let link = &item.portal;
+            let level = link.level.trim();
+            let travel = if level.is_empty() || level == options.links.here {
+                0
+            } else {
+                let i = portal_levels
+                    .iter()
+                    .position(|l| l == level)
+                    .unwrap_or_else(|| {
+                        portal_levels.push(level.to_owned());
+                        portal_levels.len() - 1
+                    });
+                PORTAL_TRAVEL_BASE + u32::try_from(i).unwrap_or(0)
+            };
+            world.add_portal(PortalDef {
+                center: item.pos,
+                radius: item.size * 0.5,
+                travel,
+                pos: link.to,
+                requires: options
+                    .links
+                    .requires
+                    .get(level)
+                    .cloned()
+                    .unwrap_or(Condition::Always),
+            });
+        }
+        for item in scene.items.iter().filter(|i| i.kind.spawns_actor()) {
             let is_player =
                 item.kind == ItemKind::PlayerSpawn && chosen.is_none_or(|e| e == item.entity);
             if is_player && player.is_some() {
@@ -434,6 +484,7 @@ impl PlaySession {
             revive_at: None,
             trading: None,
             travel: None,
+            portal_levels,
             scripted_revive,
             chase_goal: None,
             log: VecDeque::new(),
@@ -1199,7 +1250,12 @@ impl PlaySession {
             if let Event::Traveled { unit, travel, pos } = event
                 && unit == self.player
             {
-                match self.data.travel_level(travel) {
+                let level = travel
+                    .checked_sub(PORTAL_TRAVEL_BASE)
+                    .and_then(|i| self.portal_levels.get(usize::try_from(i).ok()?))
+                    .map(String::as_str)
+                    .or_else(|| self.data.travel_level(travel));
+                match level {
                     Some(level) => self.travel = Some((level.to_owned(), pos)),
                     None => self
                         .alerts
@@ -1367,6 +1423,13 @@ impl PlaySession {
     }
 
     fn on_event(&mut self, event: Event) {
+        // 포털·텔레포트로 옮겨졌으면 하던 주문을 버린다 — 옛 자리의 대상을 향해 되돌아 걷지 않게 (R6).
+        if let Event::Teleported { unit, .. } | Event::Traveled { unit, .. } = event
+            && unit == self.player
+        {
+            self.order = Order::Idle;
+            self.chase_goal = None;
+        }
         // 노리던 대상이 쓰러지면 그 tick 안에 주문을 끝낸다 — 다음 tick 까지 남겨 두면
         // 쓰러진 대상 쪽으로 한 걸음 더 내디딘다.
         if let Event::Died { unit, .. } = event
@@ -1504,6 +1567,9 @@ impl PlaySession {
                 format!("만들었다: {} ×{count}", self.data.item_name(item))
             }
             Event::Teleported { unit, .. } if unit == self.player => String::from("순간이동했다"),
+            Event::PortalBlocked { unit, .. } if unit == self.player => {
+                String::from("아직 들어갈 수 없다 — 입장 조건이 맞지 않는다")
+            }
             Event::Traveled { unit, .. } if unit == self.player => {
                 String::from("다른 곳으로 떠난다…")
             }
@@ -1723,6 +1789,24 @@ impl PlaySession {
                     texture: TextureId::WHITE,
                 });
             }
+        }
+
+        // 포털 (R6) — 들어갈 수 있으면 보라, 입장 조건이 맞지 않으면 회색.
+        for p in world.portals() {
+            let color = if world.check(&p.requires, self.player) {
+                PORTAL_COLOR
+            } else {
+                PORTAL_LOCKED_COLOR
+            };
+            crate::push_ring(p.center, p.radius, 3.0 * px, BIAS_PATH, color, out);
+            crate::push_ring(
+                p.center,
+                (p.radius - 4.0 * px).max(0.0),
+                px,
+                BIAS_PATH,
+                color,
+                out,
+            );
         }
 
         if let Some(me) = world.unit(self.player) {
@@ -2157,6 +2241,7 @@ mod tests {
                 spawn: Some(second),
                 save: None,
                 class: None,
+                links: Default::default(),
             },
         )
         .unwrap();
@@ -2198,6 +2283,7 @@ mod tests {
                 spawn: None,
                 save: Some(save.clone()),
                 class: None,
+                links: Default::default(),
             },
         )
         .unwrap();
@@ -2701,6 +2787,7 @@ mod tests {
                 spawn: None,
                 save: Some(save),
                 class: None,
+                links: Default::default(),
             },
         )
         .unwrap();
@@ -2721,6 +2808,7 @@ mod tests {
                 spawn: None,
                 save: Some(save),
                 class: None,
+                links: Default::default(),
             },
         )
         .unwrap();
@@ -2748,6 +2836,7 @@ mod tests {
                 spawn: None,
                 save: Some(save),
                 class: None,
+                links: Default::default(),
             },
         )
         .unwrap();
@@ -2792,6 +2881,7 @@ mod tests {
                 spawn: None,
                 save: Some(save),
                 class: None,
+                links: Default::default(),
             },
         )
         .expect("없는 아이템 때문에 플레이가 막히면 안 된다");
@@ -2978,6 +3068,7 @@ mod tests {
                 spawn: None,
                 save,
                 class,
+                links: Default::default(),
             },
         )
         .unwrap()
@@ -3310,6 +3401,84 @@ mod tests {
         .unwrap()
     }
 
+    // ── 포털 (R6) ─────────────────────────────────────────────────────────
+
+    /// 이 존 파일로 새 게임 — 지금 레벨과 레벨별 입장 조건을 함께 준다.
+    fn in_level(zone: &str, here: &str, requires: &[(&str, Condition)]) -> PlaySession {
+        let scene = crate::zone_file::from_ron(zone).expect("존");
+        PlaySession::start(
+            &scene,
+            Camera2d::default(),
+            GameData::embedded(),
+            PlayOptions {
+                links: LevelLinks {
+                    here: here.to_owned(),
+                    requires: requires
+                        .iter()
+                        .map(|(l, c)| ((*l).to_owned(), c.clone()))
+                        .collect(),
+                },
+                ..PlayOptions::default()
+            },
+        )
+        .unwrap()
+    }
+
+    /// `at` 으로 걸어가며 다른 레벨로 가는 요청이 나올 때까지 돈다.
+    fn walk_until_travel(s: &mut PlaySession, at: Vec2) -> Option<(String, Vec2)> {
+        s.click(at, 0.01);
+        for _ in 0..400 {
+            s.tick(DT, None);
+            if let Some(t) = s.take_travel() {
+                return Some(t);
+            }
+        }
+        None
+    }
+
+    const VILLAGE: &str = include_str!("../../../zones/village.zone.ron");
+    const HOUSE: &str = include_str!("../../../zones/house.zone.ron");
+
+    #[test]
+    fn the_house_door_leads_inside_and_the_inside_door_leads_back() {
+        let mut s = in_level(VILLAGE, "village", &[]);
+        assert_eq!(
+            walk_until_travel(&mut s, Vec2::new(-6.5, 4.5)),
+            Some((String::from("house"), Vec2::new(0.0, -2.0)))
+        );
+        // 집 안에서 문을 밟으면 마을의 집 앞으로.
+        let mut s = in_level(HOUSE, "house", &[]);
+        assert_eq!(
+            walk_until_travel(&mut s, Vec2::new(0.0, -3.5)),
+            Some((String::from("village"), Vec2::new(-6.5, 3.0)))
+        );
+    }
+
+    #[test]
+    fn a_level_entry_condition_keeps_the_door_shut() {
+        let lv5 = Condition::Level {
+            cmp: nexus_sim::Cmp::Ge,
+            value: 5,
+        };
+        let mut s = in_level(VILLAGE, "village", &[("house", lv5)]);
+        s.click(Vec2::new(-6.5, 4.5), 0.01);
+        let blocked = (0..400).any(|_| {
+            s.tick(DT, None);
+            assert_eq!(s.take_travel(), None);
+            s.log.iter().any(|l| l.contains("아직 들어갈 수 없다"))
+        });
+        assert!(blocked, "{:?}", s.log);
+    }
+
+    #[test]
+    fn a_portal_to_the_level_you_are_in_moves_you_inside_it() {
+        // 지금 레벨을 가리키는 포털은 레벨을 다시 열지 않고 그 자리로 옮긴다.
+        let mut s = in_level(VILLAGE, "house", &[]);
+        assert_eq!(walk_until_travel(&mut s, Vec2::new(-6.5, 4.5)), None);
+        let pos = s.world().unit(s.player()).unwrap().pos();
+        assert!(pos.distance(Vec2::new(0.0, -2.0)) < 0.01, "{pos}");
+    }
+
     /// 이름으로 NPC 에게 걸어가 말을 건다.
     fn talk_to(s: &mut PlaySession, name: &str) {
         let npc = find(s, name);
@@ -3385,6 +3554,7 @@ mod tests {
                 spawn: None,
                 save: Some(save),
                 class: None,
+                links: Default::default(),
             },
         )
         .unwrap();
@@ -3532,6 +3702,7 @@ mod tests {
                 spawn: None,
                 save: Some(save),
                 class: None,
+                links: Default::default(),
             },
         )
         .unwrap();

@@ -31,7 +31,7 @@ use crate::rules_editor::RulesEditor;
 use crate::save_file;
 use crate::scene::{
     ActorId, ArtId, Item, ItemKind, MAX_SPAWN_COUNT, MAX_SPAWN_RADIUS, OverrideEdit, Overrides,
-    Pick, Scene, Target, ZONE_LABEL,
+    Pick, PortalLink, Scene, Target, ZONE_LABEL,
 };
 use crate::screen::Screens;
 use crate::screen_editor::ScreenEditor;
@@ -143,7 +143,10 @@ pub(crate) enum ContinueChoice {
 impl UiModel<'_> {
     /// 이 마커 종류가 "기본값" 일 때 실제로 쓰이는 액터 타입.
     fn default_actor(&self, kind: ItemKind) -> ActorId {
-        self.actor_defaults[kind.index()]
+        self.actor_defaults
+            .get(kind.index())
+            .copied()
+            .unwrap_or(ActorId::DEFAULT)
     }
 }
 
@@ -232,6 +235,8 @@ pub(crate) struct UiActions {
     pub(crate) reload_data: bool,
     /// 레벨 편집기가 저장했다 — 레벨 목록을 다시 읽는다.
     pub(crate) reload_levels: bool,
+    /// 포털 목적지 바꾸기 (R6) — `(포털, 새 목적지, 편집이 끝났는가)`.
+    pub(crate) portal: Option<(nexus_core::Entity, PortalLink, bool)>,
     /// 화면 파일이 바뀌었다 (휴지통에서 되살림) — 화면을 다시 읽는다.
     pub(crate) reload_screens: bool,
     /// 그림(시트·타일셋·그림 위젯)을 디스크에서 다시 올린다 — 옛 텍스처는 푼다.
@@ -772,7 +777,12 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
 
                 ui.separator();
                 ui.menu_button("추가", |ui| {
-                    for kind in [ItemKind::PlayerSpawn, ItemKind::Npc, ItemKind::Monster] {
+                    for kind in [
+                        ItemKind::PlayerSpawn,
+                        ItemKind::Npc,
+                        ItemKind::Monster,
+                        ItemKind::Portal,
+                    ] {
                         if ui.button(kind.label()).clicked() {
                             actions.add_item = Some(kind);
                         }
@@ -1219,6 +1229,7 @@ fn outline_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions
                     (ItemKind::PlayerSpawn, "플레이어"),
                     (ItemKind::Npc, "NPC"),
                     (ItemKind::Monster, "몬스터"),
+                    (ItemKind::Portal, "포털"),
                 ] {
                     let button = egui::Button::new(format!("+ {text}"))
                         .fill(to_color32(kind.color()).gamma_multiply(0.25));
@@ -1835,32 +1846,40 @@ fn inspector_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActio
                             });
                         }
 
-                        // 방향: 저장은 라디안, 편집·표시는 도 (nexus_core::units 규약).
-                        // 0~360 을 넘겨 끌어도 되고, 저장할 때 정규화된다.
-                        let mut degrees = units::normalize_heading(item.orientation).to_degrees();
-                        ui.horizontal(|ui| {
-                            ui.label("방향");
-                            let r = ui.add(
-                                egui::DragValue::new(&mut degrees)
-                                    .speed(1.0)
-                                    .fixed_decimals(1)
-                                    .suffix("°"),
-                            );
-                            let finished = r.drag_stopped() || r.lost_focus();
-                            if r.changed() || finished {
-                                actions.inspector = Some(InspectorEdit::ItemHeading {
-                                    entity: *entity,
-                                    heading: degrees.to_radians(),
-                                    finished,
-                                });
-                            }
-                            ui.weak(format!("{:.3} rad", item.orientation));
-                        });
-                        ui.weak("뷰포트: 화살표 끝 ◆ 를 끌어 회전 (Ctrl 15°)");
+                        // 포털은 방향이 없다 (R6).
+                        if item.kind != ItemKind::Portal {
+                            // 방향: 저장은 라디안, 편집·표시는 도 (nexus_core::units 규약).
+                            // 0~360 을 넘겨 끌어도 되고, 저장할 때 정규화된다.
+                            let mut degrees =
+                                units::normalize_heading(item.orientation).to_degrees();
+                            ui.horizontal(|ui| {
+                                ui.label("방향");
+                                let r = ui.add(
+                                    egui::DragValue::new(&mut degrees)
+                                        .speed(1.0)
+                                        .fixed_decimals(1)
+                                        .suffix("°"),
+                                );
+                                let finished = r.drag_stopped() || r.lost_focus();
+                                if r.changed() || finished {
+                                    actions.inspector = Some(InspectorEdit::ItemHeading {
+                                        entity: *entity,
+                                        heading: degrees.to_radians(),
+                                        finished,
+                                    });
+                                }
+                                ui.weak(format!("{:.3} rad", item.orientation));
+                            });
+                            ui.weak("뷰포트: 화살표 끝 ◆ 를 끌어 회전 (Ctrl 15°)");
+                        }
 
                         ui.add_space(10.0);
-                        actor_section(ui, model, &[item], actions);
-                        spawn_section(ui, &[item], actions);
+                        if item.kind == ItemKind::Portal {
+                            portal_section(ui, model, item, actions);
+                        } else {
+                            actor_section(ui, model, &[item], actions);
+                            spawn_section(ui, &[item], actions);
+                        }
                     }
                 }
                 many => {
@@ -1875,6 +1894,7 @@ fn inspector_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActio
                             Target::Item(e) => model.scene.item(*e),
                             Target::Zone => None,
                         })
+                        .filter(|i| i.kind != ItemKind::Portal)
                         .collect();
                     if !actors.is_empty() {
                         ui.add_space(10.0);
@@ -1886,12 +1906,83 @@ fn inspector_panel(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActio
         });
 }
 
+/// 포털 목적지 (R6) — 어느 레벨의 어디로. 레벨을 비우면 이 존 안에서 옮긴다.
+/// 입장 조건은 포털이 아니라 **도착 레벨**이 정한다 (레벨 편집기의 입장 조건).
+fn portal_section(ui: &mut egui::Ui, model: &UiModel<'_>, item: &Item, actions: &mut UiActions) {
+    ui.strong("포털 목적지");
+    let link = &item.portal;
+    let level_label = |id: &str| -> String {
+        if id.is_empty() {
+            String::from("이 존 안")
+        } else {
+            model.levels.iter().find(|(l, _)| l == id).map_or_else(
+                || format!("{id} (없는 레벨)"),
+                |(l, n)| format!("{l} ({n})"),
+            )
+        }
+    };
+    egui::Grid::new("portal-link")
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label("레벨");
+            egui::ComboBox::from_id_salt("portal-level")
+                .selected_text(level_label(&link.level))
+                .show_ui(ui, |ui| {
+                    let choices = std::iter::once(String::new())
+                        .chain(model.levels.iter().map(|(id, _)| id.clone()));
+                    for id in choices {
+                        if ui
+                            .selectable_label(id == link.level, level_label(&id))
+                            .clicked()
+                        {
+                            actions.portal = Some((
+                                item.entity,
+                                PortalLink {
+                                    level: id,
+                                    to: link.to,
+                                },
+                                true,
+                            ));
+                        }
+                    }
+                });
+            ui.end_row();
+
+            let mut to = link.to;
+            ui.label("도착 위치");
+            ui.horizontal(|ui| {
+                let rx = ui.add(egui::DragValue::new(&mut to.x).speed(0.1).prefix("X "));
+                let ry = ui.add(egui::DragValue::new(&mut to.y).speed(0.1).prefix("Y "));
+                let finished =
+                    rx.drag_stopped() || rx.lost_focus() || ry.drag_stopped() || ry.lost_focus();
+                if rx.changed() || ry.changed() || finished {
+                    actions.portal = Some((
+                        item.entity,
+                        PortalLink {
+                            level: link.level.clone(),
+                            to,
+                        },
+                        finished,
+                    ));
+                }
+            });
+            ui.end_row();
+        });
+    ui.weak(format!(
+        "구역 지름 {:.1} m — 밟고 들어오는 순간 넘어간다 (플레이어만).",
+        item.size
+    ));
+    if !link.level.is_empty() {
+        ui.weak("입장 조건은 도착 레벨의 설정을 따른다 (레벨 편집기).");
+    }
+}
+
 /// 스폰 영역 — 몇 마리를 어느 반경에 흩어 세울지. 플레이어 스폰에는 없다 (조작할 한 명이다).
 /// 여러 개를 골랐으면 전부에 적용하고, 값이 다르면 "여러 값" 이라고 알린다.
 fn spawn_section(ui: &mut egui::Ui, items: &[&Item], actions: &mut UiActions) {
     let items: Vec<&&Item> = items
         .iter()
-        .filter(|i| i.kind != ItemKind::PlayerSpawn)
+        .filter(|i| matches!(i.kind, ItemKind::Npc | ItemKind::Monster))
         .collect();
     let Some(first) = items.first() else {
         return;

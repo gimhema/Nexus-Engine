@@ -26,6 +26,7 @@ use crate::item::{
     BAG_SLOTS, BagKind, EquipSlot, GroundItem, ItemDef, ItemId, ItemKind, ItemStack,
 };
 use crate::loot::{self, LootEntry, LootTableId, Rng};
+use crate::portal::PortalDef;
 use crate::progress::Progress;
 use crate::quest::{Active, Objective, QuestDef, QuestId, QuestState};
 use crate::skills::{SkillRules, to_u32};
@@ -95,6 +96,8 @@ pub struct SimWorld {
     teleports: HashMap<TeleportId, TeleportDef>,
     /// 퀘스트 (R5).
     quests: HashMap<QuestId, QuestDef>,
+    /// 포털 (R6) — 등록 순서가 번호다.
+    portals: Vec<PortalDef>,
 }
 
 impl SimWorld {
@@ -127,6 +130,7 @@ impl SimWorld {
             crafts: HashMap::new(),
             teleports: HashMap::new(),
             quests: HashMap::new(),
+            portals: Vec::new(),
         }
     }
 
@@ -480,6 +484,62 @@ impl SimWorld {
     }
 
     /// 텔레포트 목적지 표를 등록한다 (설정 작업, R4-2).
+    /// 포털을 놓는다 (R6, 설정 작업). 번호는 놓은 순서 — `Event::PortalBlocked` 가 가리킨다.
+    pub fn add_portal(&mut self, def: PortalDef) {
+        self.portals.push(def);
+    }
+
+    #[must_use]
+    pub fn portals(&self) -> &[PortalDef] {
+        &self.portals
+    }
+
+    /// 이번 tick 에 포털 구역에 들어온 플레이어를 넘긴다 (R6) — 트리거·퀘스트 뒤에 부른다.
+    /// 규칙은 `portal` 모듈 doc.
+    pub(crate) fn run_portals(&mut self, events: &mut Vec<Event>) {
+        if self.portals.is_empty() {
+            return;
+        }
+        let movers: Vec<(Entity, Vec2, Vec2)> = self
+            .units()
+            .filter(|(_, u)| u.def.class.is_some() && u.is_alive() && u.prev_pos != u.pos)
+            .map(|(e, u)| (e, u.prev_pos, u.pos))
+            .collect();
+        for (unit, from, to) in movers {
+            let Some((index, portal)) = self
+                .portals
+                .iter()
+                .enumerate()
+                .find(|(_, p)| p.entered(from, to))
+            else {
+                continue;
+            };
+            let portal = portal.clone();
+            let index = u16::try_from(index).unwrap_or(u16::MAX);
+            if !self.check(&portal.requires, unit) {
+                events.push(Event::PortalBlocked {
+                    unit,
+                    portal: index,
+                });
+            } else if portal.travel == 0 {
+                self.set_position(unit, portal.pos);
+                events.push(Event::Teleported {
+                    unit,
+                    pos: portal.pos,
+                });
+            } else {
+                if let Some(u) = self.unit_mut(unit) {
+                    u.waypoints.clear();
+                }
+                events.push(Event::Traveled {
+                    unit,
+                    travel: portal.travel,
+                    pos: portal.pos,
+                });
+            }
+        }
+    }
+
     pub fn define_teleport(&mut self, id: TeleportId, def: TeleportDef) {
         self.teleports.insert(id, def);
     }

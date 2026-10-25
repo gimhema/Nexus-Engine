@@ -11,7 +11,7 @@
 //! move 30 20 [shift] [ctrl]    포인터 이동 (누른 채면 드래그)
 //! release 30 20                왼쪽 버튼 뗌
 //! press rotate                 단독 선택 마커의 회전 핸들 위치 (move/release 도 가능)
-//! add npc|monster|player X Y   마커 추가
+//! add npc|monster|player|portal X Y   마커 추가
 //! tool select|paint|art        뷰포트 포인터가 할 일 바꾸기
 //! art 번호 [ground|prop]        지형 그림 붓 (0 = 지우기 — 이때는 층을 적는다)
 //! delete | duplicate | spawnarea 마리수 반경 | reloadart | slot N | askplay | continue yes|new|cancel | undo | redo | wait
@@ -496,7 +496,8 @@ fn parse_step(text: &str) -> Result<Step, String> {
                 Some("npc") => ItemKind::Npc,
                 Some("monster") => ItemKind::Monster,
                 Some("player") => ItemKind::PlayerSpawn,
-                _ => return Err(format!("'{text}': 종류는 npc|monster|player")),
+                Some("portal") => ItemKind::Portal,
+                _ => return Err(format!("'{text}': 종류는 npc|monster|player|portal")),
             };
             return Ok(Step::Add(kind, Vec2::new(number(2)?, number(3)?)));
         }

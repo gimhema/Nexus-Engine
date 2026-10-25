@@ -343,11 +343,13 @@ enum MarkerKindFile {
 }
 
 impl MarkerKindFile {
-    fn of(kind: ItemKind) -> Self {
+    /// 포털은 액터를 세우지 않으므로 기본 액터가 없다 (R6).
+    fn of(kind: ItemKind) -> Option<Self> {
         match kind {
-            ItemKind::PlayerSpawn => Self::Player,
-            ItemKind::Npc => Self::Npc,
-            ItemKind::Monster => Self::Monster,
+            ItemKind::PlayerSpawn => Some(Self::Player),
+            ItemKind::Npc => Some(Self::Npc),
+            ItemKind::Monster => Some(Self::Monster),
+            ItemKind::Portal => None,
         }
     }
 }
@@ -1389,8 +1391,8 @@ impl GameData {
             return actor;
         }
         // parse() 가 세 종류의 기본값이 다 있는지 확인했다.
-        self.default_actors
-            .get(&MarkerKindFile::of(kind))
+        MarkerKindFile::of(kind)
+            .and_then(|k| self.default_actors.get(&k))
             .copied()
             .unwrap_or(ActorId::DEFAULT)
     }

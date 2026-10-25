@@ -4,6 +4,8 @@
 // zone 이 없으면 UI 만 있는 레벨이다 (메인 화면). hud = 플레이 중 바탕 화면,
 // on_enter = 들어갈 때 띄울 화면, pause = Esc 로 띄울 화면, loading = 여는 동안 띄울 화면
 // (전부 ui/<번호>.ui.ron). loading_ms = 로딩 화면을 최소로 보여 줄 시간(ms).
+// instance = 인스턴스 정책(Shared·Personal·Party — 단계 1 에서는 기록만),
+// requires = 들어올 수 있는 조건(이 레벨로 가는 포털이 본다, 트리거의 when 과 같은 형식).
 (
     version: 1,
     name: "메인 화면",

@@ -19,7 +19,7 @@ use nexus_sim::{Tile, TileCoord};
 
 use crate::scene::{
     ActorId, ArtId, Handle, Item, ItemKind, MAX_SPAWN_COUNT, MAX_SPAWN_RADIUS, OverrideEdit,
-    Overrides, Pick, Scene, SpawnArea, Target, ZoneBounds,
+    Overrides, Pick, PortalLink, Scene, SpawnArea, Target, ZoneBounds,
 };
 use crate::terrain::ArtKind;
 
@@ -76,6 +76,12 @@ pub(crate) enum Command {
         kind: ArtKind,
         edits: Vec<(TileCoord, ArtId, ArtId)>,
     },
+    /// 포털 목적지 (R6). 숫자를 끄는 동안은 한 스텝으로 모은다.
+    SetPortal {
+        entity: Entity,
+        from: PortalLink,
+        to: PortalLink,
+    },
 }
 
 impl Command {
@@ -115,6 +121,11 @@ impl Command {
             Self::PaintArt { kind, edits } => {
                 for &(at, _, to) in edits {
                     set_art(scene, *kind, at, to);
+                }
+            }
+            Self::SetPortal { entity, to, .. } => {
+                if let Some(item) = scene.item_mut(*entity) {
+                    item.portal = to.clone();
                 }
             }
         }
@@ -160,6 +171,11 @@ impl Command {
                     set_art(scene, *kind, at, from);
                 }
             }
+            Self::SetPortal { entity, from, .. } => {
+                if let Some(item) = scene.item_mut(*entity) {
+                    item.portal = from.clone();
+                }
+            }
         }
     }
 
@@ -177,6 +193,7 @@ impl Command {
             Self::SetOverrides(edits) => edits.iter().all(|(_, from, to)| from == to),
             Self::SetSpawn(edits) => edits.iter().all(|(_, from, to)| from == to),
             Self::PaintArt { edits, .. } => edits.is_empty(),
+            Self::SetPortal { from, to, .. } => from == to,
         }
     }
 
@@ -213,6 +230,7 @@ impl Command {
                     ArtKind::Prop => "오브젝트 놓기",
                 },
             ),
+            Self::SetPortal { .. } => String::from("포털 목적지 변경"),
         }
     }
 }
@@ -473,6 +491,8 @@ enum LiveEdit {
     Spawn(Vec<(Entity, SpawnArea)>),
     ItemHeading(Entity, f32),
     Zone(ZoneBounds),
+    /// 포털 목적지를 끌어 바꾸는 동안 — 원래 값.
+    Portal(Entity, PortalLink),
 }
 
 /// 편집 상태 전체.
@@ -890,6 +910,11 @@ impl Editing {
             Some(LiveEdit::Zone(z)) => scene.zone = z,
             Some(LiveEdit::Overrides(originals)) => set_overrides(scene, originals.into_iter()),
             Some(LiveEdit::Spawn(originals)) => set_spawns(scene, originals.into_iter()),
+            Some(LiveEdit::Portal(e, link)) => {
+                if let Some(item) = scene.item_mut(e) {
+                    item.portal = link;
+                }
+            }
             None => {}
         }
     }
@@ -1243,6 +1268,45 @@ impl Editing {
         }
     }
 
+    /// 포털 목적지를 바꾼다 (R6). 끄는 도중(`finished == false`)에는 원래 값을 기억만 하고,
+    /// 끝날 때 원래 → 지금을 한 스텝으로 남긴다. 포털이 아니면 아무것도 하지 않는다.
+    pub(crate) fn set_portal(
+        &mut self,
+        scene: &mut Scene,
+        entity: Entity,
+        link: PortalLink,
+        finished: bool,
+    ) {
+        let Some(item) = scene
+            .item_mut(entity)
+            .filter(|i| i.kind == ItemKind::Portal)
+        else {
+            return;
+        };
+        let original = match self.live.take() {
+            Some(LiveEdit::Portal(e, orig)) if e == entity => orig,
+            _ => item.portal.clone(),
+        };
+        item.portal = PortalLink {
+            level: link.level.trim().to_owned(),
+            to: if link.to.is_finite() {
+                link.to
+            } else {
+                item.portal.to
+            },
+        };
+        if finished {
+            let to = item.portal.clone();
+            self.history.record(Command::SetPortal {
+                entity,
+                from: original,
+                to,
+            });
+        } else {
+            self.live = Some(LiveEdit::Portal(entity, original));
+        }
+    }
+
     /// 선택한 마커 전부의 덮어쓰기 한 항목을 바꾼다.
     ///
     /// 끄는 도중(`finished == false`)에는 원래 값을 기억만 하고, 끝날 때 원래 → 지금을 한 스텝으로 남긴다.
@@ -1255,7 +1319,7 @@ impl Editing {
                 .filter_map(|t| match t {
                     Target::Item(e) => scene
                         .item(*e)
-                        .filter(|i| i.kind != ItemKind::PlayerSpawn)
+                        .filter(|i| matches!(i.kind, ItemKind::Npc | ItemKind::Monster))
                         .map(|i| (*e, i.spawn)),
                     Target::Zone => None,
                 })

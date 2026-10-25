@@ -716,6 +716,14 @@ impl Editor {
             spawn: self.selected_player_spawn(),
             save,
             class: new_game,
+            links: play::LevelLinks {
+                here: self
+                    .levels
+                    .find_by_zone(self.zone_path.as_deref())
+                    .unwrap_or_default()
+                    .to_owned(),
+                requires: self.levels.entry_conditions(),
+            },
         };
         match PlaySession::start(&self.scene, self.camera, data, options) {
             Ok(session) => {
@@ -1495,6 +1503,10 @@ impl Editor {
         if let Some(edit) = actions.inspector {
             self.editing.apply_inspector(&mut self.scene, edit);
         }
+        if let Some((portal, link, finished)) = actions.portal.clone() {
+            self.editing
+                .set_portal(&mut self.scene, portal, link, finished);
+        }
         if let Some(kind) = actions.add_item {
             // 지금 보고 있는 곳 한가운데에 놓는다
             self.editing
@@ -1913,8 +1925,12 @@ impl Editor {
                 item.kind.color(),
                 &mut self.commands,
             );
-            draw_arrow(item, px, &mut self.commands);
-            draw_spawn_area(item, px, &mut self.commands);
+            if item.kind == scene::ItemKind::Portal {
+                draw_portal(item, px, &mut self.commands);
+            } else {
+                draw_arrow(item, px, &mut self.commands);
+                draw_spawn_area(item, px, &mut self.commands);
+            }
         }
 
         // ── 오브젝트 층 ──────────────────────────────────────────────────────
@@ -1930,7 +1946,7 @@ impl Editor {
             &mut self.commands,
         );
         if let Some(sprites) = &self.sprites {
-            for item in &self.scene.items {
+            for item in self.scene.items.iter().filter(|i| i.kind.spawns_actor()) {
                 // 그림은 마커 종류가 아니라 **액터 타입**이 정한다 (P1).
                 let (actor, tint) = self.actor_look_of(item);
                 sprites.build(item, actor, tint, px, BIAS_SPRITE, &mut self.commands);
@@ -2095,7 +2111,12 @@ impl Editor {
     /// 고른 마커마다 회전 핸들 — 화살표 끝에서 이어지는 가는 선 + 마름모. 아무것이나 끌면 고른 것 전부가 돈다.
     fn draw_rotate_handle(&mut self, px: f32) {
         for entity in self.editing.rotatable() {
-            if let Some(item) = self.scene.item(entity).cloned() {
+            if let Some(item) = self
+                .scene
+                .item(entity)
+                .filter(|i| i.kind != scene::ItemKind::Portal)
+                .cloned()
+            {
                 self.draw_one_rotate_handle(&item, px);
             }
         }
@@ -2526,6 +2547,51 @@ fn draw_arrow(item: &scene::Item, px: f32, out: &mut Vec<RenderCommand>) {
 }
 
 /// 스폰 영역 — 반경 원과 마리마다의 자리 (무리일 때만). 플레이 때 서는 자리 그대로다.
+/// 포털 (R6) — 구역 원과, 같은 존 안으로 보내면 도착 자리까지의 선.
+fn draw_portal(item: &scene::Item, px: f32, out: &mut Vec<RenderCommand>) {
+    let color = item.kind.color();
+    push_ring(item.pos, item.size * 0.5, 2.0 * px, BIAS_MARKER, color, out);
+    if item.portal.level.is_empty() {
+        let [r, g, b, _] = color;
+        push_segment(
+            item.pos,
+            item.portal.to,
+            THIN_LINE_PX * px,
+            BIAS_MARKER,
+            [r, g, b, 0.45],
+            out,
+        );
+        push_ring(
+            item.portal.to,
+            0.3,
+            THIN_LINE_PX * px,
+            BIAS_MARKER,
+            [r, g, b, 0.8],
+            out,
+        );
+    }
+}
+
+/// 지면에 눕는 원 — 선분 여러 개.
+pub(crate) fn push_ring(
+    center: Vec2,
+    radius: f32,
+    thick: f32,
+    depth_bias: f32,
+    color: [f32; 4],
+    out: &mut Vec<RenderCommand>,
+) {
+    const SEGMENTS: usize = 40;
+    let at = |i: usize| {
+        #[allow(clippy::cast_precision_loss)]
+        let a = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+        center + Vec2::new(a.cos(), a.sin()) * radius
+    };
+    for i in 0..SEGMENTS {
+        push_segment(at(i), at(i + 1), thick, depth_bias, color, out);
+    }
+}
+
 fn draw_spawn_area(item: &scene::Item, px: f32, out: &mut Vec<RenderCommand>) {
     const SEGMENTS: usize = 48;
     let area = item.spawn;

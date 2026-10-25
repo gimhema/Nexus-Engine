@@ -18,10 +18,12 @@
 //! 다른 데이터 파일과 같은 규칙: 실행 파일에 **내장**되어 있고, 같은 경로에 디스크 파일이
 //! 있으면 그것이 우선한다. 잘못된 파일은 경고로 남기고 그 레벨만 빠진다.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+use crate::trigger_file::ConditionFile;
 
 /// 프로젝트 설정 (작업 디렉터리 기준).
 pub(crate) const PROJECT_PATH: &str = "data/project.ron";
@@ -35,6 +37,7 @@ const EMBEDDED_LEVELS: &[(&str, &str)] = &[
     ("main", include_str!("../../../levels/main.level.ron")),
     ("village", include_str!("../../../levels/village.level.ron")),
     ("sample", include_str!("../../../levels/sample.level.ron")),
+    ("house", include_str!("../../../levels/house.level.ron")),
 ];
 
 const FORMAT_VERSION: u32 = 1;
@@ -47,8 +50,40 @@ pub(crate) struct ProjectFile {
     pub(crate) startup_level: String,
 }
 
+/// 인스턴스 정책 (R6) — 이 레벨에 들어온 사람들이 같은 세계를 보는가.
+///
+/// **단계 1 에서는 동작이 같다** — 레벨을 열 때마다 존을 새로 만든다(몬스터·땅의 아이템이 처음 상태).
+/// 단계 2(MMO)에서 서버가 이 값으로 존 인스턴스를 나눈다. 갈아엎지 않도록 필드만 미리 둔다.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum InstancePolicy {
+    /// 모두가 같은 존 — 마을·필드.
+    #[default]
+    Shared,
+    /// 들어올 때마다 혼자만의 존 — 개인 던전·집 안.
+    Personal,
+    /// 파티마다 하나 — 파티 던전.
+    Party,
+}
+
+impl InstancePolicy {
+    pub(crate) const ALL: [Self; 3] = [Self::Shared, Self::Personal, Self::Party];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Shared => "공유 (마을·필드)",
+            Self::Personal => "개인 (혼자만의 존)",
+            Self::Party => "파티 (파티마다 하나)",
+        }
+    }
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde 가 참조로 넘긴다
+fn is_shared(p: &InstancePolicy) -> bool {
+    *p == InstancePolicy::Shared
+}
+
 /// 레벨 한 개.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LevelFile {
     pub(crate) version: u32,
@@ -72,6 +107,13 @@ pub(crate) struct LevelFile {
     /// 로딩 화면을 최소 이만큼(ms) 보여 준다 — 여는 일이 금방 끝나도 화면이 번쩍이고 사라지지 않게.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub(crate) loading_ms: u32,
+    /// 인스턴스 정책 (R6). 단계 1 에서는 기록만 한다.
+    #[serde(default, skip_serializing_if = "is_shared")]
+    pub(crate) instance: InstancePolicy,
+    /// 들어올 수 있는 조건 (R6) — **이 레벨로 가는 포털**이 본다. 던전 입장 레벨·선행 퀘스트·열쇠 등.
+    /// 트리거의 `when` 과 같은 형식이다. 없으면 누구나.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) requires: Option<ConditionFile>,
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -160,6 +202,14 @@ impl Levels {
         self.levels
             .iter()
             .map(|(id, level)| (id.clone(), level.name.clone()))
+            .collect()
+    }
+
+    /// 레벨별 입장 조건 (R6) — 포털을 놓을 때 쓴다. 조건이 없는 레벨은 빠진다.
+    pub(crate) fn entry_conditions(&self) -> HashMap<String, nexus_sim::Condition> {
+        self.levels
+            .iter()
+            .filter_map(|(id, l)| Some((id.clone(), l.requires.as_ref()?.into())))
             .collect()
     }
 
@@ -302,6 +352,8 @@ pub(crate) fn to_ron(level: &LevelFile) -> String {
 // zone 이 없으면 UI 만 있는 레벨이다 (메인 화면). hud = 플레이 중 바탕 화면,
 // on_enter = 들어갈 때 띄울 화면, pause = Esc 로 띄울 화면, loading = 여는 동안 띄울 화면
 // (전부 ui/<번호>.ui.ron). loading_ms = 로딩 화면을 최소로 보여 줄 시간(ms).
+// instance = 인스턴스 정책(Shared·Personal·Party — 단계 1 에서는 기록만),
+// requires = 들어올 수 있는 조건(이 레벨로 가는 포털이 본다, 트리거의 when 과 같은 형식).
 ";
     format!("{header}{body}\n")
 }

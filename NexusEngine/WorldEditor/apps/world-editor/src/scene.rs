@@ -23,6 +23,9 @@ pub(crate) enum ItemKind {
     PlayerSpawn,
     Npc,
     Monster,
+    /// 밟으면 다른 자리·다른 레벨로 넘어가는 구역 (R6). **액터를 세우지 않는다** — `size` 가 구역 지름,
+    /// 어디로 가는지는 [`Item::portal`].
+    Portal,
 }
 
 impl ItemKind {
@@ -32,6 +35,7 @@ impl ItemKind {
             Self::PlayerSpawn => [0.30, 0.85, 0.55, 1.0],
             Self::Npc => [0.90, 0.75, 0.30, 1.0],
             Self::Monster => [0.90, 0.35, 0.30, 1.0],
+            Self::Portal => [0.65, 0.45, 0.95, 1.0],
         }
     }
 
@@ -40,19 +44,26 @@ impl ItemKind {
             Self::PlayerSpawn => "플레이어 스폰",
             Self::Npc => "NPC",
             Self::Monster => "몬스터",
+            Self::Portal => "포털",
         }
     }
 
-    /// 세 종류 전부 — 종류별 표를 만들 때 쓴다.
+    /// **액터를 세우는** 세 종류 — 종류별 기본 액터 표를 만들 때 쓴다. 포털은 들지 않는다.
     pub(crate) const ALL: [Self; 3] = [Self::PlayerSpawn, Self::Npc, Self::Monster];
 
-    /// 배열 색인용 번호. [`ALL`](Self::ALL) 순서와 같다.
+    /// 배열 색인용 번호. [`ALL`](Self::ALL) 순서와 같다. 포털은 표 밖(3)이다 — `get` 으로 읽을 것.
     pub(crate) fn index(self) -> usize {
         match self {
             Self::PlayerSpawn => 0,
             Self::Npc => 1,
             Self::Monster => 2,
+            Self::Portal => 3,
         }
+    }
+
+    /// 액터를 세우는 종류인가 — 포털이 아니면 참.
+    pub(crate) fn spawns_actor(self) -> bool {
+        self != Self::Portal
     }
 
     /// 새로 놓을 때의 점유 크기 (m). 서버에 크기 필드가 없어 캐릭터 크기 정도로 둔다.
@@ -60,6 +71,7 @@ impl ItemKind {
         match self {
             Self::PlayerSpawn => 1.0,
             Self::Npc | Self::Monster => 0.8,
+            Self::Portal => 2.0,
         }
     }
 }
@@ -84,6 +96,17 @@ pub(crate) struct Item {
     pub(crate) overrides: Overrides,
     /// 이 마커에서 몇 마리를 어느 반경에 흩어 세우는지 (몬스터·NPC). 기본은 한 마리, 제자리.
     pub(crate) spawn: SpawnArea,
+    /// 포털의 목적지 (R6). 포털이 아니면 쓰지 않는다.
+    pub(crate) portal: PortalLink,
+}
+
+/// 포털이 보내는 곳 (R6). 레벨이 비면 **지금 존 안**의 `to` 로 옮긴다.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct PortalLink {
+    /// 레벨 번호 (`levels/<번호>.level.ron`). 비면 같은 존.
+    pub(crate) level: String,
+    /// 도착 위치 (m).
+    pub(crate) to: Vec2,
 }
 
 /// 스폰 영역 — 마커 하나가 세우는 무리. 배치의 성질이라 액터 타입이 아니라 마커에 둔다.
@@ -526,6 +549,7 @@ impl Scene {
             actor: ActorId::DEFAULT,
             overrides: Overrides::default(),
             spawn: SpawnArea::default(),
+            portal: PortalLink::default(),
         });
         entity
     }
@@ -548,6 +572,11 @@ impl Scene {
             actor: ActorId::DEFAULT,
             overrides: Overrides::default(),
             spawn: SpawnArea::default(),
+            // 같은 존 안, 포털 바로 옆 — 고칠 때까지 아무 데로도 튀지 않게.
+            portal: PortalLink {
+                level: String::new(),
+                to: pos + Vec2::new(0.0, -3.0),
+            },
         }
     }
 
@@ -618,7 +647,12 @@ impl Scene {
         let tolerance = PICK_TOLERANCE_PX * px;
 
         // 회전 손잡이는 고른 마커마다 있다 — 마커보다 먼저 잡힌다.
-        for item in rotatable.iter().filter_map(|e| self.item(*e)) {
+        // 포털은 방향이 없어 손잡이도 없다 (R6).
+        for item in rotatable
+            .iter()
+            .filter_map(|e| self.item(*e))
+            .filter(|i| i.kind != ItemKind::Portal)
+        {
             if (p - rotate_handle_pos(item, px)).length() <= HANDLE_SIZE_PX * 0.5 * px + tolerance {
                 return Some(Pick::RotateHandle(item.entity));
             }
