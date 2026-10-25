@@ -243,9 +243,11 @@ end
 | `knight.canvas` | `WorldEditor/assets/worldcanvas/knight.png` + `.sheet.ron` | 성기사 (`reference/kinght.webp` 풍). 32×40, 4방향, Idle 2 + Walk 4, 망치 번개가 프레임마다 바뀐다 |
 | `dragon.canvas` | `WorldEditor/assets/worldcanvas/dragon.png` + `.sheet.ron` | 붉은 드래곤 (`reference/dragon.webp` 풍). 64×64, 4방향, Idle 2 + Walk 4(날갯짓) |
 | `palace_gate.canvas` | `WorldEditor/assets/worldcanvas/palace_gate.png` (atlas) | 궁궐 정문 (`reference/castle.webp` 광화문 풍). 128×96 = 8×6m |
+| `dark_knight.canvas` | `WorldEditor/assets/worldcanvas/dark_knight.png` + `.sheet.ron` | 암흑기사 (`reference/dark_knight.webp` 풍). 40×48, 4방향, Idle 2 + Walk 4. 도형 대신 픽셀을 직접 찍었다 (grid·patch, 반쪽 + mirror + 그늘 swap) |
+| `goblin8.canvas` | `WorldEditor/assets/worldcanvas/goblin8.png` + `.sheet.ron` | 고블린 8방향 시험판. goblin 의 남·북·동에 남동·북동을 직접 그려 더하고, 서·남서·북서는 반전 |
 
 `reference/` 는 화풍 참고용 원화다 (WebP). 그대로 베끼지 않고 구성·색·분위기만 가져온다.
-knight·dragon·palace_gate 는 **아직 WorldEditor 데이터에 연결하지 않았다** — 기사·드래곤은
+knight·dragon·palace_gate·dark_knight·goblin8 은 **아직 WorldEditor 데이터에 연결하지 않았다** — 기사·드래곤은
 `data/rules.ron` 에 액터가 있어야 `display.ron` 에 걸 수 있고, 정문은 `terrain.ron` props 에 추가하면 된다.
 
 **WorldEditor 연결:** `data/display.ron` 의 액터 1(플레이어)·102(고블린)가 위 시트를 쓴다.
