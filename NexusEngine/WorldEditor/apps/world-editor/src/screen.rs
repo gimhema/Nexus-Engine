@@ -66,6 +66,7 @@ const EMBEDDED_SCREENS: &[(&str, &str)] = &[
         include_str!("../../../ui/class_select.ui.ron"),
     ),
     ("npc", include_str!("../../../ui/npc.ui.ron")),
+    ("character", include_str!("../../../ui/character.ui.ron")),
 ];
 
 const FORMAT_VERSION: u32 = 1;
@@ -92,6 +93,8 @@ const SKILL_FILL_DIM: [f32; 4] = [0.22, 0.22, 0.28, 1.0];
 const COOLDOWN_SHADE: [f32; 4] = [0.0, 0.0, 0.0, 0.62];
 /// 스킬 칸 한 변 (UI 픽셀).
 const SKILL_CELL: f32 = 22.0;
+/// 버프 칸 한 변 (UI 픽셀, R2b).
+const BUFF_CELL: f32 = 16.0;
 const BUTTON_BACK: [f32; 4] = [0.10, 0.11, 0.15, 0.92];
 const BUTTON_HOVER: [f32; 4] = [0.20, 0.24, 0.34, 0.95];
 const BUTTON_PRESS: [f32; 4] = [0.30, 0.36, 0.50, 0.97];
@@ -130,6 +133,8 @@ pub(crate) const PLACEHOLDERS: &[&str] = &[
     "revive",
     "class",
     "gold",
+    "attack",
+    "defense",
     "npc_name",
     "npc_profile",
     "npc_page",
@@ -424,6 +429,8 @@ pub(crate) enum WidgetKind {
     /// 단축키 스킬 칸 — 숫자키 번호·쿨타임·MP 부족을 보여 준다. 가로 한 줄.
     /// `size` 가 없으면 칸 수에 맞춘다 (스킬이 없으면 칸 하나 자리).
     Skills,
+    /// 걸려 있는 버프 — 색 칸에 남은 초 (R2b). 크기는 칸 수에 맞춘다.
+    Buffs,
     /// 누를 수 있는 버튼 — 눌리면 [`Action`] 을 낸다.
     /// `size` 가 없으면 글자 + 여백에 맞춘다.
     Button { label: String, action: Action },
@@ -447,10 +454,80 @@ pub(crate) enum WidgetKind {
     /// 여러 줄 글 — 폭(`size` 의 너비)에 맞춰 줄을 바꾼다 (R4b, NPC 인사말). 값 이름은 [`Self::Text`] 와 같다.
     /// `size` 가 없으면 폭 200 UI 픽셀, 높이는 줄 수에 맞춘다. 넘치는 줄은 그리지 않는다.
     Paragraph { format: String },
-    /// 누를 수 있는 줄 목록 — 지금은 **NPC 창의 지금 쪽**(기능 메뉴·사기·팔기·제작·이동·창고·퀘스트, R4b).
-    /// 줄마다 왼쪽 글·오른쪽 글(값·상태). 누르면 [`Action::NpcRow`]. 넘치는 줄은 그리지 않는다.
-    /// `size` 가 없으면 폭 200, 높이 6줄.
-    List { row_height: u32 },
+    /// 누를 수 있는 줄 목록 — 무엇을 보여 줄지는 [`ListSource`] (R4b, T2).
+    /// 줄마다 왼쪽 글·오른쪽 글(값·상태). 넘치는 줄은 그리지 않는다. `size` 가 없으면 폭 200, 높이 6줄.
+    List {
+        row_height: u32,
+        /// 적지 않으면 NPC 창 — 예전 화면 파일이 그대로 읽힌다.
+        #[serde(default, skip_serializing_if = "ListSource::is_npc")]
+        source: ListSource,
+    },
+}
+
+/// 목록 위젯이 보여 주는 것 (T2).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) enum ListSource {
+    /// NPC 창의 지금 쪽 — 기능 메뉴·사기·팔기·제작·이동·창고·퀘스트. 누르면 [`Action::NpcRow`].
+    #[default]
+    Npc,
+    /// 던전 목표와 진행 중인 퀘스트 목표 — 읽기만.
+    Tracker,
+    /// 장비 자리 — 누르면 벗는다.
+    Equipment,
+    /// 소모품·장비 가방 — 누르면 쓰거나 입는다.
+    Bag,
+    /// 배운 스킬 — 누르면 단축키에 넣거나 뺀다.
+    Skills,
+    /// 진행 중인 퀘스트 — 두 번 누르면 포기한다.
+    Quests,
+}
+
+impl ListSource {
+    pub(crate) const ALL: [Self; 6] = [
+        Self::Npc,
+        Self::Tracker,
+        Self::Equipment,
+        Self::Bag,
+        Self::Skills,
+        Self::Quests,
+    ];
+
+    fn is_npc(&self) -> bool {
+        *self == Self::Npc
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Npc => "NPC 창",
+            Self::Tracker => "목표 추적",
+            Self::Equipment => "장비",
+            Self::Bag => "가방",
+            Self::Skills => "스킬",
+            Self::Quests => "퀘스트",
+        }
+    }
+
+    /// 이 목록의 줄.
+    fn rows(self, v: &Values) -> &[ListRow] {
+        match self {
+            Self::Npc => v.npc.as_ref().map_or(&[][..], |n| n.rows.as_slice()),
+            Self::Tracker => &v.lists.tracker,
+            Self::Equipment => &v.lists.equipment,
+            Self::Bag => &v.lists.bag,
+            Self::Skills => &v.lists.skills,
+            Self::Quests => &v.lists.quests,
+        }
+    }
+}
+
+/// NPC 창 밖의 목록들 (T2).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ListValues {
+    pub(crate) tracker: Vec<ListRow>,
+    pub(crate) equipment: Vec<ListRow>,
+    pub(crate) bag: Vec<ListRow>,
+    pub(crate) skills: Vec<ListRow>,
+    pub(crate) quests: Vec<ListRow>,
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -473,6 +550,7 @@ impl WidgetKind {
             Self::Bar { .. } => "막대",
             Self::Items { .. } => "아이템 칸",
             Self::Skills => "스킬 칸",
+            Self::Buffs => "버프 칸",
             Self::Button { .. } => "버튼",
             Self::Image { .. } => "그림",
             Self::Fill { .. } => "색 채움",
@@ -553,6 +631,8 @@ pub(crate) enum Action {
     NpcRow(u32),
     /// NPC 창을 처음 메뉴로 (R4b) — "뒤로" 버튼.
     NpcBack,
+    /// NPC 창이 아닌 목록의 그 줄을 누른다 (T2) — 목록 위젯이 줄마다 낸다.
+    ListRow { source: ListSource, row: u32 },
     /// 아무것도 하지 않는다 — 배치만 해 두는 버튼.
     None,
 }
@@ -571,6 +651,7 @@ impl Action {
             Self::NewGame { .. } => "새 게임",
             Self::NpcRow(_) => "NPC 목록 줄",
             Self::NpcBack => "NPC 처음으로",
+            Self::ListRow { .. } => "목록 줄",
             Self::None => "없음",
         }
     }
@@ -579,6 +660,14 @@ impl Action {
 // ─────────────────────────────────────────────────────────────────────────────
 // 그릴 때 쓰는 값 — 플레이 중이 아니어도 화면을 그릴 수 있어야 한다
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// 버프 칸 하나 (R2b).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct BuffSlot {
+    pub(crate) color: [f32; 4],
+    /// 남은 초 (올림).
+    pub(crate) seconds: u32,
+}
 
 /// 단축키 스킬 칸 하나의 상태.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -608,6 +697,8 @@ pub(crate) struct Values {
     pub(crate) items: Vec<([f32; 4], u32)>,
     /// 단축키 스킬 칸 — 1번 키부터.
     pub(crate) skills: Vec<SkillSlot>,
+    /// 걸려 있는 버프 (R2b).
+    pub(crate) buffs: Vec<BuffSlot>,
     pub(crate) show_items: bool,
     /// 로딩 진행 `(지난 ms, 전체 ms)` — 레벨을 여는 동안만 0 이 아니다.
     pub(crate) loading: (u32, u32),
@@ -621,6 +712,10 @@ pub(crate) struct Values {
     pub(crate) gold: u64,
     /// 말을 건 NPC 의 창 (R4b) — `{npc_name}`·`{npc_profile}`·`{npc_page}` 와 목록 위젯. 없으면 빈 글자·빈 목록.
     pub(crate) npc: Option<NpcValues>,
+    /// 공격·방어 (`{attack}`·`{defense}`, T2).
+    pub(crate) attack: u32,
+    pub(crate) defense: u32,
+    pub(crate) lists: ListValues,
 }
 
 /// NPC 창 값 (R4b).
@@ -630,6 +725,14 @@ pub(crate) struct NpcValues {
     pub(crate) profile: String,
     pub(crate) page: String,
     pub(crate) rows: Vec<ListRow>,
+}
+
+fn preview_row(text: &str, right: &str) -> ListRow {
+    ListRow {
+        text: text.to_owned(),
+        right: right.to_owned(),
+        enabled: true,
+    }
 }
 
 /// 목록 위젯 한 줄 (R4b).
@@ -655,12 +758,16 @@ impl Values {
             exp_to_next: p.exp_to_next(),
             items: play.hud_slots(),
             skills: play.skill_slots(),
+            buffs: play.buff_slots(),
             show_items,
             loading: (0, 0),
             down: !u.is_alive(),
             revive_in: play.revive_in(),
             class: play.class_name(),
             gold: play.gold(),
+            attack: u.attack(),
+            defense: u.defense(),
+            lists: play.list_values(),
             npc: play.npc_screen().map(|s| NpcValues {
                 name: s.name,
                 profile: s.profile,
@@ -693,6 +800,10 @@ impl Values {
                 ([0.85, 0.80, 0.35, 1.0], 1),
                 ([0.45, 0.65, 0.95, 1.0], 12),
             ],
+            buffs: vec![BuffSlot {
+                color: [0.4, 0.75, 0.3, 1.0],
+                seconds: 12,
+            }],
             skills: vec![
                 SkillSlot {
                     key: 1,
@@ -716,6 +827,24 @@ impl Values {
             revive_in: Some(2.4),
             class: String::from("전사"),
             gold: 1250,
+            attack: 24,
+            defense: 7,
+            lists: ListValues {
+                tracker: vec![
+                    preview_row("슬라임 소탕", ""),
+                    preview_row("· 슬라임 처치", "1/3"),
+                ],
+                equipment: vec![preview_row("무기", "숏소드"), preview_row("머리", "—")],
+                bag: vec![
+                    preview_row("빨간 포션", "×3"),
+                    preview_row("숏소드", "입기"),
+                ],
+                skills: vec![
+                    preview_row("강베기 Lv1", "1번"),
+                    preview_row("치유 Lv1", "—"),
+                ],
+                quests: vec![preview_row("슬라임 소탕", "포기")],
+            },
             npc: Some(NpcValues {
                 name: String::from("상인"),
                 profile: String::from(
@@ -1054,6 +1183,17 @@ impl Screens {
                 texts.extend([row.text.as_str(), row.right.as_str()]);
             }
         }
+        for rows in [
+            &values.lists.tracker,
+            &values.lists.equipment,
+            &values.lists.bag,
+            &values.lists.skills,
+            &values.lists.quests,
+        ] {
+            for row in rows {
+                texts.extend([row.text.as_str(), row.right.as_str()]);
+            }
+        }
         for t in texts {
             if !t.chars().all(|c| self.extra_chars.contains(&c)) {
                 self.note_text(t);
@@ -1177,6 +1317,7 @@ impl Screens {
             }
             (None, WidgetKind::Items { columns }) => self.items_size(*columns, values),
             (None, WidgetKind::Skills) => self.skills_size(values),
+            (None, WidgetKind::Buffs) => self.buffs_size(values),
             (None, WidgetKind::Bar { .. }) => (110.0 * s, 9.0 * s),
             (None, WidgetKind::Image { path, region, .. }) => {
                 let (w, h) = self.image_size(path, *region);
@@ -1187,7 +1328,7 @@ impl Screens {
                 let lines = self.wrap(&fill(format, values), width).len().max(1);
                 (width, lines as f32 * self.text_size("가").1)
             }
-            (None, WidgetKind::List { row_height }) => (
+            (None, WidgetKind::List { row_height, .. }) => (
                 DEFAULT_LIST_WIDTH * s,
                 (*row_height).max(1) as f32 * s * DEFAULT_LIST_ROWS,
             ),
@@ -1264,10 +1405,17 @@ impl Screens {
                     .find(|(_, r)| r.contains(at))
                     .map(|(key, _)| (format!("{}#{key}", l.widget.id), Action::Skill(key))),
                 // 목록도 줄마다 버튼이다 (R4b). 흐린 줄은 누를 수 없다.
-                WidgetKind::List { row_height } if l.rect.contains(at) => self
-                    .list_rows(values, *row_height, l.rect)
+                WidgetKind::List { row_height, source } if l.rect.contains(at) => self
+                    .list_rows(values, *row_height, *source, l.rect)
                     .find(|(_, r, enabled)| *enabled && r.contains(at))
-                    .map(|(i, _, _)| (format!("{}#{i}", l.widget.id), Action::NpcRow(i as u32))),
+                    .map(|(i, _, _)| {
+                        let row = i as u32;
+                        let action = match *source {
+                            ListSource::Npc => Action::NpcRow(row),
+                            source => Action::ListRow { source, row },
+                        };
+                        (format!("{}#{i}", l.widget.id), action)
+                    }),
                 _ => None,
             })
     }
@@ -1278,14 +1426,14 @@ impl Screens {
         &self,
         values: &'v Values,
         row_height: u32,
+        source: ListSource,
         r: Rect,
     ) -> impl Iterator<Item = (usize, Rect, bool)> + 'v {
         let h = row_height.max(1) as f32 * self.scale();
         let fits = (r.h / h).floor().max(0.0) as usize;
-        values
-            .npc
+        source
+            .rows(values)
             .iter()
-            .flat_map(|n| n.rows.iter())
             .take(fits)
             .enumerate()
             .map(move |(i, row)| (i, Rect::new(r.x, r.y + i as f32 * h, r.w, h), row.enabled))
@@ -1432,6 +1580,9 @@ impl Screens {
                     WidgetKind::Skills => {
                         self.skills(values, r, &bias, out);
                     }
+                    WidgetKind::Buffs => {
+                        self.buffs(values, r, &bias, out);
+                    }
                     WidgetKind::Button { label, .. } => {
                         let id = laid.widget.id.as_str();
                         let back = if pressed == Some(id) {
@@ -1468,10 +1619,10 @@ impl Screens {
                             self.text(line, at, TEXT, bias(BIAS_TEXT), out);
                         }
                     }
-                    WidgetKind::List { row_height } => {
+                    WidgetKind::List { row_height, source } => {
                         let id = laid.widget.id.as_str();
-                        let rows = values.npc.as_ref().map_or(&[][..], |n| n.rows.as_slice());
-                        for (i, cell, enabled) in self.list_rows(values, *row_height, r) {
+                        let rows = source.rows(values);
+                        for (i, cell, enabled) in self.list_rows(values, *row_height, *source, r) {
                             let name = format!("{id}#{i}");
                             let lit = enabled && hover == Some(name.as_str());
                             if lit {
@@ -1602,6 +1753,39 @@ impl Screens {
         let (cell, gap) = (SKILL_CELL * s, 3.0 * s);
         let n = values.skills.len().max(1);
         (n as f32 * (cell + gap) - gap, cell)
+    }
+
+    fn buffs_size(&self, values: &Values) -> (f32, f32) {
+        let s = self.scale();
+        let (cell, gap) = (BUFF_CELL * s, 2.0 * s);
+        let n = values.buffs.len().max(1);
+        (n as f32 * (cell + gap) - gap, cell)
+    }
+
+    /// 버프 칸 (R2b) — 데이터의 색에 남은 초.
+    fn buffs(
+        &self,
+        values: &Values,
+        r: Rect,
+        bias: &dyn Fn(f32) -> f32,
+        out: &mut Vec<RenderCommand>,
+    ) {
+        let s = self.scale();
+        let (cell, gap) = (BUFF_CELL * s, 2.0 * s);
+        for (i, buff) in values.buffs.iter().enumerate() {
+            let cell_rect = Rect::new(r.x + i as f32 * (cell + gap), r.y, cell, cell);
+            rect(cell_rect, SLOT_BACK, bias(BIAS_BACK), out);
+            rect(cell_rect.grow(-s), buff.color, bias(BIAS_FILL), out);
+            let label = buff.seconds.to_string();
+            let (tw, th) = self.text_size(&label);
+            let at = Rect::new(
+                cell_rect.x + (cell - tw) * 0.5,
+                cell_rect.y + (cell - th) * 0.5,
+                tw,
+                th,
+            );
+            self.text(&label, at, TEXT, bias(BIAS_TEXT), out);
+        }
     }
 
     /// 단축키 스킬 칸 — 숫자키 번호, MP 가 모자라면 흐리게, 쿨타임이 남은 만큼 위에서부터 그늘.
@@ -1882,7 +2066,7 @@ pub(crate) fn to_ron(screen: &ScreenFile) -> String {
 // 메뉴 UI → 위젯 편집기. 저장하면 이 파일이 통째로 다시 쓰이므로 주석은 남지 않는다.
 //
 // pos·size 는 UI 픽셀(테마의 scale 을 곱하기 전)이고, anchor 기준점에서 오른쪽·아래가 +다.
-// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {mp} {max_mp} {level} {exp} {exp_to_next} {loading}(로딩 %) {revive}(부활까지 초) {class}(직업) {gold}(기본 재화)
+// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {mp} {max_mp} {level} {exp} {exp_to_next} {loading}(로딩 %) {revive}(부활까지 초) {class}(직업) {gold}(기본 재화) {attack} {defense}
 // NPC 창(R4b): {npc_name} {npc_profile}(인사말) {npc_page}(지금 쪽) — Paragraph 는 폭에 맞춰 줄을 바꾸고, List 는 NPC 창의 목록 줄이다.
 // Image 위젯의 path 는 작업 디렉터리 기준 PNG (소문자·'/'), region 은 그림의 픽셀 사각형이다.
 ";
@@ -1933,6 +2117,8 @@ fn fill(format: &str, v: &Values) -> String {
     out.replace("{revive}", &revive)
         .replace("{class}", &v.class)
         .replace("{gold}", &v.gold.to_string())
+        .replace("{attack}", &v.attack.to_string())
+        .replace("{defense}", &v.defense.to_string())
         .replace("{npc_name}", v.npc.as_ref().map_or("", |n| n.name.as_str()))
         .replace(
             "{npc_profile}",
@@ -1972,7 +2158,7 @@ fn check_widgets<'a>(
             WidgetKind::Text { format } | WidgetKind::Paragraph { format } => {
                 check_format(&w.id, format)?;
             }
-            WidgetKind::List { row_height } => {
+            WidgetKind::List { row_height, .. } => {
                 if *row_height == 0 {
                     return Err(format!("'{}': 줄 높이가 0", w.id));
                 }
@@ -2039,7 +2225,7 @@ fn check_widgets<'a>(
                     return Err(format!("'{}': color 는 0~1", w.id));
                 }
             }
-            WidgetKind::Panel { .. } | WidgetKind::Skills => {}
+            WidgetKind::Panel { .. } | WidgetKind::Skills | WidgetKind::Buffs => {}
         }
         check_widgets(&w.children, depth + 1, seen)?;
     }
@@ -2494,7 +2680,13 @@ mod tests {
         let mut screen = ScreenFile::new("NPC");
         screen.widgets.push(Widget {
             size: Some((120, 30)), // 줄 높이 15 → 두 줄만 들어간다
-            ..Widget::new("rows", WidgetKind::List { row_height: 15 })
+            ..Widget::new(
+                "rows",
+                WidgetKind::List {
+                    row_height: 15,
+                    source: ListSource::Npc,
+                },
+            )
         });
         ui.set_screen("npc", screen.clone());
         let values = Values::preview(); // 빨간 포션·파란 포션·(흐린) 마도서
@@ -2505,7 +2697,8 @@ mod tests {
             .find(|l| l.widget.id == "rows")
             .unwrap()
             .rect;
-        let rows: Vec<(usize, Rect, bool)> = ui.list_rows(&values, 15, rect).collect();
+        let rows: Vec<(usize, Rect, bool)> =
+            ui.list_rows(&values, 15, ListSource::Npc, rect).collect();
         assert_eq!(rows.len(), 2, "넘치는 셋째 줄은 없다");
         for (i, r, _) in &rows {
             assert_eq!(
@@ -2517,7 +2710,10 @@ mod tests {
         screen.widgets[0].size = Some((120, 45));
         ui.set_screen("npc", screen.clone());
         let rect = ui.layout(&screen, &values, viewport)[0].rect;
-        let (_, third, enabled) = ui.list_rows(&values, 15, rect).nth(2).unwrap();
+        let (_, third, enabled) = ui
+            .list_rows(&values, 15, ListSource::Npc, rect)
+            .nth(2)
+            .unwrap();
         assert!(!enabled);
         assert_eq!(ui.button_at("npc", &values, viewport, third.center()), None);
     }

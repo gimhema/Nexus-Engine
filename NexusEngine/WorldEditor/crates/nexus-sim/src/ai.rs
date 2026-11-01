@@ -54,6 +54,10 @@ pub(crate) fn think(world: &mut SimWorld, events: &mut Vec<Event>) -> Vec<Intent
 fn think_one(world: &mut SimWorld, me: Entity, events: &mut Vec<Event>, out: &mut Vec<Intent>) {
     let now = world.now();
     let Some(u) = world.unit(me) else { return };
+    // 기절 중에는 생각하지 않는다 (R2b) — 풀리면 그 자리에서 이어 간다.
+    if u.is_stunned() {
+        return;
+    }
     let (def, pos, home, moving, mut ai) = (u.def(), u.pos(), u.home(), u.is_moving(), u.ai);
 
     // ── 귀환 중: 도착할 때까지 아무것도 받지 않는다 ──────────────────────────

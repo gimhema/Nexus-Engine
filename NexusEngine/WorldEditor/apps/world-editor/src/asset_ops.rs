@@ -594,6 +594,20 @@ fn table_users(
                 }
             }
         }
+        // R2b — 그 버프를 거는 스킬·소모품. 트리거·퀘스트의 참조는 저장 검사가 막는다.
+        Tab::Buffs => {
+            for (skill, f) in &tables.skills {
+                if f.level.buff == id {
+                    out.push(format!("스킬 #{skill} {}", f.name));
+                }
+            }
+            for (item, f) in &tables.items {
+                if matches!(f.kind, crate::game_data::ItemKindForm::Consumable { buff, .. } if buff == id)
+                {
+                    out.push(format!("아이템 #{item} {}", f.name));
+                }
+            }
+        }
         // R4-2 — 그 표를 여는 NPC 기능.
         Tab::Shops | Tab::Crafts | Tab::Teleports => {
             use crate::trade_file::ServiceFile;

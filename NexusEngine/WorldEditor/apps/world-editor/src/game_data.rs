@@ -27,8 +27,9 @@ use std::time::Duration;
 
 use nexus_core::Entity;
 use nexus_sim::{
-    ActorType, AiKind, EquipSlot, FactionId, Growth, ItemDef, ItemId, ItemKind as SimItemKind,
-    LootEntry, LootTableId, Relation, SimWorld, SkillDef, SkillId, TriggerDef, TriggerId, UnitDef,
+    ActorType, AiKind, BuffDef, BuffId, EquipSlot, FactionId, Growth, ItemDef, ItemId,
+    ItemKind as SimItemKind, LootEntry, LootTableId, Relation, SimWorld, SkillDef, SkillId,
+    TriggerDef, TriggerId, UnitDef,
 };
 use nexus_sim::{
     ClassDef, ClassId, CraftDef, CraftId, CurrencyId, EquipRules, Formula, Price, Service, ShopDef,
@@ -137,6 +138,57 @@ struct RulesFile {
     /// 퀘스트 (R5) — 형식은 `quest_file` 모듈 doc.
     #[serde(default)]
     quests: BTreeMap<u32, QuestFile>,
+    /// 버프·상태이상 (R2b). 이름·아이콘 색은 `display.ron` 의 `buffs`.
+    #[serde(default)]
+    buffs: BTreeMap<u32, BuffFile>,
+}
+
+/// 버프 한 줄 (R2b, 규칙은 `nexus_sim::buff`). 적지 않은 칸은 0·거짓.
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct BuffFile {
+    duration_ms: u32,
+    attack: i32,
+    defense: i32,
+    max_hp: i32,
+    max_mp: i32,
+    mp_regen: i32,
+    move_pct: i32,
+    tick_ms: u32,
+    tick_hp: i32,
+    stun: bool,
+    silence: bool,
+}
+
+impl From<BuffFile> for BuffDef {
+    fn from(b: BuffFile) -> Self {
+        Self {
+            duration_ms: b.duration_ms,
+            attack: b.attack,
+            defense: b.defense,
+            max_hp: b.max_hp,
+            max_mp: b.max_mp,
+            mp_regen: b.mp_regen,
+            move_pct: b.move_pct,
+            tick_ms: b.tick_ms,
+            tick_hp: b.tick_hp,
+            stun: b.stun,
+            silence: b.silence,
+        }
+    }
+}
+
+/// 버프의 표시 반쪽 (R2b) — 이름은 기록에, 색은 HUD 칸에.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BuffLookFile {
+    name: String,
+    #[serde(default = "default_buff_color")]
+    color: (f32, f32, f32),
+}
+
+fn default_buff_color() -> (f32, f32, f32) {
+    (0.6, 0.6, 0.6)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -228,6 +280,9 @@ struct SkillFile {
     /// 습득 조건 (R3) — 트리거의 `when` 과 같은 형식. 적지 않으면 늘 참.
     #[serde(default = "trigger_file::always")]
     requires: ConditionFile,
+    /// 맞은 유닛마다 거는 버프 (R2b).
+    #[serde(default)]
+    buff: Option<u32>,
 }
 
 fn one_f32() -> f32 {
@@ -265,6 +320,9 @@ enum ItemFile {
         /// 기본 값 (R4, 기본 재화) — 상점이 사들일 때의 기준. 0 이면 팔 수 없다.
         #[serde(default)]
         value: u32,
+        /// 쓰면 쓴 쪽에게 거는 버프 (R2b).
+        #[serde(default)]
+        buff: Option<u32>,
     },
     Equipment {
         #[serde(default)]
@@ -446,6 +504,12 @@ struct DisplayFile {
     /// 진영의 표시 이름 (P19). 번호는 `rules.ron` 의 진영 번호(서버 `EFactionId`)와 같다. 없으면 번호로 보인다.
     #[serde(default)]
     factions: BTreeMap<u32, SkillLookFile>,
+    /// 트리거의 이름 (T5) — 편집기에서만 보인다.
+    #[serde(default)]
+    triggers: BTreeMap<u32, SkillLookFile>,
+    /// 버프 이름·아이콘 색 (R2b). 없으면 번호로, 회색으로 보인다.
+    #[serde(default)]
+    buffs: BTreeMap<u32, BuffLookFile>,
     /// 직업 이름·설명 (R2). 번호는 `rules.ron` 의 `classes`.
     #[serde(default)]
     classes: BTreeMap<u32, ClassLookFile>,
@@ -559,6 +623,12 @@ pub(crate) struct GameData {
     actor_skills: BTreeMap<ActorId, Vec<SkillId>>,
     /// 스킬의 표시 이름 (`display.ron`).
     skill_names: BTreeMap<SkillId, String>,
+    /// 버프 (R2b).
+    buffs: Vec<(BuffId, BuffDef)>,
+    buff_looks: BTreeMap<BuffId, (String, (f32, f32, f32))>,
+    /// 버프를 거는 스킬·소모품 (R2b).
+    skill_buffs: Vec<(SkillId, BuffId)>,
+    item_buffs: Vec<(ItemId, BuffId)>,
     /// 진영의 표시 이름 (`display.ron`).
     faction_names: BTreeMap<u32, String>,
     /// 땅의 아이템 소멸 시간 — `None` 이면 남는다.
@@ -618,12 +688,14 @@ impl GameData {
         let skill = |s: u32| self.skills.iter().any(|(id, _)| id.0 == s);
         let quest = |q: u32| self.quests.iter().any(|(id, _)| id.0 == q);
         let loot = |t: u32| self.loot.iter().any(|(id, _)| id.0 == t);
+        let buff = |b: u32| self.buffs.iter().any(|(id, _)| id.0 == b);
         clear.check_refs(&trigger_file::Known {
             item: &item,
             actor: &actor,
             skill: &skill,
             quest: &quest,
             loot: &loot,
+            buff: &buff,
         })
     }
 
@@ -868,6 +940,39 @@ impl GameData {
                 format!("표시 진영 {id}: 이름이 비어 있음"),
             );
         }
+        // 버프 (R2b).
+        for (id, b) in &r.buffs {
+            check(
+                (1..=MAX_RESPAWN_MS).contains(&b.duration_ms),
+                format!("버프 {id}: duration_ms 는 1~1시간"),
+            );
+            check(
+                (b.tick_hp == 0) == (b.tick_ms == 0),
+                format!("버프 {id}: tick_ms 와 tick_hp 는 함께 적는다"),
+            );
+        }
+        for (id, s) in &r.skills {
+            if let Some(b) = s.buff {
+                check(
+                    r.buffs.contains_key(&b),
+                    format!("스킬 {id}: 없는 버프 {b}"),
+                );
+            }
+        }
+        for (id, it) in &r.items {
+            if let ItemFile::Consumable { buff: Some(b), .. } = it {
+                check(
+                    r.buffs.contains_key(b),
+                    format!("아이템 {id}: 없는 버프 {b}"),
+                );
+            }
+        }
+        for (id, look) in &d.buffs {
+            check(
+                !look.name.trim().is_empty(),
+                format!("표시 버프 {id}: 이름이 비어 있음"),
+            );
+        }
         check(
             (1..=100).contains(&r.revive.hp_percent)
                 && r.revive.exp_loss_percent <= 100
@@ -910,12 +1015,14 @@ impl GameData {
         let skill_exists = |s: u32| r.skills.contains_key(&s);
         let quest_exists = |q: u32| r.quests.contains_key(&q);
         let loot_exists = |t: u32| r.loot.contains_key(&t);
+        let buff_exists = |b: u32| r.buffs.contains_key(&b);
         let known = trigger_file::Known {
             item: &item_exists,
             actor: &actor_exists,
             skill: &skill_exists,
             quest: &quest_exists,
             loot: &loot_exists,
+            buff: &buff_exists,
         };
         errors.extend(trigger_file::validate(&r.triggers, &known));
         errors.extend(quest_file::validate(&r.quests, &known));
@@ -1116,6 +1223,29 @@ impl GameData {
                 .iter()
                 .map(|(id, l)| (SkillId(*id), l.name.clone()))
                 .collect(),
+            buffs: r
+                .buffs
+                .iter()
+                .map(|(id, b)| (BuffId(*id), BuffDef::from(*b)))
+                .collect(),
+            buff_looks: d
+                .buffs
+                .iter()
+                .map(|(id, l)| (BuffId(*id), (l.name.clone(), l.color)))
+                .collect(),
+            skill_buffs: r
+                .skills
+                .iter()
+                .filter_map(|(id, s)| s.buff.map(|b| (SkillId(*id), BuffId(b))))
+                .collect(),
+            item_buffs: r
+                .items
+                .iter()
+                .filter_map(|(id, it)| match it {
+                    ItemFile::Consumable { buff: Some(b), .. } => Some((ItemId(*id), BuffId(*b))),
+                    _ => None,
+                })
+                .collect(),
             faction_names: d
                 .factions
                 .iter()
@@ -1271,6 +1401,15 @@ impl GameData {
         }
         for &(id, def) in &self.items {
             world.define_item(id, def);
+        }
+        for &(id, def) in &self.buffs {
+            world.define_buff(id, def);
+        }
+        for &(skill, buff) in &self.skill_buffs {
+            world.define_skill_buff(skill, buff);
+        }
+        for &(item, buff) in &self.item_buffs {
+            world.define_item_buff(item, buff);
         }
         for (id, entries) in &self.loot {
             world.define_loot(*id, entries.clone());
@@ -1545,6 +1684,20 @@ impl GameData {
     }
 
     /// 스킬 이름. 표시 파일에 없으면 번호로.
+    /// 버프 이름 (R2b).
+    pub(crate) fn buff_name(&self, id: BuffId) -> String {
+        self.buff_looks
+            .get(&id)
+            .map_or_else(|| format!("버프 #{}", id.0), |l| l.0.clone())
+    }
+
+    /// 버프의 HUD 칸 색 (R2b).
+    pub(crate) fn buff_color(&self, id: BuffId) -> (f32, f32, f32) {
+        self.buff_looks
+            .get(&id)
+            .map_or_else(default_buff_color, |l| l.1)
+    }
+
     pub(crate) fn skill_name(&self, id: SkillId) -> String {
         self.skill_names
             .get(&id)
@@ -2020,6 +2173,8 @@ pub(crate) enum ItemKindForm {
         heal: u32,
         mana: u32,
         max_stack: u32,
+        /// 쓰면 거는 버프 (R2b). 0 = 없음.
+        buff: u32,
     },
     Equipment {
         slot: SlotChoice,
@@ -2120,6 +2275,7 @@ impl ItemForm {
                 heal: 10,
                 mana: 0,
                 max_stack: 20,
+                buff: 0,
             },
             name: name.to_owned(),
             color: (0.9, 0.9, 0.9),
@@ -2143,6 +2299,7 @@ impl ItemForm {
                 heal,
                 mana,
                 max_stack,
+                buff,
             } => {
                 // MP 회복은 있을 때만 적는다 — 예전 항목이 바이트 그대로 남게.
                 let mana = if *mana == 0 {
@@ -2150,7 +2307,12 @@ impl ItemForm {
                 } else {
                     format!("mana: {mana}, ")
                 };
-                format!("{id}: Consumable(heal: {heal}, {mana}max_stack: {max_stack}),")
+                let buff = if *buff == 0 {
+                    String::new()
+                } else {
+                    format!(", buff: Some({buff})")
+                };
+                format!("{id}: Consumable(heal: {heal}, {mana}max_stack: {max_stack}{buff}),")
             }
             ItemKindForm::Equipment {
                 slot,
@@ -2203,6 +2365,8 @@ pub(crate) struct SkillLevelForm {
     pub(crate) cooldown: String,
     pub(crate) mp_cost: String,
     pub(crate) heal: String,
+    /// 맞은 유닛마다 거는 버프 (R2b). 0 = 없음.
+    pub(crate) buff: u32,
 }
 
 impl Default for SkillLevelForm {
@@ -2215,6 +2379,7 @@ impl Default for SkillLevelForm {
             cooldown: String::new(),
             mp_cost: String::new(),
             heal: String::new(),
+            buff: 0,
         }
     }
 }
@@ -2263,6 +2428,9 @@ impl SkillForm {
         }
         if set(&l.requires) {
             extra.push_str(&format!(", requires: {}", l.requires.trim()));
+        }
+        if l.buff != 0 {
+            extra.push_str(&format!(", buff: Some({})", l.buff));
         }
         // 위력 수식이 있으면 배율 대신 그것을 적는다.
         let power = if set(&l.power) {
@@ -2317,6 +2485,7 @@ pub(crate) struct TableForms {
     pub(crate) shops: BTreeMap<u32, ShopForm>,
     pub(crate) crafts: BTreeMap<u32, CraftForm>,
     pub(crate) teleports: BTreeMap<u32, TeleportForm>,
+    pub(crate) buffs: BTreeMap<u32, BuffForm>,
     /// 참조 찾기용 — 시작 소지품의 아이템, 플레이어 공격 스킬.
     pub(crate) starting_kit: Vec<u32>,
     pub(crate) player_attack: u32,
@@ -2451,6 +2620,84 @@ impl TeleportForm {
     }
 }
 
+/// 버프 표 한 줄 (R2b).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct BuffForm {
+    pub(crate) name: String,
+    pub(crate) color: (f32, f32, f32),
+    pub(crate) duration_ms: u32,
+    pub(crate) attack: i32,
+    pub(crate) defense: i32,
+    pub(crate) max_hp: i32,
+    pub(crate) max_mp: i32,
+    pub(crate) mp_regen: i32,
+    pub(crate) move_pct: i32,
+    pub(crate) tick_ms: u32,
+    pub(crate) tick_hp: i32,
+    pub(crate) stun: bool,
+    pub(crate) silence: bool,
+}
+
+impl BuffForm {
+    pub(crate) fn new(name: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            color: default_buff_color(),
+            duration_ms: 10_000,
+            attack: 0,
+            defense: 0,
+            max_hp: 0,
+            max_mp: 0,
+            mp_regen: 0,
+            move_pct: 0,
+            tick_ms: 0,
+            tick_hp: 0,
+            stun: false,
+            silence: false,
+        }
+    }
+
+    /// `rules.ron` 의 `buffs` 항목 — 0·거짓은 적지 않는다.
+    pub(crate) fn rules_entry(&self, id: u32) -> String {
+        let mut s = format!("{id}: (duration_ms: {}", self.duration_ms);
+        for (key, v) in [
+            ("attack", self.attack),
+            ("defense", self.defense),
+            ("max_hp", self.max_hp),
+            ("max_mp", self.max_mp),
+            ("mp_regen", self.mp_regen),
+            ("move_pct", self.move_pct),
+        ] {
+            if v != 0 {
+                s.push_str(&format!(", {key}: {v}"));
+            }
+        }
+        if self.tick_ms != 0 || self.tick_hp != 0 {
+            s.push_str(&format!(
+                ", tick_ms: {}, tick_hp: {}",
+                self.tick_ms, self.tick_hp
+            ));
+        }
+        if self.stun {
+            s.push_str(", stun: true");
+        }
+        if self.silence {
+            s.push_str(", silence: true");
+        }
+        s.push_str("),");
+        s
+    }
+
+    /// `display.ron` 의 `buffs` 항목.
+    pub(crate) fn display_entry(&self, id: u32) -> String {
+        let (r, g, b) = self.color;
+        format!(
+            "{id}: (name: {}, color: ({r:?}, {g:?}, {b:?})),",
+            crate::ron_patch::quote(&self.name)
+        )
+    }
+}
+
 /// 두 파일에서 아이템·스킬·드롭 표를 읽는다. 표시 반쪽이 없는 번호는 빈 이름으로 만든다.
 pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, String> {
     let r: RulesFile = ron::from_str(rules).map_err(|e| format!("{RULES_PATH}: {e}"))?;
@@ -2464,8 +2711,10 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
                     heal,
                     mana,
                     max_stack,
+                    buff,
                     ..
                 } => ItemKindForm::Consumable {
+                    buff: buff.unwrap_or(0),
                     heal,
                     mana,
                     max_stack,
@@ -2528,6 +2777,7 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
                         cooldown: s.cooldown_ms.formula().unwrap_or("").to_owned(),
                         mp_cost: s.mp_cost.formula().unwrap_or("").to_owned(),
                         heal: s.heal.formula().unwrap_or("").to_owned(),
+                        buff: s.buff.unwrap_or(0),
                     },
                 },
             )
@@ -2615,7 +2865,33 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
             )
         })
         .collect();
+    let buffs = r
+        .buffs
+        .iter()
+        .map(|(id, b)| {
+            let look = d.buffs.get(id);
+            (
+                *id,
+                BuffForm {
+                    name: look.map(|l| l.name.clone()).unwrap_or_default(),
+                    color: look.map_or_else(default_buff_color, |l| l.color),
+                    duration_ms: b.duration_ms,
+                    attack: b.attack,
+                    defense: b.defense,
+                    max_hp: b.max_hp,
+                    max_mp: b.max_mp,
+                    mp_regen: b.mp_regen,
+                    move_pct: b.move_pct,
+                    tick_ms: b.tick_ms,
+                    tick_hp: b.tick_hp,
+                    stun: b.stun,
+                    silence: b.silence,
+                },
+            )
+        })
+        .collect();
     Ok(TableForms {
+        buffs,
         items,
         skills,
         loot,
@@ -2973,6 +3249,67 @@ pub(crate) fn remove_quest(
         Ok((text, _)) => text,
         Err(_) => display.to_owned(), // 제목이 없던 퀘스트
     };
+    GameData::parse(&rules, &display)?;
+    Ok((rules, display))
+}
+
+/// 트리거 폼들 (T5).
+pub(crate) fn trigger_forms(
+    rules: &str,
+    display: &str,
+) -> Result<BTreeMap<u32, trigger_file::TriggerForm>, String> {
+    let r: RulesFile = ron::from_str(rules).map_err(|e| format!("{RULES_PATH}: {e}"))?;
+    let d: DisplayFile = ron::from_str(display).map_err(|e| format!("{DISPLAY_PATH}: {e}"))?;
+    Ok(r.triggers
+        .iter()
+        .map(|(id, t)| {
+            let name = d
+                .triggers
+                .get(id)
+                .map(|l| l.name.clone())
+                .unwrap_or_default();
+            (*id, trigger_file::TriggerForm::from_file(t, name))
+        })
+        .collect())
+}
+
+/// 트리거 하나를 두 파일에 끼운다 (T5) — 게임과 같은 검사를 통과해야 한다. 이름이 비면 표시 쪽은 비운다.
+pub(crate) fn patch_trigger(
+    rules: &str,
+    display: &str,
+    id: u32,
+    form: &trigger_file::TriggerForm,
+) -> Result<(String, String), String> {
+    use crate::ron_patch::{ensure_map_block, remove_entry, upsert_entry};
+    let rules = upsert_entry(
+        &ensure_map_block(rules, "triggers")?,
+        "triggers",
+        id,
+        &form.rules_entry(id),
+    )?;
+    let display = if form.name.trim().is_empty() {
+        remove_entry(display, "triggers", id).map_or_else(|_| display.to_owned(), |(t, _)| t)
+    } else {
+        upsert_entry(
+            &ensure_map_block(display, "triggers")?,
+            "triggers",
+            id,
+            &form.display_entry(id),
+        )?
+    };
+    GameData::parse(&rules, &display)?;
+    Ok((rules, display))
+}
+
+/// 트리거 하나를 두 파일에서 뺀다 (T5).
+pub(crate) fn remove_trigger(
+    rules: &str,
+    display: &str,
+    id: u32,
+) -> Result<(String, String), String> {
+    let (rules, _) = crate::ron_patch::remove_entry(rules, "triggers", id)?;
+    let display = crate::ron_patch::remove_entry(display, "triggers", id)
+        .map_or_else(|_| display.to_owned(), |(t, _)| t);
     GameData::parse(&rules, &display)?;
     Ok((rules, display))
 }

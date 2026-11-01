@@ -51,6 +51,11 @@
         103: (
             name: "테스트액터",
         ),
+        106: (
+            name: "동굴 슬라임",
+            sheet: "assets/third_party/slime-garakh/monster.sheet.ron",
+            tint: (0.7, 0.8, 1.0),
+        ),
         104: (
             name: "슬라임 왕",
             sheet: "assets/third_party/slime-garakh/monster.sheet.ron",
@@ -62,6 +67,7 @@
     items: {
         501: (name: "빨간 포션", color: (0.95, 0.30, 0.30)),
         502: (name: "파란 포션", color: (0.35, 0.50, 0.95)),
+        504: (name: "수호 물약", color: (0.45, 0.60, 0.90)),
         909: (name: "젤리", color: (0.55, 0.85, 0.95)),
         1101: (name: "숏소드", color: (0.95, 0.85, 0.40)),
         2101: (name: "모자", color: (0.95, 0.85, 0.40)),
@@ -70,6 +76,11 @@
     },
 
     // 스킬의 표시 이름 (P10). 번호는 rules.ron 의 skills 와 같다. 이름이 없으면 "스킬 #번호" 로 보인다.
+    buffs: {
+        1: (name: "독", color: (0.45, 0.7, 0.25)),
+        2: (name: "수호", color: (0.3, 0.5, 0.85)),
+    },
+
     skills: {
         1: (name: "베기"),
         2: (name: "물기"),
@@ -80,6 +91,7 @@
         7: (name: "회오리 베기"),
         8: (name: "치유"),
         9: (name: "화염구"),
+        10: (name: "독 물기"),
     },
 
     // 진영의 표시 이름. 번호는 rules.ron 의 진영 번호(서버 EFactionId 번호 공간)와 같다.

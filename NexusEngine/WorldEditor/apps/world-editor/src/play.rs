@@ -562,6 +562,8 @@ pub(crate) struct PlaySession {
     /// 시작 전 에디터 카메라 — 정지하면 되돌린다.
     editor_camera: Camera2d,
     /// 이번 판의 게임 데이터 (규칙 수치 + 이름·색). 시작할 때 파일에서 읽는다.
+    /// 포기를 한 번 누른 퀘스트 (T2) — 실수로 진행을 잃지 않게 두 번 누른다.
+    abandon_armed: Option<QuestId>,
     data: GameData,
 }
 
@@ -767,6 +769,7 @@ impl PlaySession {
             hit_flash: HashMap::new(),
             order: Order::Idle,
             hotbar,
+            abandon_armed: None,
             revive_at: None,
             trading: None,
             npc_page: NpcPage::Menu,
@@ -1440,6 +1443,152 @@ impl PlaySession {
     }
 
     /// HUD 단축키 칸 — 키 번호·남은 쿨타임 비율·MP 충분 여부.
+    /// NPC 창 밖의 목록 위젯 (T2).
+    pub(crate) fn list_values(&self) -> crate::screen::ListValues {
+        use crate::screen::{ListRow, ListValues};
+        let row = |text: String, right: String, enabled: bool| ListRow {
+            text,
+            right,
+            enabled,
+        };
+        let mut tracker = Vec::new();
+        if let Some((cleared, goals)) = self.clear_lines() {
+            let title = if cleared {
+                "던전 — 클리어!"
+            } else {
+                "던전 목표"
+            };
+            tracker.push(row(title.to_owned(), String::new(), false));
+            for (text, done) in goals {
+                let mark = if done { "✓" } else { "·" };
+                tracker.push(row(format!("{mark} {text}"), String::new(), false));
+            }
+        }
+        let quests = self.quest_lines();
+        for q in &quests {
+            let ready = q.state == QuestState::Ready;
+            let right = if ready { "보고 가능" } else { "" };
+            tracker.push(row(q.title.clone(), right.to_owned(), false));
+            for (text, done) in &q.goals {
+                let mark = if *done { "✓" } else { "·" };
+                tracker.push(row(format!("{mark} {text}"), String::new(), false));
+            }
+        }
+        ListValues {
+            tracker,
+            equipment: self
+                .equipped_lines()
+                .into_iter()
+                .map(|(_, label, item)| {
+                    let worn = item.is_some();
+                    row(
+                        label.to_owned(),
+                        item.unwrap_or_else(|| "—".to_owned()),
+                        worn,
+                    )
+                })
+                .collect(),
+            bag: self
+                .bag_lines(BagKind::Consumable)
+                .into_iter()
+                .map(|l| row(l.name, format!("×{}", l.count), true))
+                .chain(
+                    self.bag_lines(BagKind::Equipment)
+                        .into_iter()
+                        .map(|l| row(l.name, "입기".to_owned(), true)),
+                )
+                .collect(),
+            skills: self
+                .skill_lines()
+                .into_iter()
+                .map(|l| {
+                    let slot = l
+                        .slot
+                        .map_or_else(|| "—".to_owned(), |i| format!("{}번", i + 1));
+                    row(format!("{} Lv{}", l.name, l.level), slot, true)
+                })
+                .collect(),
+            quests: quests
+                .iter()
+                .map(|q| {
+                    let right = if self.abandon_armed == Some(q.quest) {
+                        "한 번 더 누르면 포기"
+                    } else {
+                        "포기"
+                    };
+                    row(q.title.clone(), right.to_owned(), true)
+                })
+                .collect(),
+        }
+    }
+
+    /// NPC 창 밖의 목록 줄을 누른다 (T2) — 표시 순서가 곧 줄 번호다.
+    pub(crate) fn list_pick(&mut self, source: crate::screen::ListSource, index: usize) {
+        use crate::screen::ListSource;
+        let quest_click = source == ListSource::Quests;
+        match source {
+            ListSource::Npc | ListSource::Tracker => {}
+            ListSource::Equipment => {
+                if let Some((slot, _, Some(_))) = self.equipped_lines().into_iter().nth(index) {
+                    self.inventory(InventoryAction::Unequip(slot));
+                }
+            }
+            ListSource::Bag => {
+                let food = self.bag_lines(BagKind::Consumable);
+                if let Some(l) = food.get(index) {
+                    self.inventory(InventoryAction::Use(l.slot));
+                } else if let Some(l) = self.bag_lines(BagKind::Equipment).get(index - food.len()) {
+                    self.inventory(InventoryAction::Equip(l.slot));
+                }
+            }
+            ListSource::Skills => {
+                if let Some(l) = self.skill_lines().into_iter().nth(index) {
+                    // 넣었으면 빼고, 없으면 첫 빈 칸에. 칸이 다 차 있으면 아무 일도 없다.
+                    let slot = match l.slot {
+                        Some(_) => None,
+                        None => self.hotbar.iter().position(Option::is_none),
+                    };
+                    if slot.is_some() || l.slot.is_some() {
+                        self.assign_hotbar(l.skill, slot);
+                    }
+                }
+            }
+            ListSource::Quests => {
+                if let Some(q) = self.quest_lines().into_iter().nth(index) {
+                    if self.abandon_armed == Some(q.quest) {
+                        self.abandon_armed = None;
+                        self.abandon_quest(q.quest);
+                    } else {
+                        self.abandon_armed = Some(q.quest);
+                    }
+                }
+            }
+        }
+        // 다른 곳을 누르면 포기 대기를 푼다.
+        if !quest_click {
+            self.abandon_armed = None;
+        }
+    }
+
+    /// HUD 버프 칸 (R2b).
+    pub(crate) fn buff_slots(&self) -> Vec<crate::screen::BuffSlot> {
+        let world = self.world();
+        let now = world.now();
+        world.unit(self.player).map_or_else(Vec::new, |u| {
+            u.buffs()
+                .iter()
+                .map(|b| {
+                    let (r, g, bl) = self.data.buff_color(b.id());
+                    crate::screen::BuffSlot {
+                        color: [r, g, bl, 1.0],
+                        seconds: u32::try_from(b.remaining(now).as_millis().div_ceil(1000))
+                            .unwrap_or(u32::MAX),
+                    }
+                })
+                .collect()
+        })
+    }
+
     pub(crate) fn skill_slots(&self) -> Vec<crate::screen::SkillSlot> {
         let world = self.world();
         let me = world.unit(self.player);
@@ -1951,6 +2100,23 @@ impl PlaySession {
                 format!("던전 목표 — {goal}")
             }
             Event::DungeonCleared => String::from("던전 클리어! — 보상을 받았다"),
+            Event::BuffApplied { unit, buff } if unit == self.player => {
+                format!("{} 효과를 받았다", self.data.buff_name(buff))
+            }
+            Event::BuffEnded { unit, buff } if unit == self.player => {
+                format!("{} 효과가 끝났다", self.data.buff_name(buff))
+            }
+            Event::BuffTicked {
+                unit,
+                buff,
+                hp_delta,
+                remaining_hp,
+            } if unit == self.player => {
+                format!(
+                    "{} {hp_delta:+} (HP {remaining_hp})",
+                    self.data.buff_name(buff)
+                )
+            }
             Event::Traveled { unit, .. } if unit == self.player => {
                 String::from("다른 곳으로 떠난다…")
             }
@@ -2028,7 +2194,7 @@ impl PlaySession {
             Event::Rejected { intent, reason } if intent.unit() == self.player => {
                 // 쿨타임은 주문이 계속 기다리면 되는 일이다. 그 밖의 거절은 주문을 끝낸다
                 // — 그대로 두면 매 tick 같은 거절이 반복된다.
-                if reason == Rejection::OnCooldown {
+                if matches!(reason, Rejection::OnCooldown | Rejection::Stunned) {
                     return;
                 }
                 self.order = Order::Idle;
@@ -2456,6 +2622,8 @@ mod text {
             Rejection::ClassRestricted => "이 직업은 쓸 수 없는 장비입니다",
             Rejection::SkillNotLearned => "배우지 않은 스킬입니다",
             Rejection::SkillMaxed => "이미 최대 레벨인 스킬입니다",
+            Rejection::Stunned => "기절해 움직일 수 없습니다",
+            Rejection::Silenced => "침묵 중에는 스킬을 쓸 수 없습니다",
             Rejection::SkillRequirement => "배울 수 없는 스킬입니다 (직업·조건)",
             Rejection::NoService => "그런 일은 하지 않는 NPC 입니다",
             Rejection::NotEnoughCurrency => "돈이 모자랍니다",
@@ -3692,6 +3860,36 @@ mod tests {
         );
         assert!(!shop.goods[3].3, "마도서 1000 골드는 살 수 없다");
         assert!(s.log().any(|l| l == "상인 NPC 에게 말을 걸었다"));
+    }
+
+    /// 게임 화면 목록 (T2) — 입기·벗기·단축키·퀘스트 포기가 에디터 패널 없이 된다.
+    #[test]
+    fn the_character_lists_act_like_the_panel() {
+        use crate::screen::ListSource;
+        let mut s = new_game(None, None);
+        let values = s.list_values();
+        assert_eq!(values.equipment.len(), 5);
+        assert!(values.equipment.iter().all(|r| !r.enabled));
+
+        // 가방의 숏소드 줄 → 입기 → 장비 줄에 보이고 → 누르면 벗는다.
+        let sword = values.bag.iter().position(|r| r.right == "입기").unwrap();
+        s.list_pick(ListSource::Bag, sword);
+        s.tick(DT, None);
+        assert!(s.list_values().equipment[0].enabled);
+        s.list_pick(ListSource::Equipment, 0);
+        s.tick(DT, None);
+        assert!(!s.list_values().equipment[0].enabled);
+
+        // 단축키에 있는 스킬은 빼고, 빠진 스킬은 빈 칸으로 돌아간다.
+        assert_eq!(s.list_values().skills[0].right, "1번");
+        s.list_pick(ListSource::Skills, 0);
+        assert_eq!(s.list_values().skills[0].right, "—");
+        s.list_pick(ListSource::Skills, 0);
+        assert_eq!(s.list_values().skills[0].right, "1번");
+
+        // 범위 밖 줄은 아무 일도 없다.
+        s.list_pick(ListSource::Bag, 999);
+        s.list_pick(ListSource::Skills, 999);
     }
 
     /// NPC 창(R4b) — 메뉴에는 그 NPC 의 기능만, 고르면 그 쪽, 줄을 누르면 거래.

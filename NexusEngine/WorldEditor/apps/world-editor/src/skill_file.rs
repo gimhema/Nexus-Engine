@@ -207,6 +207,7 @@ mod tests {
                 skill: &|id| id == 9,
                 quest: &|_| true,
                 loot: &|_| true,
+                buff: &|_| true,
             },
         );
         for want in [

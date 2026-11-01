@@ -13,6 +13,7 @@
 
 mod ai;
 mod authority;
+mod buff;
 mod combat;
 mod dungeon;
 mod faction;
@@ -31,6 +32,7 @@ mod unit;
 mod world;
 
 pub use authority::{Authority, Event, Intent, LocalAuthority, Rejection};
+pub use buff::{ActiveBuff, BuffDef, BuffId};
 pub use combat::{SkillDef, SkillId, damage};
 pub use dungeon::ClearDef;
 pub use faction::{FactionId, FactionTable, Relation};

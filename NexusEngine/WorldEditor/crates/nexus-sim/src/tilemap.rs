@@ -81,8 +81,10 @@ const COST_DIAGONAL: u32 = 14;
 /// 레벨이 바뀌는 걸음에 붙는 추가 비용. 경사로를 "돌아가는 길"로 취급하게 한다.
 const COST_LEVEL_CHANGE: u32 = 10;
 
-/// 한 번의 길찾기가 살펴볼 최대 칸 수. 넓은 맵에서 폭주하지 않게 한다.
-const MAX_SEARCH_NODES: usize = 1 << 20;
+/// 한 번의 길찾기가 살펴볼 최대 칸 수 — **한 tick(50ms) 예산**이다 (T4). release 에서 약 7ms.
+/// 시간이 아니라 칸 수로 재므로 결정적이다. 곧은 길은 칸을 거의 쓰지 않고, 넓게 돌아가는 먼 길만 거절된다
+/// (`NoPath`) — 그런 길은 경유 지점을 끊어 걸어가게 한다.
+const MAX_SEARCH_NODES: usize = 1 << 15;
 
 /// 타일맵 — 균일 격자, 저장은 청크 (모듈 doc 「저장소는 청크다」).
 #[derive(Clone)]
@@ -620,6 +622,20 @@ mod tests {
 
     fn flat(w: u32, h: u32) -> TileMap {
         TileMap::new(w, h, 1.0, Vec2::ZERO, Tile::default())
+    }
+
+    /// 길찾기 예산 (T4) — 곧은 먼 길은 되고, 예산을 넘게 돌아가는 길은 멈춘다. 같은 입력이면 같은 답이다.
+    #[test]
+    fn the_search_budget_stops_wide_detours_but_not_straight_roads() {
+        let mut map = flat(2000, 2000);
+        assert_eq!(map.find_path(at(5, 5), at(1900, 1900)).unwrap().len(), 1896);
+
+        // 출발점 바로 앞을 가로막는 긴 벽 — 넓게 퍼지며 돌아가야 한다.
+        for y in 0..1900 {
+            wall(&mut map, 1000, y);
+        }
+        assert_eq!(map.find_path(at(990, 950), at(1010, 950)), None);
+        assert!(map.find_path(at(990, 1890), at(1010, 1890)).is_some());
     }
 
     fn at(x: i32, y: i32) -> TileCoord {

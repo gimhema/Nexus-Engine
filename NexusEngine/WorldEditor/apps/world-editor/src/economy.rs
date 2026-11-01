@@ -664,6 +664,7 @@ impl EconomyManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::play::TradeAction;
 
     fn data() -> GameData {
         GameData::embedded()
@@ -692,6 +693,134 @@ mod tests {
         assert!(has(&l.spending, "텔레포트", ""));
         assert!(has(&l.exp, "처치", "슬라임 (#100)"));
         assert!(has(&l.exp, "보상", "던전 클리어"));
+    }
+
+    /// 샘플 RPG 를 사람처럼 처음부터 끝까지 (T3) — 새 게임 → 퀘스트 받기 → 사냥 → 보고 → 동굴 입구 →
+    /// 보스 → 나가는 문 → 마을. 게임과 같은 데이터·클릭 경로이고, 레벨 전환만 에디터 대신 여기서 잇는다.
+    #[test]
+    fn the_sample_rpg_plays_from_new_game_to_the_dungeon_exit() {
+        const QUEST: nexus_sim::QuestId = nexus_sim::QuestId(1);
+        let (levels, _) = Levels::load();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let open = |id: &str, save: Option<crate::save_file::SaveData>| {
+            let path = levels.level(id).unwrap().zone.clone().unwrap();
+            let text = std::fs::read_to_string(root.join(path)).unwrap();
+            let scene = crate::zone_file::from_ron(&text).unwrap();
+            PlaySession::start(
+                &scene,
+                Camera2d::default(),
+                data(),
+                PlayOptions {
+                    save,
+                    links: LevelLinks {
+                        here: id.to_owned(),
+                        requires: levels.entry_conditions(),
+                        clear: levels.clear_of(id),
+                    },
+                    ..PlayOptions::default()
+                },
+            )
+            .unwrap()
+        };
+        // 조건이 설 때까지 틱을 돌린다.
+        fn until(s: &mut PlaySession, what: &str, mut done: impl FnMut(&mut PlaySession) -> bool) {
+            for _ in 0..40_000 {
+                if done(s) {
+                    return;
+                }
+                s.tick(DT, None);
+            }
+            panic!("{what}: 시간 안에 되지 않았다");
+        }
+        let npc_at = |s: &PlaySession, name: &str| {
+            s.world()
+                .units()
+                .find(|(e, _)| s.name(*e) == name)
+                .unwrap()
+                .1
+                .pos()
+        };
+
+        let mut s = open("village", None);
+        let merchant = npc_at(&s, "상인 NPC");
+        s.click(merchant, 0.01);
+        until(&mut s, "상인에게 말 걸기", |s| s.is_trading());
+        s.trade(TradeAction::AcceptQuest(QUEST));
+        s.trade(TradeAction::Close);
+        s.tick(DT, None);
+        assert!(
+            s.list_values()
+                .tracker
+                .iter()
+                .any(|r| r.text.contains("슬라임")),
+            "게임 화면 추적 목록에 보인다"
+        );
+
+        // 보스를 이길 만큼 사냥한다.
+        let mut bot = Bot::default();
+        until(&mut s, "사냥", |s| {
+            bot.act(s, 1);
+            let _ = s.take_travel();
+            s.world().unit(s.player()).unwrap().progress().level() >= 6
+                && s.quest_lines()
+                    .iter()
+                    .any(|q| q.quest == QUEST && q.state == nexus_sim::QuestState::Ready)
+        });
+        let gold = s.gold();
+        s.click(merchant, 0.01);
+        until(&mut s, "보고하러 가기", |s| s.is_trading());
+        s.trade(TradeAction::TurnInQuest(QUEST));
+        s.tick(DT, None);
+        assert!(s.gold() >= gold + 100, "보상 골드");
+        s.trade(TradeAction::Close);
+
+        // 동굴 입구 포털을 밟으면 던전으로.
+        let mut to = None;
+        s.click(nexus_core::Vec2::new(8.0, -10.0), 0.01);
+        until(&mut s, "동굴로 가기", |s| {
+            if !s.busy() && s.world().unit(s.player()).unwrap().is_alive() {
+                s.click(nexus_core::Vec2::new(8.0, -10.0), 0.01);
+            }
+            to = s.take_travel();
+            to.is_some()
+        });
+        let (level, at) = to.unwrap();
+        assert_eq!(level, "dungeon");
+        let mut save = s.save_data(String::from("zones/dungeon.zone.ron"));
+        save.pos = Some(at);
+
+        // 던전 — 나가는 문은 닫혀 있고, 보스를 쓰러뜨리면 열린다.
+        let mut d = open("dungeon", Some(save));
+        assert_eq!(d.clear_lines().map(|(cleared, _)| cleared), Some(false));
+        let mut bot = Bot::default();
+        until(&mut d, "던전 클리어", |s| {
+            bot.act(s, 1);
+            let _ = s.take_travel();
+            s.clear_lines().is_some_and(|(cleared, _)| cleared)
+        });
+        let exit = nexus_core::Vec2::new(0.0, -5.5); // 나가는 문 — zones/dungeon.zone.ron
+        let mut out = None;
+        until(&mut d, "나가는 문", |s| {
+            if !s.busy() && s.world().unit(s.player()).unwrap().is_alive() {
+                s.click(exit, 0.01);
+            }
+            out = s.take_travel();
+            out.is_some()
+        });
+        assert_eq!(out.unwrap().0, "village");
+    }
+
+    /// 위험한 곳이 더 벌어야 한다 (T3) — 사냥만 하는 봇 기준.
+    #[test]
+    fn the_dungeon_pays_more_than_the_village() {
+        let (levels, _) = Levels::load();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let run = |id: &str| simulate_level(&root, &levels, id, data(), 10).unwrap();
+        let (village, dungeon) = (run("village"), run("dungeon"));
+        assert!(
+            dungeon.gold > village.gold && dungeon.exp > village.exp,
+            "마을 {village:?} / 동굴 {dungeon:?}"
+        );
     }
 
     /// R7 끝나는 조건 — 레벨의 시간당 골드·경험치가 나오고, 같은 시드면 같은 결과다.

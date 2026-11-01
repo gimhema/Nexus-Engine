@@ -23,7 +23,7 @@ use std::path::Path;
 
 use nexus_render_wgpu::egui;
 
-use crate::game_data::{CraftForm, DestForm, RecipeForm, ShopForm, TeleportForm};
+use crate::game_data::{BuffForm, CraftForm, DestForm, RecipeForm, ShopForm, TeleportForm};
 use crate::game_data::{
     DISPLAY_PATH, EquipBonusForm, GameData, ItemForm, ItemKindForm, LootRow, RULES_PATH, SkillForm,
     SlotChoice, TableForms, loot_entry, table_forms,
@@ -40,16 +40,18 @@ pub(crate) enum Tab {
     Shops,
     Crafts,
     Teleports,
+    Buffs,
 }
 
 impl Tab {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Items,
         Self::Skills,
         Self::Loot,
         Self::Shops,
         Self::Crafts,
         Self::Teleports,
+        Self::Buffs,
     ];
 
     pub(crate) fn label(self) -> &'static str {
@@ -60,12 +62,13 @@ impl Tab {
             Self::Shops => "상점",
             Self::Crafts => "제작",
             Self::Teleports => "텔레포트",
+            Self::Buffs => "버프",
         }
     }
 
     /// 이름이 있는 표인가 — 새 항목을 만들 때 이름을 받는다.
     fn named(self) -> bool {
-        matches!(self, Self::Items | Self::Skills)
+        matches!(self, Self::Items | Self::Skills | Self::Buffs)
     }
 }
 
@@ -78,6 +81,7 @@ enum Edit {
     Shop(ShopForm),
     Craft(CraftForm),
     Teleport(TeleportForm),
+    Buff(BuffForm),
 }
 
 #[derive(Debug, Default)]
@@ -161,6 +165,7 @@ impl TableEditor {
             Tab::Shops => self.saved.shops.get(&id).cloned().map(Edit::Shop),
             Tab::Crafts => self.saved.crafts.get(&id).cloned().map(Edit::Craft),
             Tab::Teleports => self.saved.teleports.get(&id).cloned().map(Edit::Teleport),
+            Tab::Buffs => self.saved.buffs.get(&id).cloned().map(Edit::Buff),
         }
     }
 
@@ -230,6 +235,12 @@ impl TableEditor {
                 .crafts
                 .iter()
                 .map(|(id, c)| (*id, format!("레시피 {}", c.recipes.len())))
+                .collect(),
+            Tab::Buffs => self
+                .saved
+                .buffs
+                .iter()
+                .map(|(id, f)| (*id, f.name.clone()))
                 .collect(),
             Tab::Teleports => self
                 .saved
@@ -365,6 +376,7 @@ impl TableEditor {
             Tab::Shops => Edit::Shop(ShopForm::new()),
             Tab::Crafts => Edit::Craft(CraftForm::default()),
             Tab::Teleports => Edit::Teleport(TeleportForm::default()),
+            Tab::Buffs => Edit::Buff(BuffForm::new(&name)),
         });
         self.is_new = true;
         self.new_name.clear();
@@ -401,6 +413,7 @@ impl TableEditor {
             Some(Edit::Shop(f)) => shop_form(ui, f, &items),
             Some(Edit::Craft(f)) => craft_form(ui, f, &items),
             Some(Edit::Teleport(f)) => teleport_form(ui, f),
+            Some(Edit::Buff(f)) => buff_form(ui, f),
         }
     }
 
@@ -512,6 +525,10 @@ pub(crate) fn duplicate(
             forms.crafts.get(&from).cloned().map(Edit::Craft),
             forms.crafts.contains_key(&to),
         ),
+        Tab::Buffs => (
+            forms.buffs.get(&from).cloned().map(Edit::Buff),
+            forms.buffs.contains_key(&to),
+        ),
         Tab::Teleports => (
             forms.teleports.get(&from).cloned().map(Edit::Teleport),
             forms.teleports.contains_key(&to),
@@ -524,6 +541,7 @@ pub(crate) fn duplicate(
     let name = match &edit {
         Edit::Item(f) => f.name.clone(),
         Edit::Skill(f) => f.name.clone(),
+        Edit::Buff(f) => f.name.clone(),
         Edit::Loot(_) | Edit::Shop(_) | Edit::Craft(_) | Edit::Teleport(_) => {
             format!("{} #{to}", tab.label())
         }
@@ -567,6 +585,20 @@ fn patch(rules: &str, display: &str, id: u32, edit: &Edit) -> Result<(String, St
             )?,
             display.to_owned(),
         ),
+        Edit::Buff(f) => (
+            upsert_entry(
+                &ensure_map_block(rules, "buffs")?,
+                "buffs",
+                id,
+                &f.rules_entry(id),
+            )?,
+            upsert_entry(
+                &ensure_map_block(display, "buffs")?,
+                "buffs",
+                id,
+                &f.display_entry(id),
+            )?,
+        ),
         Edit::Teleport(f) => (
             upsert_entry(
                 &ensure_map_block(rules, "teleports")?,
@@ -606,6 +638,7 @@ fn item_form(ui: &mut egui::Ui, f: &mut ItemForm, skills: &[(u32, String)]) {
                     heal: 10,
                     mana: 0,
                     max_stack: 20,
+                    buff: 0,
                 };
             }
             let equipment = matches!(f.kind, ItemKindForm::Equipment { .. });
@@ -655,7 +688,11 @@ fn item_form(ui: &mut egui::Ui, f: &mut ItemForm, skills: &[(u32, String)]) {
                 heal,
                 mana,
                 max_stack,
+                buff,
             } => {
+                ui.label("쓰면 거는 버프 번호 (0 = 없음)");
+                ui.add(egui::DragValue::new(buff).range(0..=1_000_000));
+                ui.end_row();
                 ui.label("HP 회복");
                 ui.add(egui::DragValue::new(heal).range(0..=1_000_000));
                 ui.end_row();
@@ -736,6 +773,9 @@ fn item_form(ui: &mut egui::Ui, f: &mut ItemForm, skills: &[(u32, String)]) {
 
 fn skill_form(ui: &mut egui::Ui, f: &mut SkillForm) {
     egui::Grid::new("skill-form").num_columns(2).show(ui, |ui| {
+        ui.label("맞으면 거는 버프 번호 (0 = 없음)");
+        ui.add(egui::DragValue::new(&mut f.level.buff).range(0..=1_000_000));
+        ui.end_row();
         ui.label("이름");
         ui.add(egui::TextEdit::singleline(&mut f.name).desired_width(180.0));
         ui.end_row();
@@ -954,6 +994,57 @@ fn craft_form(ui: &mut egui::Ui, f: &mut CraftForm, items: &[(u32, String)]) {
     }
 }
 
+/// 버프 표 (R2b).
+fn buff_form(ui: &mut egui::Ui, f: &mut BuffForm) {
+    ui.weak("수치는 파생 스탯에 더해진다. 같은 버프를 다시 걸면 시간만 다시 잰다.");
+    egui::Grid::new("buff-form").num_columns(2).show(ui, |ui| {
+        ui.label("이름");
+        ui.add(egui::TextEdit::singleline(&mut f.name).desired_width(180.0));
+        ui.end_row();
+        ui.label("색 (게임 화면의 칸)");
+        let mut rgb = [f.color.0, f.color.1, f.color.2];
+        if ui.color_edit_button_rgb(&mut rgb).changed() {
+            f.color = (rgb[0], rgb[1], rgb[2]);
+        }
+        ui.end_row();
+        ui.label("지속 시간 (ms)");
+        ui.add(
+            egui::DragValue::new(&mut f.duration_ms)
+                .speed(100)
+                .range(1..=3_600_000),
+        );
+        ui.end_row();
+        for (label, v) in [
+            ("공격", &mut f.attack),
+            ("방어", &mut f.defense),
+            ("최대 HP", &mut f.max_hp),
+            ("최대 MP", &mut f.max_mp),
+            ("MP 회복 (초당)", &mut f.mp_regen),
+            ("이동 속도 (%)", &mut f.move_pct),
+        ] {
+            ui.label(label);
+            ui.add(egui::DragValue::new(v).range(-1_000_000..=1_000_000));
+            ui.end_row();
+        }
+        ui.label("주기 (ms, 0 = 없음)");
+        ui.add(
+            egui::DragValue::new(&mut f.tick_ms)
+                .speed(50)
+                .range(0..=600_000),
+        );
+        ui.end_row();
+        ui.label("주기마다 HP (음수 = 독)");
+        ui.add(egui::DragValue::new(&mut f.tick_hp).range(-1_000_000..=1_000_000));
+        ui.end_row();
+        ui.label("상태이상");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut f.stun, "기절");
+            ui.checkbox(&mut f.silence, "침묵");
+        });
+        ui.end_row();
+    });
+}
+
 /// 텔레포트 목적지 표 (R4-2).
 fn teleport_form(ui: &mut egui::Ui, f: &mut TeleportForm) {
     ui.weak(
@@ -1146,6 +1237,27 @@ mod tests {
         assert!(r.contains("// 플레이어 베기"), "스킬 줄 끝 주석");
     }
 
+    /// 버프 (R2b) — 새 항목이 두 파일에 들어가고, 없는 번호를 거는 스킬은 게임과 같은 검사가 막는다.
+    #[test]
+    fn a_new_buff_lands_in_both_halves_and_bad_references_are_refused() {
+        let (rules, display) = repo_texts();
+        let mut buff = BuffForm::new("맹독");
+        buff.tick_ms = 500;
+        buff.tick_hp = -2;
+        buff.stun = true;
+        let (r, d) = patch(&rules, &display, 77, &Edit::Buff(buff.clone())).unwrap();
+        assert!(r.contains("77: (duration_ms: 10000, tick_ms: 500, tick_hp: -2, stun: true),"));
+        assert_eq!(table_forms(&r, &d).unwrap().buffs[&77], buff);
+
+        let mut skill = SkillForm::new("독침");
+        skill.level.buff = 999;
+        let e = patch(&rules, &display, 77, &Edit::Skill(skill.clone())).unwrap_err();
+        assert!(e.contains("없는 버프 999"), "{e}");
+        skill.level.buff = 77;
+        let (r, d) = patch(&r, &d, 77, &Edit::Skill(skill)).unwrap();
+        assert_eq!(table_forms(&r, &d).unwrap().skills[&77].level.buff, 77);
+    }
+
     #[test]
     fn a_new_item_and_skill_land_in_both_halves() {
         let (rules, display) = repo_texts();
@@ -1154,6 +1266,7 @@ mod tests {
             heal: 30,
             mana: 15,
             max_stack: 10,
+            buff: 0,
         };
         let (r, d) = patch(&rules, &display, 503, &Edit::Item(item.clone())).unwrap();
         assert!(r.contains("503: Consumable(heal: 30, mana: 15, max_stack: 10),"));

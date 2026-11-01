@@ -189,6 +189,8 @@ pub struct Unit {
     pub(crate) storage: crate::item::Bag,
     /// 퀘스트 기록 (R5).
     pub(crate) quests: crate::quest::QuestLog,
+    /// 걸려 있는 버프 (R2b). 걸린 순서대로라 결정적이다.
+    pub(crate) buffs: Vec<crate::buff::ActiveBuff>,
 }
 
 impl Unit {
@@ -220,6 +222,7 @@ impl Unit {
             wallet: crate::trade::Wallet::default(),
             storage: crate::item::Bag::default(),
             quests: crate::quest::QuestLog::default(),
+            buffs: Vec::new(),
         }
     }
 
@@ -261,9 +264,54 @@ impl Unit {
     /// 초당 MP 회복량.
     #[must_use]
     pub fn mp_regen(&self) -> u32 {
-        self.sheet
+        let base = self
+            .sheet
             .as_ref()
-            .map_or(self.def.mp_regen, |s| s.derived.mp_regen)
+            .map_or(self.def.mp_regen, |s| s.derived.mp_regen);
+        self.buffed(base, |b| b.mp_regen)
+    }
+
+    /// 걸려 있는 버프 (R2b).
+    #[must_use]
+    pub fn buffs(&self) -> &[crate::buff::ActiveBuff] {
+        &self.buffs
+    }
+
+    #[must_use]
+    pub fn has_buff(&self, buff: crate::buff::BuffId) -> bool {
+        self.buffs.iter().any(|b| b.id == buff)
+    }
+
+    #[must_use]
+    pub fn is_stunned(&self) -> bool {
+        self.buffs.iter().any(|b| b.def.stun)
+    }
+
+    #[must_use]
+    pub fn is_silenced(&self) -> bool {
+        self.buffs.iter().any(|b| b.def.silence)
+    }
+
+    /// 버프가 반영된 이동 속도 (m/s) — 기절이면 0.
+    #[must_use]
+    pub fn move_speed(&self) -> f32 {
+        if self.is_stunned() {
+            return 0.0;
+        }
+        let pct: i32 = self
+            .buffs
+            .iter()
+            .fold(100, |sum, b| sum.saturating_add(b.def.move_pct));
+        self.def.move_speed * pct.max(0) as f32 / 100.0
+    }
+
+    /// 파생값에 버프 증감을 더한다 — 0 아래로 내려가지 않는다.
+    fn buffed(&self, base: u32, part: impl Fn(&crate::buff::BuffDef) -> i32) -> u32 {
+        let sum = self
+            .buffs
+            .iter()
+            .fold(i64::from(base), |sum, b| sum + i64::from(part(&b.def)));
+        u32::try_from(sum.max(0)).unwrap_or(u32::MAX)
     }
 
     /// 캐릭터 범위 플래그 하나 (없으면 0).
@@ -317,25 +365,30 @@ impl Unit {
     /// 레벨 성장 + 장비가 더해진 공격력 — 전투는 이 값을 쓴다.
     #[must_use]
     pub fn attack(&self) -> u32 {
-        if let Some(s) = &self.sheet {
-            return s.derived.attack;
-        }
-        self.def
-            .attack
-            .saturating_add(self.grown(self.def.growth.attack))
-            .saturating_add(self.bonus_attack)
+        let base = self.sheet.as_ref().map_or_else(
+            || {
+                self.def
+                    .attack
+                    .saturating_add(self.grown(self.def.growth.attack))
+                    .saturating_add(self.bonus_attack)
+            },
+            |s| s.derived.attack,
+        );
+        self.buffed(base, |b| b.attack)
     }
 
     /// 레벨 성장이 반영된 최대 HP. **`def().max_hp` 대신 이것을 쓴다.**
     #[must_use]
     pub fn max_hp(&self) -> u32 {
-        if let Some(s) = &self.sheet {
-            return s.derived.max_hp;
-        }
-        self.def
-            .max_hp
-            .saturating_add(self.grown(self.def.growth.max_hp))
-            .max(1)
+        let base = self.sheet.as_ref().map_or_else(
+            || {
+                self.def
+                    .max_hp
+                    .saturating_add(self.grown(self.def.growth.max_hp))
+            },
+            |s| s.derived.max_hp,
+        );
+        self.buffed(base, |b| b.max_hp).max(1)
     }
 
     #[must_use]
@@ -346,12 +399,21 @@ impl Unit {
     /// 레벨 성장이 반영된 최대 MP. **`def().max_mp` 대신 이것을 쓴다.** 0 이면 MP 가 없는 유닛.
     #[must_use]
     pub fn max_mp(&self) -> u32 {
-        if let Some(s) = &self.sheet {
-            return s.derived.max_mp;
-        }
-        self.def
-            .max_mp
-            .saturating_add(self.grown(self.def.growth.max_mp))
+        let base = self.sheet.as_ref().map_or_else(
+            || {
+                self.def
+                    .max_mp
+                    .saturating_add(self.grown(self.def.growth.max_mp))
+            },
+            |s| s.derived.max_mp,
+        );
+        self.buffed(base, |b| b.max_mp)
+    }
+
+    /// 상한이 줄었으면 현재 HP·MP 를 맞춘다 (R2b). 죽은 유닛을 살리지 않는다.
+    pub(crate) fn clamp_to_max(&mut self) {
+        self.hp = self.hp.min(self.max_hp());
+        self.mp = self.mp.min(self.max_mp());
     }
 
     /// MP `cost` 를 낼 수 있는가.
@@ -392,13 +454,16 @@ impl Unit {
     /// 레벨 성장 + 장비가 더해진 방어력.
     #[must_use]
     pub fn defense(&self) -> u32 {
-        if let Some(s) = &self.sheet {
-            return s.derived.defense;
-        }
-        self.def
-            .defense
-            .saturating_add(self.grown(self.def.growth.defense))
-            .saturating_add(self.bonus_defense)
+        let base = self.sheet.as_ref().map_or_else(
+            || {
+                self.def
+                    .defense
+                    .saturating_add(self.grown(self.def.growth.defense))
+                    .saturating_add(self.bonus_defense)
+            },
+            |s| s.derived.defense,
+        );
+        self.buffed(base, |b| b.defense)
     }
 
     #[must_use]

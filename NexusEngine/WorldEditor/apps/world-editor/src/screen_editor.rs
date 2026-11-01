@@ -433,13 +433,20 @@ impl ScreenEditor {
                     },
                 ),
                 ("+ 스킬 칸", WidgetKind::Skills),
+                ("+ 버프 칸", WidgetKind::Buffs),
                 (
                     "+ 문단",
                     WidgetKind::Paragraph {
                         format: String::from("{npc_profile}"),
                     },
                 ),
-                ("+ 목록", WidgetKind::List { row_height: 14 }),
+                (
+                    "+ 목록",
+                    WidgetKind::List {
+                        row_height: 14,
+                        source: crate::screen::ListSource::Npc,
+                    },
+                ),
                 (
                     "+ 색 채움",
                     WidgetKind::Fill {
@@ -971,15 +978,22 @@ fn kind_fields(
             );
             ui.weak("NPC 인사말은 {npc_profile}. 넘치는 줄은 그리지 않는다 — 크기를 넉넉히.");
         }
-        WidgetKind::List { row_height } => {
+        WidgetKind::List { row_height, source } => {
             ui.horizontal(|ui| {
                 ui.label("줄 높이");
                 ui.add(egui::DragValue::new(row_height).range(4..=64).suffix(" px"));
             });
-            ui.weak(
-                "NPC 창의 지금 쪽(기능 메뉴·사기·팔기·제작·이동·창고·퀘스트)을 줄마다 그립니다.",
-            );
-            ui.weak("줄을 누르면 그 쪽으로 넘어가거나 사고판다. 넘치는 줄은 그리지 않는다.");
+            egui::ComboBox::from_label("내용")
+                .selected_text(source.label())
+                .show_ui(ui, |ui| {
+                    for choice in crate::screen::ListSource::ALL {
+                        ui.selectable_value(source, choice, choice.label());
+                    }
+                });
+            ui.weak("줄을 누르면 그 줄의 일을 한다 (NPC 쪽 넘기기·벗기·쓰기·단축키 넣기). 넘치는 줄은 그리지 않는다.");
+        }
+        WidgetKind::Buffs => {
+            ui.weak("조작하는 액터에게 걸린 버프를 가로로 그립니다 — 표시 데이터의 색에 남은 초.");
         }
         WidgetKind::Skills => {
             ui.weak("조작하는 액터의 단축키 스킬(액터 편집기의 \"단축키 스킬\")을 1번 키부터 가로로 그립니다.");

@@ -43,12 +43,21 @@
             classes: [2],
             requires: Level(cmp: Ge, value: 3),
         ),
+        10: (range: 1.5, cooldown_ms: 1200, damage_mult: 1.0, buff: Some(1)),  // 독 물기 — 슬라임 왕
+    },
+
+    // 버프·상태이상 (R2b) — 수치는 파생 스탯에 더해지고, 같은 버프를 다시 걸면 시간만 다시 잰다.
+    // 칸: duration_ms attack defense max_hp max_mp mp_regen move_pct(%) tick_ms tick_hp(음수 = 독) stun silence
+    buffs: {
+        1: (duration_ms: 6000, tick_ms: 1000, tick_hp: -4),  // 독
+        2: (duration_ms: 30000, defense: 6),                 // 수호
     },
 
     items: {
         // value 는 기본 값(기본 재화) — 상점이 사들일 때의 기준 (R4). 적지 않으면 팔 수 없다.
         501: Consumable(heal: 60, max_stack: 20, value: 40),   // 빨간 포션
         502: Consumable(heal: 0, mana: 40, max_stack: 20, value: 50),   // 파란 포션
+        504: Consumable(heal: 0, max_stack: 20, value: 40, buff: Some(2)),   // 수호 물약 — 슬라임 왕 대비
         909: Consumable(heal: 15, max_stack: 99, value: 6),   // 젤리
         // 장비는 기본 스탯 보너스(stats)와 입을 수 있는 직업(classes, 비우면 누구나)을 가질 수 있다 (R2).
         1101: Equipment(slot: Weapon, attack: 12, defense: 0, classes: [1, 3], value: 200),  // 숏소드 — 마법사는 못 든다
@@ -180,6 +189,22 @@
             attack: 5,
             defense: 0,
         ),
+        // 동굴 슬라임 — 마을보다 위험한 만큼 많이 준다 (T3). 사냥터로 머물지 않게 리스폰이 느리다.
+        106: (
+            move_speed: 1.8,
+            max_hp: 130,
+            attack: 22,
+            defense: 3,
+            faction: 201,
+            ai: Aggressive,
+            aggro_range: 6.0,
+            leash_range: 15.0,
+            basic_attack: Some(2),
+            loot: Some(1),
+            exp_reward: 200,
+            respawn_ms: 20000,
+            bounty: 45,
+        ),
         // 던전 보스 (R6-2) — 리스폰하지 않는다 (respawn_ms 없음). levels/dungeon.level.ron 의 클리어 목표다.
         104: (
             move_speed: 1.8,
@@ -190,7 +215,7 @@
             ai: Aggressive,
             aggro_range: 7.0,
             leash_range: 20.0,
-            basic_attack: Some(2),
+            basic_attack: Some(10),
             loot: Some(1),
             exp_reward: 400,
             bounty: 100,
@@ -248,6 +273,7 @@
             goods: [
                 (item: 501, price: 50),
                 (item: 502, price: 60),
+                (item: 504, price: 80),
                 (item: 2101, price: 250),
                 (item: 3002, price: 1000),
             ],

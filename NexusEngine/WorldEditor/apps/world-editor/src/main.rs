@@ -47,6 +47,7 @@ mod terrain;
 mod tiles;
 mod trade_file;
 mod trash;
+mod trigger_editor;
 mod trigger_file;
 mod ui;
 mod ui_script;
@@ -97,6 +98,8 @@ const BOX_FILL: [f32; 4] = [1.0, 0.82, 0.25, 0.012];
 const HUD_SCREEN: &str = "hud";
 /// NPC 창 화면 (R4b) — 말을 걸면 띄운다. 위젯 편집기로 디자인한다 (`ui/npc.ui.ron`).
 const NPC_SCREEN: &str = "npc";
+/// 캐릭터 창 (T2) — 스탯·장비·가방·스킬·퀘스트.
+const CHARACTER_SCREEN: &str = "character";
 
 const BIAS_ART: f32 = 0.25 * DEPTH_LAYER;
 /// 타일 — 지면 층에서 그리드 바로 위.
@@ -1224,7 +1227,27 @@ impl Editor {
                     play.npc_back();
                 }
             }
+            Action::ListRow { source, row } => {
+                if let Some(play) = self.play.as_mut() {
+                    play.list_pick(source, row as usize);
+                }
+            }
             Action::None => {}
+        }
+    }
+
+    /// 캐릭터 창을 열고 닫는다 (T2) — 플레이 중에만.
+    fn toggle_character(&mut self) {
+        if self.play.is_none() {
+            return;
+        }
+        let Some(shell) = self.shell.as_mut() else {
+            return;
+        };
+        if shell.screens.iter().skip(1).any(|s| s == CHARACTER_SCREEN) {
+            shell.screens.retain(|s| s != CHARACTER_SCREEN);
+        } else {
+            shell.push(CHARACTER_SCREEN);
         }
     }
 
@@ -1493,6 +1516,9 @@ impl Editor {
         }
         if actions.open_screen_editor {
             self.screen_editor.toggle(&self.screens);
+        }
+        if actions.toggle_character {
+            self.toggle_character();
         }
         if actions.toggle_items {
             self.show_items = !self.show_items;
@@ -1791,6 +1817,7 @@ impl Editor {
                 }
             }
             Step::ToggleItems => self.show_items = !self.show_items,
+            Step::Character => self.toggle_character(),
             Step::Skill(key) => {
                 if let Some(play) = self.play.as_mut() {
                     play.use_skill(key);
@@ -1895,6 +1922,11 @@ impl Editor {
             Step::StatDesigner => {
                 if let Some(ui) = self.ui.as_mut() {
                     ui.stat_designer_mut().open();
+                }
+            }
+            Step::TriggerEditor => {
+                if let Some(ui) = self.ui.as_mut() {
+                    ui.trigger_editor_mut().open();
                 }
             }
             Step::QuestDesigner => {

@@ -207,6 +207,10 @@ pub enum Rejection {
     ClassRestricted,
     /// 배우지 않은 스킬 — 직업이 있는 유닛은 배운 스킬과 기본 공격만 쓴다 (R3).
     SkillNotLearned,
+    /// 기절 중이라 스킬을 쓸 수 없다 (R2b).
+    Stunned,
+    /// 침묵 중이라 기본 공격 말고는 쓸 수 없다 (R2b).
+    Silenced,
     /// 이미 최대 레벨인 스킬 (R3).
     SkillMaxed,
     /// 배울 수 없는 스킬 — 직업이 맞지 않거나 습득 조건이 맞지 않는다 (R3).
@@ -236,6 +240,23 @@ pub enum Event {
     Blocked { unit: Entity },
     /// Intent 가 거절됐다. 상태는 바뀌지 않았다.
     Rejected { intent: Intent, reason: Rejection },
+    /// 버프가 걸렸다 — 이미 걸려 있었으면 시간을 다시 잰 것이다 (R2b).
+    BuffApplied {
+        unit: Entity,
+        buff: crate::buff::BuffId,
+    },
+    /// 버프가 끝났거나 풀렸다 (R2b). 죽어서 사라질 때는 내지 않는다.
+    BuffEnded {
+        unit: Entity,
+        buff: crate::buff::BuffId,
+    },
+    /// 주기 효과 — 음수면 피해, 양수면 회복 (R2b).
+    BuffTicked {
+        unit: Entity,
+        buff: crate::buff::BuffId,
+        hp_delta: i32,
+        remaining_hp: u32,
+    },
     /// 공격이 맞았다.
     Damaged {
         attacker: Entity,

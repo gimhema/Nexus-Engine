@@ -1729,6 +1729,7 @@ fn details(root: &Path, asset: &Asset, assets: &[Asset], forms: &Forms) -> Detai
                             heal,
                             mana,
                             max_stack,
+                            ..
                         } if mana > 0 => {
                             format!("소모품 · HP {heal} · MP {mana} · 최대 {max_stack}개")
                         }

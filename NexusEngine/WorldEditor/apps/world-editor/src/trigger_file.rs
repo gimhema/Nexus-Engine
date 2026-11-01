@@ -47,13 +47,64 @@ pub(crate) struct TriggerFile {
     then: Vec<EffectFile>,
 }
 
+/// 트리거 편집기의 폼 (T5) — 칸마다 파일과 같은 RON 한 줄.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TriggerForm {
+    pub(crate) name: String,
+    pub(crate) on: String,
+    pub(crate) when: String,
+    pub(crate) then: Vec<String>,
+}
+
+impl TriggerForm {
+    pub(crate) fn new() -> Self {
+        Self {
+            name: String::new(),
+            on: String::from("LevelReached(2)"),
+            when: String::from("Always"),
+            then: vec![String::from("GiveExp(10)")],
+        }
+    }
+
+    pub(crate) fn from_file(file: &TriggerFile, name: String) -> Self {
+        let text = |r: Result<String, ron::Error>| r.unwrap_or_default();
+        Self {
+            name,
+            on: text(ron::to_string(&file.on)),
+            when: text(ron::to_string(&file.when)),
+            then: file.then.iter().map(|e| text(ron::to_string(e))).collect(),
+        }
+    }
+
+    /// `rules.ron` 의 `triggers` 항목.
+    pub(crate) fn rules_entry(&self, id: u32) -> String {
+        let mut s = format!(
+            "{id}: (\n    on: {},\n    when: {},\n    then: [\n",
+            self.on.trim(),
+            self.when.trim()
+        );
+        for e in &self.then {
+            s.push_str(&format!("        {},\n", e.trim()));
+        }
+        s.push_str("    ],\n),");
+        s
+    }
+
+    pub(crate) fn display_entry(&self, id: u32) -> String {
+        format!(
+            "{id}: (name: {}),",
+            crate::ron_patch::quote(self.name.trim())
+        )
+    }
+}
+
 pub(crate) fn always() -> ConditionFile {
     ConditionFile::Always
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-enum OnFile {
+pub(crate) enum OnFile {
     Killed {
         #[serde(default)]
         actor: Option<u32>,
@@ -112,6 +163,8 @@ pub(crate) enum ConditionFile {
     },
     /// 지금 존의 클리어 목표를 다 채웠다 (R6-2) — 던전의 나가는 문 `requires: Some(Cleared)`.
     Cleared,
+    /// 대상에게 그 버프가 걸려 있다 (R2b).
+    HasBuff(u32),
 }
 
 /// 퀘스트 상태 (R5).
@@ -170,6 +223,9 @@ pub(crate) enum EffectFile {
     StartQuest(u32),
     /// 드롭 표를 굴려 가방에 (R5) — 보상에 드롭 표를 다시 쓴다.
     GiveLoot(u32),
+    /// 버프를 건다 / 푼다 (R2b).
+    ApplyBuff(u32),
+    RemoveBuff(u32),
     /// 재화 (R4).
     GiveCurrency {
         currency: u32,
@@ -213,6 +269,7 @@ pub(crate) struct Known<'a> {
     pub(crate) skill: &'a dyn Fn(u32) -> bool,
     pub(crate) quest: &'a dyn Fn(u32) -> bool,
     pub(crate) loot: &'a dyn Fn(u32) -> bool,
+    pub(crate) buff: &'a dyn Fn(u32) -> bool,
 }
 
 /// 효과 하나를 검사한다 — 트리거의 `then` 과 퀘스트의 단계 효과·보상이 같은 것을 쓴다 (R5). 오류는 `then: …` 꼴.
@@ -234,6 +291,9 @@ pub(crate) fn check_effect(e: &EffectFile, known: &Known<'_>, err: &mut impl FnM
         }
         EffectFile::StartQuest(q) if !(known.quest)(q) => err(format!("then: 없는 퀘스트 {q}")),
         EffectFile::GiveLoot(t) if !(known.loot)(t) => err(format!("then: 없는 드롭 표 {t}")),
+        EffectFile::ApplyBuff(b) | EffectFile::RemoveBuff(b) if !(known.buff)(b) => {
+            err(format!("then: 없는 버프 {b}"));
+        }
         _ => {}
     }
 }
@@ -458,6 +518,7 @@ impl From<&ConditionFile> for Condition {
                 amount: *amount,
             },
             ConditionFile::Cleared => Condition::Cleared,
+            ConditionFile::HasBuff(b) => Condition::HasBuff(nexus_sim::BuffId(*b)),
         }
     }
 }
@@ -493,6 +554,8 @@ impl From<EffectFile> for Effect {
             },
             EffectFile::StartQuest(q) => Effect::StartQuest(nexus_sim::QuestId(q)),
             EffectFile::GiveLoot(t) => Effect::GiveLoot(nexus_sim::LootTableId(t)),
+            EffectFile::ApplyBuff(b) => Effect::ApplyBuff(nexus_sim::BuffId(b)),
+            EffectFile::RemoveBuff(b) => Effect::RemoveBuff(nexus_sim::BuffId(b)),
             EffectFile::GiveCurrency { currency, amount } => Effect::GiveCurrency {
                 currency: nexus_sim::CurrencyId(currency),
                 amount,
@@ -545,6 +608,7 @@ mod tests {
                 skill: &|s| s == 5,
                 quest: &|q| q == 1,
                 loot: &|t| t == 1,
+                buff: &|b| b == 1,
             },
         )
     }

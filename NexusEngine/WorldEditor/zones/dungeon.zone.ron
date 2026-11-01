@@ -320,7 +320,7 @@
         (
             name: "동굴 슬라임",
             kind: Monster,
-            actor: 100,
+            actor: 106,
             pos: (-4.0, 1.0),
             size: 0.8,
             orientation: 0.0,

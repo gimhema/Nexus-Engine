@@ -479,6 +479,7 @@ mod tests {
             skill: &|_| true,
             quest: &|q| q == 1,
             loot: &|t| t == 1,
+            buff: &|_| true,
         }
     }
 

@@ -42,8 +42,10 @@
 //! contentfolder 경로 | contentview icons|list   브라우저 폴더로 가기 (`/` = 맨 위) / 보기 방식
 //! contentmenu                 브라우저 빈 곳 오른쪽 클릭 메뉴 열기 (새로 만들기)
 //! trash                       휴지통 창 열기 (P20)
+//! character                   캐릭터 창 열고 닫기 (T2, C 키와 같다)
 //! statdesigner                스탯·직업 디자이너 열기 (R2)
 //! questdesigner               퀘스트 디자이너 열기 (R5)
+//! triggers                    트리거 편집기 열기 (T5)
 //! economy | economyrun        재화 매니저 열기 / 레벨마다 경제 시뮬레이션까지 돌리기 (R7)
 //! storyboard                  스토리보드 열기 — 퀘스트 선행·플래그를 켜는 곳/읽는 곳 그래프 (R8)
 //! contentop delete|duplicate|rename [새이름]  고른 항목에 파일 작업 확인 창 (P9)
@@ -163,9 +165,13 @@ pub(crate) enum Step {
     /// 콘텐츠 브라우저 열고 닫기 (P8).
     ContentToggle,
     /// 스탯·직업 디자이너 열기 (R2).
+    /// 캐릭터 창 열고 닫기 (T2).
+    Character,
     StatDesigner,
     /// 퀘스트 디자이너 열기 (R5).
     QuestDesigner,
+    /// 트리거 편집기 열기 (T5).
+    TriggerEditor,
     /// 스토리보드 열기 (R8).
     Storyboard,
     /// 재화 매니저 열기 — `run` 이면 시뮬레이션까지 돌린다 (R7).
@@ -353,8 +359,10 @@ fn parse_step(text: &str) -> Result<Step, String> {
         "esc" => return Ok(Step::Escape),
         "content" => return Ok(Step::ContentToggle),
         "trash" => return Ok(Step::Trash),
+        "character" => return Ok(Step::Character),
         "statdesigner" => return Ok(Step::StatDesigner),
         "questdesigner" => return Ok(Step::QuestDesigner),
+        "triggers" => return Ok(Step::TriggerEditor),
         "storyboard" => return Ok(Step::Storyboard),
         "economy" => return Ok(Step::Economy { run: false }),
         "economyrun" => return Ok(Step::Economy { run: true }),

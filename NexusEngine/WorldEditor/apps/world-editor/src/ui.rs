@@ -171,6 +171,8 @@ pub(crate) struct UiActions {
     pub(crate) continue_choice: Option<ContinueChoice>,
     /// HUD 인벤토리 창 열고 닫기 (I).
     pub(crate) toggle_items: bool,
+    /// 캐릭터 창 열고 닫기 (T2, C 키).
+    pub(crate) toggle_character: bool,
     /// 단축키 스킬 (숫자키 1~9, 플레이 중) — 1부터 센다.
     pub(crate) skill_key: Option<usize>,
     /// 에디터 패널 숨기기 (F9) — HUD 만으로 플레이되는지 보는 용도.
@@ -217,6 +219,7 @@ pub(crate) struct UiActions {
     open_stat_designer: bool,
     /// 퀘스트 디자이너를 연다 (UI 내부에서 소비, R5).
     open_quest_designer: bool,
+    open_trigger_editor: bool,
     open_economy: bool,
     open_storyboard: bool,
     /// 게임 규칙 설정 창을 연다 (UI 내부에서 소비).
@@ -275,6 +278,7 @@ pub(crate) struct EditorUi {
     trash: crate::trash::TrashWindow,
     stat_designer: crate::stat_designer::StatDesigner,
     quest_designer: crate::quest_designer::QuestDesigner,
+    trigger_editor: crate::trigger_editor::TriggerEditor,
     economy: crate::economy::EconomyManager,
     storyboard: crate::storyboard::StoryboardWindow,
 }
@@ -349,6 +353,7 @@ impl EditorUi {
             trash: crate::trash::TrashWindow::default(),
             stat_designer: crate::stat_designer::StatDesigner::default(),
             quest_designer: crate::quest_designer::QuestDesigner::default(),
+            trigger_editor: crate::trigger_editor::TriggerEditor::default(),
             economy: crate::economy::EconomyManager::default(),
             storyboard: crate::storyboard::StoryboardWindow::default(),
         }
@@ -372,6 +377,11 @@ impl EditorUi {
     /// 콘텐츠 브라우저 — 자동 검증의 `content*` 단계가 쓴다.
     pub(crate) fn content_mut(&mut self) -> &mut ContentBrowser {
         &mut self.content
+    }
+
+    /// 트리거 편집기 — 자동 검증 스크립트(`triggers`)가 연다 (T5).
+    pub(crate) fn trigger_editor_mut(&mut self) -> &mut crate::trigger_editor::TriggerEditor {
+        &mut self.trigger_editor
     }
 
     /// 퀘스트 디자이너 — 자동 검증 스크립트(`questdesigner`)가 연다 (R5).
@@ -512,6 +522,7 @@ impl EditorUi {
         let trash = &mut self.trash;
         let stat_designer = &mut self.stat_designer;
         let quest_designer = &mut self.quest_designer;
+        let trigger_editor = &mut self.trigger_editor;
         let economy = &mut self.economy;
         let storyboard = &mut self.storyboard;
 
@@ -522,6 +533,9 @@ impl EditorUi {
             }
             if std::mem::take(&mut actions.open_quest_designer) {
                 quest_designer.open();
+            }
+            if std::mem::take(&mut actions.open_trigger_editor) {
+                trigger_editor.open();
             }
             if std::mem::take(&mut actions.open_economy) {
                 economy.open();
@@ -560,6 +574,7 @@ impl EditorUi {
             rules.show(ui);
             stat_designer.show(ui);
             quest_designer.show(ui);
+            trigger_editor.show(ui);
             economy.show(ui);
             storyboard.show(ui);
             trash.show(ui.ctx());
@@ -608,6 +623,10 @@ impl EditorUi {
                 content.refresh();
             }
             if stat_designer.take_saved() {
+                actions.reload_data = true;
+                content.refresh();
+            }
+            if trigger_editor.take_saved() {
                 actions.reload_data = true;
                 content.refresh();
             }
@@ -827,6 +846,9 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
                 }
                 if ui.button("퀘스트 디자이너…").clicked() {
                     actions.open_quest_designer = true;
+                }
+                if ui.button("트리거 편집기…").clicked() {
+                    actions.open_trigger_editor = true;
                 }
                 if ui.button("재화 매니저…").clicked() {
                     actions.open_economy = true;
@@ -1123,6 +1145,7 @@ fn shortcuts(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
 
         actions.toggle_play |= i.key_pressed(Key::F5);
         actions.toggle_items |= i.key_pressed(Key::I);
+        actions.toggle_character |= i.key_pressed(Key::C) && !i.modifiers.command;
         if model.play.is_some() {
             const DIGITS: [Key; 9] = [
                 Key::Num1,

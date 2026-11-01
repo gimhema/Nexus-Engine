@@ -20,6 +20,7 @@ use nexus_core::units::dir_to_heading;
 use nexus_core::{Entity, Vec2, World};
 
 use crate::authority::{Event, Rejection};
+use crate::buff::{ActiveBuff, BuffDef, BuffId};
 use crate::combat::{self, SkillDef, SkillId};
 use crate::dungeon::{ClearDef, ClearState};
 use crate::faction::{FactionId, FactionTable, Relation};
@@ -80,6 +81,10 @@ pub struct SimWorld {
     classes: HashMap<ClassId, ClassDef>,
     /// 장비의 기본 스탯 보너스·직업 제한. 없는 장비는 보너스도 제한도 없다.
     equip_rules: HashMap<ItemId, EquipRules>,
+    /// 버프 정의와, 그것을 거는 스킬·소모품 (R2b).
+    buffs: HashMap<BuffId, BuffDef>,
+    skill_buffs: HashMap<SkillId, BuffId>,
+    item_buffs: HashMap<ItemId, BuffId>,
     /// 경험치 곡선 (R3) — 변수는 `level`. 없으면 서버와 같은 `level² × 100`.
     exp_curve: Option<Formula>,
     /// 스킬 부착 규칙·레벨 수식 (R3). 없는 스킬은 "누구나, 1레벨, 숫자 그대로".
@@ -126,6 +131,9 @@ impl SimWorld {
             stat_rules: None,
             classes: HashMap::new(),
             equip_rules: HashMap::new(),
+            buffs: HashMap::new(),
+            skill_buffs: HashMap::new(),
+            item_buffs: HashMap::new(),
             exp_curve: None,
             skill_rules: HashMap::new(),
             shops: HashMap::new(),
@@ -1355,6 +1363,130 @@ impl SimWorld {
     }
 
     /// 장비의 스탯 보너스·직업 제한을 등록한다 (설정 작업).
+    pub fn define_buff(&mut self, id: BuffId, def: BuffDef) {
+        self.buffs.insert(id, def);
+    }
+
+    /// 이 스킬이 맞은 유닛마다 건다 (R2b).
+    pub fn define_skill_buff(&mut self, skill: SkillId, buff: BuffId) {
+        self.skill_buffs.insert(skill, buff);
+    }
+
+    /// 이 소모품을 쓰면 쓴 쪽에게 건다 (R2b).
+    pub fn define_item_buff(&mut self, item: ItemId, buff: BuffId) {
+        self.item_buffs.insert(item, buff);
+    }
+
+    #[must_use]
+    pub fn buff(&self, id: BuffId) -> Option<&BuffDef> {
+        self.buffs.get(&id)
+    }
+
+    /// 버프를 건다 (R2b, 모듈 `buff`). 없는 번호·죽은 유닛·지속 시간 0 이면 아무 일도 없다.
+    pub(crate) fn apply_buff(
+        &mut self,
+        unit: Entity,
+        buff: BuffId,
+        source: Option<Entity>,
+        events: &mut Vec<Event>,
+    ) {
+        let now = self.now;
+        let Some(def) = self.buffs.get(&buff).copied().filter(|d| d.duration_ms > 0) else {
+            return;
+        };
+        let Some(u) = self.unit_mut(unit).filter(|u| u.is_alive()) else {
+            return;
+        };
+        let until = now + Duration::from_millis(u64::from(def.duration_ms));
+        if let Some(active) = u.buffs.iter_mut().find(|b| b.id == buff) {
+            active.until = until;
+            active.source = source;
+        } else {
+            u.buffs.push(ActiveBuff {
+                id: buff,
+                def,
+                until,
+                next_tick: now + Duration::from_millis(u64::from(def.tick_ms)),
+                source,
+            });
+        }
+        u.clamp_to_max();
+        events.push(Event::BuffApplied { unit, buff });
+    }
+
+    /// 버프를 푼다 (R2b). 걸려 있지 않으면 아무 일도 없다.
+    fn remove_buff(&mut self, unit: Entity, buff: BuffId, events: &mut Vec<Event>) {
+        let Some(u) = self.unit_mut(unit).filter(|u| u.has_buff(buff)) else {
+            return;
+        };
+        u.buffs.retain(|b| b.id != buff);
+        u.clamp_to_max();
+        events.push(Event::BuffEnded { unit, buff });
+    }
+
+    /// 주기 효과를 내고 끝난 버프를 지운다 (R2b) — 슬롯 순서·걸린 순서대로라 결정적이다.
+    fn run_buffs(&mut self, events: &mut Vec<Event>) {
+        let now = self.now;
+        let buffed: Vec<Entity> = self
+            .units()
+            .filter(|(_, u)| u.is_alive() && !u.buffs.is_empty())
+            .map(|(e, _)| e)
+            .collect();
+        for unit in buffed {
+            let ids: Vec<BuffId> = self
+                .unit(unit)
+                .map(|u| u.buffs.iter().map(|b| b.id).collect())
+                .unwrap_or_default();
+            for buff in ids {
+                self.tick_buff(unit, buff, events);
+                let ended = self
+                    .unit(unit)
+                    .is_some_and(|u| u.buffs.iter().any(|b| b.id == buff && b.until <= now));
+                if ended {
+                    self.remove_buff(unit, buff, events);
+                }
+            }
+        }
+    }
+
+    /// 밀린 주기 효과 — 쓰러지면 멈춘다.
+    fn tick_buff(&mut self, unit: Entity, buff: BuffId, events: &mut Vec<Event>) {
+        let now = self.now;
+        loop {
+            let Some(u) = self.unit_mut(unit).filter(|u| u.is_alive()) else {
+                return;
+            };
+            let immune = u.def.immortal || u.is_protected(now);
+            let Some(b) = u.buffs.iter_mut().find(|b| b.id == buff) else {
+                return;
+            };
+            if b.def.tick_ms == 0 || b.def.tick_hp == 0 || b.next_tick > now.min(b.until) {
+                return;
+            }
+            b.next_tick += Duration::from_millis(u64::from(b.def.tick_ms));
+            let (delta, source) = (b.def.tick_hp, b.source);
+            if delta < 0 && immune {
+                continue;
+            }
+            u.hp = if delta < 0 {
+                u.hp.saturating_sub(delta.unsigned_abs())
+            } else {
+                u.hp.saturating_add(delta.unsigned_abs()).min(u.max_hp())
+            };
+            let remaining_hp = u.hp;
+            events.push(Event::BuffTicked {
+                unit,
+                buff,
+                hp_delta: delta,
+                remaining_hp,
+            });
+            if remaining_hp == 0 {
+                self.kill(unit, source.unwrap_or(unit), events);
+                return;
+            }
+        }
+    }
+
     pub fn define_equip_rules(&mut self, item: ItemId, rules: EquipRules) {
         self.equip_rules.insert(item, rules);
     }
@@ -1445,6 +1577,7 @@ impl SimWorld {
                 unit.is_some_and(|u| cmp.test(i64::from(u.skill_level(*skill)), i64::from(*value)))
             }
             Condition::Cleared => self.is_cleared(),
+            Condition::HasBuff(buff) => unit.is_some_and(|u| u.has_buff(*buff)),
         }
     }
 
@@ -1818,6 +1951,13 @@ impl SimWorld {
         if a.def.class.is_some() && a.def.basic_attack != Some(skill) && a.skill_level(skill) == 0 {
             return Err(Rejection::SkillNotLearned);
         }
+        // 상태이상도 서버와 겹치는 판정 뒤에 (R2b).
+        if a.is_stunned() {
+            return Err(Rejection::Stunned);
+        }
+        if a.is_silenced() && a.def.basic_attack != Some(skill) {
+            return Err(Rejection::Silenced);
+        }
 
         // 맞는 유닛 — 대상이 먼저, 그다음 범위 안의 다른 유닛을 슬롯 순서대로 (결정적).
         let mut hits = vec![target];
@@ -1853,6 +1993,7 @@ impl SimWorld {
             a.heading = dir_to_heading(facing);
         }
 
+        let buff = self.skill_buffs.get(&skill).copied();
         for target in hits {
             if def.is_heal() {
                 if let Some(t) = self.unit_mut(target) {
@@ -1867,6 +2008,9 @@ impl SimWorld {
             } else {
                 self.strike(attacker, target, skill, def, events);
             }
+            if let Some(buff) = buff {
+                self.apply_buff(target, buff, Some(attacker), events);
+            }
         }
         Ok(())
     }
@@ -1880,7 +2024,6 @@ impl SimWorld {
         def: SkillDef,
         events: &mut Vec<Event>,
     ) {
-        let now = self.now;
         // 장비가 더해진 수치로 계산한다.
         let Some(attack) = self.unit(attacker).map(Unit::attack) else {
             return;
@@ -1899,23 +2042,7 @@ impl SimWorld {
             remaining_hp,
         });
         if remaining_hp == 0 {
-            t.waypoints.clear();
-            t.ai = AiState::default();
-            t.died_at = Some(now);
-            let (corpse, table, reward, bounty) =
-                (t.pos, t.def.loot, t.def.exp_reward, t.def.bounty);
-            events.push(Event::Died {
-                unit: target,
-                killer: attacker,
-            });
-            self.drop_loot(table, corpse, events);
-            self.grant_exp(attacker, reward, events);
-            // 처치 보상 재화 (R4) — 경험치처럼 바로 지갑으로.
-            if let Some(b) = bounty
-                && self.unit(attacker).is_some_and(Unit::is_alive)
-            {
-                self.pay_in(attacker, b.currency, u64::from(b.amount), events);
-            }
+            self.kill(target, attacker, events);
         } else if t.def.ai != AiKind::Passive && t.ai.target.is_none() && !t.ai.returning {
             // 반격 — 싸우는 상대가 없을 때만 갈아탄다. 귀환 중에는 받지 않는다.
             t.ai.target = Some(attacker);
@@ -1923,6 +2050,31 @@ impl SimWorld {
                 unit: target,
                 target: attacker,
             });
+        }
+    }
+
+    /// HP 가 0 이 된 유닛의 죽음 — 피해든 독이든 여기를 지난다. 죽은 쪽이 받는 보상은 `alive` 검사에 걸린다.
+    fn kill(&mut self, target: Entity, killer: Entity, events: &mut Vec<Event>) {
+        let now = self.now;
+        let Some(t) = self.unit_mut(target) else {
+            return;
+        };
+        t.waypoints.clear();
+        t.ai = AiState::default();
+        t.died_at = Some(now);
+        t.buffs.clear();
+        let (corpse, table, reward, bounty) = (t.pos, t.def.loot, t.def.exp_reward, t.def.bounty);
+        events.push(Event::Died {
+            unit: target,
+            killer,
+        });
+        self.drop_loot(table, corpse, events);
+        self.grant_exp(killer, reward, events);
+        // 처치 보상 재화 (R4) — 경험치처럼 바로 지갑으로.
+        if let Some(b) = bounty
+            && self.unit(killer).is_some_and(Unit::is_alive)
+        {
+            self.pay_in(killer, b.currency, u64::from(b.amount), events);
         }
     }
 
@@ -2074,6 +2226,7 @@ impl SimWorld {
             .get(slot)
             .ok_or(Rejection::EmptySlot)?;
         let def = self.items.get(&stack.item).ok_or(Rejection::UnknownItem)?;
+        let buff = self.item_buffs.get(&stack.item).copied();
         let (heal, mana) = match def.kind {
             ItemKind::Consumable { heal, mana } => (heal, mana),
             // 스킬북 (R3) — 배울 수 있을 때만 사라진다.
@@ -2089,7 +2242,7 @@ impl SimWorld {
 
         let u = self.unit_mut(unit).ok_or(Rejection::UnknownEntity)?;
         u.inventory.consumables.take_one(slot);
-        if heal > 0 || mana == 0 {
+        if heal > 0 || (mana == 0 && buff.is_none()) {
             let before = u.hp;
             let cap = u.max_hp();
             u.hp = u.hp.saturating_add(heal).min(cap);
@@ -2108,6 +2261,9 @@ impl SimWorld {
                 amount: u.mp - before,
                 remaining_mp: u.mp,
             });
+        }
+        if let Some(buff) = buff {
+            self.apply_buff(unit, buff, Some(unit), events);
         }
         Ok(())
     }
@@ -2441,6 +2597,8 @@ impl SimWorld {
                     });
                 }
             }
+            Effect::ApplyBuff(buff) => self.apply_buff(subject, buff, None, events),
+            Effect::RemoveBuff(buff) => self.remove_buff(subject, buff, events),
             Effect::GiveExp(amount) => self.grant_exp(subject, amount, events),
             Effect::GrantSkill { skill, levels } => {
                 let _ = self.learn(subject, skill, levels, events);
@@ -2502,6 +2660,7 @@ impl SimWorld {
         self.now += dt;
         self.respawn_due(events);
         self.expire_ground_items(events);
+        self.run_buffs(events);
         let tick = dt;
         let dt = dt.as_secs_f32();
         let tiles = &self.tiles;
@@ -2513,7 +2672,8 @@ impl SimWorld {
             if unit.waypoints.is_empty() || !unit.is_alive() {
                 continue;
             }
-            match advance(tiles, unit, unit.def.move_speed * dt) {
+            let speed = unit.move_speed();
+            match advance(tiles, unit, speed * dt) {
                 Step::Moving => {}
                 Step::Arrived => events.push(Event::Arrived { unit: *entity }),
                 Step::Blocked => events.push(Event::Blocked { unit: *entity }),

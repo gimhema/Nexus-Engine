@@ -163,6 +163,8 @@ pub enum Condition {
     },
     /// 지금 존의 클리어 목표를 다 채웠다 (R6-2) — 던전의 나가는 문. 클리어가 없는 존이면 거짓.
     Cleared,
+    /// 대상에게 그 버프가 걸려 있다 (R2b).
+    HasBuff(crate::buff::BuffId),
 }
 
 /// 한다 — 대상 유닛(캐릭터 플래그·아이템·경험치)이나 월드(월드 플래그)를 바꾼다.
@@ -200,6 +202,10 @@ pub enum Effect {
     StartQuest(crate::quest::QuestId),
     /// 드롭 표를 굴려 대상의 가방에 넣는다 (R5) — 보상에 드롭 표를 다시 쓴다. 가방이 차면 발밑에.
     GiveLoot(crate::loot::LootTableId),
+    /// 버프를 건다 (R2b) — 건 쪽이 없으므로 독으로 쓰러져도 보상이 없다. 죽은 대상에게는 걸리지 않는다.
+    ApplyBuff(crate::buff::BuffId),
+    /// 버프를 푼다 (R2b).
+    RemoveBuff(crate::buff::BuffId),
     /// 재화를 준다 (R4) — 퀘스트 보상 등.
     GiveCurrency {
         currency: crate::trade::CurrencyId,
