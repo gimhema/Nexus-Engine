@@ -223,6 +223,8 @@ pub(crate) enum EffectFile {
     StartQuest(u32),
     /// 드롭 표를 굴려 가방에 (R5) — 보상에 드롭 표를 다시 쓴다.
     GiveLoot(u32),
+    /// `script_calls` 표의 함수를 대상 유닛과 함께 부른다 (T5).
+    Script(u32),
     /// 버프를 건다 / 푼다 (R2b).
     ApplyBuff(u32),
     RemoveBuff(u32),
@@ -270,6 +272,7 @@ pub(crate) struct Known<'a> {
     pub(crate) quest: &'a dyn Fn(u32) -> bool,
     pub(crate) loot: &'a dyn Fn(u32) -> bool,
     pub(crate) buff: &'a dyn Fn(u32) -> bool,
+    pub(crate) script: &'a dyn Fn(u32) -> bool,
 }
 
 /// 효과 하나를 검사한다 — 트리거의 `then` 과 퀘스트의 단계 효과·보상이 같은 것을 쓴다 (R5). 오류는 `then: …` 꼴.
@@ -291,6 +294,9 @@ pub(crate) fn check_effect(e: &EffectFile, known: &Known<'_>, err: &mut impl FnM
         }
         EffectFile::StartQuest(q) if !(known.quest)(q) => err(format!("then: 없는 퀘스트 {q}")),
         EffectFile::GiveLoot(t) if !(known.loot)(t) => err(format!("then: 없는 드롭 표 {t}")),
+        EffectFile::Script(c) if !(known.script)(c) => {
+            err(format!("then: 없는 스크립트 호출 {c}"));
+        }
         EffectFile::ApplyBuff(b) | EffectFile::RemoveBuff(b) if !(known.buff)(b) => {
             err(format!("then: 없는 버프 {b}"));
         }
@@ -554,6 +560,7 @@ impl From<EffectFile> for Effect {
             },
             EffectFile::StartQuest(q) => Effect::StartQuest(nexus_sim::QuestId(q)),
             EffectFile::GiveLoot(t) => Effect::GiveLoot(nexus_sim::LootTableId(t)),
+            EffectFile::Script(c) => Effect::Script(nexus_sim::ScriptCallId(c)),
             EffectFile::ApplyBuff(b) => Effect::ApplyBuff(nexus_sim::BuffId(b)),
             EffectFile::RemoveBuff(b) => Effect::RemoveBuff(nexus_sim::BuffId(b)),
             EffectFile::GiveCurrency { currency, amount } => Effect::GiveCurrency {
@@ -609,6 +616,7 @@ mod tests {
                 quest: &|q| q == 1,
                 loot: &|t| t == 1,
                 buff: &|b| b == 1,
+                script: &|_| true,
             },
         )
     }

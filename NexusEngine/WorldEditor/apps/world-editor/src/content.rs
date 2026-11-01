@@ -51,6 +51,14 @@ pub(crate) enum AssetKind {
     Item,
     Skill,
     Loot,
+    /// 상점·제작·텔레포트·버프 표의 항목 (T5).
+    Shop,
+    Craft,
+    Teleport,
+    Buff,
+    /// 트리거·퀘스트 — 자기 편집기 창에서 고친다 (T5).
+    Trigger,
+    Quest,
     Script,
     Sheet,
     Image,
@@ -58,7 +66,7 @@ pub(crate) enum AssetKind {
 }
 
 impl AssetKind {
-    pub(crate) const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 17] = [
         Self::Level,
         Self::Zone,
         Self::Screen,
@@ -66,6 +74,12 @@ impl AssetKind {
         Self::Item,
         Self::Skill,
         Self::Loot,
+        Self::Shop,
+        Self::Craft,
+        Self::Teleport,
+        Self::Buff,
+        Self::Trigger,
+        Self::Quest,
         Self::Script,
         Self::Sheet,
         Self::Image,
@@ -81,6 +95,12 @@ impl AssetKind {
             Self::Item => "아이템",
             Self::Skill => "스킬",
             Self::Loot => "드롭 표",
+            Self::Shop => "상점",
+            Self::Craft => "제작",
+            Self::Teleport => "텔레포트",
+            Self::Buff => "버프",
+            Self::Trigger => "트리거",
+            Self::Quest => "퀘스트",
             Self::Script => "스크립트",
             Self::Sheet => "스프라이트 시트",
             Self::Image => "그림",
@@ -98,6 +118,10 @@ impl AssetKind {
             Self::Item => egui::Color32::from_rgb(210, 170, 110),
             Self::Skill => egui::Color32::from_rgb(230, 100, 90),
             Self::Loot => egui::Color32::from_rgb(140, 190, 120),
+            Self::Shop | Self::Craft | Self::Teleport => egui::Color32::from_rgb(200, 180, 90),
+            Self::Buff => egui::Color32::from_rgb(120, 200, 160),
+            Self::Trigger => egui::Color32::from_rgb(220, 150, 70),
+            Self::Quest => egui::Color32::from_rgb(90, 140, 220),
             Self::Script => egui::Color32::from_rgb(100, 160, 240),
             Self::Sheet => egui::Color32::from_rgb(230, 120, 170),
             Self::Image => egui::Color32::from_rgb(90, 200, 200),
@@ -108,6 +132,12 @@ impl AssetKind {
     /// 아이콘 안의 짧은 글씨 — 영문이라 어느 폰트에서나 나온다.
     fn badge(self) -> &'static str {
         match self {
+            Self::Shop => "SHP",
+            Self::Craft => "CRF",
+            Self::Teleport => "TP",
+            Self::Buff => "BUF",
+            Self::Trigger => "TRG",
+            Self::Quest => "QST",
             Self::Level => "LV",
             Self::Zone => "MAP",
             Self::Screen => "UI",
@@ -124,7 +154,21 @@ impl AssetKind {
 
     /// 파일이 아니라 표 안의 항목인가.
     pub(crate) fn is_virtual(self) -> bool {
-        matches!(self, Self::Actor | Self::Item | Self::Skill | Self::Loot)
+        matches!(self, Self::Actor | Self::Trigger | Self::Quest) || self.table_tab().is_some()
+    }
+
+    /// 데이터 표 편집기의 항목이면 그 탭.
+    pub(crate) fn table_tab(self) -> Option<Tab> {
+        Some(match self {
+            Self::Item => Tab::Items,
+            Self::Skill => Tab::Skills,
+            Self::Loot => Tab::Loot,
+            Self::Shop => Tab::Shops,
+            Self::Craft => Tab::Crafts,
+            Self::Teleport => Tab::Teleports,
+            Self::Buff => Tab::Buffs,
+            _ => return None,
+        })
     }
 }
 
@@ -238,6 +282,9 @@ pub(crate) enum ContentAction {
     /// 데이터 표 편집기 — 아이템·스킬·드롭 표 (P10).
     EditTable(Tab, u32),
     NewTable(Tab),
+    /// 트리거 편집기·퀘스트 디자이너를 이 번호로 (T5).
+    EditTrigger(u32),
+    EditQuest(u32),
     /// 게임 규칙 설정 — `rules.ron` 의 한 벌짜리 값 (시드·기본 액터·진영·시작 소지품).
     EditRules,
     /// 새 레벨 / 새 액터 — 해당 편집기에서 만든다.
@@ -335,6 +382,8 @@ impl std::fmt::Debug for ContentBrowser {
 pub(crate) struct Forms {
     actors: BTreeMap<u32, ActorForm>,
     tables: TableForms,
+    triggers: BTreeMap<u32, crate::trigger_file::TriggerForm>,
+    quests: BTreeMap<u32, crate::quest_file::QuestForm>,
 }
 
 /// 고른 항목의 상세.
@@ -490,6 +539,10 @@ impl ContentBrowser {
                     AssetKind::Item => t.items.contains_key(n),
                     AssetKind::Skill => t.skills.contains_key(n),
                     AssetKind::Loot => t.loot.contains_key(n),
+                    AssetKind::Shop => t.shops.contains_key(n),
+                    AssetKind::Craft => t.crafts.contains_key(n),
+                    AssetKind::Teleport => t.teleports.contains_key(n),
+                    AssetKind::Buff => t.buffs.contains_key(n),
                     _ => self.forms.actors.contains_key(n),
                 };
                 let free = (id + 1..).find(|n| !taken(n)).unwrap_or(id + 1);
@@ -1203,7 +1256,7 @@ impl ContentBrowser {
 
 /// 오른쪽 클릭 메뉴의 "새로 만들기" 항목 — 도구 줄의 *새로 만들기* 와 같은 목록이다.
 /// 파일 이름·번호는 각 편집기에서 정한다 (여기서는 편집기를 새 항목 상태로 열 뿐이다).
-fn create_items() -> [(&'static str, ContentAction); 8] {
+fn create_items() -> [(&'static str, ContentAction); 9] {
     [
         ("레벨…", ContentAction::NewLevel),
         ("액터…", ContentAction::NewActor),
@@ -1214,6 +1267,7 @@ fn create_items() -> [(&'static str, ContentAction); 8] {
         ("상점…", ContentAction::NewTable(Tab::Shops)),
         ("제작 표…", ContentAction::NewTable(Tab::Crafts)),
         ("텔레포트 표…", ContentAction::NewTable(Tab::Teleports)),
+        ("버프…", ContentAction::NewTable(Tab::Buffs)),
     ]
 }
 
@@ -1412,9 +1466,15 @@ pub(crate) fn open_action(asset: &Asset) -> ContentAction {
         AssetKind::Actor => asset
             .actor_id()
             .map_or(ContentAction::NewActor, ContentAction::EditActor),
+        AssetKind::Trigger => ContentAction::EditTrigger(asset.entry_id().unwrap_or_default()),
+        AssetKind::Quest => ContentAction::EditQuest(asset.entry_id().unwrap_or_default()),
         AssetKind::Item => table_action(asset, Tab::Items),
         AssetKind::Skill => table_action(asset, Tab::Skills),
         AssetKind::Loot => table_action(asset, Tab::Loot),
+        AssetKind::Shop => table_action(asset, Tab::Shops),
+        AssetKind::Craft => table_action(asset, Tab::Crafts),
+        AssetKind::Teleport => table_action(asset, Tab::Teleports),
+        AssetKind::Buff => table_action(asset, Tab::Buffs),
         AssetKind::Data => match asset.key.as_str() {
             // 표를 통째로 여는 편집기는 없다 — 그 표의 항목을 고치는 편집기로 간다.
             // 표의 항목(액터·아이템·스킬·드롭 표)은 "게임 데이터" 폴더에서 하나씩 연다.
@@ -1485,7 +1545,16 @@ fn collect(root: &Path) -> (Vec<Asset>, Forms, Option<String>) {
     ) {
         (Some(rules), Some(display)) => {
             match (actor_forms(&rules, &display), table_forms(&rules, &display)) {
-                (Ok(actors), Ok(tables)) => (Forms { actors, tables }, None),
+                (Ok(actors), Ok(tables)) => (
+                    Forms {
+                        actors,
+                        tables,
+                        triggers: crate::game_data::trigger_forms(&rules, &display)
+                            .unwrap_or_default(),
+                        quests: crate::game_data::quest_forms(&rules, &display).unwrap_or_default(),
+                    },
+                    None,
+                ),
                 (Err(e), _) | (_, Err(e)) => (
                     Forms::default(),
                     Some(format!("데이터 표를 읽지 못함 — {e}")),
@@ -1542,6 +1611,68 @@ fn collect(root: &Path) -> (Vec<Asset>, Forms, Option<String>) {
             note: format!("{}줄", rows.len()),
             bytes: None,
         });
+    }
+    // 상점·제작·텔레포트·버프·트리거·퀘스트 (T5).
+    let mut entry = |kind: AssetKind, prefix: &str, id: u32, name: String, note: String| {
+        out.push(Asset {
+            kind,
+            key: format!("{prefix}:{id}"),
+            name,
+            note,
+            bytes: None,
+        });
+    };
+    let numbered = |what: &str, id: u32| format!("{what} #{id}");
+    for (id, f) in &forms.tables.shops {
+        let note = format!("물건 {}", f.goods.len());
+        entry(AssetKind::Shop, "shop", *id, numbered("상점", *id), note);
+    }
+    for (id, f) in &forms.tables.crafts {
+        let note = format!("레시피 {}", f.recipes.len());
+        entry(
+            AssetKind::Craft,
+            "craft",
+            *id,
+            numbered("제작 표", *id),
+            note,
+        );
+    }
+    for (id, f) in &forms.tables.teleports {
+        let note = format!("목적지 {}", f.destinations.len());
+        entry(
+            AssetKind::Teleport,
+            "teleport",
+            *id,
+            numbered("텔레포트 표", *id),
+            note,
+        );
+    }
+    for (id, f) in &forms.tables.buffs {
+        entry(
+            AssetKind::Buff,
+            "buff",
+            *id,
+            named(&f.name, *id, "버프"),
+            format!("#{id}"),
+        );
+    }
+    for (id, f) in &forms.triggers {
+        entry(
+            AssetKind::Trigger,
+            "trigger",
+            *id,
+            named(&f.name, *id, "트리거"),
+            f.on.clone(),
+        );
+    }
+    for (id, f) in &forms.quests {
+        entry(
+            AssetKind::Quest,
+            "quest",
+            *id,
+            named(&f.title, *id, "퀘스트"),
+            format!("#{id}"),
+        );
     }
     (out, forms, error)
 }
@@ -1612,7 +1743,7 @@ fn details(root: &Path, asset: &Asset, assets: &[Asset], forms: &Forms) -> Detai
     let virtual_entry = matches!(
         asset.kind,
         AssetKind::Actor | AssetKind::Item | AssetKind::Skill | AssetKind::Loot
-    );
+    ) || asset.kind.is_virtual();
     if !virtual_entry {
         row("경로", asset.key.clone());
         if let Ok(meta) = std::fs::metadata(root.join(&asset.key)) {
@@ -1767,6 +1898,12 @@ fn details(root: &Path, asset: &Asset, assets: &[Asset], forms: &Forms) -> Detai
                 }
             }
         }
+        AssetKind::Shop
+        | AssetKind::Craft
+        | AssetKind::Teleport
+        | AssetKind::Buff
+        | AssetKind::Trigger
+        | AssetKind::Quest => {}
         AssetKind::Loot => {
             if let Some(lines) = asset.entry_id().and_then(|id| forms.tables.loot.get(&id)) {
                 for r in lines {
@@ -1886,6 +2023,12 @@ fn references(root: &Path, asset: &Asset, assets: &[Asset], forms: &Forms) -> Ve
                 out.push(String::from("플레이어 공격 (rules.ron)"));
             }
         }
+        AssetKind::Shop
+        | AssetKind::Craft
+        | AssetKind::Teleport
+        | AssetKind::Buff
+        | AssetKind::Trigger
+        | AssetKind::Quest => {}
         AssetKind::Loot => {
             let id = asset.entry_id().unwrap_or_default();
             for (a, f) in &forms.actors {

@@ -31,6 +31,10 @@ pub trait ScriptHost: Debug {
     }
 }
 
+/// 효과가 부르는 스크립트 함수의 번호 (T5) — `(경로, 함수)` 는 데이터 표에 있고, 시뮬레이션은 번호만 안다.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ScriptCallId(pub u32);
+
 /// 스크립트가 남긴 메시지 하나.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScriptLog {

@@ -138,9 +138,20 @@ struct RulesFile {
     /// 퀘스트 (R5) — 형식은 `quest_file` 모듈 doc.
     #[serde(default)]
     quests: BTreeMap<u32, QuestFile>,
+    /// 효과 `Script(N)` 이 부르는 함수 (T5).
+    #[serde(default)]
+    script_calls: BTreeMap<u32, ScriptCallFile>,
     /// 버프·상태이상 (R2b). 이름·아이콘 색은 `display.ron` 의 `buffs`.
     #[serde(default)]
     buffs: BTreeMap<u32, BuffFile>,
+}
+
+/// 스크립트 호출 한 줄 (T5) — `data/` 기준 경로와 `fn 함수(me)`.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScriptCallFile {
+    path: String,
+    call: String,
 }
 
 /// 버프 한 줄 (R2b, 규칙은 `nexus_sim::buff`). 적지 않은 칸은 0·거짓.
@@ -283,6 +294,9 @@ struct SkillFile {
     /// 맞은 유닛마다 거는 버프 (R2b).
     #[serde(default)]
     buff: Option<u32>,
+    /// 날아가는 속도 (m/s, T8). 0 이면 바로 맞는다.
+    #[serde(default)]
+    projectile_speed: u32,
 }
 
 fn one_f32() -> f32 {
@@ -619,6 +633,8 @@ pub(crate) struct GameData {
     actor_looks: BTreeMap<ActorId, ActorLook>,
     /// 액터 타입별 스크립트 경로 (`data/` 기준).
     actor_scripts: BTreeMap<ActorId, String>,
+    /// 효과가 부르는 함수 (T5) — 번호 → (경로, 함수).
+    script_calls: BTreeMap<u32, (String, String)>,
     /// 액터 타입별 단축키 스킬 — 비어 있는 타입은 빠진다.
     actor_skills: BTreeMap<ActorId, Vec<SkillId>>,
     /// 스킬의 표시 이름 (`display.ron`).
@@ -628,6 +644,8 @@ pub(crate) struct GameData {
     buff_looks: BTreeMap<BuffId, (String, (f32, f32, f32))>,
     /// 버프를 거는 스킬·소모품 (R2b).
     skill_buffs: Vec<(SkillId, BuffId)>,
+    /// 날아가는 스킬 (T8).
+    skill_projectiles: Vec<(SkillId, f32)>,
     item_buffs: Vec<(ItemId, BuffId)>,
     /// 진영의 표시 이름 (`display.ron`).
     faction_names: BTreeMap<u32, String>,
@@ -689,6 +707,7 @@ impl GameData {
         let quest = |q: u32| self.quests.iter().any(|(id, _)| id.0 == q);
         let loot = |t: u32| self.loot.iter().any(|(id, _)| id.0 == t);
         let buff = |b: u32| self.buffs.iter().any(|(id, _)| id.0 == b);
+        let script = |c: u32| self.script_calls.contains_key(&c);
         clear.check_refs(&trigger_file::Known {
             item: &item,
             actor: &actor,
@@ -696,6 +715,7 @@ impl GameData {
             quest: &quest,
             loot: &loot,
             buff: &buff,
+            script: &script,
         })
     }
 
@@ -940,6 +960,16 @@ impl GameData {
                 format!("표시 진영 {id}: 이름이 비어 있음"),
             );
         }
+        // 스크립트 호출 (T5).
+        for (id, c) in &r.script_calls {
+            check(
+                script_path_ok(&c.path) && !c.call.trim().is_empty(),
+                format!(
+                    "스크립트 호출 {id}: 경로 '{}' 또는 함수 이름이 잘못됨",
+                    c.path
+                ),
+            );
+        }
         // 버프 (R2b).
         for (id, b) in &r.buffs {
             check(
@@ -1016,6 +1046,7 @@ impl GameData {
         let quest_exists = |q: u32| r.quests.contains_key(&q);
         let loot_exists = |t: u32| r.loot.contains_key(&t);
         let buff_exists = |b: u32| r.buffs.contains_key(&b);
+        let script_exists = |c: u32| r.script_calls.contains_key(&c);
         let known = trigger_file::Known {
             item: &item_exists,
             actor: &actor_exists,
@@ -1023,6 +1054,7 @@ impl GameData {
             quest: &quest_exists,
             loot: &loot_exists,
             buff: &buff_exists,
+            script: &script_exists,
         };
         errors.extend(trigger_file::validate(&r.triggers, &known));
         errors.extend(quest_file::validate(&r.quests, &known));
@@ -1202,6 +1234,11 @@ impl GameData {
                     )
                 })
                 .collect(),
+            script_calls: r
+                .script_calls
+                .iter()
+                .map(|(id, c)| (*id, (c.path.clone(), c.call.clone())))
+                .collect(),
             actor_scripts: r
                 .actors
                 .iter()
@@ -1237,6 +1274,12 @@ impl GameData {
                 .skills
                 .iter()
                 .filter_map(|(id, s)| s.buff.map(|b| (SkillId(*id), BuffId(b))))
+                .collect(),
+            skill_projectiles: r
+                .skills
+                .iter()
+                .filter(|(_, s)| s.projectile_speed > 0)
+                .map(|(id, s)| (SkillId(*id), s.projectile_speed as f32))
                 .collect(),
             item_buffs: r
                 .items
@@ -1358,7 +1401,11 @@ impl GameData {
         mut self,
         read: impl Fn(&str) -> Result<Option<String>, String>,
     ) -> Result<Self, String> {
-        let paths: BTreeSet<&String> = self.actor_scripts.values().collect();
+        let paths: BTreeSet<&String> = self
+            .actor_scripts
+            .values()
+            .chain(self.script_calls.values().map(|(p, _)| p))
+            .collect();
         let mut errors = Vec::new();
         let mut sources = BTreeMap::new();
         for path in paths {
@@ -1383,6 +1430,13 @@ impl GameData {
     }
 
     /// 읽어 둔 스크립트 `(경로, 본문)` — 경로 순.
+    /// 효과가 부르는 함수들 (T5) — `(번호, 경로, 함수)`.
+    pub(crate) fn script_calls(&self) -> impl Iterator<Item = (u32, &str, &str)> {
+        self.script_calls
+            .iter()
+            .map(|(id, (p, c))| (*id, p.as_str(), c.as_str()))
+    }
+
     pub(crate) fn script_sources(&self) -> impl Iterator<Item = (&str, &str)> {
         self.script_sources
             .iter()
@@ -1404,6 +1458,9 @@ impl GameData {
         }
         for &(id, def) in &self.buffs {
             world.define_buff(id, def);
+        }
+        for &(skill, speed) in &self.skill_projectiles {
+            world.define_skill_projectile(skill, speed);
         }
         for &(skill, buff) in &self.skill_buffs {
             world.define_skill_buff(skill, buff);
@@ -2367,6 +2424,8 @@ pub(crate) struct SkillLevelForm {
     pub(crate) heal: String,
     /// 맞은 유닛마다 거는 버프 (R2b). 0 = 없음.
     pub(crate) buff: u32,
+    /// 날아가는 속도 (m/s, T8). 0 = 바로 맞는다.
+    pub(crate) projectile_speed: u32,
 }
 
 impl Default for SkillLevelForm {
@@ -2380,6 +2439,7 @@ impl Default for SkillLevelForm {
             mp_cost: String::new(),
             heal: String::new(),
             buff: 0,
+            projectile_speed: 0,
         }
     }
 }
@@ -2431,6 +2491,9 @@ impl SkillForm {
         }
         if l.buff != 0 {
             extra.push_str(&format!(", buff: Some({})", l.buff));
+        }
+        if l.projectile_speed != 0 {
+            extra.push_str(&format!(", projectile_speed: {}", l.projectile_speed));
         }
         // 위력 수식이 있으면 배율 대신 그것을 적는다.
         let power = if set(&l.power) {
@@ -2778,6 +2841,7 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
                         mp_cost: s.mp_cost.formula().unwrap_or("").to_owned(),
                         heal: s.heal.formula().unwrap_or("").to_owned(),
                         buff: s.buff.unwrap_or(0),
+                        projectile_speed: s.projectile_speed,
                     },
                 },
             )

@@ -28,10 +28,11 @@
 //! 트리거에 "한 번만" 필드는 없다. **플래그로 막는다**: 조건에 `Not(Flag(… = 1))`, 효과에
 //! `SetFlag(… 1)`. 그 플래그가 저장 파일에 남으므로 이어 해도 다시 일어나지 않는다.
 //!
-//! # 아직 없는 것
+//! # 데이터로 안 되는 것
 //!
-//! 데이터로 안 되는 경우의 탈출구(`Effect::Script`)는 아직 없다 — 액터 스크립트 호스트는
-//! 훅만 부른다. 필요해지면 UI 스크립트(P17)와 같은 `(path, call)` 모양으로 넣는다.
+//! 탈출구는 [`Effect::Script`] 다 (T5). 효과는 [`Event::ScriptCalled`](crate::Event::ScriptCalled) 만 내고,
+//! 스크립트는 **다음 tick** 에 대상 유닛을 인자로 불린다. 액터 스크립트처럼 월드를 읽기만 하고 Intent 를 낸다 —
+//! 스크립트가 보상을 직접 줄 길은 없다.
 
 use std::collections::BTreeMap;
 
@@ -202,6 +203,8 @@ pub enum Effect {
     StartQuest(crate::quest::QuestId),
     /// 드롭 표를 굴려 대상의 가방에 넣는다 (R5) — 보상에 드롭 표를 다시 쓴다. 가방이 차면 발밑에.
     GiveLoot(crate::loot::LootTableId),
+    /// 데이터로 안 되는 일 — 스크립트 함수를 대상 유닛과 함께 부른다 (T5, 모듈 doc).
+    Script(crate::script::ScriptCallId),
     /// 버프를 건다 (R2b) — 건 쪽이 없으므로 독으로 쓰러져도 보상이 없다. 죽은 대상에게는 걸리지 않는다.
     ApplyBuff(crate::buff::BuffId),
     /// 버프를 푼다 (R2b).

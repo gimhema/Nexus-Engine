@@ -89,8 +89,19 @@ pub(crate) fn supports(kind: AssetKind, op: OpKind) -> bool {
         // 액터는 번호 바꾸기까지 (P21) — 존·저장 파일의 참조를 고쳐 쓴다.
         AssetKind::Actor => true,
         // 아이템·스킬·드롭 표 — 번호는 바꾸지 않는다 (이름은 데이터 표 편집기에서 바꾼다).
-        AssetKind::Item | AssetKind::Skill | AssetKind::Loot => op != OpKind::Rename,
-        AssetKind::Sheet | AssetKind::Image | AssetKind::Data => false,
+        AssetKind::Item
+        | AssetKind::Skill
+        | AssetKind::Loot
+        | AssetKind::Shop
+        | AssetKind::Craft
+        | AssetKind::Teleport
+        | AssetKind::Buff => op != OpKind::Rename,
+        // 트리거·퀘스트의 추가·삭제는 자기 편집기 창에서 한다.
+        AssetKind::Trigger
+        | AssetKind::Quest
+        | AssetKind::Sheet
+        | AssetKind::Image
+        | AssetKind::Data => false,
     }
 }
 
@@ -128,7 +139,7 @@ pub(crate) struct Touched {
 pub(crate) fn plan(root: &Path, op: &FileOp) -> Result<Plan, String> {
     if !supports(op.asset.kind, op.kind) {
         return Err(match op.asset.kind {
-            AssetKind::Item | AssetKind::Skill | AssetKind::Loot => String::from(
+            kind if kind.table_tab().is_some() => String::from(
                 "표 항목의 이름은 데이터 표 편집기에서 바꿉니다 (번호는 바꾸지 않습니다)",
             ),
             _ => format!(
@@ -139,7 +150,7 @@ pub(crate) fn plan(root: &Path, op: &FileOp) -> Result<Plan, String> {
     }
     match op.asset.kind {
         AssetKind::Actor => plan_actor(root, op),
-        AssetKind::Item | AssetKind::Skill | AssetKind::Loot => plan_table(root, op),
+        kind if kind.table_tab().is_some() => plan_table(root, op),
         _ => plan_file(root, op),
     }
 }
@@ -470,6 +481,10 @@ fn plan_table(root: &Path, op: &FileOp) -> Result<Plan, String> {
         AssetKind::Item => (Tab::Items, "items"),
         AssetKind::Skill => (Tab::Skills, "skills"),
         AssetKind::Loot => (Tab::Loot, "loot"),
+        AssetKind::Shop => (Tab::Shops, "shops"),
+        AssetKind::Craft => (Tab::Crafts, "crafts"),
+        AssetKind::Teleport => (Tab::Teleports, "teleports"),
+        AssetKind::Buff => (Tab::Buffs, "buffs"),
         other => return Err(format!("{} 은(는) 표 항목이 아닙니다", other.label())),
     };
     let label = tab.label();
@@ -501,7 +516,9 @@ fn plan_table(root: &Path, op: &FileOp) -> Result<Plan, String> {
             let (rules2, gone_rules) = crate::ron_patch::remove_entry(&rules, map, id)?;
             // 표시 반쪽은 없을 수도 있다 (이름 없는 스킬, 드롭 표는 원래 없음).
             let (display2, gone_display) = match crate::ron_patch::remove_entry(&display, map, id) {
-                Ok((text, gone)) if tab != Tab::Loot => (text, Some(gone)),
+                Ok((text, gone)) if !matches!(tab, Tab::Loot | Tab::Shops | Tab::Crafts) => {
+                    (text, Some(gone))
+                }
                 _ => (display.clone(), None),
             };
             GameData::parse(&rules2, &display2)?;

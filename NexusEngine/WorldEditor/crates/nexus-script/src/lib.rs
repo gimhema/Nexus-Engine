@@ -92,6 +92,8 @@ pub struct RhaiHost {
     scripts: Vec<Script>,
     /// 스크립트가 붙은 유닛. 조회만 한다 — 순서는 항상 월드의 유닛 순서를 따른다.
     attached: HashMap<Entity, Attached>,
+    /// 효과가 부르는 함수 (T5) — 번호 → (스크립트, 함수 이름).
+    calls: HashMap<u32, (usize, String)>,
     ctx: Rc<RefCell<Ctx>>,
 }
 
@@ -228,6 +230,7 @@ impl RhaiHost {
             engine: build_engine(&ctx),
             scripts: Vec::new(),
             attached: HashMap::new(),
+            calls: HashMap::new(),
             ctx,
         }
     }
@@ -242,6 +245,52 @@ impl RhaiHost {
             disabled: false,
         });
         Ok(ScriptId(self.scripts.len() - 1))
+    }
+
+    /// 효과 `Script(번호)` 가 부를 함수를 등록한다 (T5). 함수는 `fn 이름(me)` 꼴이어야 한다.
+    pub fn add_call(&mut self, id: u32, script: ScriptId, function: &str) -> Result<(), String> {
+        let s = &self.scripts[script.0];
+        if !s
+            .ast
+            .iter_functions()
+            .any(|f| f.name == function && f.params.len() == 1)
+        {
+            return Err(format!("{}: 함수 {function}(me) 가 없음", s.name));
+        }
+        self.calls.insert(id, (script.0, function.to_owned()));
+        Ok(())
+    }
+
+    /// 효과가 부른 함수 하나 — 대상 유닛을 `me` 로. `this` 는 부를 때마다 빈 맵이다.
+    fn run_call(&mut self, id: u32, subject: Entity) {
+        let Some((index, function)) = self.calls.get(&id).cloned() else {
+            return;
+        };
+        let script = &mut self.scripts[index];
+        if script.disabled {
+            return;
+        }
+        self.ctx.borrow_mut().current = Some((subject, script.name.clone()));
+        let mut state = Dynamic::from_map(Map::new());
+        let options = CallFnOptions::new()
+            .eval_ast(false)
+            .bind_this_ptr(&mut state);
+        let result = self.engine.call_fn_with_options::<Dynamic>(
+            options,
+            &mut Scope::new(),
+            &script.ast,
+            &function,
+            vec![Dynamic::from(UnitRef(subject))],
+        );
+        let mut ctx = self.ctx.borrow_mut();
+        ctx.current = None;
+        if let Err(e) = result {
+            script.disabled = true;
+            ctx.log.push(ScriptLog {
+                error: true,
+                message: format!("{}: {function} 오류로 스크립트를 껐음 — {e}", script.name),
+            });
+        }
     }
 
     /// 유닛에 스크립트를 붙인다. 다음 tick 에 `on_spawn` 이 불린다.
@@ -341,10 +390,15 @@ impl RhaiHost {
 
 impl ScriptHost for RhaiHost {
     fn run(&mut self, world: &SimWorld, dt: Duration, events: &[Event], out: &mut Vec<Intent>) {
-        if self.attached.is_empty() {
+        if self.attached.is_empty() && self.calls.is_empty() {
             return;
         }
         self.snapshot(world);
+        for event in events {
+            if let Event::ScriptCalled { call, subject } = *event {
+                self.run_call(call.0, subject);
+            }
+        }
         let unit = |e: Entity| Dynamic::from(UnitRef(e));
         let int = |n: u32| Dynamic::from(INT::from(n));
 

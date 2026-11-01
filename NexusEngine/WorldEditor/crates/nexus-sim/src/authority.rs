@@ -257,6 +257,11 @@ pub enum Event {
         hp_delta: i32,
         remaining_hp: u32,
     },
+    /// 효과가 스크립트를 불렀다 (T5) — 호스트가 다음 tick 에 돌린다.
+    ScriptCalled {
+        call: crate::script::ScriptCallId,
+        subject: Entity,
+    },
     /// 공격이 맞았다.
     Damaged {
         attacker: Entity,

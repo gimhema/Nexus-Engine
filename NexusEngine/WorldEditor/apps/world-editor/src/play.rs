@@ -45,6 +45,9 @@ const BIAS_TARGET: f32 = 4.0 * DEPTH_LAYER;
 const BIAS_SPRITE: f32 = 3.0 * DEPTH_LAYER;
 const BIAS_BAR: f32 = 2.0 * DEPTH_LAYER;
 
+/// 날아가는 것의 색 (T8).
+const PROJECTILE_TINT: [f32; 4] = [1.0, 0.85, 0.35, 1.0];
+
 const PATH_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.55];
 const TARGET_COLOR: [f32; 4] = [1.0, 0.35, 0.30, 1.0];
 /// 포털 구역 (R6) — 들어갈 수 있음 / 입장 조건이 맞지 않음.
@@ -599,6 +602,14 @@ impl PlaySession {
         for (path, source) in data.script_sources() {
             let id = scripts.add_script(path, source)?;
             compiled.insert(path.to_owned(), id);
+        }
+        // 효과가 부르는 함수 (T5) — 없는 함수도 문법 오류처럼 플레이를 막는다.
+        for (call, path, function) in data.script_calls() {
+            let id = compiled
+                .get(path)
+                .copied()
+                .ok_or_else(|| format!("{path}: 스크립트가 읽히지 않음"))?;
+            scripts.add_call(call, id, function)?;
         }
 
         // 플레이어 직업 (R2) — 저장한 직업 → 새 게임에서 고른 직업 → 기본 직업. 데이터에서 사라진
@@ -2416,6 +2427,20 @@ impl PlaySession {
             sprites
                 .sheet(actor)
                 .push(u.render_pos(alpha), look, animator, px, BIAS_SPRITE, out);
+        }
+        // 날아가는 것 (T8) — 아트가 생기기 전까지 허리 높이의 빛나는 네모. 두 tick 사이를 보간한다.
+        for p in self.world().projectiles() {
+            let at = p.prev_pos().lerp(p.pos(), alpha);
+            let side = (8.0 * px).max(0.25);
+            out.push(RenderCommand::DrawSprite {
+                pos: at.extend(0.8),
+                size: Vec2::splat(side),
+                anchor: nexus_render::SpriteAnchor::Center,
+                depth_bias: BIAS_SPRITE,
+                uv: nexus_render::UvRect::FULL,
+                texture: nexus_render::TextureId::WHITE,
+                tint: PROJECTILE_TINT,
+            });
         }
     }
 

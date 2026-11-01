@@ -55,6 +55,38 @@ impl SkillDef {
     }
 }
 
+/// 날아가는 공격 (T8) — 쏜 순간 사거리·쿨타임·MP 를 판정하고, **닿을 때** 피해와 버프가 들어간다.
+///
+/// 대상을 따라가므로 빗나가지 않는다. 닿기 전에 대상이 쓰러지면 사라진다. 시뮬레이션 안의 상태라 결정적이다.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Projectile {
+    pub(crate) attacker: nexus_core::Entity,
+    pub(crate) target: nexus_core::Entity,
+    pub(crate) skill: SkillId,
+    pub(crate) def: SkillDef,
+    pub(crate) speed: f32,
+    pub(crate) pos: nexus_core::Vec2,
+    pub(crate) prev_pos: nexus_core::Vec2,
+}
+
+impl Projectile {
+    #[must_use]
+    pub fn pos(&self) -> nexus_core::Vec2 {
+        self.pos
+    }
+
+    /// 직전 tick 의 위치 — 렌더 보간용.
+    #[must_use]
+    pub fn prev_pos(&self) -> nexus_core::Vec2 {
+        self.prev_pos
+    }
+
+    #[must_use]
+    pub fn skill(&self) -> SkillId {
+        self.skill
+    }
+}
+
 /// 한 번의 적중 데미지. **최소 1** — 방어력이 높아도 0 이 되지 않는다.
 ///
 /// 곱셈 결과는 0 쪽으로 자른다 (C++ `static_cast<int32_t>(float)` 와 같다).
@@ -68,6 +100,92 @@ pub fn damage(attack: u32, damage_mult: f32, defense: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 투사체 (T8) — 쏜 순간에는 피해가 없고, 거리만큼 뒤에 들어가며, 버프도 닿을 때 걸린다.
+    #[test]
+    fn a_projectile_hits_when_it_arrives_and_vanishes_if_the_target_dies() {
+        use nexus_core::Vec2;
+
+        use crate::{
+            Authority, BuffDef, BuffId, Event, FactionId, Intent, LocalAuthority, Relation,
+            SimWorld, Tile, TileMap, UnitDef,
+        };
+        let dt = Duration::from_millis(50);
+        let bolt = SkillId(1);
+        let mut w = SimWorld::new(TileMap::new(20, 20, 1.0, Vec2::ZERO, Tile::default()));
+        w.define_skill(
+            bolt,
+            SkillDef {
+                range: 10.0,
+                cooldown_ms: 0,
+                damage_mult: 1.0,
+                mp_cost: 0,
+                radius: 0.0,
+                heal: 0,
+            },
+        );
+        w.define_skill_projectile(bolt, 10.0);
+        w.define_buff(
+            BuffId(1),
+            BuffDef {
+                duration_ms: 5000,
+                defense: 1,
+                ..BuffDef::default()
+            },
+        );
+        w.define_skill_buff(bolt, BuffId(1));
+        w.set_relation(FactionId(1), FactionId(2), Relation::Hostile);
+        let unit = |faction, hp| UnitDef {
+            faction: FactionId(faction),
+            max_hp: hp,
+            attack: 10,
+            basic_attack: Some(bolt),
+            ..UnitDef::default()
+        };
+        let me = w.spawn_unit(Vec2::new(1.0, 1.0), 0.0, unit(1, 100));
+        let far = w.spawn_unit(Vec2::new(6.0, 1.0), 0.0, unit(2, 100));
+        let near = w.spawn_unit(Vec2::new(1.0, 3.0), 0.0, unit(2, 10));
+        let mut auth = LocalAuthority::new(w);
+
+        auth.submit(Intent::Attack {
+            unit: me,
+            target: far,
+            skill: bolt,
+        });
+        let first = auth.tick(dt);
+        assert!(!first.iter().any(|e| matches!(e, Event::Damaged { .. })));
+        assert_eq!(auth.world().projectiles().len(), 1);
+        // 5m ÷ 10m/s = 0.5초.
+        let mut hit_at = None;
+        for t in 1..20 {
+            if auth
+                .tick(dt)
+                .iter()
+                .any(|e| matches!(*e, Event::Damaged { target, .. } if target == far))
+            {
+                hit_at = Some(t);
+                break;
+            }
+        }
+        assert_eq!(hit_at, Some(9));
+        assert!(auth.world().projectiles().is_empty());
+        assert!(
+            auth.world().unit(far).unwrap().has_buff(BuffId(1)),
+            "버프는 닿을 때"
+        );
+
+        // 날아가는 동안 대상이 쓰러지면 사라진다.
+        auth.submit(Intent::Attack {
+            unit: me,
+            target: near,
+            skill: bolt,
+        });
+        auth.tick(dt);
+        auth.world_mut().unit_mut(near).unwrap().hp = 0;
+        let events = auth.tick(dt);
+        assert!(auth.world().projectiles().is_empty());
+        assert!(!events.iter().any(|e| matches!(e, Event::Damaged { .. })));
+    }
 
     #[test]
     fn damage_matches_server_formula() {

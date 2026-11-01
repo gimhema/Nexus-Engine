@@ -84,6 +84,9 @@ pub struct SimWorld {
     /// 버프 정의와, 그것을 거는 스킬·소모품 (R2b).
     buffs: HashMap<BuffId, BuffDef>,
     skill_buffs: HashMap<SkillId, BuffId>,
+    /// 날아가는 스킬의 속도 (m/s, T8)와 지금 날아가는 것들 (쏜 순서).
+    skill_projectiles: HashMap<SkillId, f32>,
+    projectiles: Vec<combat::Projectile>,
     item_buffs: HashMap<ItemId, BuffId>,
     /// 경험치 곡선 (R3) — 변수는 `level`. 없으면 서버와 같은 `level² × 100`.
     exp_curve: Option<Formula>,
@@ -133,6 +136,8 @@ impl SimWorld {
             equip_rules: HashMap::new(),
             buffs: HashMap::new(),
             skill_buffs: HashMap::new(),
+            skill_projectiles: HashMap::new(),
+            projectiles: Vec::new(),
             item_buffs: HashMap::new(),
             exp_curve: None,
             skill_rules: HashMap::new(),
@@ -1372,6 +1377,47 @@ impl SimWorld {
         self.skill_buffs.insert(skill, buff);
     }
 
+    /// 이 스킬은 `speed`(m/s)로 날아가 닿을 때 들어간다 (T8). 회복 스킬에는 쓰이지 않는다.
+    pub fn define_skill_projectile(&mut self, skill: SkillId, speed: f32) {
+        if speed.is_finite() && speed > 0.0 {
+            self.skill_projectiles.insert(skill, speed);
+        }
+    }
+
+    /// 지금 날아가는 것들 (T8).
+    #[must_use]
+    pub fn projectiles(&self) -> &[combat::Projectile] {
+        &self.projectiles
+    }
+
+    /// 날아가는 것을 옮기고, 닿은 것의 피해를 낸다 (T8) — 쏜 순서대로라 결정적이다.
+    fn step_projectiles(&mut self, dt: f32, events: &mut Vec<Event>) {
+        let flying = std::mem::take(&mut self.projectiles);
+        let mut still = Vec::with_capacity(flying.len());
+        for mut p in flying {
+            let Some(t) = self.unit(p.target).filter(|t| t.is_alive()) else {
+                continue;
+            };
+            let aim = t.pos();
+            p.prev_pos = p.pos;
+            let budget = p.speed * dt;
+            if p.pos.distance_squared(aim) > budget * budget {
+                p.pos += (aim - p.pos).normalize_or_zero() * budget;
+                still.push(p);
+                continue;
+            }
+            // 날아오는 사이에 보호가 걸렸으면 들어가지 않는다.
+            if t.is_protected(self.now) {
+                continue;
+            }
+            self.strike(p.attacker, p.target, p.skill, p.def, events);
+            if let Some(buff) = self.skill_buffs.get(&p.skill).copied() {
+                self.apply_buff(p.target, buff, Some(p.attacker), events);
+            }
+        }
+        self.projectiles = still;
+    }
+
     /// 이 소모품을 쓰면 쓴 쪽에게 건다 (R2b).
     pub fn define_item_buff(&mut self, item: ItemId, buff: BuffId) {
         self.item_buffs.insert(item, buff);
@@ -1994,7 +2040,21 @@ impl SimWorld {
         }
 
         let buff = self.skill_buffs.get(&skill).copied();
+        let flies = self.skill_projectiles.get(&skill).copied();
+        let from = self.unit(attacker).map_or(Vec2::ZERO, Unit::pos);
         for target in hits {
+            if let (Some(speed), false) = (flies, def.is_heal()) {
+                self.projectiles.push(combat::Projectile {
+                    attacker,
+                    target,
+                    skill,
+                    def,
+                    speed,
+                    pos: from,
+                    prev_pos: from,
+                });
+                continue;
+            }
             if def.is_heal() {
                 if let Some(t) = self.unit_mut(target) {
                     let before = t.hp;
@@ -2597,6 +2657,7 @@ impl SimWorld {
                     });
                 }
             }
+            Effect::Script(call) => events.push(Event::ScriptCalled { call, subject }),
             Effect::ApplyBuff(buff) => self.apply_buff(subject, buff, None, events),
             Effect::RemoveBuff(buff) => self.remove_buff(subject, buff, events),
             Effect::GiveExp(amount) => self.grant_exp(subject, amount, events),
@@ -2663,6 +2724,7 @@ impl SimWorld {
         self.run_buffs(events);
         let tick = dt;
         let dt = dt.as_secs_f32();
+        self.step_projectiles(dt, events);
         let tiles = &self.tiles;
         for (entity, unit) in self.units.iter_mut().flatten() {
             unit.prev_pos = unit.pos;

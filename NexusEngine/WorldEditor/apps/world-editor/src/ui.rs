@@ -109,6 +109,8 @@ pub(crate) struct UiModel<'a> {
     pub(crate) play: Option<&'a PlaySession>,
     /// 에디터 패널을 숨기고 있다 (F9) — HUD 만 남는다 (P5).
     pub(crate) hide_panels: bool,
+    /// 게임 실행 파일 (T7) — 메뉴와 편집 단축키가 없다.
+    pub(crate) game: bool,
     /// 레벨 목록 `(번호, 이름)` — 레벨 메뉴 (P7).
     pub(crate) levels: Vec<(String, String)>,
     /// 시작 레벨 번호 (data/project.ron).
@@ -416,10 +418,8 @@ impl EditorUi {
                 .and_then(|n| n.parse().ok())
                 .is_some_and(|id| self.actors.blocks(id)),
             AssetKind::Level => self.levels.blocks(level_id(&asset.key)),
-            AssetKind::Item | AssetKind::Skill | AssetKind::Loot => {
-                table_entry(asset.kind, &asset.key)
-                    .is_some_and(|(tab, id)| self.tables.blocks(tab, id))
-            }
+            kind if kind.table_tab().is_some() => table_entry(asset.kind, &asset.key)
+                .is_some_and(|(tab, id)| self.tables.blocks(tab, id)),
             _ => false,
         };
         busy.then(|| {
@@ -446,7 +446,7 @@ impl EditorUi {
                     }
                 }
                 AssetKind::Level => self.levels.forget(level_id(key)),
-                AssetKind::Item | AssetKind::Skill | AssetKind::Loot => {
+                kind if kind.table_tab().is_some() => {
                     if let Some((tab, id)) = table_entry(op.asset.kind, key) {
                         self.tables.forget(tab, id);
                     }
@@ -470,6 +470,8 @@ impl EditorUi {
             tables: &mut self.tables,
             rules: &mut self.rules,
             trash: &mut self.trash,
+            triggers: &mut self.trigger_editor,
+            quests: &mut self.quest_designer,
         };
         dispatch(action, &mut editors, dirty, &mut actions);
         actions
@@ -527,7 +529,9 @@ impl EditorUi {
         let storyboard = &mut self.storyboard;
 
         let output = self.ctx.run_ui(raw, |ui| {
-            menu_bar(ui, model, &mut actions);
+            if !model.game {
+                menu_bar(ui, model, &mut actions);
+            }
             if std::mem::take(&mut actions.open_stat_designer) {
                 stat_designer.open();
             }
@@ -595,6 +599,8 @@ impl EditorUi {
                         tables,
                         rules,
                         trash,
+                        triggers: &mut *trigger_editor,
+                        quests: &mut *quest_designer,
                     };
                     dispatch(action, &mut editors, model.dirty, &mut actions);
                 }
@@ -672,14 +678,7 @@ fn table_entry(
     kind: crate::content::AssetKind,
     key: &str,
 ) -> Option<(crate::table_editor::Tab, u32)> {
-    use crate::content::AssetKind;
-    use crate::table_editor::Tab;
-    let tab = match kind {
-        AssetKind::Item => Tab::Items,
-        AssetKind::Skill => Tab::Skills,
-        AssetKind::Loot => Tab::Loot,
-        _ => return None,
-    };
+    let tab = kind.table_tab()?;
     Some((tab, key.split_once(':')?.1.parse().ok()?))
 }
 
@@ -699,6 +698,8 @@ struct Editors<'a> {
     tables: &'a mut TableEditor,
     rules: &'a mut RulesEditor,
     trash: &'a mut crate::trash::TrashWindow,
+    triggers: &'a mut crate::trigger_editor::TriggerEditor,
+    quests: &'a mut crate::quest_designer::QuestDesigner,
 }
 
 /// 브라우저가 연 리소스를 맞는 편집기로 보낸다.
@@ -727,6 +728,8 @@ fn dispatch(action: ContentAction, e: &mut Editors<'_>, dirty: bool, actions: &m
         ContentAction::EditTable(tab, id) => e.tables.open_entry(tab, id),
         ContentAction::NewTable(tab) => e.tables.open_new(tab),
         ContentAction::EditRules => e.rules.open(),
+        ContentAction::EditTrigger(id) => e.triggers.open_entry(id),
+        ContentAction::EditQuest(id) => e.quests.open_entry(id),
         ContentAction::OpenTrash => e.trash.open(),
         ContentAction::Notice(text) => actions.notice = Some(text),
         other @ (ContentAction::EditScreen(_)
@@ -1129,10 +1132,10 @@ fn shortcuts(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
             i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::O)),
         )
     });
-    if save {
+    if save && !model.game {
         request_save(model, actions);
     }
-    if open && model.play.is_none() {
+    if open && model.play.is_none() && !model.game {
         actions.file_dialog = Some(FileDialogMode::Open);
     }
 
@@ -1177,6 +1180,20 @@ fn shortcuts(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
         actions.deselect |= i.key_pressed(Key::Escape);
         actions.delete |= i.key_pressed(Key::Delete);
     });
+    if model.game {
+        // 게임에 남는 것은 플레이 조작뿐이다.
+        actions.redo = false;
+        actions.undo = false;
+        actions.duplicate = false;
+        actions.toggle_play = false;
+        actions.toggle_panels = false;
+        actions.open_screen_editor = false;
+        actions.toggle_content = false;
+        actions.open_level = None;
+        actions.reset_view = false;
+        actions.frame_selection = false;
+        actions.delete = false;
+    }
 }
 
 /// 커서 아래 타일을 사람이 읽을 문자열로. 저작 중 데이터를 바로 확인하는 수단이다.

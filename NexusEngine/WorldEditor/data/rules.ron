@@ -29,7 +29,7 @@
         4: (range: 2.0, cooldown_ms: 3000, damage_mult: 2.0, mp_cost: 20),  // 고블린 강타
         // 강베기 — 레벨 1 은 예전과 같은 1.8배·MP 15.
         5: (range: 2.0, cooldown_ms: 3000, power: "1700 + skill_level * 100", mp_cost: "13 + skill_level * 2", max_level: 5, classes: [1, 3]),
-        6: (range: 6.0, cooldown_ms: 2000, damage_mult: 0.8, mp_cost: 10),  // 플레이어 돌 던지기 (단축키 2)
+        6: (range: 6.0, cooldown_ms: 2000, damage_mult: 0.8, mp_cost: 10, projectile_speed: 14),  // 플레이어 돌 던지기 (단축키 2)
         7: (range: 2.0, cooldown_ms: 4000, damage_mult: 1.2, mp_cost: 20, radius: 2.5),  // 플레이어 회오리 베기 (단축키 3) — 대상 둘레 2.5m 의 적 모두
         // 치유 — 자신. 지능에 비례한다 (전사 레벨 1 은 예전과 같은 60).
         8: (range: 0.0, cooldown_ms: 6000, damage_mult: 0.0, mp_cost: 15, heal: "40 + int * 2 + skill_level * 10", max_level: 5),
@@ -39,6 +39,7 @@
             cooldown_ms: "3000 - skill_level * 200",
             power: "1400 + skill_level * 200 + int * 20",
             mp_cost: "8 + skill_level * 4",
+            projectile_speed: 12,
             max_level: 5,
             classes: [2],
             requires: Level(cmp: Ge, value: 3),

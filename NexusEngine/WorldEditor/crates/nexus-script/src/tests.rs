@@ -459,3 +459,34 @@ fn hook_signatures_match_what_the_engine_calls() {
     let src: String = sigs.iter().map(|s| format!("{s} {{ }}\n")).collect();
     assert_eq!(super::check(&src).unwrap().hooks.len(), 6);
 }
+
+/// 효과가 부른 함수 (T5) — 다음 tick 에 대상 유닛을 `me` 로 받아 Intent 를 낸다.
+#[test]
+fn an_effect_call_runs_with_the_subject_as_me() {
+    let source = "fn go_home(me) { print(\"집으로\"); move_to(me, 5.0, 0.0); }";
+    let (mut auth, goblin, _) = arena("", 1, Vec2::new(10.0, 0.0));
+    let mut host = RhaiHost::new(1);
+    let id = host.add_script("call.rhai", source).unwrap();
+    host.add_call(7, id, "go_home").unwrap();
+    assert!(host.add_call(8, id, "없는함수").is_err());
+    auth.set_script_host(Box::new(host));
+    let trigger = nexus_sim::TriggerDef {
+        on: nexus_sim::On::Entered {
+            center: Vec2::new(-1.0, 0.0),
+            radius: 0.5,
+        },
+        when: nexus_sim::Condition::Always,
+        then: vec![nexus_sim::Effect::Script(nexus_sim::ScriptCallId(7))],
+    };
+    auth.world_mut()
+        .define_trigger(nexus_sim::TriggerId(1), trigger);
+    auth.submit(nexus_sim::Intent::MoveTo {
+        unit: goblin,
+        target: Vec2::new(-1.0, 0.0),
+    });
+    run(&mut auth, 40);
+    let at = auth.world().unit(goblin).unwrap().pos();
+    assert!(at.x > 0.0, "함수가 낸 이동을 받았어야 한다: {at:?}");
+    let log = auth.script_host_mut().unwrap().drain_log();
+    assert!(log.iter().any(|l| l.message.contains("집으로")), "{log:?}");
+}

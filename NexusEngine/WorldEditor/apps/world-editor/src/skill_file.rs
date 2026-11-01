@@ -208,6 +208,7 @@ mod tests {
                 quest: &|_| true,
                 loot: &|_| true,
                 buff: &|_| true,
+                script: &|_| true,
             },
         );
         for want in [

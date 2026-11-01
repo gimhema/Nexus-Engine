@@ -3,6 +3,7 @@ name = "world-editor"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+default-run = "world-editor"
 
 [dependencies]
 nexus-assets.workspace   = true
@@ -18,6 +19,10 @@ egui-winit.workspace = true
 png.workspace        = true
 serde.workspace      = true
 ron.workspace        = true
+
+[lib]
+# 모듈 문서의 예시는 RON·그림이다.
+doctest = false
 
 [lints]
 workspace = true

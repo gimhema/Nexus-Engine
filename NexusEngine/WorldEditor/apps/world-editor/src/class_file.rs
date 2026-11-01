@@ -298,6 +298,8 @@ pub(crate) fn equip_rules(stats: Option<&StatsFile>, e: &EquipRef<'_>) -> EquipR
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StatRow {
     pub(crate) key: String,
+    /// 파일에 적힌 이름 (T5) — 저장할 때 달라졌으면 쓰는 곳을 따라 고친다. 새 스탯은 비어 있다.
+    pub(crate) was: String,
     /// `display.ron` 의 이름. 비우면 규칙 이름 그대로 보인다.
     pub(crate) label: String,
 }
@@ -352,6 +354,7 @@ impl StatForm {
                 .iter()
                 .map(|k| StatRow {
                     key: k.clone(),
+                    was: k.clone(),
                     label: stat_labels.get(k).cloned().unwrap_or_default(),
                 })
                 .collect(),
@@ -378,6 +381,7 @@ impl StatForm {
     pub(crate) fn push_stat(&mut self, key: String) {
         self.stats.push(StatRow {
             key,
+            was: String::new(),
             label: String::new(),
         });
         for c in &mut self.classes {
@@ -536,9 +540,38 @@ impl StatForm {
     /// 두 파일 텍스트에 폼을 써 넣는다 — 네 블록(`stats`·`classes` / `classes`·`stats`)만 갈아 끼운다.
     /// ⚠ 그 블록 **안**의 주석은 남지 않는다. 검증은 부르는 쪽이 두 파일을 함께 한다.
     pub(crate) fn patch(&self, rules: &str, display: &str) -> Result<(String, String), String> {
-        use crate::ron_patch::replace_block;
-        let (stats, classes) = self.rules_blocks();
-        let rules = replace_block(rules, "stats", '(', &stats)?;
+        use crate::ron_patch::{rename_word, rename_word_in_strings, replace_block};
+        // 이름을 바꾼 스탯 (T5) — 수식·장비·스킬이 옛 이름을 읽고 있으므로 따라 고친다.
+        // 임시 이름을 거쳐 str ↔ int 처럼 맞바꾸어도 섞이지 않는다.
+        let renames: Vec<(usize, &str, &str)> = self
+            .stats
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| !row.was.is_empty() && row.was != row.key.trim())
+            .map(|(i, row)| (i, row.was.as_str(), row.key.trim()))
+            .collect();
+        let mut form = self.clone();
+        let mut rules = rules.to_owned();
+        for phase in 0..2 {
+            for &(i, was, now) in &renames {
+                let temp = format!("rename_tmp_{i}");
+                let (from, to) = if phase == 0 {
+                    (was, temp.as_str())
+                } else {
+                    (temp.as_str(), now)
+                };
+                rules = rename_word_in_strings(&rules, from, to);
+                let formulas = form
+                    .derived
+                    .iter_mut()
+                    .chain(form.classes.iter_mut().flat_map(|c| c.formulas.iter_mut()));
+                for f in formulas {
+                    *f = rename_word(f, from, to);
+                }
+            }
+        }
+        let (stats, classes) = form.rules_blocks();
+        let rules = replace_block(&rules, "stats", '(', &stats)?;
         let rules = replace_block(&rules, "classes", '{', &classes)?;
         let (class_looks, stat_labels) = self.display_blocks();
         let display = replace_block(display, "classes", '{', &class_looks)?;
@@ -550,6 +583,40 @@ impl StatForm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 스탯 이름 바꾸기 (T5) — 수식·스킬·장비가 따라오고, 맞바꿔도 섞이지 않고, 게임 검사를 통과한다.
+    #[test]
+    fn renaming_stats_follows_formulas_skills_and_gear() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let read = |p: &str| std::fs::read_to_string(root.join(p)).unwrap();
+        let (rules, display) = (read("data/rules.ron"), read("data/display.ron"));
+        let mut form = crate::game_data::stat_form(&rules, &display).unwrap();
+        let int = form.stats.iter().position(|s| s.key == "int").unwrap();
+        form.stats[int].key = String::from("wis");
+        let (r, d) = crate::game_data::patch_stat_form(&rules, &display, &form).unwrap();
+        assert!(r.contains("wis"), "스킬 수식");
+        assert!(!r.contains("int * 2"), "옛 이름이 남았다");
+        assert!(r.contains("wis * 2"));
+        let again = crate::game_data::stat_form(&r, &d).unwrap();
+        assert!(again.derived.iter().any(|f| f.contains("wis")));
+
+        // 맞바꾸기 — 임시 이름을 거친다.
+        let mut swap = crate::game_data::stat_form(&rules, &display).unwrap();
+        let str_i = swap.stats.iter().position(|s| s.key == "str").unwrap();
+        swap.stats[int].key = String::from("str");
+        swap.stats[str_i].key = String::from("int");
+        let (r, _) = crate::game_data::patch_stat_form(&rules, &display, &swap).unwrap();
+        assert!(r.contains("40 + str * 2"), "치유 수식의 int 가 str 로");
+    }
+
+    #[test]
+    fn renaming_skips_comments_paths_and_longer_words() {
+        let text = "// int 주석\n a: \"int + inter\", b: \"data/int.rhai\", c: int,";
+        assert_eq!(
+            crate::ron_patch::rename_word_in_strings(text, "int", "wis"),
+            "// int 주석\n a: \"wis + inter\", b: \"data/int.rhai\", c: int,"
+        );
+    }
 
     fn stats(text: &str) -> StatsFile {
         ron::from_str(text).unwrap()
@@ -635,6 +702,7 @@ mod tests {
             form.stats[0],
             StatRow {
                 key: "str".into(),
+                was: "str".into(),
                 label: "힘".into()
             }
         );

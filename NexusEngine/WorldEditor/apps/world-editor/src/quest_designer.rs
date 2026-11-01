@@ -62,6 +62,14 @@ impl QuestDesigner {
         }
     }
 
+    /// 이 번호를 연다 — 콘텐츠 브라우저의 두 번 누르기 (T5).
+    pub(crate) fn open_entry(&mut self, id: u32) {
+        self.open();
+        if !self.is_dirty() {
+            self.select(id);
+        }
+    }
+
     pub(crate) fn take_saved(&mut self) -> bool {
         std::mem::take(&mut self.saved_now)
     }

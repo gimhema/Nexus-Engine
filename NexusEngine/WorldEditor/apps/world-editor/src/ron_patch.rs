@@ -9,6 +9,72 @@
 //! - **항목 안의 주석은 남지 않는다** — 그 줄들은 다시 쓰이기 때문이다. 항목 **위**의 주석은 남는다.
 //! - 결과가 올바른 RON 인지는 여기서 보지 않는다 — 부르는 쪽이 다시 파싱해 검증한 뒤에 쓴다.
 
+/// 문자열 리터럴 안의 **낱말** 하나를 바꾼다 (T5, 스탯 이름 바꾸기) — 수식과 `{"str": 2}` 의 키.
+/// 주석·문자열 밖은 건드리지 않고, 경로(`/` 나 `.` 가 든 문자열)도 건너뛴다.
+pub(crate) fn rename_word_in_strings(text: &str, from: &str, to: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find(['"', '/']) {
+        let (head, tail) = rest.split_at(i);
+        out.push_str(head);
+        if let Some(comment) = tail.strip_prefix("//") {
+            let end = comment.find('\n').unwrap_or(comment.len());
+            out.push_str("//");
+            out.push_str(&comment[..end]);
+            rest = &comment[end..];
+        } else if let Some(after) = tail.strip_prefix('/') {
+            out.push('/');
+            rest = after;
+        } else {
+            let body = &tail[1..];
+            let mut end = 0;
+            let mut escaped = false;
+            for (k, c) in body.char_indices() {
+                if !escaped && c == '"' {
+                    end = k;
+                    break;
+                }
+                escaped = !escaped && c == '\\';
+                end = k + c.len_utf8();
+            }
+            let string = &body[..end];
+            out.push('"');
+            if string.contains(['/', '.']) {
+                out.push_str(string);
+            } else {
+                out.push_str(&rename_word(string, from, to));
+            }
+            rest = &body[end..];
+            if let Some(r) = rest.strip_prefix('"') {
+                out.push('"');
+                rest = r;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// 낱말 경계(영문·숫자·`_`)를 지켜 바꾼다.
+pub(crate) fn rename_word(text: &str, from: &str, to: &str) -> String {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(i) = rest.find(from) {
+        let before = rest[..i].chars().next_back();
+        let after = rest[i + from.len()..].chars().next();
+        out.push_str(&rest[..i]);
+        if before.is_none_or(|c| !word(c)) && after.is_none_or(|c| !word(c)) {
+            out.push_str(to);
+        } else {
+            out.push_str(from);
+        }
+        rest = &rest[i + from.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// 맵 블록 `name: {` … `},` — `(여는 줄, 닫는 줄, 들여쓰기)`.
 fn map_block(lines: &[&str], name: &str) -> Option<(usize, usize, usize)> {
     let head = format!("{name}:");

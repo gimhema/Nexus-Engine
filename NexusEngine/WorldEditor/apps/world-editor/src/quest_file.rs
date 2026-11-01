@@ -480,6 +480,7 @@ mod tests {
             quest: &|q| q == 1,
             loot: &|t| t == 1,
             buff: &|_| true,
+            script: &|_| true,
         }
     }
 
