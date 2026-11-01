@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/nexus-assets",
+    "crates/nexus-audio",
     "crates/nexus-core",
     "crates/nexus-platform",
     "crates/nexus-render",
@@ -20,6 +21,7 @@ rust-version = "1.95"
 [workspace.dependencies]
 # ── 내부 크레이트 ────────────────────────────────────────────────────────────
 nexus-assets     = { path = "crates/nexus-assets" }
+nexus-audio      = { path = "crates/nexus-audio" }
 nexus-core       = { path = "crates/nexus-core" }
 nexus-platform   = { path = "crates/nexus-platform" }
 nexus-render     = { path = "crates/nexus-render" }
@@ -39,6 +41,8 @@ egui              = "0.36"
 egui-wgpu         = "0.36"
 egui-winit        = "0.36"
 png               = "0.18"
+# 소리 (T8). nexus-audio 만 쓴다. 리눅스 빌드에 alsa-lib-devel(libasound2-dev) 이 필요하다.
+rodio             = { version = "0.23", default-features = false, features = ["playback", "vorbis", "wav"] }
 # 시스템 폰트 글자 래스터 (P7-E). egui(epaint) 가 이미 쓰는 크레이트다.
 ab_glyph          = "0.2"
 # 존 파일 (S7-2). 앱만 쓴다 — 코어·시뮬레이션 크레이트는 직렬화를 모른다.

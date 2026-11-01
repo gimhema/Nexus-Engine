@@ -374,6 +374,20 @@ impl LevelEditor {
             );
             ui.end_row();
 
+            ui.label("배경음악");
+            let mut bgm = level.bgm.clone().unwrap_or_default();
+            if ui
+                .add(
+                    egui::TextEdit::singleline(&mut bgm)
+                        .hint_text("없음 — 예: assets/sounds/town.ogg")
+                        .desired_width(220.0),
+                )
+                .changed()
+            {
+                level.bgm = (!bgm.trim().is_empty()).then(|| bgm.trim().to_owned());
+            }
+            ui.end_row();
+
             ui.label("인스턴스");
             egui::ComboBox::from_id_salt("level-instance")
                 .width(200.0)

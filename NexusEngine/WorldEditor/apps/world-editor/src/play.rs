@@ -45,6 +45,9 @@ const BIAS_TARGET: f32 = 4.0 * DEPTH_LAYER;
 const BIAS_SPRITE: f32 = 3.0 * DEPTH_LAYER;
 const BIAS_BAR: f32 = 2.0 * DEPTH_LAYER;
 
+/// 쌓아 둘 소리 수 (T8).
+const MAX_QUEUED_SOUNDS: usize = 8;
+
 /// 날아가는 것의 색 (T8).
 const PROJECTILE_TINT: [f32; 4] = [1.0, 0.85, 0.35, 1.0];
 
@@ -562,6 +565,8 @@ pub(crate) struct PlaySession {
     log: VecDeque<String>,
     /// 상태 바에 띄울 경고 (스크립트 오류) — 편집기가 꺼내 간다.
     alerts: Vec<String>,
+    /// 이번에 낼 소리 파일 (T8) — 앱이 tick 뒤에 꺼내 간다.
+    sounds: Vec<String>,
     /// 시작 전 에디터 카메라 — 정지하면 되돌린다.
     editor_camera: Camera2d,
     /// 이번 판의 게임 데이터 (규칙 수치 + 이름·색). 시작할 때 파일에서 읽는다.
@@ -790,6 +795,7 @@ impl PlaySession {
             chase_goal: None,
             log: VecDeque::new(),
             alerts: Vec::new(),
+            sounds: Vec::new(),
             editor_camera,
             data,
         };
@@ -1370,6 +1376,59 @@ impl PlaySession {
     }
 
     /// 상태 바에 띄울 경고를 꺼낸다.
+    /// 이번에 낼 소리 파일들 (T8).
+    pub(crate) fn take_sounds(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.sounds)
+    }
+
+    /// 이 일의 소리를 예약한다 (T8) — 플레이어와 관계있는 일만. 한 tick 에 같은 소리는 한 번,
+    /// 꺼내 가는 쪽이 없어도(시뮬레이터) 쌓이지 않게 상한을 둔다.
+    fn queue_sound(&mut self, event: &Event) {
+        use crate::sound::SoundEvent as S;
+        let me = self.player;
+        let path = match *event {
+            Event::Damaged {
+                attacker,
+                target,
+                skill,
+                ..
+            } if attacker == me || target == me => self
+                .data
+                .skill_sound(skill)
+                .filter(|_| attacker == me)
+                .or_else(|| self.data.event_sound(S::Hit)),
+            Event::Died { unit, killer } if unit == me || killer == me => {
+                self.data.event_sound(S::Death)
+            }
+            Event::LeveledUp { unit, .. } if unit == me => self.data.event_sound(S::LevelUp),
+            Event::PickedUp { unit, .. } if unit == me => self.data.event_sound(S::Pickup),
+            Event::Healed { unit, .. } if unit == me => self.data.event_sound(S::Heal),
+            Event::BuffApplied { unit, .. } if unit == me => self.data.event_sound(S::Buff),
+            Event::Bought { unit, .. } | Event::Sold { unit, .. } | Event::Crafted { unit, .. }
+                if unit == me =>
+            {
+                self.data.event_sound(S::Trade)
+            }
+            Event::QuestAccepted { unit, .. } | Event::QuestCompleted { unit, .. }
+                if unit == me =>
+            {
+                self.data.event_sound(S::Quest)
+            }
+            Event::DungeonCleared => self.data.event_sound(S::Quest),
+            Event::Teleported { unit, .. } | Event::Traveled { unit, .. } if unit == me => {
+                self.data.event_sound(S::Travel)
+            }
+            _ => None,
+        };
+        if let Some(path) = path
+            && self.sounds.len() < MAX_QUEUED_SOUNDS
+            && !self.sounds.iter().any(|s| s == path)
+        {
+            let path = path.to_owned();
+            self.sounds.push(path);
+        }
+    }
+
     pub(crate) fn take_alerts(&mut self) -> Vec<String> {
         std::mem::take(&mut self.alerts)
     }
@@ -1798,6 +1857,7 @@ impl PlaySession {
                     }
                 }
             }
+            self.queue_sound(&event);
             self.on_event(event);
         }
         // 거래 창은 멀어지거나 상대·내가 쓰러지면 닫는다 (R4).

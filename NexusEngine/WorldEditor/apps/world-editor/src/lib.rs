@@ -42,6 +42,7 @@ mod script;
 mod script_editor;
 mod sheet_viewer;
 mod skill_file;
+mod sound;
 mod sprites;
 mod stat_designer;
 mod storyboard;
@@ -225,6 +226,8 @@ struct Editor {
     show_items: bool,
     /// 에디터 패널을 숨긴다 (F9) — HUD 만으로 플레이되는지 확인하는 용도.
     hide_panels: bool,
+    /// 소리 (T8).
+    sounds: sound::Sounds,
     /// 게임 실행 파일인가 (T7).
     game: bool,
     /// 시작 레벨을 아직 열지 않았다 — 데이터가 다 읽힌 뒤 첫 tick 에 연다.
@@ -312,6 +315,7 @@ impl Default for Editor {
             screens: Screens::default(),
             show_items: false,
             hide_panels: false,
+            sounds: sound::Sounds::default(),
             game: false,
             game_start_pending: false,
             screen_editor: ScreenEditor::default(),
@@ -662,12 +666,33 @@ impl Editor {
             self.stop_play();
         } else {
             self.start_play(SaveChoice::Ask);
+            // F5 — 이 존이 속한 레벨의 음악.
+            let level = self
+                .levels
+                .find_by_zone(self.zone_path.as_deref())
+                .and_then(|id| self.levels.level(id))
+                .cloned();
+            self.apply_level_music(level.as_ref());
+        }
+    }
+
+    /// 이 레벨의 배경음악으로 바꾼다 (T8). 소리 음량은 지금 게임 데이터를 따른다.
+    fn apply_level_music(&mut self, level: Option<&level::LevelFile>) {
+        if let Ok(data) = GameData::load() {
+            let (effect, music) = data.sound_volumes();
+            self.sounds.set_volumes(effect, music);
+        }
+        if let Some(e) = self.sounds.music(level.and_then(|l| l.bgm.as_deref())) {
+            self.notify(e, true);
         }
     }
 
     /// 플레이를 멈추고 에디터로 돌아온다. 진행 상황은 저장한다 (P3-4 정상 종료 경로).
     fn stop_play(&mut self) {
         self.shell = None;
+        if self.play.is_some() && self.pending_level.is_none() {
+            self.apply_level_music(None);
+        }
         // 버튼 스크립트의 상태(this)는 한 판 단위다.
         self.ui_scripts.reset();
         self.pending_level = None;
@@ -964,10 +989,12 @@ impl Editor {
                 }
                 self.stop_play();
                 self.start_play(SaveChoice::Continue);
+                self.apply_level_music(Some(level));
             }
             None => {
                 self.stop_play();
                 self.shell = Some(Shell::new(id, level.base_screen()));
+                self.apply_level_music(Some(level));
                 self.notify(format!("레벨 '{}' — {}", id, level.name), false);
             }
         }
@@ -1197,6 +1224,15 @@ impl Editor {
     /// 화면 버튼의 동작 — 데이터에 적힌 [`screen::Action`] 을 실행한다.
     fn run_action(&mut self, action: screen::Action) {
         use screen::Action;
+        // 버튼 소리 (T8) — 단축키 칸과 빈 동작은 빼고.
+        if !matches!(action, Action::Skill(_) | Action::None)
+            && let Some(path) = GameData::load()
+                .ok()
+                .and_then(|d| d.event_sound(sound::SoundEvent::Click).map(str::to_owned))
+            && let Some(e) = self.sounds.play(&path)
+        {
+            self.notify(e, true);
+        }
         match action {
             Action::OpenScreen(id) => {
                 if self.screens.screen(&id).is_none() {
@@ -2463,6 +2499,11 @@ impl Editor {
 
 impl App for Editor {
     fn init(&mut self, target: &WindowTarget) -> Result<(), String> {
+        let (sounds, note) = sound::Sounds::open();
+        self.sounds = sounds;
+        if let Some(note) = note {
+            println!("{note}");
+        }
         let (width, height) = target.size();
 
         // WindowTarget 은 Clone + Send + Sync + 'static 이므로 wgpu 서피스 타깃으로
@@ -2587,8 +2628,14 @@ impl App for Editor {
             play.tick(dt, self.sprites.as_ref());
             travel = play.take_travel();
             // 스크립트 오류는 콘솔만이 아니라 상태 바에도 — 창만 보는 사람도 알 수 있게.
+            let sounds = play.take_sounds();
             for alert in play.take_alerts() {
                 self.notify(alert, true);
+            }
+            for path in sounds {
+                if let Some(e) = self.sounds.play(&path) {
+                    self.notify(e, true);
+                }
             }
         }
         if let Some((level, pos)) = travel {

@@ -189,6 +189,27 @@ impl From<BuffFile> for BuffDef {
     }
 }
 
+/// 소리 표 (T8).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct SoundFile {
+    effect_volume: f32,
+    music_volume: f32,
+    events: BTreeMap<String, String>,
+    skills: BTreeMap<u32, String>,
+}
+
+impl Default for SoundFile {
+    fn default() -> Self {
+        Self {
+            effect_volume: 0.8,
+            music_volume: 0.5,
+            events: BTreeMap::new(),
+            skills: BTreeMap::new(),
+        }
+    }
+}
+
 /// 버프의 표시 반쪽 (R2b) — 이름은 기록에, 색은 HUD 칸에.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -518,6 +539,9 @@ struct DisplayFile {
     /// 진영의 표시 이름 (P19). 번호는 `rules.ron` 의 진영 번호(서버 `EFactionId`)와 같다. 없으면 번호로 보인다.
     #[serde(default)]
     factions: BTreeMap<u32, SkillLookFile>,
+    /// 소리 (T8) — `sound.rs` 모듈 doc.
+    #[serde(default)]
+    sound: SoundFile,
     /// 트리거의 이름 (T5) — 편집기에서만 보인다.
     #[serde(default)]
     triggers: BTreeMap<u32, SkillLookFile>,
@@ -639,6 +663,8 @@ pub(crate) struct GameData {
     actor_skills: BTreeMap<ActorId, Vec<SkillId>>,
     /// 스킬의 표시 이름 (`display.ron`).
     skill_names: BTreeMap<SkillId, String>,
+    /// 소리 (T8).
+    sound: SoundFile,
     /// 버프 (R2b).
     buffs: Vec<(BuffId, BuffDef)>,
     buff_looks: BTreeMap<BuffId, (String, (f32, f32, f32))>,
@@ -997,6 +1023,29 @@ impl GameData {
                 );
             }
         }
+        // 소리 (T8).
+        check(
+            (0.0..=1.0).contains(&d.sound.effect_volume)
+                && (0.0..=1.0).contains(&d.sound.music_volume),
+            String::from("sound: 음량은 0~1"),
+        );
+        for (key, path) in &d.sound.events {
+            check(
+                crate::sound::SoundEvent::ALL.iter().any(|e| e.key() == key),
+                format!("sound: 모르는 일 '{key}'"),
+            );
+            check(
+                crate::sound::sound_path_ok(path),
+                format!("sound '{key}': 경로 '{path}' — 소문자·'/'·.ogg 또는 .wav"),
+            );
+        }
+        for (id, path) in &d.sound.skills {
+            check(r.skills.contains_key(id), format!("sound: 없는 스킬 {id}"));
+            check(
+                crate::sound::sound_path_ok(path),
+                format!("sound 스킬 {id}: 경로 '{path}' — 소문자·'/'·.ogg 또는 .wav"),
+            );
+        }
         for (id, look) in &d.buffs {
             check(
                 !look.name.trim().is_empty(),
@@ -1265,6 +1314,7 @@ impl GameData {
                 .iter()
                 .map(|(id, b)| (BuffId(*id), BuffDef::from(*b)))
                 .collect(),
+            sound: d.sound.clone(),
             buff_looks: d
                 .buffs
                 .iter()
@@ -1741,6 +1791,21 @@ impl GameData {
     }
 
     /// 스킬 이름. 표시 파일에 없으면 번호로.
+    /// 이 일의 소리 파일 (T8).
+    pub(crate) fn event_sound(&self, event: crate::sound::SoundEvent) -> Option<&str> {
+        self.sound.events.get(event.key()).map(String::as_str)
+    }
+
+    /// 이 스킬만의 소리 파일 (T8).
+    pub(crate) fn skill_sound(&self, skill: SkillId) -> Option<&str> {
+        self.sound.skills.get(&skill.0).map(String::as_str)
+    }
+
+    /// `(효과음, 배경음악)` 음량 (T8).
+    pub(crate) fn sound_volumes(&self) -> (f32, f32) {
+        (self.sound.effect_volume, self.sound.music_volume)
+    }
+
     /// 버프 이름 (R2b).
     pub(crate) fn buff_name(&self, id: BuffId) -> String {
         self.buff_looks

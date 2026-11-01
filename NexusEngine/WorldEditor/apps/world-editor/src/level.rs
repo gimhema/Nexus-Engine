@@ -109,6 +109,9 @@ pub(crate) struct LevelFile {
     /// 로딩 화면을 최소 이만큼(ms) 보여 준다 — 여는 일이 금방 끝나도 화면이 번쩍이고 사라지지 않게.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub(crate) loading_ms: u32,
+    /// 배경음악 파일 (T8) — 작업 디렉터리 기준 `.ogg`·`.wav`. 없으면 음악이 멈춘다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) bgm: Option<String>,
     /// 인스턴스 정책 (R6). 단계 1 에서는 기록만 한다.
     #[serde(default, skip_serializing_if = "is_shared")]
     pub(crate) instance: InstancePolicy,
@@ -400,6 +403,13 @@ pub(crate) fn read_level(text: &str) -> Result<LevelFile, String> {
             ));
         }
     }
+    if let Some(bgm) = &file.bgm
+        && !crate::sound::sound_path_ok(bgm)
+    {
+        return Err(format!(
+            "bgm '{bgm}' — 소문자·'/'·.ogg 또는 .wav 상대 경로여야 함"
+        ));
+    }
     if file.loading_ms > MAX_LOADING_MS {
         return Err(format!("loading_ms 는 {MAX_LOADING_MS} 이하여야 함"));
     }
@@ -495,6 +505,7 @@ pub(crate) fn to_ron(level: &LevelFile) -> String {
 // requires = 들어올 수 있는 조건(이 레벨로 가는 포털이 본다, 트리거의 when 과 같은 형식).
 // clear = 던전 클리어 — objectives(퀘스트 목표 형식)를 다 채우면 rewards(트리거 효과 형식)를 주고
 // Cleared 조건이 참이 된다(나가는 문 포털의 requires: Some(Cleared)).
+// bgm = 배경음악 파일(.ogg·.wav, 작업 디렉터리 기준 상대 경로).
 ";
     format!("{header}{body}\n")
 }
