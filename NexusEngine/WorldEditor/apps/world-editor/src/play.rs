@@ -21,7 +21,7 @@ use nexus_core::{Camera2d, Entity, Vec2, Vec3};
 use nexus_render::{DEPTH_LAYER, RenderCommand, SpriteAnchor, TextureId, UvRect};
 use nexus_script::RhaiHost;
 use nexus_sim::{
-    Authority, BagKind, ClassId, Condition, CraftId, EquipSlot, Event, Intent, ItemStack,
+    Authority, BagKind, ClassId, Condition, CraftId, EquipSlot, Event, Intent, ItemId, ItemStack,
     LocalAuthority, PortalDef, Price, Progress, QuestId, QuestState, Rejection, Relation, Service,
     ShopId, SimWorld, SkillId, TeleportId, Unit,
 };
@@ -2491,7 +2491,12 @@ impl PlaySession {
                 fallback,
             };
             let animator = self.animators.get(&unit).unwrap_or(&idle_animator);
-            let parts = sprites.parts(actor, effect);
+            // 외형이 바뀌는 장비인지는 라이브러리가 안다 — 여기서는 입은 것만 넘긴다.
+            let worn: Vec<(EquipSlot, ItemId)> = EquipSlot::ALL
+                .into_iter()
+                .filter_map(|slot| Some((slot, u.inventory().equipped(slot)?)))
+                .collect();
+            let parts = sprites.parts(actor, &worn, effect);
             sprites.sheet(actor).push(
                 u.render_pos(alpha),
                 look,
@@ -2697,6 +2702,8 @@ mod text {
             EquipSlot::Body => "몸",
             EquipSlot::Hand => "손",
             EquipSlot::Shoes => "신발",
+            EquipSlot::Neck => "목걸이",
+            EquipSlot::Ring => "반지",
         }
     }
 
@@ -3967,7 +3974,11 @@ mod tests {
         use crate::screen::ListSource;
         let mut s = new_game(None, None);
         let values = s.list_values();
-        assert_eq!(values.equipment.len(), 5);
+        assert_eq!(
+            values.equipment.len(),
+            EquipSlot::ALL.len(),
+            "장신구 두 자리 포함"
+        );
         assert!(values.equipment.iter().all(|r| !r.enabled));
 
         // 가방의 숏소드 줄 → 입기 → 장비 줄에 보이고 → 누르면 벗는다.

@@ -2,7 +2,7 @@
 //!
 //! 서버 `Game/Logic/Item.h` · `ItemBag.h` · `CommonLogicType.h` 의 **구조를 따른다**:
 //! 종류별 가방(소모품·장비)이 따로 있고, 칸 수는 서버 `MAX_*_BAG_NUM` 과 같은 120 이며,
-//! 장비 자리는 `EQUIPMENT_POS_TYPE` 과 같은 다섯 곳이다.
+//! 장비 자리는 `EQUIPMENT_POS_TYPE` 의 다섯 곳에 장신구 둘(목걸이·반지)을 **뒤에 붙인** 일곱 곳이다.
 //!
 //! 서버 쪽은 사용·장착 효과가 아직 TODO 라 **효과 규칙은 여기서 정했다** — 소모품은 HP 회복,
 //! 장비는 공격력·방어력 가산. 스킨(`SkinBag`)은 외형만 바꾸고 규칙에 영향이 없어 다루지 않는다.
@@ -14,23 +14,29 @@ use nexus_core::Vec2;
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ItemId(pub u32);
 
-/// 장비 자리. 서버 `EQUIPMENT_POS_TYPE` (1~5) 와 같은 순서.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// 장비 자리. 서버 `EQUIPMENT_POS_TYPE` (1~5) 와 같은 순서이고, 장신구 `Neck`(6)·`Ring`(7)은
+/// 그 뒤에 붙였다 — **서버 enum 에는 아직 없다.** 단계 2 에서 서버도 6·7 을 같은 순서로 붙여야 한다.
+/// 기존 번호를 바꾸지 않도록 새 자리는 항상 맨 뒤에 붙인다.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum EquipSlot {
     Weapon,
     Head,
     Body,
     Hand,
     Shoes,
+    Neck,
+    Ring,
 }
 
 impl EquipSlot {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::Weapon,
         Self::Head,
         Self::Body,
         Self::Hand,
         Self::Shoes,
+        Self::Neck,
+        Self::Ring,
     ];
 
     fn index(self) -> usize {
@@ -214,7 +220,7 @@ impl Bag {
 pub struct Inventory {
     pub(crate) consumables: Bag,
     pub(crate) equipment: Bag,
-    pub(crate) equipped: [Option<ItemId>; 5],
+    pub(crate) equipped: [Option<ItemId>; EquipSlot::ALL.len()],
 }
 
 impl Inventory {

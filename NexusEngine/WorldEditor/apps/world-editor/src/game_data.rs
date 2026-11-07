@@ -41,7 +41,7 @@ use crate::class_file::{self, ClassFile, ClassLookFile, EquipRef, StatsFile};
 use crate::quest_file::{self, QuestFile, QuestLookFile};
 use crate::scene::{ActorId, ItemKind};
 use crate::skill_file::{self, NumOr, SkillLevelRef};
-use crate::sprites::PartPath;
+use crate::sprites::{PartRef, SpriteSources};
 use crate::trade_file::{self, CraftFile, ServiceFile, ShopFile, TeleportFile, TradeRefs};
 use crate::trigger_file::{self, ConditionFile, TriggerFile};
 
@@ -419,6 +419,8 @@ enum SlotFile {
     Body,
     Hand,
     Shoes,
+    Neck,
+    Ring,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -602,6 +604,22 @@ struct PartLookFile {
     sheet: String,
     #[serde(default = "white")]
     tint: (f32, f32, f32),
+    /// **템플릿 파츠만** — 이 자리에 외형이 있는 장비를 입으면 이 파츠가 빠진다
+    /// (기본 옷 `Some(Body)` → 갑옷). 없으면 장비와 무관하게 늘 보인다(머리카락·얼굴).
+    /// 아이템 파츠에는 적지 않는다 — 아이템의 자리는 `rules.ron` 이 정한다.
+    #[serde(default)]
+    slot: Option<SlotFile>,
+}
+
+impl PartLookFile {
+    fn to_ref(&self) -> PartRef {
+        let (r, g, b) = self.tint;
+        PartRef {
+            sheet: self.sheet.clone(),
+            tint: [r, g, b, 1.0],
+            slot: self.slot.map(EquipSlot::from),
+        }
+    }
 }
 
 /// 색을 적지 않았을 때 — 그림 그대로.
@@ -615,6 +633,10 @@ struct ItemLookFile {
     name: String,
     /// sRGB.
     color: (f32, f32, f32),
+    /// 입으면 겹치는 그림 — **있으면 외형이 바뀌는 장비**(갑옷·모자), 없으면 외형에 영향이 없다
+    /// (목걸이·반지). 장비에만 적을 수 있다.
+    #[serde(default)]
+    parts: Vec<PartLookFile>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -626,6 +648,8 @@ struct ItemLookFile {
 struct ItemLook {
     name: String,
     color: [f32; 4],
+    /// 입으면 겹치는 파츠. 비면 외형에 영향이 없다.
+    parts: Vec<PartRef>,
 }
 
 /// 액터 타입 하나의 표시 정보.
@@ -638,8 +662,8 @@ pub(crate) struct ActorLook {
     tint: [f32; 4],
     /// NPC 프로필 글 (R4-2). 없으면 빈 문자열.
     pub(crate) profile: String,
-    /// 기본 파츠 `(시트 정의 경로, 색)`.
-    parts: Vec<PartPath>,
+    /// 템플릿 기본 파츠.
+    parts: Vec<PartRef>,
 }
 
 impl ActorLook {
@@ -983,6 +1007,18 @@ impl GameData {
                 [r_, g, b].iter().all(|c| (0.0..=1.0).contains(c)),
                 format!("표시 아이템 {id}: 색은 0~1"),
             );
+            // 외형 파츠는 입을 수 있는 것에만 — 소모품에 적으면 조용히 쓰이지 않는다.
+            check(
+                look.parts.is_empty()
+                    || matches!(r.items.get(id), Some(ItemFile::Equipment { .. })),
+                format!("표시 아이템 {id}: parts 는 장비에만 적을 수 있음"),
+            );
+            check(
+                look.parts.iter().all(|p| p.slot.is_none()),
+                format!(
+                    "표시 아이템 {id}: 아이템 파츠에는 slot 을 적지 않음 (자리는 rules.ron 이 정한다)"
+                ),
+            );
         }
         for (id, look) in &d.skills {
             check(
@@ -1277,6 +1313,7 @@ impl GameData {
                     (
                         id,
                         ItemLook {
+                            parts: l.parts.iter().map(PartLookFile::to_ref).collect(),
                             name: l.name,
                             color: [r_, g, b, 1.0],
                         },
@@ -1295,14 +1332,7 @@ impl GameData {
                             sheet: (!l.sheet.is_empty()).then_some(l.sheet),
                             tint: [r_, g, b, 1.0],
                             profile: l.profile,
-                            parts: l
-                                .parts
-                                .into_iter()
-                                .map(|p| {
-                                    let (r, g, b) = p.tint;
-                                    (p.sheet, [r, g, b, 1.0])
-                                })
-                                .collect(),
+                            parts: l.parts.iter().map(PartLookFile::to_ref).collect(),
                         },
                     )
                 })
@@ -1878,13 +1908,23 @@ impl GameData {
             .collect()
     }
 
-    /// 액터 타입별 기본 파츠 `(액터, [(시트 정의 경로, 색)])` — 파츠가 있는 타입만.
-    pub(crate) fn sprite_parts(&self) -> Vec<(ActorId, Vec<PartPath>)> {
-        self.actor_looks
-            .iter()
-            .filter(|(_, look)| !look.parts.is_empty())
-            .map(|(id, look)| (*id, look.parts.clone()))
-            .collect()
+    /// 스프라이트 라이브러리가 읽을 것 — 몸 시트, 템플릿 파츠, 외형이 있는 장비의 파츠.
+    pub(crate) fn sprite_sources(&self) -> SpriteSources {
+        SpriteSources {
+            sheets: self.sprite_sheets(),
+            actor_parts: self
+                .actor_looks
+                .iter()
+                .filter(|(_, look)| !look.parts.is_empty())
+                .map(|(id, look)| (*id, look.parts.clone()))
+                .collect(),
+            item_parts: self
+                .looks
+                .iter()
+                .filter(|(_, look)| !look.parts.is_empty())
+                .map(|(id, look)| (ItemId(*id), look.parts.clone()))
+                .collect(),
+        }
     }
 }
 
@@ -1948,6 +1988,8 @@ impl From<SlotFile> for EquipSlot {
             SlotFile::Body => Self::Body,
             SlotFile::Hand => Self::Hand,
             SlotFile::Shoes => Self::Shoes,
+            SlotFile::Neck => Self::Neck,
+            SlotFile::Ring => Self::Ring,
         }
     }
 }
@@ -2320,6 +2362,15 @@ pub(crate) struct ItemForm {
     pub(crate) color: (f32, f32, f32),
     /// 기본 값 (R4, 기본 재화) — 상점이 사들일 때의 기준. 0 이면 팔 수 없다.
     pub(crate) value: u32,
+    /// 입으면 겹치는 그림 — 장비만. 비우면 외형에 영향이 없다(목걸이·반지).
+    pub(crate) parts: Vec<PartForm>,
+}
+
+/// 장비 외형 파츠 한 장 — 시트 정의 경로와 곱할 색 (sRGB).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PartForm {
+    pub(crate) sheet: String,
+    pub(crate) tint: (f32, f32, f32),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2371,7 +2422,7 @@ impl EquipBonusForm {
     }
 }
 
-/// 장착 자리 — 편집기 드롭다운용 (파일 형식 `SlotFile` 과 같은 다섯 가지, 서버 순서).
+/// 장착 자리 — 편집기 드롭다운용 (파일 형식 `SlotFile` 과 같은 일곱 가지, 서버 순서 + 장신구).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SlotChoice {
     Weapon,
@@ -2379,15 +2430,19 @@ pub(crate) enum SlotChoice {
     Body,
     Hand,
     Shoes,
+    Neck,
+    Ring,
 }
 
 impl SlotChoice {
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::Weapon,
         Self::Head,
         Self::Body,
         Self::Hand,
         Self::Shoes,
+        Self::Neck,
+        Self::Ring,
     ];
 
     pub(crate) fn label(self) -> &'static str {
@@ -2397,6 +2452,8 @@ impl SlotChoice {
             Self::Body => "몸",
             Self::Hand => "손",
             Self::Shoes => "신발",
+            Self::Neck => "목걸이",
+            Self::Ring => "반지",
         }
     }
 
@@ -2407,6 +2464,8 @@ impl SlotChoice {
             Self::Body => "Body",
             Self::Hand => "Hand",
             Self::Shoes => "Shoes",
+            Self::Neck => "Neck",
+            Self::Ring => "Ring",
         }
     }
 }
@@ -2419,6 +2478,8 @@ impl From<SlotFile> for SlotChoice {
             SlotFile::Body => Self::Body,
             SlotFile::Hand => Self::Hand,
             SlotFile::Shoes => Self::Shoes,
+            SlotFile::Neck => Self::Neck,
+            SlotFile::Ring => Self::Ring,
         }
     }
 }
@@ -2435,6 +2496,7 @@ impl ItemForm {
             name: name.to_owned(),
             color: (0.9, 0.9, 0.9),
             value: 0,
+            parts: Vec::new(),
         }
     }
 
@@ -2485,11 +2547,26 @@ impl ItemForm {
         }
     }
 
-    /// `display.ron` 의 `items` 항목.
+    /// `display.ron` 의 `items` 항목. 외형 파츠는 장비일 때만 적는다 — 종류를 바꾸면 따라 빠진다.
     pub(crate) fn display_entry(&self, id: u32) -> String {
         let (r, g, b) = self.color;
+        let mut parts = String::new();
+        if matches!(self.kind, ItemKindForm::Equipment { .. }) && !self.parts.is_empty() {
+            let list: Vec<String> = self
+                .parts
+                .iter()
+                .map(|p| {
+                    let (r, g, b) = p.tint;
+                    format!(
+                        "(sheet: {}, tint: ({r:?}, {g:?}, {b:?}))",
+                        crate::ron_patch::quote(&p.sheet)
+                    )
+                })
+                .collect();
+            parts = format!(", parts: [{}]", list.join(", "));
+        }
         format!(
-            "{id}: (name: {}, color: ({r:?}, {g:?}, {b:?})),",
+            "{id}: (name: {}, color: ({r:?}, {g:?}, {b:?}){parts}),",
             crate::ron_patch::quote(&self.name)
         )
     }
@@ -2908,6 +2985,17 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
                     name: look.map(|l| l.name.clone()).unwrap_or_default(),
                     color: look.map_or((0.9, 0.9, 0.9), |l| l.color),
                     value: it.value(),
+                    parts: look
+                        .map(|l| {
+                            l.parts
+                                .iter()
+                                .map(|p| PartForm {
+                                    sheet: p.sheet.clone(),
+                                    tint: p.tint,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                 },
             )
         })
@@ -3516,6 +3604,68 @@ mod tests {
         ] {
             assert!(!script_path_ok(bad), "{bad} 를 받아들였다");
         }
+    }
+
+    #[test]
+    fn only_equipment_with_parts_changes_the_look() {
+        // 모자(2101)는 외형이 있는 장비, 숏소드(1101)는 파츠를 적지 않아 외형이 그대로다.
+        let display = EMBEDDED_DISPLAY.replacen(
+            "2101: (name: \"모자\", color: (0.95, 0.85, 0.40)),",
+            "2101: (name: \"모자\", color: (0.95, 0.85, 0.40), parts: [(sheet: \"hat.sheet.ron\", tint: (1.0, 0.5, 0.5))]),",
+            1,
+        );
+        let data = GameData::parse(EMBEDDED_RULES, &display).unwrap();
+        let items = data.sprite_sources().item_parts;
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0].0, ItemId(2101));
+        assert_eq!(items[0].1[0].tint, [1.0, 0.5, 0.5, 1.0]);
+        assert_eq!(items[0].1[0].slot, None);
+    }
+
+    #[test]
+    fn the_table_editor_keeps_an_items_look_parts() {
+        let mut form = ItemForm::new("판금 갑옷");
+        form.kind = ItemKindForm::Equipment {
+            slot: SlotChoice::Body,
+            attack: 0,
+            defense: 8,
+            bonus: EquipBonusForm::default(),
+        };
+        form.parts.push(PartForm {
+            sheet: String::from("assets/parts/plate.sheet.ron"),
+            tint: (0.8, 0.8, 0.9),
+        });
+        let line = form.display_entry(2301);
+        assert_eq!(
+            line,
+            "2301: (name: \"판금 갑옷\", color: (0.9, 0.9, 0.9), parts: [(sheet: \"assets/parts/plate.sheet.ron\", tint: (0.8, 0.8, 0.9))]),"
+        );
+        let entry = line.split_once(": ").unwrap().1.trim_end_matches(',');
+        let file: ItemLookFile = ron::from_str(entry).unwrap();
+        assert_eq!(file.parts.len(), 1, "표시 파일 형식으로 다시 읽힌다");
+
+        // 장비가 아니게 바꾸면 파츠는 적지 않는다 — 소모품 파츠는 검사에서 거절되므로.
+        form.kind = ItemForm::new("").kind;
+        assert!(!form.display_entry(2301).contains("parts"));
+    }
+
+    #[test]
+    fn item_parts_are_only_for_equipment_and_carry_no_slot() {
+        let potion = EMBEDDED_DISPLAY.replacen(
+            "501: (name: \"빨간 포션\", color: (0.95, 0.30, 0.30)),",
+            "501: (name: \"빨간 포션\", color: (0.95, 0.30, 0.30), parts: [(sheet: \"a.sheet.ron\")]),",
+            1,
+        );
+        let err = GameData::parse(EMBEDDED_RULES, &potion).unwrap_err();
+        assert!(err.contains("parts 는 장비에만"), "{err}");
+
+        let slotted = EMBEDDED_DISPLAY.replacen(
+            "2101: (name: \"모자\", color: (0.95, 0.85, 0.40)),",
+            "2101: (name: \"모자\", color: (0.95, 0.85, 0.40), parts: [(sheet: \"a.sheet.ron\", slot: Some(Body))]),",
+            1,
+        );
+        let err = GameData::parse(EMBEDDED_RULES, &slotted).unwrap_err();
+        assert!(err.contains("slot 을 적지 않음"), "{err}");
     }
 
     #[test]

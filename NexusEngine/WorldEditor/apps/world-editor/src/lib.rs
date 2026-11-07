@@ -76,7 +76,7 @@ use scene::{Handle, Pick, Scene, Target};
 use screen::{Screens, Values};
 use screen_editor::ScreenEditor;
 use script::{Anchor, Button, Script, Step};
-use sprites::SpriteLibrary;
+use sprites::{SpriteLibrary, SpriteSources};
 use terrain::Terrain;
 use ui::{EditorUi, FrameStats, Notice, UiActions, UiModel};
 
@@ -1058,17 +1058,12 @@ impl Editor {
         };
         let mut old = Vec::new();
         let mut warnings = Vec::new();
-        let sheets = self
+        let sources = self
             .data
             .as_ref()
-            .map(GameData::sprite_sheets)
+            .map(GameData::sprite_sources)
             .unwrap_or_default();
-        let parts = self
-            .data
-            .as_ref()
-            .map(GameData::sprite_parts)
-            .unwrap_or_default();
-        match SpriteLibrary::load(renderer, &sheets, &parts, &mut warnings) {
+        match SpriteLibrary::load(renderer, &sources, &mut warnings) {
             Ok(fresh) => {
                 if let Some(prev) = self.sprites.replace(fresh) {
                     old.extend(prev.textures());
@@ -2548,19 +2543,19 @@ impl App for Editor {
         // 그림은 여기서 GPU 에 한 번 올린다 — 시트를 갈아끼우면 다시 시작해야 반영된다
         // (텍스처 해제 API 가 없어 매번 올리면 쌓인다).
         let mut warnings = Vec::new();
-        let (sheets, parts) = match GameData::load() {
+        let sources = match GameData::load() {
             Ok(data) => {
-                let art = (data.sprite_sheets(), data.sprite_parts());
+                let sources = data.sprite_sources();
                 self.data = Some(data);
-                art
+                sources
             }
             Err(e) => {
                 warnings.push(format!("게임 데이터를 읽지 못해 기본값을 씁니다 — {e}"));
-                (Vec::new(), Vec::new())
+                SpriteSources::default()
             }
         };
         // 실패해도 에디터는 돌아간다 — 마커가 지면 사각형만 남을 뿐이다.
-        match SpriteLibrary::load(&mut renderer, &sheets, &parts, &mut warnings) {
+        match SpriteLibrary::load(&mut renderer, &sources, &mut warnings) {
             Ok(s) => self.sprites = Some(s),
             Err(e) => warnings.push(format!("스프라이트 시트 로드 실패: {e}")),
         }

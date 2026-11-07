@@ -25,8 +25,8 @@ use nexus_render_wgpu::egui;
 
 use crate::game_data::{BuffForm, CraftForm, DestForm, RecipeForm, ShopForm, TeleportForm};
 use crate::game_data::{
-    DISPLAY_PATH, EquipBonusForm, GameData, ItemForm, ItemKindForm, LootRow, RULES_PATH, SkillForm,
-    SlotChoice, TableForms, loot_entry, table_forms,
+    DISPLAY_PATH, EquipBonusForm, GameData, ItemForm, ItemKindForm, LootRow, PartForm, RULES_PATH,
+    SkillForm, SlotChoice, TableForms, loot_entry, table_forms,
 };
 
 /// 편집기의 탭.
@@ -879,6 +879,38 @@ fn item_form(ui: &mut egui::Ui, f: &mut ItemForm, skills: &[(u32, String)]) {
                             .collect();
                     }
                     ui.weak("직업 번호를 쉼표로 — 비우면 누구나");
+                });
+                ui.end_row();
+                // 외형 — 시트 정의 파일과 곱할 색. 비우면 입어도 외형이 바뀌지 않는다(목걸이·반지).
+                ui.label("외형 파츠");
+                ui.vertical(|ui| {
+                    let mut remove = None;
+                    for (i, part) in f.parts.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut part.sheet)
+                                    .hint_text("assets/…/armor.sheet.ron")
+                                    .desired_width(180.0),
+                            );
+                            let mut rgb = [part.tint.0, part.tint.1, part.tint.2];
+                            if ui.color_edit_button_rgb(&mut rgb).changed() {
+                                part.tint = (rgb[0], rgb[1], rgb[2]);
+                            }
+                            if ui.small_button("×").clicked() {
+                                remove = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = remove {
+                        f.parts.remove(i);
+                    }
+                    if ui.small_button("+ 파츠").clicked() {
+                        f.parts.push(PartForm {
+                            sheet: String::new(),
+                            tint: (1.0, 1.0, 1.0),
+                        });
+                    }
+                    ui.weak("비우면 외형에 영향이 없다. 몸 시트와 칸 배치가 같은 시트만 겹쳐진다");
                 });
                 ui.end_row();
             }

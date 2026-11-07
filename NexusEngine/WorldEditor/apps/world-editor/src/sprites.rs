@@ -22,6 +22,17 @@
 //!   층마다 [`PART_DEPTH_STEP`] 씩 앞으로 민다.
 //! - 색(피부·머리색)은 층마다 따로 곱한다. **곱하기라 어둡게만 된다** — 색을 바꿀 부위는 밝은 무채색으로 그린다.
 //!
+//! ## 장비와 외형
+//!
+//! 유닛이 입는 파츠는 [`compose`] 가 정한다 — **외형을 바꾸는지는 아이템 표시 데이터가 정한다:**
+//!
+//! | `display.ron` 아이템 | 장착하면 |
+//! |---|---|
+//! | `parts` 있음 (갑옷·모자·무기) | 그 그림이 겹친다. 템플릿 파츠 중 **같은 자리**(`slot`)인 것은 빠진다 — 기본 옷 → 갑옷 |
+//! | `parts` 없음 (목걸이·반지) | 외형이 그대로다 |
+//!
+//! 템플릿 파츠에 `slot` 이 없으면(머리카락·얼굴) 어떤 장비로도 빠지지 않는다.
+//!
 //! # 어디서 읽나
 //!
 //! 기본 시트(플레이스홀더)는 실행 파일에 **내장**되어 작업 디렉터리와 무관하게 항상 뜬다.
@@ -37,6 +48,8 @@ use nexus_assets::{AnimState, Clip, GridAtlas, Image, SpriteAnimator, SpriteShee
 use nexus_core::{Camera2d, Vec2, Vec3, units};
 use nexus_render::{RenderCommand, Renderer, SpriteAnchor, TextureId};
 use serde::Deserialize;
+
+use nexus_sim::{EquipSlot, ItemId};
 
 use crate::scene::{ActorId, Item};
 
@@ -493,8 +506,51 @@ impl Sheet {
 /// 쿼터뷰 기본 줌에서 앞뒤로 1cm 안쪽에 선 다른 유닛과만 순서가 섞인다.
 pub(crate) const PART_DEPTH_STEP: f32 = nexus_render::DEPTH_LAYER / 100.0;
 
-/// 파츠 정의 파일 경로와 곱할 색 — `data/display.ron` 에서 온다.
-pub(crate) type PartPath = (String, [f32; 4]);
+/// 파츠 한 장의 출처 — `data/display.ron` 에서 온다.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PartRef {
+    /// 시트 정의 파일 경로.
+    pub(crate) sheet: String,
+    /// 곱할 색 (sRGB).
+    pub(crate) tint: [f32; 4],
+    /// 템플릿 파츠만 — 이 자리에 **외형이 있는** 장비를 입으면 빠진다. 장비 파츠는 `None`.
+    pub(crate) slot: Option<EquipSlot>,
+}
+
+/// [`SpriteLibrary::load`] 가 읽을 것 — `GameData::sprite_sources` 가 만든다.
+#[derive(Debug, Default)]
+pub(crate) struct SpriteSources {
+    /// 액터 타입별 몸 시트.
+    pub(crate) sheets: Vec<(ActorId, String)>,
+    /// 액터 타입(템플릿)별 기본 파츠.
+    pub(crate) actor_parts: Vec<(ActorId, Vec<PartRef>)>,
+    /// 외형을 바꾸는 장비의 파츠. 여기에 없는 장비는 외형에 영향이 없다.
+    pub(crate) item_parts: Vec<(ItemId, Vec<PartRef>)>,
+}
+
+/// 템플릿 파츠와 입은 장비로 유닛이 실제로 겹칠 파츠를 고른다.
+///
+/// - 외형이 있는 장비(파츠가 하나 이상)가 차지한 자리의 템플릿 파츠는 빠진다.
+/// - 외형이 없는 장비(빈 목록 — 목걸이·반지)는 아무것도 바꾸지 않는다.
+/// - 순서: 남은 템플릿 파츠(적은 순서) → 장비 파츠(`worn` 순서). 앞뒤는 그리기에서 `layer` 로 다시 정렬된다.
+pub(crate) fn compose<'a, T>(
+    template: &'a [(T, Option<EquipSlot>)],
+    worn: &[(EquipSlot, &'a [T])],
+) -> Vec<&'a T> {
+    let covered = |slot: EquipSlot| {
+        worn.iter()
+            .any(|(s, parts)| *s == slot && !parts.is_empty())
+    };
+    template
+        .iter()
+        .filter(|(_, slot)| !slot.is_some_and(covered))
+        .map(|(part, _)| part)
+        .chain(worn.iter().flat_map(|(_, parts)| parts.iter()))
+        .collect()
+}
+
+/// GPU 에 올라간 파츠 한 장과 데이터가 정한 색.
+type LoadedPart = (Sheet, [f32; 4]);
 
 /// 몸 위에 겹치는 파츠 한 장과 그 색.
 #[derive(Clone, Copy, Debug)]
@@ -545,8 +601,10 @@ pub(crate) struct SpriteLibrary {
     fallback: Sheet,
     /// 액터 타입별 시트. 여러 타입이 같은 그림을 써도 한 번만 올린다.
     by_actor: BTreeMap<ActorId, Sheet>,
-    /// 액터 타입별 기본 파츠와 색 — 몸 시트와 격자가 맞는 것만 남는다.
-    parts_by_actor: BTreeMap<ActorId, Vec<(Sheet, [f32; 4])>>,
+    /// 액터 타입(템플릿)별 기본 파츠 — 몸 시트와 격자가 맞는 것만 남는다.
+    parts_by_actor: BTreeMap<ActorId, Vec<(LoadedPart, Option<EquipSlot>)>>,
+    /// 외형을 바꾸는 장비의 파츠. 입은 유닛의 몸과 맞는지는 그릴 때 본다([`Sheet::fits`]).
+    parts_by_item: BTreeMap<ItemId, Vec<LoadedPart>>,
     animator: SpriteAnimator,
 }
 
@@ -555,7 +613,8 @@ impl SpriteLibrary {
     pub(crate) fn textures(&self) -> Vec<TextureId> {
         let mut all: Vec<TextureId> = std::iter::once(&self.fallback)
             .chain(self.by_actor.values())
-            .chain(self.parts_by_actor.values().flatten().map(|(s, _)| s))
+            .chain(self.parts_by_actor.values().flatten().map(|((s, _), _)| s))
+            .chain(self.parts_by_item.values().flatten().map(|(s, _)| s))
             .map(|s| s.texture)
             .collect();
         all.sort_by_key(|t| t.index());
@@ -563,13 +622,11 @@ impl SpriteLibrary {
         all
     }
 
-    /// 내장 시트를 올리고, `sheets` 가 가리키는 **액터 타입별** 시트를 덮어쓴다.
+    /// 내장 시트를 올리고, `sources.sheets` 가 가리키는 **액터 타입별** 시트를 덮어쓴다.
     ///
-    /// `sheets` 는 `(액터 번호, 정의 파일 경로)` 목록이다 — `data/display.ron` 에서 온다.
-    /// 같은 경로가 여러 타입에 나오면 **그림은 한 번만 GPU 에 올린다** (텍스처 해제 API 가 없다).
-    ///
-    /// `parts` 는 `(액터 번호, [(파츠 정의 파일 경로, 색)])` 목록이다 — 역시 `data/display.ron` 에서 온다.
-    /// 파츠는 그 타입의 몸 시트(없으면 내장)와 격자가 맞아야 한다([`Sheet::fits`]).
+    /// 같은 경로가 여러 번 나오면(타입·파츠 공유) **그림은 한 번만 GPU 에 올린다.**
+    /// 템플릿 파츠는 그 타입의 몸 시트(없으면 내장)와 격자가 맞아야 하고([`Sheet::fits`]),
+    /// 장비 파츠는 읽어 둔 몸 시트 중 **하나라도** 맞아야 한다 — 누가 입을지는 플레이 중에 정해진다.
     ///
     /// # Errors
     /// 내장 시트를 올리지 못하면 오류. **타입별 시트 실패는 오류가 아니라** `warnings` 에 남기고
@@ -577,8 +634,7 @@ impl SpriteLibrary {
     /// 읽지 못했거나 몸과 맞지 않는 파츠도 경고를 남기고 그 파츠만 뺀다.
     pub(crate) fn load(
         renderer: &mut impl Renderer,
-        sheets: &[(ActorId, String)],
-        parts: &[(ActorId, Vec<PartPath>)],
+        sources: &SpriteSources,
         warnings: &mut Vec<String>,
     ) -> Result<Self, String> {
         let fallback = Sheet::upload(plan_sheet(EMBEDDED_DEF, None)?, renderer)?;
@@ -586,7 +642,7 @@ impl SpriteLibrary {
         // 경로 → 이미 올린 시트. 같은 그림을 여러 타입·파츠가 공유할 때 중복 업로드를 막는다.
         let mut uploaded: BTreeMap<&str, Sheet> = BTreeMap::new();
 
-        for (actor, path_str) in sheets {
+        for (actor, path_str) in &sources.sheets {
             match load_once(renderer, path_str, &mut uploaded) {
                 Ok(sheet) => {
                     by_actor.insert(*actor, sheet);
@@ -595,19 +651,20 @@ impl SpriteLibrary {
             }
         }
 
-        let mut parts_by_actor: BTreeMap<ActorId, Vec<(Sheet, [f32; 4])>> = BTreeMap::new();
-        for (actor, list) in parts {
+        let mut parts_by_actor = BTreeMap::new();
+        for (actor, list) in &sources.actor_parts {
             let body = by_actor.get(actor).unwrap_or(&fallback);
             let mut kept = Vec::new();
-            for (path_str, tint) in list {
-                match load_once(renderer, path_str, &mut uploaded) {
-                    Ok(sheet) if sheet.fits(body) => kept.push((sheet, *tint)),
+            for part in list {
+                match load_once(renderer, &part.sheet, &mut uploaded) {
+                    Ok(sheet) if sheet.fits(body) => kept.push(((sheet, part.tint), part.slot)),
                     Ok(_) => warnings.push(format!(
-                        "액터 {} 파츠 {path_str} — 몸 시트와 칸 크기·행·열·방향이 다르다",
-                        actor.raw()
+                        "액터 {} 파츠 {} — 몸 시트와 칸 크기·행·열·방향이 다르다",
+                        actor.raw(),
+                        part.sheet
                     )),
                     Err(e) => {
-                        warnings.push(format!("액터 {} 파츠를 쓸 수 없음 — {e}", actor.raw()))
+                        warnings.push(format!("액터 {} 파츠를 쓸 수 없음 — {e}", actor.raw()));
                     }
                 }
             }
@@ -615,28 +672,67 @@ impl SpriteLibrary {
                 parts_by_actor.insert(*actor, kept);
             }
         }
+
+        let mut parts_by_item = BTreeMap::new();
+        for (item, list) in &sources.item_parts {
+            let mut kept = Vec::new();
+            for part in list {
+                match load_once(renderer, &part.sheet, &mut uploaded) {
+                    Ok(sheet)
+                        if std::iter::once(&fallback)
+                            .chain(by_actor.values())
+                            .any(|b| sheet.fits(b)) =>
+                    {
+                        kept.push((sheet, part.tint));
+                    }
+                    Ok(_) => warnings.push(format!(
+                        "아이템 {} 파츠 {} — 칸 크기·행·열·방향이 맞는 몸 시트가 없다",
+                        item.0, part.sheet
+                    )),
+                    Err(e) => warnings.push(format!("아이템 {} 파츠를 쓸 수 없음 — {e}", item.0)),
+                }
+            }
+            // 전부 실패해도 빈 목록으로 남기지 않는다 — 빈 목록은 "외형 없음" 이라 템플릿 파츠를 빼지 않는다.
+            if !kept.is_empty() {
+                parts_by_item.insert(*item, kept);
+            }
+        }
+
         Ok(Self {
             fallback,
             by_actor,
             parts_by_actor,
+            parts_by_item,
             animator: SpriteAnimator::default(),
         })
     }
 
-    /// 이 액터 타입의 기본 파츠. `tint` 가 있으면 모든 파츠의 색을 그것으로 바꾼다 —
-    /// 시체·피격처럼 몸과 함께 물들어야 할 때.
-    pub(crate) fn parts(&self, actor: ActorId, tint: Option<[f32; 4]>) -> Vec<Part<'_>> {
-        self.parts_by_actor
+    /// 이 액터 타입(템플릿)이 `worn`(자리, 아이템)을 입었을 때 겹칠 파츠 — [`compose`] 규칙.
+    /// `tint` 가 있으면 모든 파츠의 색을 그것으로 바꾼다 — 시체·피격처럼 몸과 함께 물들어야 할 때.
+    pub(crate) fn parts(
+        &self,
+        actor: ActorId,
+        worn: &[(EquipSlot, ItemId)],
+        tint: Option<[f32; 4]>,
+    ) -> Vec<Part<'_>> {
+        let template = self
+            .parts_by_actor
             .get(&actor)
-            .map(|list| {
-                list.iter()
-                    .map(|(sheet, own)| Part {
-                        sheet,
-                        tint: tint.unwrap_or(*own),
-                    })
-                    .collect()
+            .map_or(&[][..], Vec::as_slice);
+        let worn: Vec<(EquipSlot, &[LoadedPart])> = worn
+            .iter()
+            .map(|(slot, item)| {
+                let parts = self.parts_by_item.get(item).map_or(&[][..], Vec::as_slice);
+                (*slot, parts)
             })
-            .unwrap_or_default()
+            .collect();
+        compose(template, &worn)
+            .into_iter()
+            .map(|(sheet, own)| Part {
+                sheet,
+                tint: tint.unwrap_or(*own),
+            })
+            .collect()
     }
 
     /// 이 액터 타입이 쓸 시트. 없으면 내장 플레이스홀더.
@@ -673,7 +769,7 @@ impl SpriteLibrary {
             tint,
             fallback: item.kind.color(),
         };
-        let parts = self.parts(actor, None);
+        let parts = self.parts(actor, &[], None);
         self.sheet(actor)
             .push(item.pos, look, &parts, &self.animator, px, depth_bias, out);
     }
@@ -945,6 +1041,36 @@ mod tests {
         assert!(plan_sheet(&part_def("layer_by_direction: [1, -1],"), None).is_err());
         let plan = plan_sheet(&part_def("layer: 3,"), None).unwrap();
         assert_eq!(plan.layers, vec![3; 4], "비우면 모든 방향이 layer");
+    }
+
+    #[test]
+    fn equipment_with_a_look_replaces_the_template_part_of_its_slot() {
+        // 템플릿: 머리카락(자리 없음) · 기본 옷(몸) · 기본 신발(신발).
+        let template = [
+            ("머리카락", None),
+            ("기본 옷", Some(EquipSlot::Body)),
+            ("기본 신발", Some(EquipSlot::Shoes)),
+        ];
+        let armor = ["갑옷", "갑옷 망토"];
+        let hat = ["모자"];
+        let none: [&str; 0] = [];
+
+        let bare = compose(&template, &[]);
+        assert_eq!(bare, [&"머리카락", &"기본 옷", &"기본 신발"]);
+
+        let worn = [
+            (EquipSlot::Head, &hat[..]),
+            (EquipSlot::Body, &armor[..]),
+            // 외형이 없는 장비 — 목걸이·반지, 그리고 그림 없는 신발.
+            (EquipSlot::Neck, &none[..]),
+            (EquipSlot::Ring, &none[..]),
+            (EquipSlot::Shoes, &none[..]),
+        ];
+        assert_eq!(
+            compose(&template, &worn),
+            [&"머리카락", &"기본 신발", &"모자", &"갑옷", &"갑옷 망토"],
+            "갑옷이 기본 옷을 대신하고, 그림 없는 신발은 기본 신발을 빼지 않는다. 머리카락은 모자와 함께 남는다"
+        );
     }
 
     #[test]
