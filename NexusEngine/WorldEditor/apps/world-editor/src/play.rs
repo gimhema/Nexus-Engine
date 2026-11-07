@@ -2472,11 +2472,18 @@ impl PlaySession {
             }
             let actor = self.actor_of(unit);
             // 시체는 어떤 시트든 회색 — 명시한 색으로 넘겨 컬러 아트에도 곱해지게 한다.
-            let (tint, fallback) = match self.labels.get(&unit) {
-                _ if !u.is_alive() => (CORPSE_TINT, CORPSE_TINT),
-                _ if self.hit_flash.contains_key(&unit) => (HIT_TINT, HIT_TINT),
-                Some(l) => (l.tint, l.fallback),
-                None => (NO_TINT, NO_TINT),
+            // 시체·피격 색은 파츠까지 함께 물든다.
+            let effect = if !u.is_alive() {
+                Some(CORPSE_TINT)
+            } else if self.hit_flash.contains_key(&unit) {
+                Some(HIT_TINT)
+            } else {
+                None
+            };
+            let (tint, fallback) = match (effect, self.labels.get(&unit)) {
+                (Some(c), _) => (c, c),
+                (None, Some(l)) => (l.tint, l.fallback),
+                (None, None) => (NO_TINT, NO_TINT),
             };
             let look = Look {
                 heading: u.heading(),
@@ -2484,9 +2491,16 @@ impl PlaySession {
                 fallback,
             };
             let animator = self.animators.get(&unit).unwrap_or(&idle_animator);
-            sprites
-                .sheet(actor)
-                .push(u.render_pos(alpha), look, animator, px, BIAS_SPRITE, out);
+            let parts = sprites.parts(actor, effect);
+            sprites.sheet(actor).push(
+                u.render_pos(alpha),
+                look,
+                &parts,
+                animator,
+                px,
+                BIAS_SPRITE,
+                out,
+            );
         }
         // 날아가는 것 (T8) — 아트가 생기기 전까지 허리 높이의 빛나는 네모. 두 tick 사이를 보간한다.
         for p in self.world().projectiles() {

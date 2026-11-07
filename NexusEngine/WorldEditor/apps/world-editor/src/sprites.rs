@@ -10,6 +10,18 @@
 //!   보통 남·동·북·서 같은 다른 순서다. 그림을 재배치하는 대신 여기서 흡수한다.
 //! - [`tinted`](SheetFile::tinted) — **무채색 시트에만** 종류 색을 곱한다. 컬러 아트에 곱하면 색이 뒤집힌다.
 //!
+//! # 파츠 — 몸 위에 겹치는 시트
+//!
+//! 머리카락·옷·모자·무기는 **몸 시트와 격자가 똑같은 시트**로 그린다(종이 인형). 파츠는 재생기를 따로
+//! 갖지 않고 몸의 재생기가 고른 칸(같은 행·같은 프레임)을 그대로 쓴다 — 그래서 칸 크기·열·행·방향 수·
+//! 방향 행이 몸과 같아야 하고([`Sheet::fits`]), 클립은 읽지 않는다(`clips: []` 로 둬도 된다).
+//!
+//! - 앞뒤는 파츠 시트의 [`layer`](SheetFile::layer) 다. 몸이 `0`, 큰 쪽이 앞. 뒷모습에서 무기·망토가
+//!   몸 뒤로 가야 하므로 [`layer_by_direction`](SheetFile::layer_by_direction) 으로 방향마다 바꿀 수 있다.
+//! - 같은 발밑 위치에 서므로 깊이가 같다 — 부동소수 오차로 칸마다 이기는 쪽이 바뀌지 않게
+//!   층마다 [`PART_DEPTH_STEP`] 씩 앞으로 민다.
+//! - 색(피부·머리색)은 층마다 따로 곱한다. **곱하기라 어둡게만 된다** — 색을 바꿀 부위는 밝은 무채색으로 그린다.
+//!
 //! # 어디서 읽나
 //!
 //! 기본 시트(플레이스홀더)는 실행 파일에 **내장**되어 작업 디렉터리와 무관하게 항상 뜬다.
@@ -67,6 +79,15 @@ struct SheetFile {
     /// 무채색 시트인가 — `true` 면 종류별 색을 곱한다. 컬러 아트는 `false`.
     #[serde(default)]
     tinted: bool,
+    /// **파츠로 쓸 때의** 앞뒤 — 몸이 `0`, 큰 쪽이 앞. 몸 시트로 쓰면 읽지 않는다.
+    #[serde(default = "default_part_layer")]
+    layer: i32,
+    /// 엔진 방향별 앞뒤. 비우면 모든 방향이 [`layer`](Self::layer).
+    /// 뒷모습(북)에서 무기를 몸 뒤로 보내려면 4방향 시트에서 `[1, -1, 1, 1]`.
+    #[serde(default)]
+    layer_by_direction: Vec<i32>,
+    /// 파츠 시트는 클립을 읽지 않으므로 비워도 된다.
+    #[serde(default)]
     clips: Vec<ClipFile>,
 }
 
@@ -108,6 +129,11 @@ impl From<StateFile> for AnimState {
 // 검증을 마친 시트 (GPU 업로드 전)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// 파츠 시트가 `layer` 를 적지 않았을 때 — 몸 바로 앞.
+fn default_part_layer() -> i32 {
+    1
+}
+
 /// 시트 정의에서 `pixels_per_meter` 를 적지 않았을 때의 값 — 내장 플레이스홀더의 축척.
 fn default_pixels_per_meter() -> f32 {
     Camera2d::PIXELS_PER_METER
@@ -122,6 +148,8 @@ struct SheetPlan {
     direction_rows: Vec<u32>,
     tinted: bool,
     pixels_per_meter: f32,
+    /// 엔진 방향 → 파츠 앞뒤.
+    layers: Vec<i32>,
 }
 
 /// 시트 정의를 읽고 그림에 맞는지 확인한다.
@@ -171,6 +199,17 @@ fn plan_sheet(def: &str, base: Option<&Path>) -> Result<SheetPlan, String> {
         rows
     };
 
+    let layers = if file.layer_by_direction.is_empty() {
+        vec![file.layer; directions as usize]
+    } else if file.layer_by_direction.len() == directions as usize {
+        file.layer_by_direction
+    } else {
+        return Err(format!(
+            "layer_by_direction 는 {directions} 개여야 함 (지금 {})",
+            file.layer_by_direction.len()
+        ));
+    };
+
     let mut clips = Vec::new();
     for c in &file.clips {
         if c.frames == 0 || c.frames > atlas.columns() {
@@ -214,6 +253,7 @@ fn plan_sheet(def: &str, base: Option<&Path>) -> Result<SheetPlan, String> {
         direction_rows,
         tinted: file.tinted,
         pixels_per_meter: file.pixels_per_meter,
+        layers,
     })
 }
 
@@ -337,6 +377,8 @@ pub(crate) struct Sheet {
     tinted: bool,
     /// 그림 1미터의 픽셀 수 — 월드 크기의 기준.
     pixels_per_meter: f32,
+    /// 파츠로 쓸 때 엔진 방향별 앞뒤 (몸 = 0).
+    layers: Vec<i32>,
 }
 
 impl Sheet {
@@ -351,6 +393,7 @@ impl Sheet {
             direction_rows: plan.direction_rows,
             tinted: plan.tinted,
             pixels_per_meter: plan.pixels_per_meter,
+            layers: plan.layers,
         })
     }
 
@@ -373,11 +416,18 @@ impl Sheet {
         &self.sheet
     }
 
-    /// `pos`(발밑)에 스프라이트 하나를 세운다. 재생기는 호출자 것 — 플레이 모드는 유닛마다 따로 둔다.
+    /// `pos`(발밑)에 이 시트를 몸으로 세우고 `parts` 를 겹친다. 재생기는 호출자 것 —
+    /// 플레이 모드는 유닛마다 따로 둔다.
+    ///
+    /// 모든 층이 **몸의 재생기가 고른 같은 칸**을 그린다. 몸과 격자가 맞지 않는 파츠는 건너뛴다 —
+    /// 읽을 때 [`fits`](Self::fits) 로 걸러 경고하므로 여기까지 오지 않는 것이 정상이다.
+    /// 층은 앞뒤(`layer`) 순으로 내고, 같으면 `parts` 에 적은 순서를 따른다.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn push(
         &self,
         pos: Vec2,
         look: Look,
+        parts: &[Part<'_>],
         animator: &SpriteAnimator,
         px: f32,
         depth_bias: f32,
@@ -391,18 +441,67 @@ impl Sheet {
         // `heading - camera_yaw` 가 된다.
         let index = units::direction_index(look.heading, self.sheet.directions()) as usize;
         let row = self.direction_rows.get(index).copied().unwrap_or(0);
+        let uv = animator.uv(&self.sheet, row);
 
-        out.push(RenderCommand::DrawSprite {
-            // 앵커가 BottomCenter 라 발밑에서 위로 선다.
-            pos: Vec3::new(pos.x, pos.y, 0.0),
-            size: Vec2::new(width, height),
-            anchor: SpriteAnchor::BottomCenter,
-            depth_bias,
-            uv: animator.uv(&self.sheet, row),
-            texture: self.texture,
-            tint: tint_of(self.tinted, look),
-        });
+        // (앞뒤, 텍스처, 색). 몸은 0 이고 파츠 앞에 둬서 같은 층이면 파츠가 이긴다.
+        let mut layers = vec![(0, self.texture, tint_of(self.tinted, look))];
+        for part in parts.iter().filter(|p| p.sheet.fits(self)) {
+            let layer = part.sheet.layers.get(index).copied().unwrap_or(1);
+            let tint = tint_of(
+                part.sheet.tinted,
+                Look {
+                    tint: part.tint,
+                    fallback: NO_TINT,
+                    ..look
+                },
+            );
+            layers.push((layer, part.sheet.texture, tint));
+        }
+        // 안정 정렬 — 같은 앞뒤면 적은 순서 그대로.
+        layers.sort_by_key(|(layer, ..)| *layer);
+
+        for (i, (_, texture, tint)) in layers.into_iter().enumerate() {
+            out.push(RenderCommand::DrawSprite {
+                // 앵커가 BottomCenter 라 발밑에서 위로 선다.
+                pos: Vec3::new(pos.x, pos.y, 0.0),
+                size: Vec2::new(width, height),
+                anchor: SpriteAnchor::BottomCenter,
+                depth_bias: depth_bias + i as f32 * PART_DEPTH_STEP,
+                uv,
+                texture,
+                tint,
+            });
+        }
     }
+
+    /// 이 시트를 `body` 위에 파츠로 겹칠 수 있는가 — 같은 칸을 같은 UV 로 가리키려면
+    /// 칸 크기·열·행·방향 수·방향 행이 모두 같아야 한다.
+    pub(crate) fn fits(&self, body: &Sheet) -> bool {
+        let (a, b) = (self.sheet.atlas(), body.sheet.atlas());
+        self.cell == body.cell
+            && a.columns() == b.columns()
+            && a.rows() == b.rows()
+            && self.sheet.directions() == body.sheet.directions()
+            && self.direction_rows == body.direction_rows
+    }
+}
+
+/// 같은 유닛의 층 사이 깊이 간격 (NDC).
+///
+/// 층들은 같은 발밑에 서서 수학적으로 깊이가 같다. 그대로 두면 정점 계산의 반올림(`1e-7` 안팎)에 따라
+/// 칸마다 이기는 층이 바뀌어 지글거린다. 그보다 한 자릿수 크게, `DEPTH_LAYER` 보다는 두 자릿수 작게 —
+/// 쿼터뷰 기본 줌에서 앞뒤로 1cm 안쪽에 선 다른 유닛과만 순서가 섞인다.
+pub(crate) const PART_DEPTH_STEP: f32 = nexus_render::DEPTH_LAYER / 100.0;
+
+/// 파츠 정의 파일 경로와 곱할 색 — `data/display.ron` 에서 온다.
+pub(crate) type PartPath = (String, [f32; 4]);
+
+/// 몸 위에 겹치는 파츠 한 장과 그 색.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Part<'a> {
+    pub(crate) sheet: &'a Sheet,
+    /// 곱할 색 (sRGB) — 머리색·옷 색. [`NO_TINT`] 면 그림 그대로.
+    pub(crate) tint: [f32; 4],
 }
 
 /// 이 시트에 실제로 곱할 색.
@@ -446,6 +545,8 @@ pub(crate) struct SpriteLibrary {
     fallback: Sheet,
     /// 액터 타입별 시트. 여러 타입이 같은 그림을 써도 한 번만 올린다.
     by_actor: BTreeMap<ActorId, Sheet>,
+    /// 액터 타입별 기본 파츠와 색 — 몸 시트와 격자가 맞는 것만 남는다.
+    parts_by_actor: BTreeMap<ActorId, Vec<(Sheet, [f32; 4])>>,
     animator: SpriteAnimator,
 }
 
@@ -454,6 +555,7 @@ impl SpriteLibrary {
     pub(crate) fn textures(&self) -> Vec<TextureId> {
         let mut all: Vec<TextureId> = std::iter::once(&self.fallback)
             .chain(self.by_actor.values())
+            .chain(self.parts_by_actor.values().flatten().map(|(s, _)| s))
             .map(|s| s.texture)
             .collect();
         all.sort_by_key(|t| t.index());
@@ -466,44 +568,75 @@ impl SpriteLibrary {
     /// `sheets` 는 `(액터 번호, 정의 파일 경로)` 목록이다 — `data/display.ron` 에서 온다.
     /// 같은 경로가 여러 타입에 나오면 **그림은 한 번만 GPU 에 올린다** (텍스처 해제 API 가 없다).
     ///
+    /// `parts` 는 `(액터 번호, [(파츠 정의 파일 경로, 색)])` 목록이다 — 역시 `data/display.ron` 에서 온다.
+    /// 파츠는 그 타입의 몸 시트(없으면 내장)와 격자가 맞아야 한다([`Sheet::fits`]).
+    ///
     /// # Errors
     /// 내장 시트를 올리지 못하면 오류. **타입별 시트 실패는 오류가 아니라** `warnings` 에 남기고
     /// 그 타입만 내장 시트를 쓴다 — 애셋 하나가 잘못됐다고 에디터가 안 열리면 곤란하다.
+    /// 읽지 못했거나 몸과 맞지 않는 파츠도 경고를 남기고 그 파츠만 뺀다.
     pub(crate) fn load(
         renderer: &mut impl Renderer,
         sheets: &[(ActorId, String)],
+        parts: &[(ActorId, Vec<PartPath>)],
         warnings: &mut Vec<String>,
     ) -> Result<Self, String> {
         let fallback = Sheet::upload(plan_sheet(EMBEDDED_DEF, None)?, renderer)?;
         let mut by_actor: BTreeMap<ActorId, Sheet> = BTreeMap::new();
-        // 경로 → 이미 올린 타입. 같은 그림을 여러 타입이 공유할 때 중복 업로드를 막는다.
-        let mut uploaded: BTreeMap<&str, ActorId> = BTreeMap::new();
+        // 경로 → 이미 올린 시트. 같은 그림을 여러 타입·파츠가 공유할 때 중복 업로드를 막는다.
+        let mut uploaded: BTreeMap<&str, Sheet> = BTreeMap::new();
 
         for (actor, path_str) in sheets {
-            if let Some(first) = uploaded.get(path_str.as_str()) {
-                if let Some(sheet) = by_actor.get(first).map(Sheet::share) {
-                    by_actor.insert(*actor, sheet);
-                }
-                continue;
-            }
-            let path = Path::new(path_str);
-            let loaded = std::fs::read_to_string(path)
-                .map_err(|e| format!("{}: {e}", path.display()))
-                .and_then(|def| plan_sheet(&def, path.parent()))
-                .and_then(|plan| Sheet::upload(plan, renderer));
-            match loaded {
+            match load_once(renderer, path_str, &mut uploaded) {
                 Ok(sheet) => {
                     by_actor.insert(*actor, sheet);
-                    uploaded.insert(path_str.as_str(), *actor);
                 }
                 Err(e) => warnings.push(format!("액터 {} 시트를 쓸 수 없음 — {e}", actor.raw())),
+            }
+        }
+
+        let mut parts_by_actor: BTreeMap<ActorId, Vec<(Sheet, [f32; 4])>> = BTreeMap::new();
+        for (actor, list) in parts {
+            let body = by_actor.get(actor).unwrap_or(&fallback);
+            let mut kept = Vec::new();
+            for (path_str, tint) in list {
+                match load_once(renderer, path_str, &mut uploaded) {
+                    Ok(sheet) if sheet.fits(body) => kept.push((sheet, *tint)),
+                    Ok(_) => warnings.push(format!(
+                        "액터 {} 파츠 {path_str} — 몸 시트와 칸 크기·행·열·방향이 다르다",
+                        actor.raw()
+                    )),
+                    Err(e) => {
+                        warnings.push(format!("액터 {} 파츠를 쓸 수 없음 — {e}", actor.raw()))
+                    }
+                }
+            }
+            if !kept.is_empty() {
+                parts_by_actor.insert(*actor, kept);
             }
         }
         Ok(Self {
             fallback,
             by_actor,
+            parts_by_actor,
             animator: SpriteAnimator::default(),
         })
+    }
+
+    /// 이 액터 타입의 기본 파츠. `tint` 가 있으면 모든 파츠의 색을 그것으로 바꾼다 —
+    /// 시체·피격처럼 몸과 함께 물들어야 할 때.
+    pub(crate) fn parts(&self, actor: ActorId, tint: Option<[f32; 4]>) -> Vec<Part<'_>> {
+        self.parts_by_actor
+            .get(&actor)
+            .map(|list| {
+                list.iter()
+                    .map(|(sheet, own)| Part {
+                        sheet,
+                        tint: tint.unwrap_or(*own),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// 이 액터 타입이 쓸 시트. 없으면 내장 플레이스홀더.
@@ -540,9 +673,28 @@ impl SpriteLibrary {
             tint,
             fallback: item.kind.color(),
         };
+        let parts = self.parts(actor, None);
         self.sheet(actor)
-            .push(item.pos, look, &self.animator, px, depth_bias, out);
+            .push(item.pos, look, &parts, &self.animator, px, depth_bias, out);
     }
+}
+
+/// 시트 하나를 읽어 올린다 — 이미 올린 경로면 텍스처를 공유한다.
+fn load_once<'p>(
+    renderer: &mut impl Renderer,
+    path_str: &'p str,
+    uploaded: &mut BTreeMap<&'p str, Sheet>,
+) -> Result<Sheet, String> {
+    if let Some(sheet) = uploaded.get(path_str) {
+        return Ok(sheet.share());
+    }
+    let path = Path::new(path_str);
+    let sheet = std::fs::read_to_string(path)
+        .map_err(|e| format!("{}: {e}", path.display()))
+        .and_then(|def| plan_sheet(&def, path.parent()))
+        .and_then(|plan| Sheet::upload(plan, renderer))?;
+    uploaded.insert(path_str, sheet.share());
+    Ok(sheet)
 }
 
 /// 시험용 — 시트 정의 본문을 GPU·디스크 없이 읽는다. `image` 를 비우면 내장 `markers.png` 를 쓴다.
@@ -557,6 +709,7 @@ pub(crate) fn sheet_for_test(def: &str) -> SpriteSheet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nexus_render::UvRect;
 
     fn embedded() -> SheetPlan {
         plan_sheet(EMBEDDED_DEF, None).unwrap()
@@ -649,6 +802,149 @@ mod tests {
         // 무채색 시트는 색이 없으면 형체만 남으므로 종류 색을 쓴다. 명시한 색이 있으면 그것이 이긴다.
         assert_eq!(tint_of(true, plain), kind_green);
         assert_eq!(tint_of(true, recoloured), recoloured.tint);
+    }
+
+    /// GPU 없이 시트를 만든다 — 텍스처 번호만 가짜로 붙인다.
+    fn sheet_with(def: &str, texture: u32) -> Sheet {
+        let plan = plan_sheet(def, None).unwrap();
+        Sheet {
+            texture: TextureId::from_index(texture),
+            sheet: plan.sheet,
+            cell: plan.cell,
+            direction_rows: plan.direction_rows,
+            tinted: plan.tinted,
+            pixels_per_meter: plan.pixels_per_meter,
+            layers: plan.layers,
+        }
+    }
+
+    /// 내장 그림을 그대로 쓰는 파츠 정의 — 격자가 몸과 같다.
+    fn part_def(layer: &str) -> String {
+        format!("(version: 1, cell: (32, 48), directions: 4, {layer} clips: [])")
+    }
+
+    /// 그려진 층의 `(텍스처, 깊이 편향, uv, 색)` 을 낸 순서대로.
+    fn drawn(heading: f32, parts: &[Part<'_>], body: &Sheet) -> Vec<(u32, f32, UvRect, [f32; 4])> {
+        let look = Look {
+            heading,
+            tint: NO_TINT,
+            fallback: [0.5; 4],
+        };
+        let mut out = Vec::new();
+        body.push(
+            Vec2::ZERO,
+            look,
+            parts,
+            &SpriteAnimator::default(),
+            0.01,
+            3.0 * nexus_render::DEPTH_LAYER, // 플레이의 BIAS_SPRITE 와 같은 크기
+            &mut out,
+        );
+        out.iter()
+            .map(|c| match c {
+                RenderCommand::DrawSprite {
+                    texture,
+                    depth_bias,
+                    uv,
+                    tint,
+                    ..
+                } => (texture.index(), *depth_bias, *uv, *tint),
+                other => panic!("빌보드가 아님: {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn parts_stack_on_the_body_in_layer_order_with_the_same_cell() {
+        let body = sheet_with(EMBEDDED_DEF, 1);
+        let hat = sheet_with(&part_def("layer: 2,"), 2);
+        let shirt = sheet_with(&part_def(""), 3); // 기본 layer 1
+        let cape = sheet_with(&part_def("layer: -1,"), 4);
+        let red = [1.0, 0.2, 0.2, 1.0];
+        let parts = [
+            Part {
+                sheet: &hat,
+                tint: NO_TINT,
+            },
+            Part {
+                sheet: &shirt,
+                tint: red,
+            },
+            Part {
+                sheet: &cape,
+                tint: NO_TINT,
+            },
+        ];
+
+        let layers = drawn(0.0, &parts, &body);
+        let order: Vec<u32> = layers.iter().map(|l| l.0).collect();
+        assert_eq!(
+            order,
+            vec![4, 1, 3, 2],
+            "망토(-1) → 몸(0) → 옷(1) → 모자(2)"
+        );
+
+        // 뒤에 낸 층일수록 앞 — 같은 발밑이라 깊이 편향만이 앞뒤를 정한다.
+        for pair in layers.windows(2) {
+            assert!(pair[1].1 > pair[0].1, "{pair:?}");
+            assert!(pair[1].1 - pair[0].1 >= PART_DEPTH_STEP * 0.99);
+        }
+        // 다른 유닛과 섞이지 않도록 층이 쌓여도 DEPTH_LAYER 한 칸 안에 머문다.
+        assert!(layers[3].1 - layers[0].1 < nexus_render::DEPTH_LAYER);
+
+        assert!(
+            layers.iter().all(|l| l.2 == layers[0].2),
+            "모든 층이 몸과 같은 칸"
+        );
+        assert_eq!(layers[2].3, red, "파츠 색은 파츠마다");
+        assert_eq!(layers[1].3, [0.5; 4], "무채색 몸은 기본 색 그대로");
+    }
+
+    #[test]
+    fn a_part_can_go_behind_the_body_in_some_directions() {
+        use std::f32::consts::FRAC_PI_2;
+        let body = sheet_with(EMBEDDED_DEF, 1);
+        // 엔진 방향 1(북 = 뒷모습)에서만 몸 뒤로 — 등에 멘 무기.
+        let sword = sheet_with(&part_def("layer_by_direction: [1, -1, 1, 1],"), 2);
+        let parts = [Part {
+            sheet: &sword,
+            tint: NO_TINT,
+        }];
+
+        let east: Vec<u32> = drawn(0.0, &parts, &body).iter().map(|l| l.0).collect();
+        let north: Vec<u32> = drawn(FRAC_PI_2, &parts, &body)
+            .iter()
+            .map(|l| l.0)
+            .collect();
+        assert_eq!(east, vec![1, 2], "앞모습: 몸 위");
+        assert_eq!(north, vec![2, 1], "뒷모습: 몸 뒤");
+    }
+
+    #[test]
+    fn parts_must_share_the_body_grid() {
+        let body = sheet_with(EMBEDDED_DEF, 1);
+        assert!(sheet_with(&part_def(""), 2).fits(&body));
+
+        // 같은 그림이어도 칸을 다르게 자르면 UV 가 다른 칸을 가리킨다.
+        let wide = sheet_with(&part_def("").replace("(32, 48)", "(64, 48)"), 2);
+        assert!(!wide.fits(&body));
+        // 방향 행 순서가 다르면 앞모습 몸에 뒷모습 모자가 얹힌다.
+        let rows = sheet_with(&part_def("direction_rows: [1, 2, 3, 0],"), 2);
+        assert!(!rows.fits(&body));
+
+        // 맞지 않는 파츠는 그리지 않는다.
+        let parts = [Part {
+            sheet: &wide,
+            tint: NO_TINT,
+        }];
+        assert_eq!(drawn(0.0, &parts, &body).len(), 1);
+    }
+
+    #[test]
+    fn layer_by_direction_needs_one_entry_per_direction() {
+        assert!(plan_sheet(&part_def("layer_by_direction: [1, -1],"), None).is_err());
+        let plan = plan_sheet(&part_def("layer: 3,"), None).unwrap();
+        assert_eq!(plan.layers, vec![3; 4], "비우면 모든 방향이 layer");
     }
 
     #[test]

@@ -41,6 +41,7 @@ use crate::class_file::{self, ClassFile, ClassLookFile, EquipRef, StatsFile};
 use crate::quest_file::{self, QuestFile, QuestLookFile};
 use crate::scene::{ActorId, ItemKind};
 use crate::skill_file::{self, NumOr, SkillLevelRef};
+use crate::sprites::PartPath;
 use crate::trade_file::{self, CraftFile, ServiceFile, ShopFile, TeleportFile, TradeRefs};
 use crate::trigger_file::{self, ConditionFile, TriggerFile};
 
@@ -588,6 +589,19 @@ struct ActorLookFile {
     /// NPC 프로필 — 설정 글 (R4-2). NPC 창 머리에 보인다. 표시 데이터라 여기에 있다.
     #[serde(default)]
     profile: String,
+    /// 몸 위에 겹치는 기본 파츠(머리카락·옷·모자…), 적은 순서 = 같은 앞뒤일 때의 순서.
+    /// 각 시트는 몸 시트와 격자가 같아야 한다 (`sprites` 모듈 doc 「파츠」).
+    #[serde(default)]
+    parts: Vec<PartLookFile>,
+}
+
+/// 파츠 한 장 — 시트 정의 경로와 곱할 색(머리색·옷 색).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PartLookFile {
+    sheet: String,
+    #[serde(default = "white")]
+    tint: (f32, f32, f32),
 }
 
 /// 색을 적지 않았을 때 — 그림 그대로.
@@ -624,6 +638,8 @@ pub(crate) struct ActorLook {
     tint: [f32; 4],
     /// NPC 프로필 글 (R4-2). 없으면 빈 문자열.
     pub(crate) profile: String,
+    /// 기본 파츠 `(시트 정의 경로, 색)`.
+    parts: Vec<PartPath>,
 }
 
 impl ActorLook {
@@ -1279,6 +1295,14 @@ impl GameData {
                             sheet: (!l.sheet.is_empty()).then_some(l.sheet),
                             tint: [r_, g, b, 1.0],
                             profile: l.profile,
+                            parts: l
+                                .parts
+                                .into_iter()
+                                .map(|p| {
+                                    let (r, g, b) = p.tint;
+                                    (p.sheet, [r, g, b, 1.0])
+                                })
+                                .collect(),
                         },
                     )
                 })
@@ -1851,6 +1875,15 @@ impl GameData {
         self.actor_looks
             .iter()
             .filter_map(|(id, look)| look.sheet.clone().map(|path| (*id, path)))
+            .collect()
+    }
+
+    /// 액터 타입별 기본 파츠 `(액터, [(시트 정의 경로, 색)])` — 파츠가 있는 타입만.
+    pub(crate) fn sprite_parts(&self) -> Vec<(ActorId, Vec<PartPath>)> {
+        self.actor_looks
+            .iter()
+            .filter(|(_, look)| !look.parts.is_empty())
+            .map(|(id, look)| (*id, look.parts.clone()))
             .collect()
     }
 }

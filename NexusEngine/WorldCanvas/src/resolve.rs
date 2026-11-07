@@ -82,6 +82,7 @@ impl<'a> Resolver<'a> {
                 None => bm.swap(*from, *to),
             },
             Op::Outline { c } => bm.outline(*c),
+            Op::Selout { c, pairs } => bm.selout(*c, pairs),
             Op::Mirror => bm.mirror(),
             Op::Ellipse { x, y, w, h, c } => bm.ellipse(*x, *y, *w, *h, *c),
             Op::Poly { c, points } => bm.poly(points, *c),

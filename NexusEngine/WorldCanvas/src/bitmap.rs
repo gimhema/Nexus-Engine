@@ -311,6 +311,32 @@ impl Bitmap {
             }
         }
     }
+
+    /// 색 있는 외곽선 — 색 `c` 픽셀을 맞닿은 안쪽 색에 따라 `pairs` 의 결과색으로 바꾼다.
+    ///
+    /// 이웃은 위·왼쪽·오른쪽·아래 순서로 보고, 먼저 찾은 쌍을 쓴다. 맞는 쌍이 없으면 그대로 둔다.
+    pub fn selout(&mut self, c: u8, pairs: &[(u8, u8)]) {
+        let src = self.clone();
+        for y in 0..self.h as i32 {
+            for x in 0..self.w as i32 {
+                if src.get(x, y) != Some(c) {
+                    continue;
+                }
+                let found = [(0, -1), (-1, 0), (1, 0), (0, 1)]
+                    .iter()
+                    .find_map(|(dx, dy)| {
+                        let near = src.get(x + dx, y + dy)?;
+                        pairs
+                            .iter()
+                            .find(|(from, _)| *from == near)
+                            .map(|(_, to)| *to)
+                    });
+                if let Some(to) = found {
+                    self.set(x, y, to);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -378,6 +404,13 @@ mod tests {
         let mut b = bm(&["...", ".A.", "..."]);
         b.outline(b'K');
         assert_eq!(text(&b), [".K.", "KAK", ".K."]);
+    }
+
+    #[test]
+    fn selout_follows_the_inner_color() {
+        let mut b = bm(&["KKK", "KAK", "KBK", "K.K"]);
+        b.selout(b'K', &[(b'A', b'a'), (b'B', b'b')]);
+        assert_eq!(text(&b), ["KaK", "aAa", "bBb", "K.K"]);
     }
 
     #[test]

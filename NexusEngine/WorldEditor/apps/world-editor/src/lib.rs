@@ -1063,7 +1063,12 @@ impl Editor {
             .as_ref()
             .map(GameData::sprite_sheets)
             .unwrap_or_default();
-        match SpriteLibrary::load(renderer, &sheets, &mut warnings) {
+        let parts = self
+            .data
+            .as_ref()
+            .map(GameData::sprite_parts)
+            .unwrap_or_default();
+        match SpriteLibrary::load(renderer, &sheets, &parts, &mut warnings) {
             Ok(fresh) => {
                 if let Some(prev) = self.sprites.replace(fresh) {
                     old.extend(prev.textures());
@@ -2543,19 +2548,19 @@ impl App for Editor {
         // 그림은 여기서 GPU 에 한 번 올린다 — 시트를 갈아끼우면 다시 시작해야 반영된다
         // (텍스처 해제 API 가 없어 매번 올리면 쌓인다).
         let mut warnings = Vec::new();
-        let sheets = match GameData::load() {
+        let (sheets, parts) = match GameData::load() {
             Ok(data) => {
-                let sheets = data.sprite_sheets();
+                let art = (data.sprite_sheets(), data.sprite_parts());
                 self.data = Some(data);
-                sheets
+                art
             }
             Err(e) => {
                 warnings.push(format!("게임 데이터를 읽지 못해 기본값을 씁니다 — {e}"));
-                Vec::new()
+                (Vec::new(), Vec::new())
             }
         };
         // 실패해도 에디터는 돌아간다 — 마커가 지면 사각형만 남을 뿐이다.
-        match SpriteLibrary::load(&mut renderer, &sheets, &mut warnings) {
+        match SpriteLibrary::load(&mut renderer, &sheets, &parts, &mut warnings) {
             Ok(s) => self.sprites = Some(s),
             Err(e) => warnings.push(format!("스프라이트 시트 로드 실패: {e}")),
         }

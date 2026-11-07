@@ -125,6 +125,11 @@ pub enum Op {
     Outline {
         c: u8,
     },
+    /// 색 있는 외곽선. 색 `c` 픽셀이 안쪽 색 `from` 에 맞닿아 있으면 `to` 로 바꾼다.
+    Selout {
+        c: u8,
+        pairs: Vec<(u8, u8)>,
+    },
     /// 왼쪽 절반을 오른쪽에 좌우 대칭으로 복사한다. 가로가 홀수면 가운데 열은 그대로.
     Mirror,
     /// `(x, y, 가로, 세로)` 사각형에 내접하는 채운 타원.
@@ -162,6 +167,9 @@ impl Op {
             | Self::Poly { c, .. }
             | Self::Outline { c } => vec![*c],
             Self::Swap { from, to, .. } => vec![*from, *to],
+            Self::Selout { c, pairs } => std::iter::once(*c)
+                .chain(pairs.iter().flat_map(|(from, to)| [*from, *to]))
+                .collect(),
             Self::FlipH
             | Self::FlipV
             | Self::Shift { .. }
@@ -203,6 +211,13 @@ impl fmt::Display for Op {
                 }
             }
             Self::Outline { c } => write!(f, "outline {}", ch(c)),
+            Self::Selout { c, pairs } => {
+                write!(f, "selout {}", ch(c))?;
+                for (from, to) in pairs {
+                    write!(f, " {}{}", ch(from), ch(to))?;
+                }
+                Ok(())
+            }
             Self::Mirror => write!(f, "mirror"),
             Self::Ellipse { x, y, w, h, c } => write!(f, "ellipse {x} {y} {w} {h} {}", ch(c)),
             Self::Poly { c, points } => {

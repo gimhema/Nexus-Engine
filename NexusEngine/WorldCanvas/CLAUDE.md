@@ -179,6 +179,7 @@ end
 | `swap A B [X Y W H]` | 색 A 를 B 로 — 색 변종. 사각형을 주면 그 안에서만 (한쪽 그늘, 모양 안 줄무늬) |
 | `mirror` | 왼쪽 절반을 오른쪽에 대칭 복사 — 정면·뒷면·건물은 반만 그린다 |
 | `outline C` | 불투명 픽셀에 상하좌우로 닿은 투명 픽셀을 C 로 — 외곽선 |
+| `selout C Aa Bb …` | 색 있는 외곽선 — 색 C 픽셀이 안쪽 색 A 에 닿으면 a 로, B 에 닿으면 b 로. 맞는 쌍이 없으면 그대로 |
 | `stamp NAME X Y` | 다른 그림(부품·프레임)을 투명 부분 빼고 얹음 |
 | `ellipse X Y W H C` | 사각형에 내접하는 채운 타원 — 머리·견갑·몸통 같은 둥근 덩어리 |
 | `poly C x1 y1 x2 y2 …` | 채운 다각형 (꼭짓점 3개 이상, 픽셀 중심 좌표) — 날개막·망토·지붕·꼬리 |
@@ -245,9 +246,13 @@ end
 | `palace_gate.canvas` | `WorldEditor/assets/worldcanvas/palace_gate.png` (atlas) | 궁궐 정문 (`reference/castle.webp` 광화문 풍). 128×96 = 8×6m |
 | `dark_knight.canvas` | `WorldEditor/assets/worldcanvas/dark_knight.png` + `.sheet.ron` | 암흑기사 (`reference/dark_knight.webp` 풍). 40×48, 4방향, Idle 2 + Walk 4. 도형 대신 픽셀을 직접 찍었다 (grid·patch, 반쪽 + mirror + 그늘 swap) |
 | `goblin8.canvas` | `WorldEditor/assets/worldcanvas/goblin8.png` + `.sheet.ron` | 고블린 8방향 시험판. goblin 의 남·북·동에 남동·북동을 직접 그려 더하고, 서·남서·북서는 반전 |
+| `dark_knight_sd.canvas` | `WorldEditor/assets/worldcanvas/dark_knight_sd.png` + `.sheet.ron` | 암흑기사 SD (`reference/dark_knight.webp` 인물 + `style/sheet_style.png` 화풍). 56×56, 4방향, Idle 2 + Walk 4 |
+| `forest_witch_v3.canvas` | `WorldEditor/assets/worldcanvas/forest_witch_v3.png` + `.sheet.ron` | 숲의 마녀 v3 (오리지널, `style/sheet_style.png` 화풍). 8배로 칠해 축소·양자화한 결과를 grid 로 넣음. 56×56, 4방향, Idle 2 + Walk 4 |
+| `forest_witch_v2.canvas` | `WorldEditor/assets/worldcanvas/forest_witch_v2.png` + `.sheet.ron` | 숲의 마녀 v2 (오리지널). 스타일 시트 샘플의 비율을 틀로 새로 그림. 56×56, 4방향, Idle 2 + Walk 4 |
+| `forest_witch.canvas` | `WorldEditor/assets/worldcanvas/forest_witch.png` + `.sheet.ron` | 숲의 마녀 (오리지널, `style/sheet_style.png` 화풍). 56×56, 4방향, Idle 2 + Walk 4 |
 
 `reference/` 는 화풍 참고용 원화다 (WebP). 그대로 베끼지 않고 구성·색·분위기만 가져온다.
-knight·dragon·palace_gate·dark_knight·goblin8 은 **아직 WorldEditor 데이터에 연결하지 않았다** — 기사·드래곤은
+knight·dragon·palace_gate·dark_knight·dark_knight_sd·forest_witch·forest_witch_v2·forest_witch_v3·goblin8 은 **아직 WorldEditor 데이터에 연결하지 않았다** — 기사·드래곤은
 `data/rules.ron` 에 액터가 있어야 `display.ron` 에 걸 수 있고, 정문은 `terrain.ron` props 에 추가하면 된다.
 
 **WorldEditor 연결:** `data/display.ron` 의 액터 1(플레이어)·102(고블린)가 위 시트를 쓴다.

@@ -365,6 +365,22 @@ fn parse_op(p: &mut Parser<'_>, l: Line<'_>) -> Result<Op> {
                 c: color(&l, w[1])?,
             }
         }
+        "selout" => {
+            if w.len() < 3 {
+                return Err(l.err(String::from("형식: selout <외곽색> <안쪽색><결과색> ...")));
+            }
+            let mut pairs = Vec::with_capacity(w.len() - 2);
+            for pair in &w[2..] {
+                match pair.as_bytes() {
+                    [from, to] => pairs.push((*from, *to)),
+                    _ => return Err(l.err(format!("안쪽색·결과색 두 글자여야 함: {pair}"))),
+                }
+            }
+            Op::Selout {
+                c: color(&l, w[1])?,
+                pairs,
+            }
+        }
         "mirror" => {
             arity(&l, &w, 1, "mirror")?;
             Op::Mirror
