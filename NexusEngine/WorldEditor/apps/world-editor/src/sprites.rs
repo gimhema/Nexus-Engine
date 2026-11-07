@@ -1062,8 +1062,8 @@ mod tests {
             (EquipSlot::Head, &hat[..]),
             (EquipSlot::Body, &armor[..]),
             // 외형이 없는 장비 — 목걸이·반지, 그리고 그림 없는 신발.
-            (EquipSlot::Neck, &none[..]),
-            (EquipSlot::Ring, &none[..]),
+            (EquipSlot::Accessory(nexus_sim::AccessoryKind(1)), &none[..]),
+            (EquipSlot::Accessory(nexus_sim::AccessoryKind(2)), &none[..]),
             (EquipSlot::Shoes, &none[..]),
         ];
         assert_eq!(
@@ -1071,6 +1071,48 @@ mod tests {
             [&"머리카락", &"기본 신발", &"모자", &"갑옷", &"갑옷 망토"],
             "갑옷이 기본 옷을 대신하고, 그림 없는 신발은 기본 신발을 빼지 않는다. 머리카락은 모자와 함께 남는다"
         );
+    }
+
+    /// 종이 인형 템플릿(`WorldCanvas/tools/paperdoll.py` 결과) — 모든 파츠가 읽히고 자기 템플릿의 몸과 맞는가.
+    ///
+    /// 생성 결과는 추적하지 않는 애셋 폴더에 있다. 아직 만들지 않은 작업 폴더에서는 건너뛴다.
+    #[test]
+    fn paperdoll_parts_fit_their_template_body() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/worldcanvas/paperdoll");
+        let Ok(dirs) = std::fs::read_dir(&root) else {
+            return;
+        };
+        let load = |path: &Path| {
+            let def = std::fs::read_to_string(path).unwrap();
+            let plan = plan_sheet(&def, path.parent())
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            Sheet {
+                texture: TextureId::from_index(1),
+                sheet: plan.sheet,
+                cell: plan.cell,
+                direction_rows: plan.direction_rows,
+                tinted: plan.tinted,
+                pixels_per_meter: plan.pixels_per_meter,
+                layers: plan.layers,
+            }
+        };
+        let mut templates = 0;
+        for dir in dirs.flatten().filter(|d| d.path().is_dir()) {
+            let body = load(&dir.path().join("body.sheet.ron"));
+            for part in std::fs::read_dir(dir.path()).unwrap().flatten() {
+                let path = part.path();
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                if name.ends_with(".sheet.ron") && name != "body.sheet.ron" {
+                    assert!(
+                        load(&path).fits(&body),
+                        "{} 가 몸과 맞지 않는다",
+                        path.display()
+                    );
+                }
+            }
+            templates += 1;
+        }
+        assert!(templates > 0, "템플릿 폴더가 비었다");
     }
 
     #[test]

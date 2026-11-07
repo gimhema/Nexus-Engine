@@ -25,7 +25,8 @@ use crate::combat::{self, SkillDef, SkillId};
 use crate::dungeon::{ClearDef, ClearState};
 use crate::faction::{FactionId, FactionTable, Relation};
 use crate::item::{
-    BAG_SLOTS, BagKind, EquipSlot, GroundItem, ItemDef, ItemId, ItemKind, ItemStack,
+    AccessoryKind, BAG_SLOTS, BagKind, EquipPos, EquipSlot, GroundItem, Inventory, ItemDef, ItemId,
+    ItemKind, ItemStack,
 };
 use crate::loot::{self, LootEntry, LootTableId, Rng};
 use crate::portal::PortalDef;
@@ -81,6 +82,8 @@ pub struct SimWorld {
     classes: HashMap<ClassId, ClassDef>,
     /// 장비의 기본 스탯 보너스·직업 제한. 없는 장비는 보너스도 제한도 없다.
     equip_rules: HashMap<ItemId, EquipRules>,
+    /// 장신구 종류별 칸 수. 없는 종류는 0칸이라 입을 수 없다.
+    accessory_slots: BTreeMap<AccessoryKind, u8>,
     /// 버프 정의와, 그것을 거는 스킬·소모품 (R2b).
     buffs: HashMap<BuffId, BuffDef>,
     skill_buffs: HashMap<SkillId, BuffId>,
@@ -134,6 +137,7 @@ impl SimWorld {
             stat_rules: None,
             classes: HashMap::new(),
             equip_rules: HashMap::new(),
+            accessory_slots: BTreeMap::new(),
             buffs: HashMap::new(),
             skill_buffs: HashMap::new(),
             skill_projectiles: HashMap::new(),
@@ -970,6 +974,47 @@ impl SimWorld {
         self.item_prices.insert(item, price);
     }
 
+    /// 장신구 칸 배치 (설정 작업) — 종류마다 몇 칸인지. 0칸인 종류는 적지 않은 것과 같다.
+    ///
+    /// 칸 수를 줄여도 이미 입은 장신구를 벗기지는 않는다 — 플레이를 시작할 때 정하는 값이다.
+    pub fn set_accessory_slots(&mut self, slots: impl IntoIterator<Item = (AccessoryKind, u8)>) {
+        self.accessory_slots = slots.into_iter().filter(|(_, n)| *n > 0).collect();
+    }
+
+    /// 이 자리 종류의 칸 수 — 고정 자리는 1, 장신구는 데이터가 정한 수.
+    #[must_use]
+    pub fn slot_count(&self, slot: EquipSlot) -> u8 {
+        match slot {
+            EquipSlot::Accessory(kind) => self.accessory_slots.get(&kind).copied().unwrap_or(0),
+            _ => 1,
+        }
+    }
+
+    /// 유닛이 가진 장착 칸 전부 — 고정 다섯 곳, 그다음 장신구 종류 번호 순 × 칸 순.
+    #[must_use]
+    pub fn equip_positions(&self) -> Vec<EquipPos> {
+        let accessories = self.accessory_slots.iter().flat_map(|(kind, n)| {
+            (0..*n).map(move |index| EquipPos {
+                slot: EquipSlot::Accessory(*kind),
+                index,
+            })
+        });
+        EquipSlot::FIXED
+            .into_iter()
+            .map(EquipPos::from)
+            .chain(accessories)
+            .collect()
+    }
+
+    /// `slot` 종류의 아이템을 입힐 칸 — 빈 칸 중 첫째, 다 찼으면 첫 칸(맞바꿈). 칸이 없으면 `None`.
+    fn place_for(&self, inventory: &Inventory, slot: EquipSlot) -> Option<EquipPos> {
+        let positions = (0..self.slot_count(slot)).map(|index| EquipPos { slot, index });
+        positions
+            .clone()
+            .find(|p| inventory.equipped(*p).is_none())
+            .or_else(|| positions.into_iter().next())
+    }
+
     #[must_use]
     pub fn item_price(&self, item: ItemId) -> Option<Price> {
         self.item_prices.get(&item).copied()
@@ -1709,7 +1754,8 @@ impl SimWorld {
         true
     }
 
-    /// 장비를 가방을 거치지 않고 바로 장착한다 (설정 작업). 장비가 아니면 무시한다.
+    /// 장비를 가방을 거치지 않고 바로 **빈 칸에** 장착한다 (설정 작업).
+    /// 장비가 아니거나 그 종류의 빈 칸이 없으면 `false` — 부른 쪽이 가방에 넣을지 정한다.
     pub fn force_equip(&mut self, unit: Entity, item: ItemId) -> bool {
         let Some(def) = self.items.get(&item).copied() else {
             return false;
@@ -1717,10 +1763,19 @@ impl SimWorld {
         let ItemKind::Equipment { slot, .. } = def.kind else {
             return false;
         };
+        let Some(inventory) = self.unit(unit).map(|u| &u.inventory) else {
+            return false;
+        };
+        let Some(pos) = self
+            .place_for(inventory, slot)
+            .filter(|p| inventory.equipped(*p).is_none())
+        else {
+            return false;
+        };
         let Some(u) = self.unit_mut(unit) else {
             return false;
         };
-        u.inventory.set_equipped(slot, Some(item));
+        u.inventory.set_equipped(pos, Some(item));
         self.refresh_stats(unit);
         true
     }
@@ -2328,7 +2383,8 @@ impl SimWorld {
         Ok(())
     }
 
-    /// 장비 가방의 `slot` 을 장착한다. 그 자리에 있던 장비는 **같은 칸**으로 돌아온다 (맞바꿈).
+    /// 장비 가방의 `slot` 을 장착한다. 그 종류의 빈 칸이 있으면 거기에, 다 찼으면 첫 칸에 입히고
+    /// 있던 장비는 **같은 가방 칸**으로 돌아온다 (맞바꿈).
     pub(crate) fn equip(
         &mut self,
         unit: Entity,
@@ -2354,6 +2410,9 @@ impl SimWorld {
             return Err(Rejection::ClassRestricted);
         }
 
+        let place = self
+            .place_for(&u.inventory, place)
+            .ok_or(Rejection::NoEquipSlot)?;
         let u = self.unit_mut(unit).ok_or(Rejection::UnknownEntity)?;
         let previous = u.inventory.equipped(place);
         u.inventory.set_equipped(place, Some(stack.item));
@@ -2369,7 +2428,7 @@ impl SimWorld {
     pub(crate) fn unequip(
         &mut self,
         unit: Entity,
-        place: EquipSlot,
+        place: EquipPos,
         events: &mut Vec<Event>,
     ) -> Result<(), Rejection> {
         let u = self.living(unit)?;
@@ -2392,10 +2451,7 @@ impl SimWorld {
     fn refresh_stats(&mut self, unit: Entity) {
         let Some(u) = self.unit(unit) else { return };
         let mut equip = EquipTotals::default();
-        for place in EquipSlot::ALL {
-            let Some(item) = u.inventory.equipped(place) else {
-                continue;
-            };
+        for (_, item) in u.inventory.worn() {
             if let Some(ItemKind::Equipment {
                 attack: a,
                 defense: d,

@@ -18,7 +18,7 @@ use nexus_core::{Entity, Vec2};
 
 use crate::ai;
 use crate::combat::SkillId;
-use crate::item::{BagKind, EquipSlot, ItemId, ItemStack};
+use crate::item::{BagKind, EquipPos, ItemId, ItemStack};
 use crate::progress::Progress;
 use crate::quest::QuestId;
 use crate::script::ScriptHost;
@@ -53,7 +53,7 @@ pub enum Intent {
     /// 장비 가방의 `slot` 을 장착한다 (그 자리의 장비와 맞바꿈).
     Equip { unit: Entity, slot: u16 },
     /// `slot` 자리의 장비를 벗는다.
-    Unequip { unit: Entity, slot: EquipSlot },
+    Unequip { unit: Entity, slot: EquipPos },
     /// NPC 에게 말을 건다 (R4) — 상호작용 거리 안이어야 하고 그 NPC 에게 기능이 있어야 한다.
     /// 받아들이면 `Event::Interacted` — 기능 메뉴를 여는 것은 앱의 일이다. 다가가는 것은 내는 쪽의 일.
     Interact { unit: Entity, npc: Entity },
@@ -197,6 +197,8 @@ pub enum Rejection {
     UnknownItem,
     /// 빈 칸.
     EmptySlot,
+    /// 이 장신구 종류의 칸이 하나도 없다 — `rules.ron` 의 `accessory_slots` 에 없는 종류.
+    NoEquipSlot,
     /// 가방에 다 들어가지 않는다. 일부만 줍지 않는다.
     InventoryFull,
     /// 그 방식으로 쓸 수 없는 아이템 (장비를 "사용" 등).
@@ -306,7 +308,7 @@ pub enum Event {
         remaining_mp: u32,
     },
     /// 장착 상태가 바뀌었다. 공격력·방어력이 달라졌을 수 있다.
-    EquipmentChanged { unit: Entity, slot: EquipSlot },
+    EquipmentChanged { unit: Entity, slot: EquipPos },
     /// 경험치를 얻었다 (P3). `progress` 는 더한 뒤의 상태다.
     ExperienceGained {
         unit: Entity,

@@ -1872,7 +1872,10 @@ fn details(root: &Path, asset: &Asset, assets: &[Asset], forms: &Forms) -> Detai
                             attack,
                             defense,
                             ..
-                        } => format!("장비({}) · 공격 {attack} · 방어 {defense}", slot.label()),
+                        } => format!(
+                            "장비({}) · 공격 {attack} · 방어 {defense}",
+                            slot.label(&forms.tables.accessories)
+                        ),
                         ItemKindForm::SkillBook { skill, max_stack } => {
                             format!("스킬북 · 스킬 #{skill} · 최대 {max_stack}개")
                         }

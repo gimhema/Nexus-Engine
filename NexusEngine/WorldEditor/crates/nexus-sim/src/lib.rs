@@ -37,7 +37,8 @@ pub use combat::{Projectile, SkillDef, SkillId, damage};
 pub use dungeon::ClearDef;
 pub use faction::{FactionId, FactionTable, Relation};
 pub use item::{
-    BAG_SLOTS, Bag, BagKind, EquipSlot, GroundItem, Inventory, ItemDef, ItemId, ItemKind, ItemStack,
+    AccessoryKind, BAG_SLOTS, Bag, BagKind, EquipPos, EquipSlot, GroundItem, Inventory, ItemDef,
+    ItemId, ItemKind, ItemStack,
 };
 pub use loot::{LootEntry, LootTableId};
 pub use portal::PortalDef;

@@ -23,6 +23,8 @@ use std::path::Path;
 
 use nexus_render_wgpu::egui;
 
+use std::collections::BTreeMap;
+
 use crate::game_data::{BuffForm, CraftForm, DestForm, RecipeForm, ShopForm, TeleportForm};
 use crate::game_data::{
     DISPLAY_PATH, EquipBonusForm, GameData, ItemForm, ItemKindForm, LootRow, PartForm, RULES_PATH,
@@ -520,7 +522,7 @@ impl TableEditor {
             None => {
                 ui.weak("콘텐츠 브라우저에서 두 번 누르거나 위에서 고르세요.");
             }
-            Some(Edit::Item(f)) => item_form(ui, f, &skills),
+            Some(Edit::Item(f)) => item_form(ui, f, &skills, &self.saved.accessories),
             Some(Edit::Skill(f)) => skill_form(ui, f),
             Some(Edit::Loot(rows)) => loot_form(ui, rows, &items),
             Some(Edit::Shop(f)) => shop_form(ui, f, &items),
@@ -734,7 +736,12 @@ fn patch(rules: &str, display: &str, id: u32, edit: &Edit) -> Result<(String, St
     Ok((rules, display))
 }
 
-fn item_form(ui: &mut egui::Ui, f: &mut ItemForm, skills: &[(u32, String)]) {
+fn item_form(
+    ui: &mut egui::Ui,
+    f: &mut ItemForm,
+    skills: &[(u32, String)],
+    accessories: &BTreeMap<u16, String>,
+) {
     egui::Grid::new("item-form").num_columns(2).show(ui, |ui| {
         ui.label("이름");
         ui.add(egui::TextEdit::singleline(&mut f.name).desired_width(180.0));
@@ -826,11 +833,15 @@ fn item_form(ui: &mut egui::Ui, f: &mut ItemForm, skills: &[(u32, String)]) {
                 bonus,
             } => {
                 ui.label("자리");
+                // 장신구 종류는 `rules.ron` 의 `accessory_slots` 에 있는 것만 — 칸이 없으면 입을 수 없다.
                 egui::ComboBox::from_id_salt("item-slot")
-                    .selected_text(slot.label())
+                    .selected_text(slot.label(accessories))
                     .show_ui(ui, |ui| {
-                        for s in SlotChoice::ALL {
-                            ui.selectable_value(slot, s, s.label());
+                        let choices = SlotChoice::FIXED
+                            .into_iter()
+                            .chain(accessories.keys().map(|k| SlotChoice::Accessory(*k)));
+                        for s in choices {
+                            ui.selectable_value(slot, s, s.label(accessories));
                         }
                     });
                 ui.end_row();

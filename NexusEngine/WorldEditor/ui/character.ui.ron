@@ -13,7 +13,7 @@
             id: "window",
             anchor: Center,
             pos: (0, -10),
-            size: Some((376, 266)),
+            size: Some((376, 296)),
             kind: Panel(
                 frame: true,
             ),
@@ -22,7 +22,7 @@
                     id: "back_fill",
                     anchor: Center,
                     pos: (0, 0),
-                    size: Some((366, 256)),
+                    size: Some((366, 286)),
                     kind: Fill(
                         color: (0.07, 0.08, 0.11, 1.0),
                     ),
@@ -55,7 +55,7 @@
                     id: "equipment",
                     anchor: TopLeft,
                     pos: (12, 56),
-                    size: Some((170, 92)),
+                    size: Some((170, 182)),
                     kind: List(
                         row_height: 13,
                         source: Equipment,
@@ -64,7 +64,7 @@
                 (
                     id: "skills_title",
                     anchor: TopLeft,
-                    pos: (12, 152),
+                    pos: (194, 126),
                     kind: Text(
                         format: "스킬 — 누르면 단축키에",
                     ),
@@ -72,7 +72,7 @@
                 (
                     id: "skills",
                     anchor: TopLeft,
-                    pos: (12, 166),
+                    pos: (194, 140),
                     size: Some((170, 66)),
                     kind: List(
                         row_height: 13,
@@ -100,7 +100,7 @@
                 (
                     id: "quests_title",
                     anchor: TopLeft,
-                    pos: (194, 126),
+                    pos: (194, 210),
                     kind: Text(
                         format: "퀘스트",
                     ),
@@ -108,7 +108,7 @@
                 (
                     id: "quests",
                     anchor: TopLeft,
-                    pos: (194, 140),
+                    pos: (194, 224),
                     size: Some((170, 40)),
                     kind: List(
                         row_height: 13,

@@ -2,7 +2,7 @@
 //!
 //! 서버 `Game/Logic/Item.h` · `ItemBag.h` · `CommonLogicType.h` 의 **구조를 따른다**:
 //! 종류별 가방(소모품·장비)이 따로 있고, 칸 수는 서버 `MAX_*_BAG_NUM` 과 같은 120 이며,
-//! 장비 자리는 `EQUIPMENT_POS_TYPE` 의 다섯 곳에 장신구 둘(목걸이·반지)을 **뒤에 붙인** 일곱 곳이다.
+//! 장비 자리는 `EQUIPMENT_POS_TYPE` 의 다섯 곳 + 데이터가 정하는 장신구 칸이다([`EquipSlot`]).
 //!
 //! 서버 쪽은 사용·장착 효과가 아직 TODO 라 **효과 규칙은 여기서 정했다** — 소모품은 HP 회복,
 //! 장비는 공격력·방어력 가산. 스킨(`SkinBag`)은 외형만 바꾸고 규칙에 영향이 없어 다루지 않는다.
@@ -14,9 +14,11 @@ use nexus_core::Vec2;
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ItemId(pub u32);
 
-/// 장비 자리. 서버 `EQUIPMENT_POS_TYPE` (1~5) 와 같은 순서이고, 장신구 `Neck`(6)·`Ring`(7)은
-/// 그 뒤에 붙였다 — **서버 enum 에는 아직 없다.** 단계 2 에서 서버도 6·7 을 같은 순서로 붙여야 한다.
-/// 기존 번호를 바꾸지 않도록 새 자리는 항상 맨 뒤에 붙인다.
+/// 장비가 들어가는 **자리 종류** — 아이템 정의가 적는다.
+///
+/// 앞의 다섯은 서버 `EQUIPMENT_POS_TYPE` (1~5) 와 같은 순서이고 한 칸씩이다.
+/// 장신구는 [`AccessoryKind`] 로 종류를 나누고, 종류마다 칸 수를 **데이터가 정한다**
+/// ([`SimWorld::set_accessory_slots`](crate::SimWorld::set_accessory_slots)) — 반지 2칸, 귀걸이 2칸처럼.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum EquipSlot {
     Weapon,
@@ -24,23 +26,36 @@ pub enum EquipSlot {
     Body,
     Hand,
     Shoes,
-    Neck,
-    Ring,
+    Accessory(AccessoryKind),
 }
 
 impl EquipSlot {
-    pub const ALL: [Self; 7] = [
+    /// 칸 수가 하나로 고정된 자리.
+    pub const FIXED: [Self; 5] = [
         Self::Weapon,
         Self::Head,
         Self::Body,
         Self::Hand,
         Self::Shoes,
-        Self::Neck,
-        Self::Ring,
     ];
+}
 
-    fn index(self) -> usize {
-        self as usize
+/// 장신구 종류 번호 — 목걸이·반지·귀걸이 같은 구분. 이름은 표시 데이터가 붙인다.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct AccessoryKind(pub u16);
+
+/// 유닛의 **실제 장착 칸** — 자리 종류와 그 안의 몇 번째 칸(0부터).
+///
+/// 고정 자리는 늘 `index: 0` 이다. `EquipSlot` 에서 바로 만들면 첫 칸이다.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct EquipPos {
+    pub slot: EquipSlot,
+    pub index: u8,
+}
+
+impl From<EquipSlot> for EquipPos {
+    fn from(slot: EquipSlot) -> Self {
+        Self { slot, index: 0 }
     }
 }
 
@@ -220,7 +235,8 @@ impl Bag {
 pub struct Inventory {
     pub(crate) consumables: Bag,
     pub(crate) equipment: Bag,
-    pub(crate) equipped: [Option<ItemId>; EquipSlot::ALL.len()],
+    /// 장착 칸 → 아이템. 칸 수가 데이터로 바뀌므로 고정 배열이 아니다.
+    pub(crate) equipped: std::collections::BTreeMap<EquipPos, ItemId>,
 }
 
 impl Inventory {
@@ -239,14 +255,22 @@ impl Inventory {
         }
     }
 
-    /// `slot` 에 장착한 아이템.
+    /// `pos` 에 장착한 아이템. 자리 종류만 주면 그 첫 칸이다.
     #[must_use]
-    pub fn equipped(&self, slot: EquipSlot) -> Option<ItemId> {
-        self.equipped[slot.index()]
+    pub fn equipped(&self, pos: impl Into<EquipPos>) -> Option<ItemId> {
+        self.equipped.get(&pos.into()).copied()
     }
 
-    pub(crate) fn set_equipped(&mut self, slot: EquipSlot, item: Option<ItemId>) {
-        self.equipped[slot.index()] = item;
+    /// 장착한 것 전부 `(칸, 아이템)`, 칸 순서.
+    pub fn worn(&self) -> impl Iterator<Item = (EquipPos, ItemId)> + '_ {
+        self.equipped.iter().map(|(p, i)| (*p, *i))
+    }
+
+    pub(crate) fn set_equipped(&mut self, pos: EquipPos, item: Option<ItemId>) {
+        match item {
+            Some(item) => self.equipped.insert(pos, item),
+            None => self.equipped.remove(&pos),
+        };
     }
 }
 
@@ -709,6 +733,80 @@ mod flow_tests {
     }
 
     #[test]
+    fn accessory_slot_counts_come_from_data() {
+        const RING: AccessoryKind = AccessoryKind(2);
+        const EARRING: AccessoryKind = AccessoryKind(3);
+        let ring = |id: u32, attack: u32| {
+            (
+                ItemId(id),
+                ItemDef {
+                    kind: ItemKind::Equipment {
+                        slot: EquipSlot::Accessory(RING),
+                        attack,
+                        defense: 0,
+                    },
+                    max_stack: 1,
+                },
+            )
+        };
+        let mut w = world();
+        for (id, def) in [ring(2201, 1), ring(2202, 2), ring(2203, 4)] {
+            w.define_item(id, def);
+        }
+        w.define_item(
+            ItemId(2301),
+            ItemDef {
+                kind: ItemKind::Equipment {
+                    slot: EquipSlot::Accessory(EARRING),
+                    attack: 8,
+                    defense: 0,
+                },
+                max_stack: 1,
+            },
+        );
+        // 반지 2칸, 귀걸이는 칸이 없다.
+        w.set_accessory_slots([(RING, 2), (EARRING, 0)]);
+        assert_eq!(w.equip_positions().len(), 5 + 2);
+
+        let h = w.spawn_unit(Vec2::new(1.5, 1.5), 0.0, hero());
+        for id in [2201, 2202, 2203, 2301] {
+            assert!(w.give_item(h, ItemId(id), 1));
+        }
+        let mut auth = LocalAuthority::new(w);
+        let attack = |auth: &LocalAuthority| auth.world().unit(h).unwrap().attack();
+
+        // 두 반지는 빈 칸을 차례로 채운다.
+        submit(&mut auth, Intent::Equip { unit: h, slot: 0 });
+        submit(&mut auth, Intent::Equip { unit: h, slot: 1 });
+        assert_eq!(attack(&auth), 10 + 1 + 2);
+        let second = EquipPos {
+            slot: EquipSlot::Accessory(RING),
+            index: 1,
+        };
+        let inv = auth.world().unit(h).unwrap().inventory();
+        assert_eq!(inv.equipped(EquipSlot::Accessory(RING)), Some(ItemId(2201)));
+        assert_eq!(inv.equipped(second), Some(ItemId(2202)));
+
+        // 다 찼으면 첫 칸과 맞바꾼다.
+        submit(&mut auth, Intent::Equip { unit: h, slot: 2 });
+        assert_eq!(attack(&auth), 10 + 4 + 2);
+
+        // 칸이 없는 종류는 거절된다.
+        let events = submit(&mut auth, Intent::Equip { unit: h, slot: 3 });
+        assert_eq!(rejected(&events), Some(Rejection::NoEquipSlot));
+
+        // 두 번째 칸만 벗을 수 있다.
+        submit(
+            &mut auth,
+            Intent::Unequip {
+                unit: h,
+                slot: second,
+            },
+        );
+        assert_eq!(attack(&auth), 10 + 4);
+    }
+
+    #[test]
     fn equipment_adds_attack_swaps_in_place_and_comes_off() {
         let mut w = world();
         let h = w.spawn_unit(Vec2::new(1.5, 1.5), 0.0, hero());
@@ -738,12 +836,12 @@ mod flow_tests {
             &mut auth,
             Intent::Unequip {
                 unit: h,
-                slot: EquipSlot::Weapon,
+                slot: EquipSlot::Weapon.into(),
             },
         );
         assert!(events.contains(&Event::EquipmentChanged {
             unit: h,
-            slot: EquipSlot::Weapon
+            slot: EquipSlot::Weapon.into()
         }));
         assert_eq!(unit(&auth), 10);
         assert_eq!(bag(&auth, h, BagKind::Equipment).count_of(AXE), 1);
@@ -794,7 +892,7 @@ mod flow_tests {
             &mut auth,
             Intent::Unequip {
                 unit: h,
-                slot: EquipSlot::Weapon,
+                slot: EquipSlot::Weapon.into(),
             },
         );
         assert_eq!(rejected(&events), Some(Rejection::InventoryFull));

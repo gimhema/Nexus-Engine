@@ -123,6 +123,13 @@
         1: (name: "골드"),
     },
 
+    // 장신구 종류 이름. 번호와 칸 수는 rules.ron 의 accessory_slots.
+    accessories: {
+        1: (name: "목걸이"),
+        2: (name: "반지"),
+        3: (name: "귀걸이"),
+    },
+
     // 직업의 이름·설명 (R2). 번호는 rules.ron 의 classes 와 같다.
     classes: {
         1: (name: "전사", description: "힘과 체력으로 버틴다. 칼을 든다."),

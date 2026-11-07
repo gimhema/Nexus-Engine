@@ -27,9 +27,9 @@ use std::time::Duration;
 
 use nexus_core::Entity;
 use nexus_sim::{
-    ActorType, AiKind, BuffDef, BuffId, EquipSlot, FactionId, Growth, ItemDef, ItemId,
-    ItemKind as SimItemKind, LootEntry, LootTableId, Relation, SimWorld, SkillDef, SkillId,
-    TriggerDef, TriggerId, UnitDef,
+    AccessoryKind, ActorType, AiKind, BuffDef, BuffId, EquipPos, EquipSlot, FactionId, Growth,
+    ItemDef, ItemId, ItemKind as SimItemKind, LootEntry, LootTableId, Relation, SimWorld, SkillDef,
+    SkillId, TriggerDef, TriggerId, UnitDef,
 };
 use nexus_sim::{
     ClassDef, ClassId, CraftDef, CraftId, CurrencyId, EquipRules, Formula, Price, Service, ShopDef,
@@ -86,6 +86,9 @@ const EMBEDDED_SCRIPTS: &[(&str, &str)] = &[
 struct RulesFile {
     version: u32,
     seed: u64,
+    /// 장신구 종류 → 칸 수 — `{1: 1, 2: 2}` 면 목걸이 1칸·반지 2칸. 없는 종류는 입을 수 없다.
+    #[serde(default)]
+    accessory_slots: BTreeMap<u16, u8>,
     #[serde(default)]
     relations: Vec<RelationFile>,
     skills: BTreeMap<u32, SkillFile>,
@@ -419,8 +422,8 @@ enum SlotFile {
     Body,
     Hand,
     Shoes,
-    Neck,
-    Ring,
+    /// 장신구 종류 번호 — 칸 수는 `accessory_slots`, 이름은 `display.ron` 의 `accessories`.
+    Accessory(u16),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -542,6 +545,9 @@ struct DisplayFile {
     /// 진영의 표시 이름 (P19). 번호는 `rules.ron` 의 진영 번호(서버 `EFactionId`)와 같다. 없으면 번호로 보인다.
     #[serde(default)]
     factions: BTreeMap<u32, SkillLookFile>,
+    /// 장신구 종류 이름 — `{2: (name: "반지")}`. 번호는 `rules.ron` 의 `accessory_slots`.
+    #[serde(default)]
+    accessories: BTreeMap<u16, SkillLookFile>,
     /// 소리 (T8) — `sound.rs` 모듈 doc.
     #[serde(default)]
     sound: SoundFile,
@@ -749,6 +755,9 @@ pub(crate) struct GameData {
     default_currency: Option<CurrencyId>,
     /// 재화 이름 (`display.ron`).
     currency_names: BTreeMap<u32, String>,
+    /// 장신구 종류별 칸 수 (`rules.ron`)와 이름 (`display.ron`).
+    accessory_slots: Vec<(AccessoryKind, u8)>,
+    accessory_names: BTreeMap<u16, String>,
     /// 제작 표 (R4-2).
     crafts: Vec<(CraftId, CraftDef)>,
     /// 텔레포트 표 (R4-2).
@@ -999,6 +1008,26 @@ impl GameData {
             check(
                 rel.a != rel.b,
                 format!("관계 ({}, {}): 같은 진영끼리는 정할 수 없음", rel.a, rel.b),
+            );
+        }
+        for (id, item) in &r.items {
+            if let ItemFile::Equipment {
+                slot: SlotFile::Accessory(kind),
+                ..
+            } = item
+            {
+                check(
+                    r.accessory_slots.get(kind).is_some_and(|n| *n > 0),
+                    format!(
+                        "아이템 {id}: 장신구 종류 {kind} 의 칸이 없음 (accessory_slots 에 칸 수를 적는다)"
+                    ),
+                );
+            }
+        }
+        for kind in d.accessories.keys() {
+            check(
+                r.accessory_slots.contains_key(kind),
+                format!("표시 장신구 {kind}: rules.ron 의 accessory_slots 에 없는 종류"),
             );
         }
         for (id, look) in &d.items {
@@ -1467,6 +1496,16 @@ impl GameData {
                 .iter()
                 .map(|(id, l)| (*id, l.name.clone()))
                 .collect(),
+            accessory_slots: r
+                .accessory_slots
+                .iter()
+                .map(|(k, n)| (AccessoryKind(*k), *n))
+                .collect(),
+            accessory_names: d
+                .accessories
+                .iter()
+                .map(|(k, l)| (*k, l.name.clone()))
+                .collect(),
             crafts: r
                 .crafts
                 .iter()
@@ -1560,6 +1599,7 @@ impl GameData {
         for &(id, def) in &self.items {
             world.define_item(id, def);
         }
+        world.set_accessory_slots(self.accessory_slots.iter().copied());
         for &(id, def) in &self.buffs {
             world.define_buff(id, def);
         }
@@ -1704,6 +1744,28 @@ impl GameData {
     /// 기본 재화 (R4). 없으면 재화가 없는 게임.
     pub(crate) fn default_currency(&self) -> Option<CurrencyId> {
         self.default_currency
+    }
+
+    /// 장착 칸의 화면 이름 — `무기`, `반지 2`. 같은 종류가 한 칸뿐이면 번호를 붙이지 않는다.
+    pub(crate) fn slot_label(&self, pos: EquipPos, count: u8) -> String {
+        let name = match pos.slot {
+            EquipSlot::Weapon => "무기".to_owned(),
+            EquipSlot::Head => "머리".to_owned(),
+            EquipSlot::Body => "몸".to_owned(),
+            EquipSlot::Hand => "손".to_owned(),
+            EquipSlot::Shoes => "신발".to_owned(),
+            EquipSlot::Accessory(kind) => self.accessory_name(kind.0),
+        };
+        if count > 1 {
+            format!("{name} {}", pos.index + 1)
+        } else {
+            name
+        }
+    }
+
+    /// 장신구 종류 이름 — 표시 파일에 없으면 번호로.
+    pub(crate) fn accessory_name(&self, kind: u16) -> String {
+        accessory_name(&self.accessory_names, kind)
     }
 
     /// 재화 이름 — 표시 파일에 없으면 번호로.
@@ -1988,8 +2050,7 @@ impl From<SlotFile> for EquipSlot {
             SlotFile::Body => Self::Body,
             SlotFile::Hand => Self::Hand,
             SlotFile::Shoes => Self::Shoes,
-            SlotFile::Neck => Self::Neck,
-            SlotFile::Ring => Self::Ring,
+            SlotFile::Accessory(kind) => Self::Accessory(AccessoryKind(kind)),
         }
     }
 }
@@ -2422,7 +2483,7 @@ impl EquipBonusForm {
     }
 }
 
-/// 장착 자리 — 편집기 드롭다운용 (파일 형식 `SlotFile` 과 같은 일곱 가지, 서버 순서 + 장신구).
+/// 장착 자리 — 편집기 드롭다운용 (파일 형식 `SlotFile` 과 같다).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SlotChoice {
     Weapon,
@@ -2430,44 +2491,50 @@ pub(crate) enum SlotChoice {
     Body,
     Hand,
     Shoes,
-    Neck,
-    Ring,
+    /// 장신구 종류 번호.
+    Accessory(u16),
 }
 
 impl SlotChoice {
-    pub(crate) const ALL: [Self; 7] = [
+    /// 칸 수가 하나로 고정된 자리. 장신구는 데이터의 종류 목록에서 고른다.
+    pub(crate) const FIXED: [Self; 5] = [
         Self::Weapon,
         Self::Head,
         Self::Body,
         Self::Hand,
         Self::Shoes,
-        Self::Neck,
-        Self::Ring,
     ];
 
-    pub(crate) fn label(self) -> &'static str {
+    /// 화면 이름. 장신구는 `names`(`display.ron` 의 `accessories`)에서 찾는다.
+    pub(crate) fn label(self, names: &BTreeMap<u16, String>) -> String {
         match self {
-            Self::Weapon => "무기",
-            Self::Head => "머리",
-            Self::Body => "몸",
-            Self::Hand => "손",
-            Self::Shoes => "신발",
-            Self::Neck => "목걸이",
-            Self::Ring => "반지",
+            Self::Weapon => "무기".to_owned(),
+            Self::Head => "머리".to_owned(),
+            Self::Body => "몸".to_owned(),
+            Self::Hand => "손".to_owned(),
+            Self::Shoes => "신발".to_owned(),
+            Self::Accessory(kind) => accessory_name(names, kind),
         }
     }
 
-    fn file_name(self) -> &'static str {
+    fn file_name(self) -> String {
         match self {
-            Self::Weapon => "Weapon",
-            Self::Head => "Head",
-            Self::Body => "Body",
-            Self::Hand => "Hand",
-            Self::Shoes => "Shoes",
-            Self::Neck => "Neck",
-            Self::Ring => "Ring",
+            Self::Weapon => "Weapon".to_owned(),
+            Self::Head => "Head".to_owned(),
+            Self::Body => "Body".to_owned(),
+            Self::Hand => "Hand".to_owned(),
+            Self::Shoes => "Shoes".to_owned(),
+            Self::Accessory(kind) => format!("Accessory({kind})"),
         }
     }
+}
+
+/// 장신구 종류 이름 — 없으면 `장신구 #번호`.
+fn accessory_name(names: &BTreeMap<u16, String>, kind: u16) -> String {
+    names
+        .get(&kind)
+        .cloned()
+        .unwrap_or_else(|| format!("장신구 #{kind}"))
 }
 
 impl From<SlotFile> for SlotChoice {
@@ -2478,8 +2545,7 @@ impl From<SlotFile> for SlotChoice {
             SlotFile::Body => Self::Body,
             SlotFile::Hand => Self::Hand,
             SlotFile::Shoes => Self::Shoes,
-            SlotFile::Neck => Self::Neck,
-            SlotFile::Ring => Self::Ring,
+            SlotFile::Accessory(kind) => Self::Accessory(kind),
         }
     }
 }
@@ -2727,6 +2793,8 @@ pub(crate) struct TableForms {
     /// 참조 찾기용 — 시작 소지품의 아이템, 플레이어 공격 스킬.
     pub(crate) starting_kit: Vec<u32>,
     pub(crate) player_attack: u32,
+    /// 장신구 종류 이름 — 자리 드롭다운용. 종류는 `rules.ron` 의 `accessory_slots` 에 있는 것만.
+    pub(crate) accessories: BTreeMap<u16, String>,
 }
 
 /// 상점 하나 — 표 편집기 폼 (R4-2).
@@ -3150,6 +3218,17 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
         teleports,
         starting_kit: r.starting_kit.iter().map(|s| s.item).collect(),
         player_attack: r.player_attack,
+        accessories: {
+            let names: BTreeMap<u16, String> = d
+                .accessories
+                .iter()
+                .map(|(k, l)| (*k, l.name.clone()))
+                .collect();
+            r.accessory_slots
+                .keys()
+                .map(|k| (*k, accessory_name(&names, *k)))
+                .collect()
+        },
     })
 }
 
@@ -3392,6 +3471,61 @@ pub(crate) fn skill_users(rules: &str, skill: u32) -> Result<Vec<String>, String
     Ok(out)
 }
 
+/// 장신구 칸 한 줄 — 종류 번호, 칸 수(`rules.ron`), 이름(`display.ron`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AccessoryRow {
+    pub(crate) kind: u16,
+    pub(crate) count: u8,
+    pub(crate) name: String,
+}
+
+/// 장신구 칸 표 — 두 파일에서 읽는다. 칸 수 번호 순.
+pub(crate) fn accessory_rows(rules: &str, display: &str) -> Result<Vec<AccessoryRow>, String> {
+    let r: RulesFile = ron::from_str(rules).map_err(|e| format!("{RULES_PATH}: {e}"))?;
+    let d: DisplayFile = ron::from_str(display).map_err(|e| format!("{DISPLAY_PATH}: {e}"))?;
+    Ok(r.accessory_slots
+        .iter()
+        .map(|(kind, count)| AccessoryRow {
+            kind: *kind,
+            count: *count,
+            name: d
+                .accessories
+                .get(kind)
+                .map(|l| l.name.clone())
+                .unwrap_or_default(),
+        })
+        .collect())
+}
+
+/// 장신구 칸 표를 두 파일에 끼운다 — `accessory_slots`(규칙)·`accessories`(이름) 블록만 다시 쓴다.
+/// 같은 종류가 두 번이면 거부한다. 검증은 부르는 쪽이 두 파일을 함께 한다.
+pub(crate) fn patch_accessories(
+    rules: &str,
+    display: &str,
+    rows: &[AccessoryRow],
+) -> Result<(String, String), String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut slots = Vec::new();
+    let mut names = Vec::new();
+    for row in rows {
+        if !seen.insert(row.kind) {
+            return Err(format!("장신구 종류 {} 가 두 번 있음", row.kind));
+        }
+        slots.push(format!("{}: {},", row.kind, row.count));
+        if !row.name.trim().is_empty() {
+            names.push(format!(
+                "{}: (name: {}),",
+                row.kind,
+                crate::ron_patch::quote(row.name.trim())
+            ));
+        }
+    }
+    Ok((
+        crate::ron_patch::replace_block(rules, "accessory_slots", '{', &slots)?,
+        crate::ron_patch::replace_block(display, "accessories", '{', &names)?,
+    ))
+}
+
 /// 진영 이름 표 — `display.ron` 의 `factions` (P19). 블록이 없으면 빈 표.
 pub(crate) fn faction_names(display: &str) -> Result<BTreeMap<u32, String>, String> {
     let d: DisplayFile = ron::from_str(display).map_err(|e| format!("{DISPLAY_PATH}: {e}"))?;
@@ -3620,6 +3754,27 @@ mod tests {
         assert_eq!(items[0].0, ItemId(2101));
         assert_eq!(items[0].1[0].tint, [1.0, 0.5, 0.5, 1.0]);
         assert_eq!(items[0].1[0].slot, None);
+    }
+
+    #[test]
+    fn accessory_kinds_need_slots_and_name_their_positions() {
+        let data = GameData::embedded();
+        let ring = EquipSlot::Accessory(AccessoryKind(2));
+        let second = EquipPos {
+            slot: ring,
+            index: 1,
+        };
+        assert_eq!(data.slot_label(second, 2), "반지 2");
+        assert_eq!(data.slot_label(EquipSlot::Weapon.into(), 1), "무기");
+
+        // 칸이 없는 종류를 끼는 아이템은 읽을 때 거절한다.
+        let rules = EMBEDDED_RULES.replacen(
+            "2101: Equipment(slot: Head,",
+            "2101: Equipment(slot: Accessory(9),",
+            1,
+        );
+        let err = GameData::parse(&rules, EMBEDDED_DISPLAY).unwrap_err();
+        assert!(err.contains("장신구 종류 9 의 칸이 없음"), "{err}");
     }
 
     #[test]

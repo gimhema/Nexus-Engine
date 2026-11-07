@@ -260,6 +260,26 @@ knight·dragon·palace_gate·dark_knight·dark_knight_sd·forest_witch·forest_w
 props 의 `px` 는 `build` 출력값을 손으로 옮긴 것이다 — **아틀라스 배치를 바꾸면 terrain.ron 도 고친다.**
 | `markers.canvas` | `WorldEditor/assets/sprites/markers.png` (+ `.sheet.ron`) | 에디터 내장 플레이스홀더. `import` 로 가져옴 — 픽셀 일치 확인됨. `build` 하면 손으로 쓴 `markers.sheet.ron` 주석이 생성 주석으로 바뀐다 |
 
+## 종이 인형 생성기 (`tools/paperdoll.py`)
+
+캐릭터 커스터마이징용 **베이스 템플릿과 파츠**는 `.canvas` 가 아니라 생성기로 만든다 —
+파츠는 몸과 같은 칸·같은 프레임이어야 겹치므로(WorldEditor `sprites.rs` 「파츠」), 템플릿 수 × 파츠 수를
+손으로 그리는 대신 템플릿을 **체형 수치**(`Template`: 칸, 머리 크기, 몸통 반폭, 팔다리 길이, 눈, 종족 특징)로 적고
+몸과 모든 파츠를 같은 기하(`Geo`)에서 그린다.
+
+```bash
+python3 tools/paperdoll.py            # WorldEditor/assets/worldcanvas/paperdoll/ 에 빌드
+python3 tools/paperdoll.py --preview  # + preview/paperdoll_templates.png (템플릿 × 견본 차림) · paperdoll_parts_sd_human.png
+```
+
+- 표준 라이브러리만 쓴다(PNG 는 zlib 로 직접). 견본 그림의 글자만 PIL 이 있으면 붙인다.
+- 색을 고를 부위는 밝은 무채색 + `tinted: true`. 얼굴(입·볼)·엄니만 색 그대로.
+- 시트 배치는 `player.sheet.ron` 과 같다(Idle 2 + Walk 4, 동·북·서·남). 칸 위에 머리 크기만큼 **여백**(`pad`)을 둬 모자·뿔이 잘리지 않는다.
+- 앞뒤(`layer`/`layer_by_direction`)는 파츠마다 생성기가 적는다 — 망토·뒷머리·꼬리는 뒷모습에서 몸 앞으로 온다.
+- 템플릿 폴더의 `catalog.ron` 이 그 체형의 파츠(분류·색 묶음·장비 자리), 공용 `paperdoll/catalog.ron` 이 템플릿 목록과 색 묶음이다.
+- 템플릿·파츠를 더하는 법: `TEMPLATES` 에 체형 한 줄, 또는 `draw_*` 함수 + `PARTS` 한 줄. 특정 게임 캐릭터를 옮기지 않는다 — 참고는 **장르의 비율**까지.
+- 결과물은 추적하지 않는 애셋 폴더다. WorldEditor 시험 `paperdoll_parts_fit_their_template_body` 가 모든 파츠가 몸과 맞는지 지킨다(폴더가 없으면 건너뛴다).
+
 ## 다음 단계 (미구현)
 
 - 공격·피격·사망 클립 (지금은 Idle·Walk 만). 엔진은 없는 클립을 Idle 로 대체한다.

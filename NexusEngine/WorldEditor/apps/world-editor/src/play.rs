@@ -21,9 +21,9 @@ use nexus_core::{Camera2d, Entity, Vec2, Vec3};
 use nexus_render::{DEPTH_LAYER, RenderCommand, SpriteAnchor, TextureId, UvRect};
 use nexus_script::RhaiHost;
 use nexus_sim::{
-    Authority, BagKind, ClassId, Condition, CraftId, EquipSlot, Event, Intent, ItemId, ItemStack,
-    LocalAuthority, PortalDef, Price, Progress, QuestId, QuestState, Rejection, Relation, Service,
-    ShopId, SimWorld, SkillId, TeleportId, Unit,
+    Authority, BagKind, ClassId, Condition, CraftId, EquipPos, EquipSlot, Event, Intent, ItemId,
+    ItemStack, LocalAuthority, PortalDef, Price, Progress, QuestId, QuestState, Rejection,
+    Relation, Service, ShopId, SimWorld, SkillId, TeleportId, Unit,
 };
 
 use crate::game_data::{ActorLook, GameData};
@@ -285,7 +285,7 @@ struct Label {
 pub(crate) enum InventoryAction {
     Use(u16),
     Equip(u16),
-    Unequip(EquipSlot),
+    Unequip(EquipPos),
 }
 
 /// 플레이를 시작할 때 주는 설정.
@@ -1340,10 +1340,9 @@ impl PlaySession {
             zone,
             pos: u.map(Unit::pos),
             bags,
-            equipped: EquipSlot::ALL
-                .into_iter()
-                .filter_map(|slot| inventory?.equipped(slot))
-                .collect(),
+            equipped: inventory
+                .map(|i| i.worn().map(|(_, item)| item).collect())
+                .unwrap_or_default(),
             class: u.and_then(|u| u.def().class),
             skills: Some(u.map(|u| u.learned_skills().collect()).unwrap_or_default()),
             hotbar: Some(self.hotbar.clone()),
@@ -2250,7 +2249,7 @@ impl PlaySession {
                     .and_then(|u| u.inventory().equipped(slot));
                 match now {
                     Some(item) => format!("{} 장착", self.data.item_name(item)),
-                    None => format!("{} 해제", text::slot_name(slot)),
+                    None => format!("{} 해제", self.slot_label(slot)),
                 }
             }
             Event::Engaged { unit, target } => {
@@ -2352,18 +2351,24 @@ impl PlaySession {
         }
     }
 
-    /// 장착 자리마다 (자리, 자리 이름, 장착한 아이템 이름).
-    pub(crate) fn equipped_lines(&self) -> Vec<(EquipSlot, &'static str, Option<String>)> {
+    /// 장착 칸마다 (칸, 칸 이름, 장착한 아이템 이름). 장신구 칸 수는 `rules.ron` 이 정한다.
+    pub(crate) fn equipped_lines(&self) -> Vec<(EquipPos, String, Option<String>)> {
         let me = self.world().unit(self.player);
-        EquipSlot::ALL
+        self.world()
+            .equip_positions()
             .into_iter()
-            .map(|slot| {
+            .map(|pos| {
                 let item = me
-                    .and_then(|u| u.inventory().equipped(slot))
+                    .and_then(|u| u.inventory().equipped(pos))
                     .map(|i| self.data.item_name(i));
-                (slot, text::slot_name(slot), item)
+                (pos, self.slot_label(pos), item)
             })
             .collect()
+    }
+
+    /// 장착 칸의 화면 이름 — `반지 2`.
+    fn slot_label(&self, pos: EquipPos) -> String {
+        self.data.slot_label(pos, self.world().slot_count(pos.slot))
     }
 
     // ── 그리기 ───────────────────────────────────────────────────────────────
@@ -2492,9 +2497,10 @@ impl PlaySession {
             };
             let animator = self.animators.get(&unit).unwrap_or(&idle_animator);
             // 외형이 바뀌는 장비인지는 라이브러리가 안다 — 여기서는 입은 것만 넘긴다.
-            let worn: Vec<(EquipSlot, ItemId)> = EquipSlot::ALL
-                .into_iter()
-                .filter_map(|slot| Some((slot, u.inventory().equipped(slot)?)))
+            let worn: Vec<(EquipSlot, ItemId)> = u
+                .inventory()
+                .worn()
+                .map(|(pos, item)| (pos.slot, item))
                 .collect();
             let parts = sprites.parts(actor, &worn, effect);
             sprites.sheet(actor).push(
@@ -2693,19 +2699,7 @@ fn next_anim(
 }
 
 mod text {
-    use nexus_sim::{EquipSlot, Rejection};
-
-    pub(super) fn slot_name(slot: EquipSlot) -> &'static str {
-        match slot {
-            EquipSlot::Weapon => "무기",
-            EquipSlot::Head => "머리",
-            EquipSlot::Body => "몸",
-            EquipSlot::Hand => "손",
-            EquipSlot::Shoes => "신발",
-            EquipSlot::Neck => "목걸이",
-            EquipSlot::Ring => "반지",
-        }
-    }
+    use nexus_sim::Rejection;
 
     pub(super) fn rejection(reason: Rejection) -> &'static str {
         match reason {
@@ -2722,6 +2716,7 @@ mod text {
             Rejection::Invulnerable => "공격할 수 없는 대상입니다",
             Rejection::Friendly => "우호 대상입니다",
             Rejection::EmptySlot => "빈 칸입니다",
+            Rejection::NoEquipSlot => "그 장신구를 낄 칸이 없습니다",
             Rejection::InventoryFull => "가방이 가득 찼습니다",
             Rejection::NotUsable => "쓸 수 없는 아이템입니다",
             Rejection::NotDead => "쓰러진 상태가 아닙니다",
@@ -2752,7 +2747,16 @@ fn restore(world: &mut SimWorld, player: Entity, save: &SaveData) {
         world.place_item(player, slot, ItemStack { item, count });
     }
     for &item in &save.equipped {
-        world.force_equip(player, item);
+        // 장신구 칸을 줄였으면 남는 것은 장비 가방으로 — 이어 하기에서 아이템을 잃지 않게.
+        if !world.force_equip(player, item) {
+            let free = world.unit(player).and_then(|u| {
+                (0..nexus_sim::BAG_SLOTS)
+                    .find(|&i| u.inventory().bag(BagKind::Equipment).get(i).is_none())
+            });
+            if let Some(slot) = free.and_then(|i| u16::try_from(i).ok()) {
+                world.place_item(player, slot, ItemStack { item, count: 1 });
+            }
+        }
     }
     // 위치는 같은 존일 때만 남아 있다 — 다른 존이면 스폰 지점 그대로다.
     if let Some(pos) = save.pos {
@@ -3976,7 +3980,7 @@ mod tests {
         let values = s.list_values();
         assert_eq!(
             values.equipment.len(),
-            EquipSlot::ALL.len(),
+            s.world().equip_positions().len(),
             "장신구 두 자리 포함"
         );
         assert!(values.equipment.iter().all(|r| !r.enabled));

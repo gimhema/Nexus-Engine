@@ -29,7 +29,7 @@ use std::path::Path;
 use nexus_render_wgpu::egui;
 
 use crate::game_data::{
-    MARKER_KINDS, RelationChoice, RelationRow, SettingsForm, actor_forms, data_texts,
+    AccessoryRow, MARKER_KINDS, RelationChoice, RelationRow, SettingsForm, actor_forms, data_texts,
     patch_settings, settings_form, table_forms, write_tables,
 };
 
@@ -48,6 +48,9 @@ pub(crate) struct RulesEditor {
     /// 진영 이름 표 (`display.ron` 의 `factions`, P19) — 디스크 값 / 고치는 값. `(번호, 이름)`, 번호 순.
     names_saved: Vec<(u32, String)>,
     names_edit: Vec<(u32, String)>,
+    /// 장신구 칸 — 종류마다 칸 수와 이름.
+    accessories_saved: Vec<AccessoryRow>,
+    accessories_edit: Vec<AccessoryRow>,
     status: Option<(bool, String)>,
     saved_now: bool,
 }
@@ -69,7 +72,9 @@ impl RulesEditor {
     }
 
     fn is_dirty(&self) -> bool {
-        (self.edit.is_some() && self.edit != self.saved) || self.names_edit != self.names_saved
+        (self.edit.is_some() && self.edit != self.saved)
+            || self.names_edit != self.names_saved
+            || self.accessories_edit != self.accessories_saved
     }
 
     fn reload(&mut self) -> Result<(), String> {
@@ -101,6 +106,8 @@ impl RulesEditor {
             .into_iter()
             .collect();
         self.names_edit = self.names_saved.clone();
+        self.accessories_saved = crate::game_data::accessory_rows(&rules, &display)?;
+        self.accessories_edit = self.accessories_saved.clone();
         Ok(())
     }
 
@@ -132,6 +139,7 @@ impl RulesEditor {
         let (actors, items, skills, factions) =
             (&self.actors, &self.items, &self.skills, &self.factions);
         let names = &mut self.names_edit;
+        let accessories = &mut self.accessories_edit;
 
         egui::Grid::new("rules-top").num_columns(2).show(ui, |ui| {
             ui.label("난수 시드");
@@ -211,6 +219,41 @@ impl RulesEditor {
             let next =
                 unnamed.unwrap_or_else(|| names.iter().map(|(id, _)| *id).max().unwrap_or(0) + 1);
             names.push((next, String::from("새 진영")));
+        }
+
+        ui.add_space(6.0);
+        ui.strong("장신구 칸");
+        ui.weak("종류마다 칸 수를 정한다. 아이템은 표 편집기에서 자리를 그 종류로 고른다. 0칸이면 낄 수 없다.");
+        let mut remove = None;
+        for (i, row) in accessories.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut row.kind).range(1..=9_999))
+                    .on_hover_text("종류 번호");
+                ui.add(
+                    egui::TextEdit::singleline(&mut row.name)
+                        .hint_text("이름")
+                        .desired_width(100.0),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut row.count)
+                        .range(0..=12)
+                        .suffix("칸"),
+                );
+                if ui.small_button("×").on_hover_text("이 종류 빼기").clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            accessories.remove(i);
+        }
+        if ui.button("+ 장신구 종류").clicked() {
+            let next = accessories.iter().map(|r| r.kind).max().unwrap_or(0) + 1;
+            accessories.push(AccessoryRow {
+                kind: next,
+                count: 1,
+                name: String::from("새 장신구"),
+            });
         }
 
         ui.add_space(6.0);
@@ -310,10 +353,16 @@ impl RulesEditor {
         let Some(form) = self.edit.clone() else {
             return;
         };
-        match save_settings(Path::new("."), &form, &self.names_edit) {
+        match save_settings(
+            Path::new("."),
+            &form,
+            &self.names_edit,
+            &self.accessories_edit,
+        ) {
             Ok(()) => {
                 self.saved = Some(form);
                 self.names_saved = self.names_edit.clone();
+                self.accessories_saved = self.accessories_edit.clone();
                 self.saved_now = true;
                 self.status = Some((
                     false,
@@ -327,10 +376,17 @@ impl RulesEditor {
 
 /// `root` 아래의 두 파일에 설정을 쓴다 — 규칙 반쪽(`rules.ron`)과 진영 이름(`display.ron` 의 `factions`).
 /// 두 파일을 **함께 다시 검증**한 뒤에만 쓴다.
-fn save_settings(root: &Path, form: &SettingsForm, names: &[(u32, String)]) -> Result<(), String> {
+fn save_settings(
+    root: &Path,
+    form: &SettingsForm,
+    names: &[(u32, String)],
+    accessories: &[AccessoryRow],
+) -> Result<(), String> {
     let read = |p: &str| std::fs::read_to_string(root.join(p)).map_err(|e| format!("{p}: {e}"));
     let rules = read(crate::game_data::RULES_PATH)?;
     let display = read(crate::game_data::DISPLAY_PATH)?;
+    // 장신구 칸을 먼저 끼운다 — 칸을 늘린 종류를 쓰는 아이템이 있으면 그래야 설정 검사를 통과한다.
+    let (rules, display) = crate::game_data::patch_accessories(&rules, &display, accessories)?;
     let rules = patch_settings(&rules, &display, form)?;
     let display = patch_names(&display, names)?;
     crate::game_data::GameData::parse(&rules, &display)?;
@@ -446,6 +502,38 @@ mod tests {
         form.relations.clear();
         let text = patch_settings(&rules, &display, &form).unwrap();
         assert!(text.contains("starting_kit: [],") && text.contains("relations: [],"));
+    }
+
+    #[test]
+    fn accessory_slot_counts_are_edited_in_both_files() {
+        let (rules, display) = data_texts().unwrap();
+        let mut rows = crate::game_data::accessory_rows(&rules, &display).unwrap();
+        assert_eq!(
+            rows.iter().map(|r| (r.kind, r.count)).collect::<Vec<_>>(),
+            [(1, 1), (2, 2), (3, 2)]
+        );
+        // 반지를 4칸으로, 발찌 종류를 새로.
+        rows[1].count = 4;
+        rows.push(AccessoryRow {
+            kind: 4,
+            count: 2,
+            name: String::from("발찌"),
+        });
+        let (r2, d2) = crate::game_data::patch_accessories(&rules, &display, &rows).unwrap();
+        let data = crate::game_data::GameData::parse(&r2, &d2).unwrap();
+        let mut world = nexus_sim::SimWorld::new(nexus_sim::TileMap::new(
+            4,
+            4,
+            1.0,
+            nexus_core::Vec2::ZERO,
+            nexus_sim::Tile::default(),
+        ));
+        data.install(&mut world);
+        assert_eq!(world.equip_positions().len(), 5 + 1 + 4 + 2 + 2);
+        assert_eq!(data.accessory_name(4), "발찌");
+
+        let twice = [rows[0].clone(), rows[0].clone()];
+        assert!(crate::game_data::patch_accessories(&rules, &display, &twice).is_err());
     }
 
     #[test]
