@@ -1572,10 +1572,7 @@ fn play_inspector(ui: &mut egui::Ui, play: &PlaySession, actions: &mut UiActions
     }
     for line in skills {
         ui.horizontal(|ui| {
-            ui.label(format!(
-                "{} Lv{}/{} · MP {}",
-                line.name, line.level, line.max_level, line.mp_cost
-            ));
+            ui.label(format!("{} · MP {}", line.name, line.mp_cost));
             let shown = line
                 .slot
                 .map_or_else(|| String::from("—"), |i| (i + 1).to_string());

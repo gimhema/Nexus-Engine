@@ -86,7 +86,6 @@ pub struct SimWorld {
     accessory_slots: BTreeMap<AccessoryKind, u8>,
     /// 버프 정의와, 그것을 거는 스킬·소모품 (R2b).
     buffs: HashMap<BuffId, BuffDef>,
-    skill_buffs: HashMap<SkillId, BuffId>,
     /// 날아가는 스킬의 속도 (m/s, T8)와 지금 날아가는 것들 (쏜 순서).
     skill_projectiles: HashMap<SkillId, f32>,
     projectiles: Vec<combat::Projectile>,
@@ -139,7 +138,6 @@ impl SimWorld {
             equip_rules: HashMap::new(),
             accessory_slots: BTreeMap::new(),
             buffs: HashMap::new(),
-            skill_buffs: HashMap::new(),
             skill_projectiles: HashMap::new(),
             projectiles: Vec::new(),
             item_buffs: HashMap::new(),
@@ -1277,40 +1275,31 @@ impl SimWorld {
         self.skill_rules.get(&skill)
     }
 
-    /// 스킬 최대 레벨 (규칙이 없으면 1).
-    #[must_use]
-    pub fn skill_max_level(&self, skill: SkillId) -> u32 {
-        self.skill_rules
-            .get(&skill)
-            .map_or(1, |r| r.max_level.max(1))
-    }
-
-    /// 스킬 레벨을 그대로 심는다 (설정 작업 — 직업의 시작 스킬, 저장 파일에서 되살릴 때).
-    /// 조건은 보지 않는다. 최대 레벨로 자르고, 0 이면 뗀다. 없는 스킬은 무시한다.
-    pub fn set_skill_level(&mut self, unit: Entity, skill: SkillId, level: u32) {
+    /// 스킬을 가졌는지 그대로 심는다 (설정 작업 — 직업의 시작 스킬, 저장 파일에서 되살릴 때).
+    /// 조건은 보지 않는다. 없는 스킬은 무시한다.
+    pub fn set_known(&mut self, unit: Entity, skill: SkillId, known: bool) {
         if !self.skills.contains_key(&skill) {
             return;
         }
-        let max = self.skill_max_level(skill);
         if let Some(u) = self.unit_mut(unit) {
-            if level == 0 {
-                u.skills.remove(&skill);
+            if known {
+                u.skills.insert(skill);
             } else {
-                u.skills.insert(skill, level.min(max));
+                u.skills.remove(&skill);
             }
         }
     }
 
-    /// 이 유닛이 쓸 때의 스킬 — 레벨 수식을 그 유닛의 스탯·스킬 레벨로 계산해 덮은 값 (R3).
-    /// 배우지 않은 스킬은 1레벨로 계산한다. UI 가 툴팁에 쓸 수 있다.
+    /// 이 유닛이 쓸 때의 스킬 — 공식을 그 유닛의 스탯·레벨·장비로 계산해 덮은 값 (R3·K1).
+    /// 배우지 않은 스킬(몬스터의 스킬)도 같다. UI 가 툴팁에 쓸 수 있다.
     #[must_use]
     pub fn effective_skill(&self, unit: Entity, skill: SkillId) -> Option<SkillDef> {
-        let mut def = *self.skills.get(&skill)?;
+        let mut def = self.skills.get(&skill)?.clone();
         let Some(rules) = self.skill_rules.get(&skill) else {
             return Some(def);
         };
         let u = self.unit(unit)?;
-        // 변수 순서는 skills::skill_variables 와 같다: 기본 스탯 · level · equip_attack · equip_defense · skill_level.
+        // 변수 순서는 skills::skill_variables 와 같다: 기본 스탯 · level · equip_attack · equip_defense.
         let n = self.stat_rules.as_ref().map_or(0, |r| r.stats().len());
         let mut vals: Vec<i64> = (0..n)
             .map(|i| {
@@ -1324,11 +1313,15 @@ impl SimWorld {
             i64::from(u.progress.level()),
             i64::from(u.bonus_attack),
             i64::from(u.bonus_defense),
-            i64::from(u.skill_level(skill).max(1)),
         ]);
-        if let Some(f) = &rules.power_per_mille {
-            // 천분율 → 배율. 전투 공식은 서버와 같은 f32 배율을 그대로 쓴다.
-            def.damage_mult = to_u32(f.eval(&vals)) as f32 / 1000.0;
+        // 효과마다 공식 (K1) — 피해는 위력 천분율, 회복은 양. 버프 효과에는 공식이 없다.
+        for (i, f) in &rules.amounts {
+            let v = to_u32(f.eval(&vals));
+            match def.effects.get_mut(*i).map(|e| &mut e.kind) {
+                Some(combat::EffectKind::Damage { power_per_mille }) => *power_per_mille = v,
+                Some(combat::EffectKind::Heal { amount }) => *amount = v,
+                _ => {}
+            }
         }
         if let Some(f) = &rules.cooldown_ms {
             def.cooldown_ms = to_u32(f.eval(&vals));
@@ -1336,46 +1329,39 @@ impl SimWorld {
         if let Some(f) = &rules.mp_cost {
             def.mp_cost = to_u32(f.eval(&vals));
         }
-        if let Some(f) = &rules.heal {
-            def.heal = to_u32(f.eval(&vals));
-        }
         Some(def)
     }
 
-    /// 스킬을 배운다 / 레벨을 올린다 — **모든 습득 경로가 지나는 문** (R3). 새 레벨을 돌려준다.
+    /// 스킬을 배운다 — **모든 습득 경로가 지나는 문** (R3). 스킬 레벨은 없다 (K1) — 한 번 가지면 끝이다.
     pub(crate) fn learn(
         &mut self,
         unit: Entity,
         skill: SkillId,
-        levels: u32,
         events: &mut Vec<Event>,
-    ) -> Result<u32, Rejection> {
+    ) -> Result<(), Rejection> {
         if !self.skills.contains_key(&skill) {
             return Err(Rejection::UnknownSkill);
         }
         let u = self.unit(unit).ok_or(Rejection::UnknownEntity)?;
-        let max = self.skill_max_level(skill);
-        let have = u.skill_level(skill);
+        if u.knows(skill) {
+            return Err(Rejection::SkillKnown);
+        }
         if let Some(rules) = self.skill_rules.get(&skill)
             && (!rules.allows(u.def.class) || !self.check(&rules.requires, unit))
         {
             return Err(Rejection::SkillRequirement);
         }
-        if have >= max {
-            return Err(Rejection::SkillMaxed);
-        }
-        let level = have.saturating_add(levels.max(1)).min(max);
         if let Some(u) = self.unit_mut(unit) {
-            u.skills.insert(skill, level);
+            u.skills.insert(skill);
         }
-        events.push(Event::SkillLearned { unit, skill, level });
-        Ok(level)
+        events.push(Event::SkillLearned { unit, skill });
+        Ok(())
     }
 
     /// 스킬을 뗀다 (R3). 배우지 않았으면 아무 일도 없다.
     pub(crate) fn forget(&mut self, unit: Entity, skill: SkillId, events: &mut Vec<Event>) {
         if let Some(u) = self.unit_mut(unit)
-            && u.skills.remove(&skill).is_some()
+            && u.skills.remove(&skill)
         {
             events.push(Event::SkillForgotten { unit, skill });
         }
@@ -1417,9 +1403,19 @@ impl SimWorld {
         self.buffs.insert(id, def);
     }
 
-    /// 이 스킬이 맞은 유닛마다 건다 (R2b).
+    /// 이 스킬이 맞은 유닛마다 건다 (R2b) — 예전 방식. 첫 효과와 **같은 대상**에게 거는 버프 효과를
+    /// 효과 목록 끝에 더한다 (K1). 스킬을 먼저 등록해야 한다.
     pub fn define_skill_buff(&mut self, skill: SkillId, buff: BuffId) {
-        self.skill_buffs.insert(skill, buff);
+        if let Some(def) = self.skills.get_mut(&skill) {
+            let to = def
+                .effects
+                .first()
+                .map_or(combat::Affects::Target, |e| e.to);
+            def.effects.push(combat::SkillEffect {
+                to,
+                kind: combat::EffectKind::Buff(buff),
+            });
+        }
     }
 
     /// 이 스킬은 `speed`(m/s)로 날아가 닿을 때 들어간다 (T8). 회복 스킬에는 쓰이지 않는다.
@@ -1455,9 +1451,8 @@ impl SimWorld {
             if t.is_protected(self.now) {
                 continue;
             }
-            self.strike(p.attacker, p.target, p.skill, p.def, events);
-            if let Some(buff) = self.skill_buffs.get(&p.skill).copied() {
-                self.apply_buff(p.target, buff, Some(p.attacker), events);
+            for kind in p.effects {
+                self.apply_skill_effect(p.attacker, p.target, p.skill, kind, events);
             }
         }
         self.projectiles = still;
@@ -1664,9 +1659,7 @@ impl SimWorld {
             Condition::HasCurrency { currency, amount } => {
                 unit.is_some_and(|u| u.wallet.get(*currency) >= *amount)
             }
-            Condition::SkillLevel { skill, cmp, value } => {
-                unit.is_some_and(|u| cmp.test(i64::from(u.skill_level(*skill)), i64::from(*value)))
-            }
+            Condition::HasSkill(skill) => unit.is_some_and(|u| u.knows(*skill)),
             Condition::Cleared => self.is_cleared(),
             Condition::HasBuff(buff) => unit.is_some_and(|u| u.has_buff(*buff)),
         }
@@ -2012,8 +2005,16 @@ impl SimWorld {
         let def = self
             .effective_skill(attacker, skill)
             .ok_or(Rejection::UnknownSkill)?;
+        // 지점·방향 조준은 K2 의 `Intent::Cast` 로만 쓴다 — 유닛을 고르는 이 길로는 겨눌 곳이 없다.
+        if matches!(def.aim, combat::Aim::Point | combat::Aim::Direction) {
+            return Err(Rejection::NeedsAim);
+        }
+        // 자신 조준이면 대상은 늘 시전자다.
+        let on_self = def.aim == combat::Aim::Caster;
+        let target = if on_self { attacker } else { target };
+        let harmful = def.is_harmful();
         // 회복은 자신에게도 쓴다. 피해는 자신에게 쓸 수 없다.
-        if attacker == target && !def.is_heal() {
+        if attacker == target && harmful && !on_self {
             return Err(Rejection::InvalidTarget);
         }
         let a = self.unit(attacker).ok_or(Rejection::UnknownEntity)?;
@@ -2032,11 +2033,13 @@ impl SimWorld {
         if !a.has_mp(def.mp_cost) {
             return Err(Rejection::NotEnoughMp);
         }
-        if a.pos.distance_squared(t.pos) > def.range * def.range {
+        if !on_self && a.pos.distance_squared(t.pos) > def.range * def.range {
             return Err(Rejection::OutOfRange);
         }
         let relation = self.factions.get(a.def.faction, t.def.faction);
-        if def.is_heal() {
+        if on_self {
+            // 자신 조준은 대상 판정이 없다 — 효과가 판정 모양 안에서 고른다.
+        } else if !harmful {
             if attacker != target && relation == Relation::Hostile {
                 return Err(Rejection::InvalidTarget);
             }
@@ -2049,7 +2052,7 @@ impl SimWorld {
             }
         }
         // 서버와 겹치는 판정 뒤에 붙인 것 (R3) — 직업이 있는 유닛은 배운 스킬과 기본 공격만 쓴다.
-        if a.def.class.is_some() && a.def.basic_attack != Some(skill) && a.skill_level(skill) == 0 {
+        if a.def.class.is_some() && a.def.basic_attack != Some(skill) && !a.knows(skill) {
             return Err(Rejection::SkillNotLearned);
         }
         // 상태이상도 서버와 겹치는 판정 뒤에 (R2b).
@@ -2060,27 +2063,39 @@ impl SimWorld {
             return Err(Rejection::Silenced);
         }
 
-        // 맞는 유닛 — 대상이 먼저, 그다음 범위 안의 다른 유닛을 슬롯 순서대로 (결정적).
-        let mut hits = vec![target];
-        if def.radius > 0.0 {
-            let (center, now) = (t.pos, self.now);
-            let faction = a.def.faction;
-            let r2 = def.radius * def.radius;
-            for (e, u) in self.units() {
-                if e == target || !u.is_alive() || u.pos.distance_squared(center) > r2 {
-                    continue;
-                }
-                let rel = self.factions.get(faction, u.def.faction);
-                let ok = if def.is_heal() {
-                    e == attacker || rel == Relation::Friendly
-                } else {
-                    e != attacker
-                        && rel == Relation::Hostile
-                        && !u.def.immortal
-                        && !u.is_protected(now)
-                };
-                if ok {
-                    hits.push(e);
+        // 판정 모양 안의 유닛 — 고른 대상이 먼저, 그다음 슬롯 순서대로 (결정적).
+        let (origin, anchor) = (a.pos, t.pos);
+        let dir = if on_self {
+            nexus_core::units::heading_to_dir(a.heading)
+        } else {
+            t.pos - a.pos
+        };
+        let mut inside = vec![target];
+        for (e, u) in self.units() {
+            if e != target
+                && u.is_alive()
+                && combat::in_area(def.area, origin, anchor, dir, def.range, u.pos)
+            {
+                inside.push(e);
+            }
+        }
+        // 맞는 유닛마다 그 유닛에 해당하는 효과 — 효과 목록 순서대로.
+        let mut hits: Vec<(Entity, Vec<combat::EffectKind>)> = Vec::new();
+        let add = |hits: &mut Vec<(Entity, Vec<combat::EffectKind>)>, e: Entity, k| match hits
+            .iter_mut()
+            .find(|(h, _)| *h == e)
+        {
+            Some((_, ks)) => ks.push(k),
+            None => hits.push((e, vec![k])),
+        };
+        for effect in &def.effects {
+            if effect.to == combat::Affects::Caster {
+                add(&mut hits, attacker, effect.kind);
+                continue;
+            }
+            for &e in &inside {
+                if self.affected(effect.to, attacker, target, e) {
+                    add(&mut hits, e, effect.kind);
                 }
             }
         }
@@ -2094,40 +2109,82 @@ impl SimWorld {
             a.heading = dir_to_heading(facing);
         }
 
-        let buff = self.skill_buffs.get(&skill).copied();
+        // 날아가는 스킬 (T8) — 시전자 아닌 유닛에게는 투사체가 날라 가 닿을 때 들어간다.
         let flies = self.skill_projectiles.get(&skill).copied();
         let from = self.unit(attacker).map_or(Vec2::ZERO, Unit::pos);
-        for target in hits {
-            if let (Some(speed), false) = (flies, def.is_heal()) {
+        for (unit, kinds) in hits {
+            if let Some(speed) = flies.filter(|_| unit != attacker) {
                 self.projectiles.push(combat::Projectile {
                     attacker,
-                    target,
+                    target: unit,
                     skill,
-                    def,
+                    effects: kinds,
                     speed,
                     pos: from,
                     prev_pos: from,
                 });
                 continue;
             }
-            if def.is_heal() {
-                if let Some(t) = self.unit_mut(target) {
+            for kind in kinds {
+                self.apply_skill_effect(attacker, unit, skill, kind, events);
+            }
+        }
+        Ok(())
+    }
+
+    /// 효과의 대상 필터 (K1, [`combat::Affects`]) — `e` 가 판정 모양 안의 유닛일 때.
+    fn affected(&self, to: combat::Affects, attacker: Entity, target: Entity, e: Entity) -> bool {
+        use combat::Affects;
+        let Some(u) = self.unit(e).filter(|u| u.is_alive()) else {
+            return false;
+        };
+        let faction = self
+            .unit(attacker)
+            .map_or(FactionId::NONE, |a| a.def.faction);
+        let rel = self.factions.get(faction, u.def.faction);
+        // 고른 대상은 조준 판정을 이미 통과했다 — 자신 조준이면 시전자다.
+        let chosen = e == target && e != attacker;
+        match to {
+            Affects::Target => e == target,
+            Affects::Caster => e == attacker,
+            Affects::Enemies => {
+                chosen
+                    || (e != attacker
+                        && rel == Relation::Hostile
+                        && !u.def.immortal
+                        && !u.is_protected(self.now))
+            }
+            Affects::Allies => chosen || (e != attacker && rel == Relation::Friendly),
+            Affects::AlliesAndCaster => e == attacker || chosen || rel == Relation::Friendly,
+        }
+    }
+
+    /// 스킬 효과 하나를 들어가게 한다 (K1) — 판정을 마친 뒤에. 투사체는 닿을 때 부른다.
+    fn apply_skill_effect(
+        &mut self,
+        attacker: Entity,
+        target: Entity,
+        skill: SkillId,
+        kind: combat::EffectKind,
+        events: &mut Vec<Event>,
+    ) {
+        match kind {
+            combat::EffectKind::Damage { power_per_mille } => {
+                self.strike(attacker, target, skill, power_per_mille, events);
+            }
+            combat::EffectKind::Heal { amount } => {
+                if let Some(t) = self.unit_mut(target).filter(|t| t.is_alive()) {
                     let before = t.hp;
-                    t.hp = t.hp.saturating_add(def.heal).min(t.max_hp());
+                    t.hp = t.hp.saturating_add(amount).min(t.max_hp());
                     events.push(Event::Healed {
                         unit: target,
                         amount: t.hp - before,
                         remaining_hp: t.hp,
                     });
                 }
-            } else {
-                self.strike(attacker, target, skill, def, events);
             }
-            if let Some(buff) = buff {
-                self.apply_buff(target, buff, Some(attacker), events);
-            }
+            combat::EffectKind::Buff(buff) => self.apply_buff(target, buff, Some(attacker), events),
         }
-        Ok(())
     }
 
     /// 피해 한 번 — 판정을 마친 뒤에 부른다. 범위 스킬이면 맞는 유닛마다 한 번씩.
@@ -2136,7 +2193,7 @@ impl SimWorld {
         attacker: Entity,
         target: Entity,
         skill: SkillId,
-        def: SkillDef,
+        power_per_mille: u32,
         events: &mut Vec<Event>,
     ) {
         // 장비가 더해진 수치로 계산한다.
@@ -2146,7 +2203,12 @@ impl SimWorld {
         let Some(t) = self.unit_mut(target) else {
             return;
         };
-        let amount = combat::damage(attack, def.damage_mult, t.defense());
+        // 죽은 유닛에게는 들어가지 않는다 (같은 공격의 앞 효과로 쓰러졌을 수 있다).
+        if !t.is_alive() {
+            return;
+        }
+        // 천분율 → 배율. 전투 공식은 서버와 같은 f32 배율을 그대로 쓴다.
+        let amount = combat::damage(attack, power_per_mille as f32 / 1000.0, t.defense());
         t.hp = t.hp.saturating_sub(amount);
         let remaining_hp = t.hp;
         events.push(Event::Damaged {
@@ -2346,7 +2408,7 @@ impl SimWorld {
             ItemKind::Consumable { heal, mana } => (heal, mana),
             // 스킬북 (R3) — 배울 수 있을 때만 사라진다.
             ItemKind::SkillBook { skill } => {
-                self.learn(unit, skill, 1, events)?;
+                self.learn(unit, skill, events)?;
                 if let Some(u) = self.unit_mut(unit) {
                     u.inventory.consumables.take_one(slot);
                 }
@@ -2717,8 +2779,8 @@ impl SimWorld {
             Effect::ApplyBuff(buff) => self.apply_buff(subject, buff, None, events),
             Effect::RemoveBuff(buff) => self.remove_buff(subject, buff, events),
             Effect::GiveExp(amount) => self.grant_exp(subject, amount, events),
-            Effect::GrantSkill { skill, levels } => {
-                let _ = self.learn(subject, skill, levels, events);
+            Effect::GrantSkill { skill } => {
+                let _ = self.learn(subject, skill, events);
             }
             Effect::RemoveSkill { skill } => self.forget(subject, skill, events),
             Effect::StartQuest(quest) => {

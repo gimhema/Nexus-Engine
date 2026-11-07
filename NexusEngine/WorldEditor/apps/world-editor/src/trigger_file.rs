@@ -145,12 +145,8 @@ pub(crate) enum ConditionFile {
     All(Vec<ConditionFile>),
     Any(Vec<ConditionFile>),
     Not(Box<ConditionFile>),
-    /// 대상이 그 스킬을 몇 레벨 배웠나 (배우지 않았으면 0, R3).
-    SkillLevel {
-        skill: u32,
-        cmp: CmpFile,
-        value: u32,
-    },
+    /// 대상이 그 스킬을 가졌다 (R3·K1) — `HasSkill(9)`.
+    HasSkill(u32),
     /// 대상의 퀘스트 상태 (R5) — `Quest(quest: 1, state: Completed)`.
     Quest {
         quest: u32,
@@ -210,11 +206,9 @@ pub(crate) enum EffectFile {
         count: u32,
     },
     GiveExp(u32),
-    /// 스킬을 배운다 / `levels` 만큼 올린다 (R3). `levels` 를 적지 않으면 1.
+    /// 스킬을 배운다 (R3) — `GrantSkill(skill: 9)`. 스킬 레벨은 없다 (K1).
     GrantSkill {
         skill: u32,
-        #[serde(default = "one")]
-        levels: u32,
     },
     RemoveSkill {
         skill: u32,
@@ -237,10 +231,6 @@ pub(crate) enum EffectFile {
         currency: u32,
         amount: u32,
     },
-}
-
-fn one() -> u32 {
-    1
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
@@ -359,7 +349,7 @@ pub(crate) fn check_condition(
             err(format!("when: 없는 아이템 {item}"));
         }
         ConditionFile::Actor(a) if !(known.actor)(*a) => err(format!("when: 없는 액터 {a}")),
-        ConditionFile::SkillLevel { skill, .. } if !(known.skill)(*skill) => {
+        ConditionFile::HasSkill(skill) if !(known.skill)(*skill) => {
             err(format!("when: 없는 스킬 {skill}"));
         }
         ConditionFile::Quest { quest, .. } if !(known.quest)(*quest) => {
@@ -440,7 +430,7 @@ fn condition_refs(c: &ConditionFile, r: &mut Refs) {
             }
         }
         ConditionFile::Not(c) => condition_refs(c, r),
-        ConditionFile::SkillLevel { skill, .. } => {
+        ConditionFile::HasSkill(skill) => {
             r.skills.insert(*skill);
         }
         _ => {}
@@ -510,11 +500,7 @@ impl From<&ConditionFile> for Condition {
             ConditionFile::All(list) => Condition::All(list.iter().map(Into::into).collect()),
             ConditionFile::Any(list) => Condition::Any(list.iter().map(Into::into).collect()),
             ConditionFile::Not(c) => Condition::Not(Box::new(c.as_ref().into())),
-            ConditionFile::SkillLevel { skill, cmp, value } => Condition::SkillLevel {
-                skill: SkillId(*skill),
-                cmp: (*cmp).into(),
-                value: *value,
-            },
+            ConditionFile::HasSkill(skill) => Condition::HasSkill(SkillId(*skill)),
             ConditionFile::Quest { quest, state } => Condition::Quest {
                 quest: nexus_sim::QuestId(*quest),
                 state: (*state).into(),
@@ -551,9 +537,8 @@ impl From<EffectFile> for Effect {
                 count,
             },
             EffectFile::GiveExp(n) => Effect::GiveExp(n),
-            EffectFile::GrantSkill { skill, levels } => Effect::GrantSkill {
+            EffectFile::GrantSkill { skill } => Effect::GrantSkill {
                 skill: SkillId(skill),
-                levels,
             },
             EffectFile::RemoveSkill { skill } => Effect::RemoveSkill {
                 skill: SkillId(skill),

@@ -103,26 +103,27 @@ pub(crate) struct TableEditor {
     preview: SkillPreview,
 }
 
-/// 스킬 레벨별 수치 표 (T5) — 게임과 같은 계산(`effective_skill`)으로. 폼이 바뀔 때만 다시 계산한다.
+/// 캐릭터 레벨별 스킬 수치 표 (T5·K1) — 게임과 같은 계산(`effective_skill`)으로. 폼이 바뀔 때만 다시 계산한다.
+/// 스킬 레벨은 없으므로(K1) 줄은 **캐릭터 레벨**이다 — 1 부터 `char_level` 까지 몇 단계.
 #[derive(Debug, Default)]
 struct SkillPreview {
     class: u32,
     char_level: u32,
     key: Option<(u32, SkillForm, u32, u32)>,
-    result: Option<Result<Vec<SkillLevelRow>, String>>,
+    result: Option<Result<Vec<SkillRow>, String>>,
     classes: Vec<u32>,
 }
 
-/// 표 한 줄 `(스킬 레벨, 위력 천분율, 쿨타임 ms, MP, 회복)`.
-type SkillLevelRow = (u32, u32, u32, u32, u32);
+/// 표 한 줄 `(캐릭터 레벨, 위력 천분율, 쿨타임 ms, MP, 회복)`.
+type SkillRow = (u32, u32, u32, u32, u32);
 
-/// 저장하지 않은 폼으로 레벨별 수치를 계산한다.
-fn skill_level_rows(
+/// 저장하지 않은 폼으로 캐릭터 레벨별 수치를 계산한다.
+fn skill_rows(
     id: u32,
     form: &SkillForm,
     class: u32,
     char_level: u32,
-) -> Result<Vec<SkillLevelRow>, String> {
+) -> Result<Vec<SkillRow>, String> {
     use nexus_sim::{ClassId, Progress, SimWorld, SkillId, Tile, TileMap, UnitDef};
     let (rules, display) = crate::game_data::data_texts()?;
     let (rules, display) = patch(&rules, &display, id, &Edit::Skill(form.clone()))?;
@@ -143,19 +144,23 @@ fn skill_level_rows(
             ..UnitDef::default()
         },
     );
-    world.set_progress(unit, Progress::new(char_level.max(1), 0));
+    let top = char_level.max(1);
+    // 1, 그리고 맨 위까지 고르게 다섯 단계 (같은 레벨은 한 번).
+    let mut levels: Vec<u32> = (0..=5).map(|i| 1 + (top - 1) * i / 5).collect();
+    levels.dedup();
     let mut rows = Vec::new();
-    for level in 1..=form.level.max_level.clamp(1, 20) {
-        world.set_skill_level(unit, SkillId(id), level);
+    for level in levels {
+        // 스탯도 그 레벨로 다시 계산된다 (`set_progress`).
+        world.set_progress(unit, Progress::new(level, 0));
         let def = world
             .effective_skill(unit, SkillId(id))
             .ok_or("스킬을 계산할 수 없음")?;
         rows.push((
             level,
-            (def.damage_mult * 1000.0).round() as u32,
+            def.power_per_mille().unwrap_or(0),
             def.cooldown_ms,
             def.mp_cost,
-            def.heal,
+            def.heal_amount().unwrap_or(0),
         ));
     }
     Ok(rows)
@@ -169,10 +174,10 @@ impl SkillPreview {
                 .map(|d| d.class_ids().map(|c| c.0).collect())
                 .unwrap_or_default();
             self.class = self.classes.first().copied().unwrap_or(0);
-            self.char_level = 1;
+            self.char_level = 50;
         }
         ui.separator();
-        ui.strong("레벨별 수치");
+        ui.strong("캐릭터 레벨별 수치");
         ui.horizontal(|ui| {
             let (class, classes) = (&mut self.class, &self.classes);
             egui::ComboBox::from_label("직업")
@@ -182,12 +187,12 @@ impl SkillPreview {
                         ui.selectable_value(class, *c, format!("#{c}"));
                     }
                 });
-            ui.label("캐릭터 레벨");
+            ui.label("최고 레벨");
             ui.add(egui::DragValue::new(&mut self.char_level).range(1..=999));
         });
         let key = (id, form.clone(), self.class, self.char_level);
         if self.key.as_ref() != Some(&key) {
-            self.result = Some(skill_level_rows(id, form, self.class, self.char_level));
+            self.result = Some(skill_rows(id, form, self.class, self.char_level));
             self.key = Some(key);
         }
         match &self.result {
@@ -938,6 +943,16 @@ fn skill_form(ui: &mut egui::Ui, f: &mut SkillForm) {
         ui.label("날아가는 속도 (m/s, 0 = 바로 맞음)");
         ui.add(egui::DragValue::new(&mut f.level.projectile_speed).range(0..=200));
         ui.end_row();
+        // 새 모양 (K1) — 정식 폼(K8) 전까지 RON 한 줄로. 저장할 때 게임과 같은 검사를 거친다.
+        ui.label("새 모양 (조준·범위·효과)")
+            .on_hover_text("aim: Point, cast_ms: 250, area: Circle(radius: 2.0), effects: [Damage(to: Enemies, power: \"1500 + int * 30\")], tags: [\"fire\"]");
+        ui.add(
+            egui::TextEdit::multiline(&mut f.level.shape)
+                .desired_rows(2)
+                .desired_width(320.0)
+                .font(egui::TextStyle::Monospace),
+        );
+        ui.end_row();
         ui.label("이름");
         ui.add(egui::TextEdit::singleline(&mut f.name).desired_width(180.0));
         ui.end_row();
@@ -978,16 +993,13 @@ fn skill_form(ui: &mut egui::Ui, f: &mut SkillForm) {
             .on_hover_text("0 보다 크면 피해 대신 HP 를 채운다 — 자신·우호 유닛에게 쓴다");
         ui.end_row();
     });
-    // 레벨·부착 규칙 (R3).
+    // 습득·공식 (R3·K1).
     ui.add_space(6.0);
-    ui.strong("레벨과 습득");
+    ui.strong("습득과 공식");
     let l = &mut f.level;
     egui::Grid::new("skill-level-form")
         .num_columns(2)
         .show(ui, |ui| {
-            ui.label("최대 레벨");
-            ui.add(egui::DragValue::new(&mut l.max_level).range(1..=100));
-            ui.end_row();
             ui.label("배울 수 있는 직업");
             let mut text = l
                 .classes
@@ -1013,12 +1025,12 @@ fn skill_form(ui: &mut egui::Ui, f: &mut SkillForm) {
                     .desired_width(220.0)
                     .font(egui::TextStyle::Monospace),
             )
-            .on_hover_text("트리거의 when 과 같은 형식 — 비우면 늘 참. 레벨을 올릴 때도 매번 본다");
+            .on_hover_text("트리거의 when 과 같은 형식 — 비우면 늘 참");
             ui.end_row();
             for (label, text, hint) in [
-                ("위력 수식 ‰", &mut l.power, "1500 + skill_level * 100"),
-                ("쿨타임 수식", &mut l.cooldown, "3000 - skill_level * 200"),
-                ("MP 수식", &mut l.mp_cost, "10 + skill_level * 2"),
+                ("위력 수식 ‰", &mut l.power, "1500 + level * 40 + str * 10"),
+                ("쿨타임 수식", &mut l.cooldown, "3000 - level * 20"),
+                ("MP 수식", &mut l.mp_cost, "10 + level"),
                 ("회복 수식", &mut l.heal, "20 + int * 3"),
             ] {
                 ui.label(label);
@@ -1031,7 +1043,7 @@ fn skill_form(ui: &mut egui::Ui, f: &mut SkillForm) {
                 ui.end_row();
             }
         });
-    ui.weak("수식 칸이 비어 있지 않으면 위의 같은 칸(배율·쿨타임·MP·회복)보다 이긴다. 변수: 기본 스탯 · level · equip_attack · equip_defense · skill_level.");
+    ui.weak("수식 칸이 비어 있지 않으면 위의 같은 칸(배율·쿨타임·MP·회복)보다 이긴다. 변수: 기본 스탯 · level(캐릭터 레벨) · equip_attack · equip_defense. 스킬 레벨은 없다 — 한 번 얻으면 공식이 세기를 정한다.");
     ui.weak("피해 = max(1, 공격 × 배율 − 방어) — 서버 CombatProcessor 와 같은 식.");
     ui.weak("MP 소모가 0 이면 MP 를 보지 않는다. MP 가 모자라면 거절되고 쿨타임도 걸리지 않는다.");
 }
@@ -1399,18 +1411,23 @@ mod tests {
         assert!(r.contains("// 플레이어 베기"), "스킬 줄 끝 주석");
     }
 
-    /// 수치 표 (T5) — 숫자는 그대로, 수식은 레벨마다 게임과 같은 계산으로.
+    /// 수치 표 (T5·K1) — 숫자는 그대로, 공식은 캐릭터 레벨마다 게임과 같은 계산으로.
     #[test]
     fn the_skill_table_uses_the_game_calculation() {
         let forms = {
             let (r, d) = repo_texts();
             table_forms(&r, &d).unwrap()
         };
-        let rows = skill_level_rows(5, &forms.skills[&5], 1, 1).unwrap();
-        assert_eq!(rows.len(), 5);
-        // 강베기: "1700 + skill_level * 100" · MP "13 + skill_level * 2".
+        // 1 부터 21 까지 다섯 단계 — 1·5·9·13·17·21.
+        let rows = skill_rows(5, &forms.skills[&5], 1, 21).unwrap();
+        assert_eq!(
+            rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+            [1, 5, 9, 13, 17, 21]
+        );
+        // 강베기: "1780 + level * 20" · MP "14 + level".
         assert_eq!(rows[0], (1, 1800, 3000, 15, 0));
-        assert_eq!(rows[4], (5, 2200, 3000, 23, 0));
+        assert_eq!(rows[5], (21, 2200, 3000, 35, 0));
+        assert_eq!(skill_rows(5, &forms.skills[&5], 1, 1).unwrap().len(), 1);
     }
 
     /// 버프 (R2b) — 새 항목이 두 파일에 들어가고, 없는 번호를 거는 스킬은 게임과 같은 검사가 막는다.

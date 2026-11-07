@@ -17,53 +17,237 @@
 
 use std::time::Duration;
 
+use nexus_core::Vec2;
+
 /// 스킬 번호. 서버 `SkillDef::skillId` 와 같은 공간이다 — **ID 공간이 곧 프로토콜.**
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SkillId(pub u32);
 
-/// 스킬 정적 데이터. 서버 `SkillDef` 의 단일 대상(Melee/Ranged) 부분 + 범위·회복.
+/// 어디를 겨누는가 (K1) — 입력이 무엇을 골라야 하는지를 정한다.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Aim {
+    /// 유닛 하나를 고른다 (대상 지정). 예전 스킬은 전부 이것이다.
+    #[default]
+    Unit,
+    /// 땅의 한 점을 고른다 (지점 범위) — K2 의 `Intent::Cast` 로만 쓴다.
+    Point,
+    /// 방향을 고른다 (스킬샷) — K2 의 `Intent::Cast` 로만 쓴다.
+    Direction,
+    /// 고르지 않는다 — 시전자 자신이 기준이다 (자기 버프·주변 범위).
+    Caster,
+}
+
+/// 판정 모양 (K1). 기준점은 조준 방식이 정한다 — 대상 지정이면 대상, 자신이면 시전자.
+/// 직선·부채꼴은 **시전자에서** 겨눈 쪽으로 뻗는다.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Area {
+    /// 고른 대상 하나 (자신 조준이면 시전자).
+    #[default]
+    Single,
+    /// 기준점 둘레 반경 (m).
+    Circle { radius: f32 },
+    /// 시전자에서 겨눈 쪽으로 사거리만큼, 폭 (m).
+    Line { width: f32 },
+    /// 시전자에서 겨눈 쪽으로 반경 (m) · 벌어진 각 (라디안, 전체 각).
+    Cone { radius: f32, angle: f32 },
+}
+
+/// 효과가 누구에게 들어가는가 (K1). 판정 모양 안의 유닛에서 고른다.
+///
+/// 고른 대상(대상 지정)은 조준 판정을 이미 통과했으므로 `Enemies`·`Allies` 에 **늘 들어간다**
+/// — 중립 몬스터를 범위 스킬로 쳐도 그 몬스터는 맞는다 (예전 범위 스킬과 같다).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Affects {
+    /// 고른 대상만 (자신 조준이면 시전자).
+    Target,
+    /// 고른 대상 + 판정 안의 적대 유닛 (불사·부활 보호 제외).
+    Enemies,
+    /// 고른 대상 + 판정 안의 우호 유닛 (시전자 제외).
+    Allies,
+    /// [`Allies`](Self::Allies) + 시전자.
+    AlliesAndCaster,
+    /// 시전자만 — 판정 모양과 무관하다.
+    Caster,
+}
+
+/// 효과 한 가지 (K1). 수치는 쓸 때 공식으로 덮일 수 있다 (`SimWorld::effective_skill`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EffectKind {
+    /// 피해 — 위력 천분율 (1000 = 공격력 그대로). 공식은 서버와 같다 ([`damage`]).
+    Damage { power_per_mille: u32 },
+    /// HP 회복.
+    Heal { amount: u32 },
+    /// 버프·상태이상을 건다.
+    Buff(crate::BuffId),
+}
+
+/// 효과 하나 — 누구에게 무엇을.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkillEffect {
+    pub to: Affects,
+    pub kind: EffectKind,
+}
+
+/// 스킬 정적 데이터 (K1) — 쓰는 방식(사거리·쿨타임·MP·시전 시간·조준·판정 모양) + **효과 목록**.
+///
+/// 서버 `SkillDef` 의 단일 대상 스킬은 `Aim::Unit` + `Area::Single` + 피해 하나다 ([`SkillDef::legacy`]).
+/// 효과는 적은 순서대로 들어간다 — 맞은 유닛마다 그 유닛에 해당하는 효과를 차례로.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SkillDef {
-    /// 최대 사거리 (m). 공격자와 대상의 지면 거리가 이 값 이하여야 한다.
+    /// 최대 사거리 (m). 대상 지정이면 대상까지의 지면 거리, 직선이면 그 길이.
     pub range: f32,
     /// 다시 쓸 때까지의 시간 (ms). 서버와 같은 단위.
     pub cooldown_ms: u32,
-    /// 데미지 배율.
-    pub damage_mult: f32,
     /// 쓸 때 드는 MP. 0 이면 MP 를 보지 않는다. 거절된 공격은 MP 를 쓰지 않는다 (쿨타임과 같다).
     pub mp_cost: u32,
-    /// 0 보다 크면 **범위 스킬** — 대상 둘레 이 반경(m) 안의 다른 유닛에게도 들어간다.
-    /// 피해 스킬은 시전자에게 **적대**인 유닛만, 회복 스킬은 시전자 자신과 **우호** 유닛만 맞는다.
-    pub radius: f32,
-    /// 0 보다 크면 **회복 스킬** — 피해 대신 HP 를 이만큼 채운다 ([`Event::Healed`](crate::Event::Healed)).
-    /// 자신이나 적대가 아닌 유닛을 대상으로 한다 (적대 대상은 `InvalidTarget`).
-    pub heal: u32,
+    /// 시전 시간 (ms) — 0 이면 바로. **K2 에서 쓴다** (지금은 데이터 자리만).
+    pub cast_ms: u32,
+    pub aim: Aim,
+    pub area: Area,
+    pub effects: Vec<SkillEffect>,
 }
 
 impl SkillDef {
-    /// 회복 스킬인가.
+    /// 예전 한 줄 스킬 — 대상 지정, `radius > 0` 이면 대상 둘레 원, 피해 **또는** 회복 하나.
+    ///
+    /// 회복(`heal > 0`)이면 대상(+ 원 안의 우호·시전자)을, 아니면 대상(+ 원 안의 적대)을 친다.
+    /// 예전 `attack` 의 판정과 결과가 같다.
+    #[must_use]
+    pub fn legacy(
+        range: f32,
+        cooldown_ms: u32,
+        damage_mult: f32,
+        mp_cost: u32,
+        radius: f32,
+        heal: u32,
+    ) -> Self {
+        let wide = radius > 0.0;
+        let (to, kind) = if heal > 0 {
+            let to = if wide {
+                Affects::AlliesAndCaster
+            } else {
+                Affects::Target
+            };
+            (to, EffectKind::Heal { amount: heal })
+        } else {
+            let to = if wide {
+                Affects::Enemies
+            } else {
+                Affects::Target
+            };
+            (
+                to,
+                EffectKind::Damage {
+                    power_per_mille: per_mille(damage_mult),
+                },
+            )
+        };
+        Self {
+            range,
+            cooldown_ms,
+            mp_cost,
+            cast_ms: 0,
+            aim: Aim::Unit,
+            area: if wide {
+                Area::Circle { radius }
+            } else {
+                Area::Single
+            },
+            effects: vec![SkillEffect { to, kind }],
+        }
+    }
+
+    /// 피해 효과가 있는 스킬 — 대상 지정이면 적을 골라야 한다.
+    #[must_use]
+    pub fn is_harmful(&self) -> bool {
+        self.effects
+            .iter()
+            .any(|e| matches!(e.kind, EffectKind::Damage { .. }))
+    }
+
+    /// 회복 스킬인가 — 피해 없이 회복이 있다. 대상 지정이면 자신이나 적대가 아닌 유닛을 고른다.
     #[must_use]
     pub fn is_heal(&self) -> bool {
-        self.heal > 0
+        !self.is_harmful()
+            && self
+                .effects
+                .iter()
+                .any(|e| matches!(e.kind, EffectKind::Heal { .. }))
     }
-}
 
-impl SkillDef {
+    /// 첫 피해 효과의 위력 천분율 — UI 표시용.
+    #[must_use]
+    pub fn power_per_mille(&self) -> Option<u32> {
+        self.effects.iter().find_map(|e| match e.kind {
+            EffectKind::Damage { power_per_mille } => Some(power_per_mille),
+            _ => None,
+        })
+    }
+
+    /// 첫 회복 효과의 양 — UI 표시용.
+    #[must_use]
+    pub fn heal_amount(&self) -> Option<u32> {
+        self.effects.iter().find_map(|e| match e.kind {
+            EffectKind::Heal { amount } => Some(amount),
+            _ => None,
+        })
+    }
+
     #[must_use]
     pub fn cooldown(&self) -> Duration {
         Duration::from_millis(u64::from(self.cooldown_ms))
     }
 }
 
+/// 배율 → 천분율. 예전 `damage_mult` 를 읽을 때만 쓴다 — 계산은 천분율로.
+#[must_use]
+pub fn per_mille(mult: f32) -> u32 {
+    if mult.is_finite() && mult > 0.0 {
+        (mult * 1000.0).round().min(u32::MAX as f32) as u32
+    } else {
+        0
+    }
+}
+
+/// `pos` 가 판정 모양 안인가 (K1).
+///
+/// `origin` 은 시전자, `anchor` 는 기준점(대상·지점·시전자), `dir` 은 겨눈 쪽(정규화 안 해도 된다),
+/// `length` 는 직선의 길이(사거리). `Single` 은 늘 `false` — 고른 대상은 부르는 쪽이 넣는다.
+#[must_use]
+pub fn in_area(area: Area, origin: Vec2, anchor: Vec2, dir: Vec2, length: f32, pos: Vec2) -> bool {
+    let dir = dir.normalize_or_zero();
+    match area {
+        Area::Single => false,
+        Area::Circle { radius } => pos.distance_squared(anchor) <= radius * radius,
+        Area::Line { width } => {
+            let d = pos - origin;
+            let along = d.dot(dir);
+            let across = (d - dir * along).length();
+            dir != Vec2::ZERO && (0.0..=length).contains(&along) && across <= width * 0.5
+        }
+        Area::Cone { radius, angle } => {
+            let d = pos - origin;
+            if d.length_squared() > radius * radius {
+                return false;
+            }
+            if d.length_squared() <= f32::EPSILON {
+                return true;
+            }
+            dir != Vec2::ZERO && d.normalize().dot(dir) >= (angle * 0.5).cos()
+        }
+    }
+}
+
 /// 날아가는 공격 (T8) — 쏜 순간 사거리·쿨타임·MP 를 판정하고, **닿을 때** 피해와 버프가 들어간다.
 ///
 /// 대상을 따라가므로 빗나가지 않는다. 닿기 전에 대상이 쓰러지면 사라진다. 시뮬레이션 안의 상태라 결정적이다.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Projectile {
     pub(crate) attacker: nexus_core::Entity,
     pub(crate) target: nexus_core::Entity,
     pub(crate) skill: SkillId,
-    pub(crate) def: SkillDef,
+    /// 닿을 때 이 유닛에게 들어갈 효과 — 쏠 때 판정 모양·대상 필터로 골라 둔 것.
+    pub(crate) effects: Vec<EffectKind>,
     pub(crate) speed: f32,
     pub(crate) pos: nexus_core::Vec2,
     pub(crate) prev_pos: nexus_core::Vec2,
@@ -113,17 +297,7 @@ mod tests {
         let dt = Duration::from_millis(50);
         let bolt = SkillId(1);
         let mut w = SimWorld::new(TileMap::new(20, 20, 1.0, Vec2::ZERO, Tile::default()));
-        w.define_skill(
-            bolt,
-            SkillDef {
-                range: 10.0,
-                cooldown_ms: 0,
-                damage_mult: 1.0,
-                mp_cost: 0,
-                radius: 0.0,
-                heal: 0,
-            },
-        );
+        w.define_skill(bolt, SkillDef::legacy(10.0, 0, 1.0, 0, 0.0, 0));
         w.define_skill_projectile(bolt, 10.0);
         w.define_buff(
             BuffId(1),
@@ -241,28 +415,8 @@ mod flow_tests {
     /// 20×20 평지, 공격자 (1.5, 1.5) / 대상 (3.5, 1.5) — 2m 거리.
     fn arena() -> (LocalAuthority, Entity, Entity) {
         let mut world = SimWorld::new(TileMap::new(20, 20, 1.0, Vec2::ZERO, Tile::default()));
-        world.define_skill(
-            MELEE,
-            SkillDef {
-                range: 3.0,
-                cooldown_ms: 1000,
-                damage_mult: 1.0,
-                mp_cost: 0,
-                radius: 0.0,
-                heal: 0,
-            },
-        );
-        world.define_skill(
-            ARROW,
-            SkillDef {
-                range: 20.0,
-                cooldown_ms: 2000,
-                damage_mult: 0.5,
-                mp_cost: 0,
-                radius: 0.0,
-                heal: 0,
-            },
-        );
+        world.define_skill(MELEE, SkillDef::legacy(3.0, 1000, 1.0, 0, 0.0, 0));
+        world.define_skill(ARROW, SkillDef::legacy(20.0, 2000, 0.5, 0, 0.0, 0));
         let a = world.spawn_unit(Vec2::new(1.5, 1.5), 0.0, fighter());
         let t = world.spawn_unit(Vec2::new(3.5, 1.5), 0.0, fighter());
         (LocalAuthority::new(world), a, t)
@@ -445,26 +599,8 @@ mod flow_tests {
         use crate::{FactionId, Relation};
         let mut world = SimWorld::new(TileMap::new(20, 20, 1.0, Vec2::ZERO, Tile::default()));
         world.set_relation(FactionId(1), FactionId(2), Relation::Hostile);
-        world.define_skill(
-            WHIRL,
-            SkillDef {
-                range: 3.0,
-                cooldown_ms: 1000,
-                damage_mult: 1.0,
-                radius: 2.5,
-                ..SkillDef::default()
-            },
-        );
-        world.define_skill(
-            MEND,
-            SkillDef {
-                range: 5.0,
-                cooldown_ms: 1000,
-                heal: 50,
-                radius: 3.0,
-                ..SkillDef::default()
-            },
-        );
+        world.define_skill(WHIRL, SkillDef::legacy(3.0, 1000, 1.0, 0, 2.5, 0));
+        world.define_skill(MEND, SkillDef::legacy(5.0, 1000, 0.0, 0, 3.0, 50));
         let side = |faction| UnitDef {
             faction: FactionId(faction),
             ..fighter()
@@ -932,17 +1068,7 @@ mod flow_tests {
     fn caster_arena(regen: u32) -> (LocalAuthority, Entity, Entity) {
         let (mut auth, _, t) = arena();
         let world = auth.world_mut();
-        world.define_skill(
-            BOLT,
-            SkillDef {
-                range: 20.0,
-                cooldown_ms: 0,
-                damage_mult: 1.0,
-                mp_cost: 30,
-                radius: 0.0,
-                heal: 0,
-            },
-        );
+        world.define_skill(BOLT, SkillDef::legacy(20.0, 0, 1.0, 30, 0.0, 0));
         let caster = world.spawn_unit(
             Vec2::new(1.5, 2.5),
             0.0,
@@ -984,17 +1110,8 @@ mod flow_tests {
     fn mp_check_comes_after_cooldown_like_the_server_slot() {
         // 쿨타임과 MP 가 둘 다 모자라면 쿨타임이 먼저 보고된다 (3 → 3-1 순서).
         let (mut auth, c, t) = caster_arena(0);
-        auth.world_mut().define_skill(
-            BOLT,
-            SkillDef {
-                range: 20.0,
-                cooldown_ms: 5000,
-                damage_mult: 1.0,
-                mp_cost: 30,
-                radius: 0.0,
-                heal: 0,
-            },
-        );
+        auth.world_mut()
+            .define_skill(BOLT, SkillDef::legacy(20.0, 5000, 1.0, 30, 0.0, 0));
         attack(&mut auth, c, t, BOLT);
         assert_eq!(
             rejected(&attack(&mut auth, c, t, BOLT)),
@@ -1048,5 +1165,216 @@ mod flow_tests {
             (50, 50),
             "성장치만큼 오르고 가득 찬다"
         );
+    }
+}
+
+/// 스킬 데이터 모양 (K1) — 조준·판정 모양·효과 목록.
+#[cfg(test)]
+mod shape_tests {
+    use std::f32::consts::FRAC_PI_2;
+    use std::time::Duration;
+
+    use nexus_core::{Entity, Vec2};
+
+    use super::*;
+    use crate::{
+        Authority, BuffDef, BuffId, Event, FactionId, Intent, LocalAuthority, Rejection, Relation,
+        SimWorld, Tile, TileMap, UnitDef,
+    };
+
+    const DT: Duration = Duration::from_millis(50);
+    const SPELL: SkillId = SkillId(1);
+
+    #[test]
+    fn areas_cover_what_they_say() {
+        let o = Vec2::ZERO;
+        let east = Vec2::X;
+        let circle = Area::Circle { radius: 2.0 };
+        assert!(in_area(
+            circle,
+            o,
+            Vec2::new(5.0, 0.0),
+            east,
+            8.0,
+            Vec2::new(6.5, 0.5)
+        ));
+        assert!(!in_area(
+            circle,
+            o,
+            Vec2::new(5.0, 0.0),
+            east,
+            8.0,
+            Vec2::new(7.5, 0.0)
+        ));
+        // 직선 — 시전자에서 사거리까지, 폭의 절반 안.
+        let line = Area::Line { width: 1.0 };
+        assert!(in_area(line, o, o, east, 8.0, Vec2::new(7.9, 0.4)));
+        assert!(
+            !in_area(line, o, o, east, 8.0, Vec2::new(7.9, 0.6)),
+            "폭 밖"
+        );
+        assert!(
+            !in_area(line, o, o, east, 8.0, Vec2::new(-0.5, 0.0)),
+            "등 뒤"
+        );
+        assert!(
+            !in_area(line, o, o, east, 8.0, Vec2::new(8.5, 0.0)),
+            "사거리 밖"
+        );
+        // 부채꼴 — 90° 면 좌우 45° 까지.
+        let cone = Area::Cone {
+            radius: 3.0,
+            angle: FRAC_PI_2,
+        };
+        assert!(in_area(cone, o, o, east, 0.0, Vec2::new(2.0, 1.9)));
+        assert!(
+            !in_area(cone, o, o, east, 0.0, Vec2::new(1.0, 1.5)),
+            "각 밖"
+        );
+        assert!(
+            !in_area(cone, o, o, east, 0.0, Vec2::new(3.5, 0.0)),
+            "반경 밖"
+        );
+        assert!(!in_area(Area::Single, o, o, east, 9.0, o));
+    }
+
+    #[test]
+    fn legacy_skills_read_as_one_effect() {
+        let hit = SkillDef::legacy(2.0, 800, 1.2, 0, 0.0, 0);
+        assert_eq!(hit.aim, Aim::Unit);
+        assert_eq!(hit.area, Area::Single);
+        assert_eq!(hit.power_per_mille(), Some(1200));
+        assert!(hit.is_harmful() && !hit.is_heal());
+        let mend = SkillDef::legacy(5.0, 1000, 0.0, 10, 3.0, 50);
+        assert!(mend.is_heal());
+        assert_eq!(mend.effects[0].to, Affects::AlliesAndCaster);
+        assert_eq!(per_mille(0.8), 800);
+    }
+
+    /// 시전자 (5, 5) 에서 동쪽을 본다. 적 셋: 가까운 동쪽·먼 동쪽·서쪽. 아군 하나.
+    fn arena(def: SkillDef) -> (LocalAuthority, Entity, [Entity; 4]) {
+        let mut w = SimWorld::new(TileMap::new(20, 20, 1.0, Vec2::ZERO, Tile::default()));
+        w.set_relation(FactionId(1), FactionId(2), Relation::Hostile);
+        w.define_skill(SPELL, def);
+        w.define_buff(
+            BuffId(1),
+            BuffDef {
+                duration_ms: 5000,
+                defense: 1,
+                ..BuffDef::default()
+            },
+        );
+        let unit = |faction, hp| UnitDef {
+            faction: FactionId(faction),
+            max_hp: hp,
+            attack: 20,
+            ..UnitDef::default()
+        };
+        let me = w.spawn_unit(Vec2::new(5.0, 5.0), 0.0, unit(1, 100));
+        let near = w.spawn_unit(Vec2::new(6.5, 5.0), 0.0, unit(2, 100));
+        let far = w.spawn_unit(Vec2::new(9.0, 5.2), 0.0, unit(2, 100));
+        let west = w.spawn_unit(Vec2::new(3.5, 5.0), 0.0, unit(2, 100));
+        let friend = w.spawn_unit(Vec2::new(5.0, 6.0), 0.0, unit(1, 100));
+        auth_hurt(&mut w, me);
+        (LocalAuthority::new(w), me, [near, far, west, friend])
+    }
+
+    /// 시전자 HP 를 깎아 둔다 — 회복이 보이게.
+    fn auth_hurt(w: &mut SimWorld, me: Entity) {
+        w.set_hp(me, 40);
+    }
+
+    fn cast(auth: &mut LocalAuthority, me: Entity, target: Entity) -> Vec<Event> {
+        auth.submit(Intent::Attack {
+            unit: me,
+            target,
+            skill: SPELL,
+        });
+        auth.tick(DT)
+    }
+
+    fn damaged(events: &[Event]) -> Vec<Entity> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Damaged { target, .. } => Some(*target),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_self_cast_hits_enemies_around_and_heals_the_caster() {
+        // 회오리 — 자신 둘레 2m 의 적에게 피해 + 둔화 버프, 자신은 회복.
+        let def = SkillDef {
+            range: 0.0,
+            aim: Aim::Caster,
+            area: Area::Circle { radius: 2.0 },
+            effects: vec![
+                SkillEffect {
+                    to: Affects::Enemies,
+                    kind: EffectKind::Damage {
+                        power_per_mille: 1000,
+                    },
+                },
+                SkillEffect {
+                    to: Affects::Enemies,
+                    kind: EffectKind::Buff(BuffId(1)),
+                },
+                SkillEffect {
+                    to: Affects::Caster,
+                    kind: EffectKind::Heal { amount: 15 },
+                },
+            ],
+            ..SkillDef::default()
+        };
+        let (mut auth, me, [near, far, west, friend]) = arena(def);
+        // 대상은 무엇을 넘겨도 시전자다.
+        let events = cast(&mut auth, me, far);
+        let hit = damaged(&events);
+        assert!(hit.contains(&near) && hit.contains(&west), "{hit:?}");
+        assert!(!hit.contains(&far) && !hit.contains(&friend) && !hit.contains(&me));
+        let w = auth.world();
+        assert!(w.unit(near).unwrap().has_buff(BuffId(1)));
+        assert!(!w.unit(friend).unwrap().has_buff(BuffId(1)));
+        assert_eq!(w.unit(me).unwrap().hp(), 55, "40 + 15");
+    }
+
+    #[test]
+    fn a_line_from_the_caster_to_the_target_hits_everything_on_it() {
+        let def = SkillDef {
+            range: 8.0,
+            area: Area::Line { width: 1.0 },
+            effects: vec![SkillEffect {
+                to: Affects::Enemies,
+                kind: EffectKind::Damage {
+                    power_per_mille: 1000,
+                },
+            }],
+            ..SkillDef::default()
+        };
+        let (mut auth, me, [near, far, west, _]) = arena(def);
+        let hit = damaged(&cast(&mut auth, me, far));
+        assert_eq!(hit, vec![far, near], "고른 대상이 먼저, 그다음 줄 위의 적");
+        assert!(!hit.contains(&west));
+    }
+
+    #[test]
+    fn point_and_direction_skills_need_a_cast() {
+        let def = SkillDef {
+            range: 8.0,
+            aim: Aim::Point,
+            area: Area::Circle { radius: 2.0 },
+            ..SkillDef::default()
+        };
+        let (mut auth, me, [near, ..]) = arena(def);
+        let events = cast(&mut auth, me, near);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::Rejected {
+                reason: Rejection::NeedsAim,
+                ..
+            }
+        )));
     }
 }

@@ -35,17 +35,7 @@ fn arena(source: &str, seed: u64, hero_at: Vec2) -> (LocalAuthority, Entity, Ent
         Vec2::new(-20.0, -20.0),
         Tile::default(),
     ));
-    world.define_skill(
-        BITE,
-        SkillDef {
-            range: 1.5,
-            cooldown_ms: 1000,
-            damage_mult: 1.0,
-            mp_cost: 0,
-            radius: 0.0,
-            heal: 0,
-        },
-    );
+    world.define_skill(BITE, SkillDef::legacy(1.5, 1000, 1.0, 0, 0.0, 0));
     world.set_relation(HEROES, GOBLINS, Relation::Hostile);
     let goblin = world.spawn_unit(Vec2::ZERO, 0.0, fighter(GOBLINS));
     let hero = world.spawn_unit(hero_at, 0.0, fighter(HEROES));
@@ -202,17 +192,7 @@ fn a_respawned_actor_keeps_its_script_and_starts_over() {
         Vec2::new(-20.0, -20.0),
         Tile::default(),
     ));
-    world.define_skill(
-        BITE,
-        SkillDef {
-            range: 1.5,
-            cooldown_ms: 1000,
-            damage_mult: 1.0,
-            mp_cost: 0,
-            radius: 0.0,
-            heal: 0,
-        },
-    );
+    world.define_skill(BITE, SkillDef::legacy(1.5, 1000, 1.0, 0, 0.0, 0));
     world.set_relation(HEROES, GOBLINS, Relation::Hostile);
     let goblin = world.spawn_unit(
         Vec2::ZERO,

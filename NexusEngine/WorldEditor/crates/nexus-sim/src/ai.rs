@@ -113,11 +113,11 @@ fn think_one(world: &mut SimWorld, me: Entity, events: &mut Vec<Event>, out: &mu
     // ── 치거나 쫓는다 ───────────────────────────────────────────────────────
     let skill = def
         .basic_attack
-        .and_then(|id| world.skill(id).map(|s| (id, *s)));
+        .and_then(|id| world.skill(id).map(|s| (id, s.range, s.mp_cost)));
     let target_pos = world.unit(target).map_or(pos, |t| t.pos());
-    let in_range = skill.is_some_and(|(_, s)| pos.distance(target_pos) <= s.range);
+    let in_range = skill.is_some_and(|(_, range, _)| pos.distance(target_pos) <= range);
 
-    if let Some((skill_id, skill_def)) = skill.filter(|_| in_range) {
+    if let Some((skill_id, _, mp_cost)) = skill.filter(|_| in_range) {
         if moving {
             out.push(Intent::Stop { unit: me });
         }
@@ -125,7 +125,7 @@ fn think_one(world: &mut SimWorld, me: Entity, events: &mut Vec<Event>, out: &mu
         // MP 가 모자라면 쿨타임처럼 서서 기다린다 — 차오르면 다시 친다.
         let ready = world
             .unit(me)
-            .is_some_and(|u| u.is_ready(skill_id, now) && u.has_mp(skill_def.mp_cost));
+            .is_some_and(|u| u.is_ready(skill_id, now) && u.has_mp(mp_cost));
         if ready {
             out.push(Intent::Attack {
                 unit: me,
@@ -257,14 +257,7 @@ mod tests {
     fn world_with(map: TileMap) -> SimWorld {
         let mut w = SimWorld::new(map);
         w.set_relation(PLAYERS, WILD, Relation::Hostile);
-        let skill = |range, cooldown_ms| SkillDef {
-            range,
-            cooldown_ms,
-            damage_mult: 1.0,
-            mp_cost: 0,
-            radius: 0.0,
-            heal: 0,
-        };
+        let skill = |range, cooldown_ms| SkillDef::legacy(range, cooldown_ms, 1.0, 0, 0.0, 0);
         w.define_skill(BITE, skill(1.5, 1000));
         w.define_skill(SWORD, skill(2.0, 800));
         w.define_skill(ARROW, skill(40.0, 500));

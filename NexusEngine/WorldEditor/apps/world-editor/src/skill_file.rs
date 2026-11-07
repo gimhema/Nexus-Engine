@@ -1,33 +1,31 @@
-//! `rules.ron` 의 스킬 항목 중 R3 에서 늘어난 부분 — 레벨 수식·부착 규칙·경험치 곡선.
+//! `rules.ron` 의 스킬 항목 중 R3 에서 늘어난 부분 — 수치 공식·부착 규칙·경험치 곡선.
 //!
 //! ```ron
 //! skills: {
 //!     // 숫자 칸은 예전 그대로 읽힌다.
 //!     1: (range: 2.0, cooldown_ms: 800, damage_mult: 1.0),
-//!     // 레벨이 있는 스킬 — 숫자 대신 수식(문자열)을 적을 수 있다. power 는 위력 천분율.
+//!     // 숫자 대신 공식(문자열)을 적을 수 있다. power 는 위력 천분율.
 //!     9: (
-//!         range: 6.0, max_level: 5, classes: [2],
+//!         range: 6.0, classes: [2],
 //!         requires: Level(cmp: Ge, value: 3),
-//!         power: "1500 + skill_level * 200 + int * 20",
-//!         cooldown_ms: "3000 - skill_level * 200",
-//!         mp_cost: "10 + skill_level * 3",
+//!         power: "1500 + level * 40 + int * 20",
+//!         cooldown_ms: "3000 - level * 20",
+//!         mp_cost: "10 + level",
 //!     ),
 //! },
 //! exp_curve: "level * level * 100",   // 적지 않으면 서버와 같은 이 식
 //! ```
 //!
-//! 규칙(부착·레벨 계산)은 `nexus_sim::skills` 에 있다. 수식 문법은 스탯과 같고 변수에 `skill_level` 이 더해진다.
+//! 스킬 레벨은 없다 (K1) — 공식의 변수는 기본 스탯 + `level`(캐릭터 레벨)·`equip_attack`·`equip_defense`.
+//! 규칙(부착·공식 계산)은 `nexus_sim::skills` 에 있다.
 
 use nexus_sim::{ClassId, Formula, SkillRules, skill_variables};
 use serde::Deserialize;
 
 use crate::trigger_file::ConditionFile;
 
-/// 스킬 최대 레벨 상한 — 손으로 쓰는 표에서 이보다 크면 실수다.
-pub(crate) const MAX_SKILL_LEVEL: u32 = 100;
-
 /// 숫자 또는 수식 — 예전 항목(숫자)이 그대로 읽히게.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(untagged)]
 pub(crate) enum NumOr {
     Num(u32),
@@ -71,34 +69,32 @@ impl NumOr {
 }
 
 /// 스킬 항목의 R3 칸만 빌려 온 것 — 검증·변환 입력.
-pub(crate) struct SkillLevelRef<'a> {
+pub(crate) struct SkillRulesRef<'a> {
     pub(crate) id: u32,
-    pub(crate) max_level: u32,
     pub(crate) classes: &'a [u32],
     pub(crate) requires: &'a ConditionFile,
-    pub(crate) power: &'a str,
+    /// 효과 수치 공식 `(효과 번호, 칸 이름, 공식)` (K1) — 예전 `power`·`heal` 은 효과 0 번이다.
+    pub(crate) amounts: Vec<(usize, String, &'a str)>,
     pub(crate) cooldown_ms: &'a NumOr,
     pub(crate) mp_cost: &'a NumOr,
-    pub(crate) heal: &'a NumOr,
 }
 
-impl SkillLevelRef<'_> {
-    fn formulas(&self) -> [(&'static str, Option<&str>); 4] {
-        [
-            (
-                "power",
-                (!self.power.trim().is_empty()).then_some(self.power),
-            ),
-            ("cooldown_ms", self.cooldown_ms.formula()),
-            ("mp_cost", self.mp_cost.formula()),
-            ("heal", self.heal.formula()),
-        ]
+impl SkillRulesRef<'_> {
+    /// 공식 칸 전부 `(칸 이름, 공식)`.
+    fn formulas(&self) -> Vec<(String, Option<&str>)> {
+        let mut out: Vec<(String, Option<&str>)> = self
+            .amounts
+            .iter()
+            .map(|(_, what, src)| (what.clone(), Some(*src)))
+            .collect();
+        out.push((String::from("cooldown_ms"), self.cooldown_ms.formula()));
+        out.push((String::from("mp_cost"), self.mp_cost.formula()));
+        out
     }
 
     /// 특별한 것이 하나도 없다 — 부착 규칙을 만들 필요가 없다.
     fn is_plain(&self) -> bool {
-        self.max_level <= 1
-            && self.classes.is_empty()
+        self.classes.is_empty()
             && *self.requires == ConditionFile::Always
             && self.formulas().iter().all(|(_, f)| f.is_none())
     }
@@ -106,16 +102,13 @@ impl SkillLevelRef<'_> {
 
 /// 검증. `stats` 는 기본 스탯 이름(없으면 빈 목록), 나머지는 같은 파일의 표를 본다.
 pub(crate) fn validate(
-    skill: &SkillLevelRef<'_>,
+    skill: &SkillRulesRef<'_>,
     stats: &[String],
     class_exists: impl Fn(u32) -> bool,
     known: &crate::trigger_file::Known<'_>,
 ) -> Vec<String> {
     let id = skill.id;
     let mut errors = Vec::new();
-    if !(1..=MAX_SKILL_LEVEL).contains(&skill.max_level) {
-        errors.push(format!("스킬 {id}: max_level 은 1~{MAX_SKILL_LEVEL}"));
-    }
     for c in skill.classes.iter().filter(|c| !class_exists(**c)) {
         errors.push(format!("스킬 {id}: classes 의 {c} 은(는) 없는 직업"));
     }
@@ -133,21 +126,22 @@ pub(crate) fn validate(
 }
 
 /// 부착 규칙 — 특별한 것이 없으면 `None` (등록하지 않는다). 검증을 마친 뒤에 부른다.
-pub(crate) fn rules(skill: &SkillLevelRef<'_>, stats: &[String]) -> Option<SkillRules> {
+pub(crate) fn rules(skill: &SkillRulesRef<'_>, stats: &[String]) -> Option<SkillRules> {
     if skill.is_plain() {
         return None;
     }
     let vars = skill_variables(stats);
     let parse = |src: Option<&str>| src.and_then(|s| Formula::parse(s, &vars).ok());
-    let [power, cooldown, mp, heal] = skill.formulas().map(|(_, f)| parse(f));
     Some(SkillRules {
-        max_level: skill.max_level.max(1),
         classes: skill.classes.iter().map(|c| ClassId(*c)).collect(),
         requires: skill.requires.into(),
-        power_per_mille: power,
-        cooldown_ms: cooldown,
-        mp_cost: mp,
-        heal,
+        amounts: skill
+            .amounts
+            .iter()
+            .filter_map(|(i, _, src)| Some((*i, parse(Some(src))?)))
+            .collect(),
+        cooldown_ms: parse(skill.cooldown_ms.formula()),
+        mp_cost: parse(skill.mp_cost.formula()),
     })
 }
 
@@ -173,29 +167,23 @@ mod tests {
 
     #[test]
     fn numbers_and_formulas_both_read() {
-        let p: Probe = ron::from_str(r#"(a: 800, b: "3000 - skill_level * 200")"#).unwrap();
+        let p: Probe = ron::from_str(r#"(a: 800, b: "3000 - level * 20")"#).unwrap();
         assert_eq!(p.a, NumOr::Num(800));
-        assert_eq!(p.b.formula(), Some("3000 - skill_level * 200"));
+        assert_eq!(p.b.formula(), Some("3000 - level * 20"));
         assert_eq!((p.a.base(7), p.b.base(7)), (800, 7));
     }
 
     #[test]
     fn formula_errors_and_dangling_numbers_are_named() {
-        let req = ConditionFile::SkillLevel {
-            skill: 77,
-            cmp: ron::from_str("Ge").unwrap(),
-            value: 1,
-        };
-        let cd = NumOr::Formula(String::from("skill_level * luk"));
-        let s = SkillLevelRef {
+        let req = ConditionFile::HasSkill(77);
+        let cd = NumOr::Formula(String::from("level * luk"));
+        let s = SkillRulesRef {
             id: 9,
-            max_level: 0,
             classes: &[4],
             requires: &req,
-            power: "1000 +",
+            amounts: vec![(0, String::from("power"), "1000 +")],
             cooldown_ms: &cd,
             mp_cost: &NumOr::Num(3),
-            heal: &NumOr::Num(0),
         };
         let e = validate(
             &s,
@@ -212,7 +200,6 @@ mod tests {
             },
         );
         for want in [
-            "스킬 9: max_level 은",
             "스킬 9: classes 의 4",
             "스킬 9: power 수식",
             "스킬 9: cooldown_ms 수식",

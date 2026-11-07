@@ -41,8 +41,8 @@ pub(crate) struct SaveData {
     pub(crate) actor: ActorId,
     /// 직업 (R2). `None` = 직업이 생기기 전의 저장 파일 — 기본 직업으로 이어 한다.
     pub(crate) class: Option<ClassId>,
-    /// 배운 스킬과 레벨 (R3). `None` = 스킬이 생기기 전의 저장 — 직업의 시작 스킬로 이어 한다.
-    pub(crate) skills: Option<Vec<(SkillId, u32)>>,
+    /// 가진 스킬 (R3). `None` = 스킬이 생기기 전의 저장 — 직업의 시작 스킬로 이어 한다.
+    pub(crate) skills: Option<Vec<SkillId>>,
     /// 단축키 배치 (R3) — 칸마다 스킬 또는 빈 칸. `None` = 예전 저장 — 시작 스킬을 차례로.
     pub(crate) hotbar: Option<Vec<Option<SkillId>>>,
     pub(crate) level: u32,
@@ -84,9 +84,9 @@ struct SaveFile {
     /// 직업 (R2). 없는 예전 파일도 읽힌다.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     class: Option<u32>,
-    /// 배운 스킬 `번호: 레벨` (R3). 없는 예전 파일도 읽힌다.
+    /// 가진 스킬 `[5, 8]` (R3). 스킬 레벨이 있던 예전 파일의 `{5: 2}` 도 읽힌다 (K1 — 레벨은 버린다).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    skills: Option<BTreeMap<u32, u32>>,
+    skills: Option<SkillsFile>,
     /// 단축키 칸 (R3) — `[Some(5), None, Some(6)]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hotbar: Option<Vec<Option<u32>>>,
@@ -123,6 +123,14 @@ struct SaveFile {
     appearance: Option<crate::appearance::Appearance>,
 }
 
+/// 가진 스킬 — 지금은 목록, 스킬 레벨이 있던 예전 파일은 `번호: 레벨` 표 (K1).
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+enum SkillsFile {
+    List(Vec<u32>),
+    Levels(BTreeMap<u32, u32>),
+}
+
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct QuestSaveFile {
@@ -152,7 +160,7 @@ pub(crate) fn to_ron(save: &SaveData) -> String {
         skills: save
             .skills
             .as_ref()
-            .map(|list| list.iter().map(|(s, l)| (s.0, *l)).collect()),
+            .map(|list| SkillsFile::List(list.iter().map(|s| s.0).collect())),
         hotbar: save
             .hotbar
             .as_ref()
@@ -240,11 +248,13 @@ pub(crate) fn from_ron(text: &str) -> Result<SaveData, String> {
     Ok(SaveData {
         actor: ActorId::new(file.actor),
         class: file.class.map(ClassId),
-        skills: file.skills.map(|m| {
-            m.into_iter()
+        skills: file.skills.map(|f| match f {
+            SkillsFile::List(list) => list.into_iter().map(SkillId).collect(),
+            SkillsFile::Levels(m) => m
+                .into_iter()
                 .filter(|(_, l)| *l > 0)
-                .map(|(s, l)| (SkillId(s), l))
-                .collect()
+                .map(|(s, _)| SkillId(s))
+                .collect(),
         }),
         hotbar: file
             .hotbar
@@ -354,7 +364,7 @@ mod tests {
             }),
             actor: ActorId::new(1),
             class: Some(ClassId(2)),
-            skills: Some(vec![(SkillId(6), 1), (SkillId(8), 3)]),
+            skills: Some(vec![SkillId(6), SkillId(8)]),
             hotbar: Some(vec![Some(SkillId(8)), None, Some(SkillId(6))]),
             level: 3,
             exp: 240,

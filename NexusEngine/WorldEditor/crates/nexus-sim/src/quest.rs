@@ -200,17 +200,7 @@ mod tests {
     /// 영웅 + 촌장(퀘스트 1·2·3) + 퀘스트 넷.
     fn village() -> (LocalAuthority, Entity, Entity) {
         let mut w = SimWorld::new(TileMap::new(40, 40, 1.0, Vec2::ZERO, Tile::default()));
-        w.define_skill(
-            HIT,
-            SkillDef {
-                range: 3.0,
-                cooldown_ms: 0,
-                damage_mult: 1.0,
-                mp_cost: 0,
-                radius: 0.0,
-                heal: 0,
-            },
-        );
+        w.define_skill(HIT, SkillDef::legacy(3.0, 0, 1.0, 0, 0.0, 0));
         w.define_item(
             JELLY,
             ItemDef {

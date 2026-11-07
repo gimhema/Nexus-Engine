@@ -33,7 +33,10 @@ mod world;
 
 pub use authority::{Authority, Event, Intent, LocalAuthority, Rejection};
 pub use buff::{ActiveBuff, BuffDef, BuffId};
-pub use combat::{Projectile, SkillDef, SkillId, damage};
+pub use combat::{
+    Affects, Aim, Area, EffectKind, Projectile, SkillDef, SkillEffect, SkillId, damage, in_area,
+    per_mille,
+};
 pub use dungeon::ClearDef;
 pub use faction::{FactionId, FactionTable, Relation};
 pub use item::{
@@ -45,7 +48,7 @@ pub use portal::PortalDef;
 pub use progress::{Growth, Progress, exp_to_next};
 pub use quest::{Active, Objective, QuestDef, QuestEntry, QuestId, QuestLog, QuestState, Stage};
 pub use script::{ScriptCallId, ScriptHost, ScriptLog};
-pub use skills::{SKILL_LEVEL_VAR, SkillRules, skill_variables};
+pub use skills::{SkillRules, skill_variables};
 pub use stats::{
     ClassDef, ClassId, Derived, DerivedStat, EquipRules, EquipTotals, Formula, FormulaError,
     MAX_STATS, RESERVED, StatRules, StatSheet,

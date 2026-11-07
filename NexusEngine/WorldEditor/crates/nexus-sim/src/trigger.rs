@@ -156,12 +156,8 @@ pub enum Condition {
         currency: crate::trade::CurrencyId,
         amount: u64,
     },
-    /// 대상이 그 스킬을 `value` 레벨과 비교해 (배우지 않았으면 0, R3).
-    SkillLevel {
-        skill: crate::combat::SkillId,
-        cmp: Cmp,
-        value: u32,
-    },
+    /// 대상이 그 스킬을 가졌다 (R3·K1).
+    HasSkill(crate::combat::SkillId),
     /// 지금 존의 클리어 목표를 다 채웠다 (R6-2) — 던전의 나가는 문. 클리어가 없는 존이면 거짓.
     Cleared,
     /// 대상에게 그 버프가 걸려 있다 (R2b).
@@ -191,12 +187,8 @@ pub enum Effect {
     TakeItem { item: ItemId, count: u32 },
     /// 경험치 — 레벨업 규칙은 처치 경험치와 같다. 죽은 대상은 받지 않는다.
     GiveExp(u32),
-    /// 스킬을 배운다 — 이미 배웠으면 `levels` 만큼 올린다 (최대 레벨에서 멈춘다, R3).
-    /// 직업·습득 조건이 맞지 않으면 아무 일도 없다 (다른 효과처럼 조용히).
-    GrantSkill {
-        skill: crate::combat::SkillId,
-        levels: u32,
-    },
+    /// 스킬을 배운다 (R3). 이미 가졌거나 직업·습득 조건이 맞지 않으면 아무 일도 없다 (다른 효과처럼 조용히).
+    GrantSkill { skill: crate::combat::SkillId },
     /// 스킬을 잊는다 (R3).
     RemoveSkill { skill: crate::combat::SkillId },
     /// 퀘스트를 시작한다 (R5) — 담당 NPC 가 없는 월드 퀘스트의 입구. 받을 수 없으면 조용히 지나간다.
@@ -329,17 +321,7 @@ mod tests {
     /// 한 방에 쓰러뜨리는 영웅 하나 — 슬라임은 [`slime`] 으로 옆에 세운다.
     fn arena() -> (LocalAuthority, Entity) {
         let mut world = SimWorld::new(TileMap::new(20, 20, 1.0, Vec2::ZERO, Tile::default()));
-        world.define_skill(
-            HIT,
-            SkillDef {
-                range: 3.0,
-                cooldown_ms: 0,
-                damage_mult: 1.0,
-                mp_cost: 0,
-                radius: 0.0,
-                heal: 0,
-            },
-        );
+        world.define_skill(HIT, SkillDef::legacy(3.0, 0, 1.0, 0, 0.0, 0));
         world.define_item(
             POTION,
             ItemDef {

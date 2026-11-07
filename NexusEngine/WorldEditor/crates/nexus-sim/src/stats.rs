@@ -738,17 +738,7 @@ mod tests {
                     classes: vec![MAGE],
                 },
             );
-            w.define_skill(
-                SkillId(1),
-                SkillDef {
-                    range: 3.0,
-                    cooldown_ms: 0,
-                    damage_mult: 1.0,
-                    mp_cost: 0,
-                    radius: 0.0,
-                    heal: 0,
-                },
-            );
+            w.define_skill(SkillId(1), SkillDef::legacy(3.0, 0, 1.0, 0, 0.0, 0));
             let hero = w.spawn_unit(
                 Vec2::new(5.5, 5.5),
                 0.0,

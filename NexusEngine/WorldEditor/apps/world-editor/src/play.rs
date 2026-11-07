@@ -530,9 +530,7 @@ fn mentions_cleared(c: &Condition) -> bool {
 pub(crate) struct SkillLine {
     pub(crate) skill: SkillId,
     pub(crate) name: String,
-    pub(crate) level: u32,
-    pub(crate) max_level: u32,
-    /// 지금 레벨의 MP.
+    /// 지금 MP — 공식이면 캐릭터 레벨·스탯으로 계산한 값.
     pub(crate) mp_cost: u32,
     /// 놓인 단축키 칸 (0부터). 없으면 `None`.
     pub(crate) slot: Option<usize>,
@@ -760,19 +758,10 @@ impl PlaySession {
                     .map(|l: &Label| data.actor_skills(l.actor).to_vec())
             })
             .unwrap_or_default();
-        // 배운 스킬 — 이어 하기면 저장한 것, 아니면(새 게임·스킬이 생기기 전의 저장) 시작 스킬 1레벨.
+        // 가진 스킬 — 이어 하기면 저장한 것, 아니면(새 게임·스킬이 생기기 전의 저장) 시작 스킬.
         let saved_skills = options.save.as_ref().and_then(|s| s.skills.as_ref());
-        match saved_skills {
-            Some(list) => {
-                for &(skill, level) in list {
-                    world.set_skill_level(player, skill, level);
-                }
-            }
-            None => {
-                for &skill in &starting {
-                    world.set_skill_level(player, skill, 1);
-                }
-            }
+        for &skill in saved_skills.unwrap_or(&starting) {
+            world.set_known(player, skill, true);
         }
         // 단축키 — 저장한 배치가 있으면 그것, 아니면 시작 스킬을 차례로.
         let mut hotbar = match options.save.as_ref().and_then(|s| s.hotbar.as_ref()) {
@@ -1275,25 +1264,23 @@ impl PlaySession {
         self.npc_page = NpcPage::Menu;
     }
 
-    /// 플레이어가 배운 스킬 — 스킬 창용 (R3). 직업이 없는 게임이면 단축키에 있는 스킬을 1레벨로 보인다.
+    /// 플레이어가 가진 스킬 — 스킬 창용 (R3). 직업이 없는 게임이면 단축키에 있는 스킬을 보인다.
     pub(crate) fn skill_lines(&self) -> Vec<SkillLine> {
         let world = self.world();
         let Some(u) = world.unit(self.player) else {
             return Vec::new();
         };
-        let mut learned: Vec<(SkillId, u32)> = u.learned_skills().collect();
+        let mut learned: Vec<SkillId> = u.learned_skills().collect();
         if u.def().class.is_none() && learned.is_empty() {
-            learned = self.hotbar.iter().flatten().map(|s| (*s, 1)).collect();
+            learned = self.hotbar.iter().flatten().copied().collect();
         }
         learned
             .into_iter()
-            .map(|(skill, level)| {
+            .map(|skill| {
                 let def = world.effective_skill(self.player, skill);
                 SkillLine {
                     skill,
                     name: self.data.skill_name(skill),
-                    level,
-                    max_level: world.skill_max_level(skill),
                     mp_cost: def.map_or(0, |d| d.mp_cost),
                     slot: self.hotbar.iter().position(|s| *s == Some(skill)),
                 }
@@ -1617,7 +1604,7 @@ impl PlaySession {
                     let slot = l
                         .slot
                         .map_or_else(|| "—".to_owned(), |i| format!("{}번", i + 1));
-                    row(format!("{} Lv{}", l.name, l.level), slot, true)
+                    row(l.name.clone(), slot, true)
                 })
                 .collect(),
             quests: quests
@@ -1725,7 +1712,7 @@ impl PlaySession {
                 };
                 // 레벨 수식이 반영된 값 (R3) — MP·쿨타임이 레벨마다 다르다.
                 let def = world.effective_skill(self.player, skill);
-                let total = def.map_or(0.0, |d| d.cooldown().as_secs_f32());
+                let total = def.as_ref().map_or(0.0, |d| d.cooldown().as_secs_f32());
                 let left = me.map_or(0.0, |u| u.cooldown_left(skill, now).as_secs_f32());
                 crate::screen::SkillSlot {
                     key,
@@ -1781,10 +1768,7 @@ impl PlaySession {
         let def = world
             .effective_skill(self.player, skill)
             .ok_or_else(|| format!("{name}: 모르는 스킬입니다"))?;
-        if me.def().class.is_some()
-            && me.def().basic_attack != Some(skill)
-            && me.skill_level(skill) == 0
-        {
+        if me.def().class.is_some() && me.def().basic_attack != Some(skill) && !me.knows(skill) {
             return Err(format!("{name}: 배우지 않은 스킬입니다"));
         }
         let now = world.now();
@@ -2168,17 +2152,10 @@ impl PlaySession {
             Event::LeveledUp { unit, level, .. } if unit == self.player => {
                 format!("레벨 {level} 달성 — HP 가 가득 찼다")
             }
-            Event::SkillLearned { unit, skill, level } if unit == self.player => {
-                let max = self.world().skill_max_level(skill);
-                if level == 1 {
-                    format!(
-                        "스킬을 배웠다: {} — 스킬 목록에서 단축키에 놓으세요",
-                        self.data.skill_name(skill)
-                    )
-                } else {
-                    format!("{} 레벨 {level}/{max}", self.data.skill_name(skill))
-                }
-            }
+            Event::SkillLearned { unit, skill } if unit == self.player => format!(
+                "스킬을 배웠다: {} — 스킬 목록에서 단축키에 놓으세요",
+                self.data.skill_name(skill)
+            ),
             Event::SkillForgotten { unit, skill } if unit == self.player => {
                 format!("스킬을 잊었다: {}", self.data.skill_name(skill))
             }
@@ -2764,13 +2741,14 @@ mod text {
             Rejection::Invulnerable => "공격할 수 없는 대상입니다",
             Rejection::Friendly => "우호 대상입니다",
             Rejection::EmptySlot => "빈 칸입니다",
+            Rejection::NeedsAim => "겨눌 곳을 골라야 하는 스킬입니다",
             Rejection::NoEquipSlot => "그 장신구를 낄 칸이 없습니다",
             Rejection::InventoryFull => "가방이 가득 찼습니다",
             Rejection::NotUsable => "쓸 수 없는 아이템입니다",
             Rejection::NotDead => "쓰러진 상태가 아닙니다",
             Rejection::ClassRestricted => "이 직업은 쓸 수 없는 장비입니다",
             Rejection::SkillNotLearned => "배우지 않은 스킬입니다",
-            Rejection::SkillMaxed => "이미 최대 레벨인 스킬입니다",
+            Rejection::SkillKnown => "이미 가진 스킬입니다",
             Rejection::Stunned => "기절해 움직일 수 없습니다",
             Rejection::Silenced => "침묵 중에는 스킬을 쓸 수 없습니다",
             Rejection::SkillRequirement => "배울 수 없는 스킬입니다 (직업·조건)",
@@ -3913,30 +3891,31 @@ mod tests {
         assert_eq!(
             w.effective_skill(warrior.player(), SkillId(8))
                 .unwrap()
-                .heal,
-            60
+                .heal_amount(),
+            Some(60)
         );
         let mage = new_game(Some(ClassId(2)), None);
         assert_eq!(
             mage.world()
                 .effective_skill(mage.player(), SkillId(8))
                 .unwrap()
-                .heal,
-            74
+                .heal_amount(),
+            Some(74)
         );
 
-        // 강베기 비급으로 2레벨 → 위력 1.9배, MP 17.
+        // 강베기는 캐릭터 레벨을 따라 세진다 (스킬 레벨은 없다, K1) — 레벨 1: 1.8배·MP 15, 레벨 6: 1.9배·MP 20.
         let mut s = new_game(Some(ClassId(1)), None);
         let me = s.player();
         let before = s.world().effective_skill(me, SkillId(5)).unwrap();
-        assert_eq!((before.damage_mult, before.mp_cost), (1.8, 15));
+        assert_eq!((before.power_per_mille(), before.mp_cost), (Some(1800), 15));
+        s.auth.world_mut().set_progress(me, Progress::new(6, 0));
+        let after = s.world().effective_skill(me, SkillId(5)).unwrap();
+        assert_eq!((after.power_per_mille(), after.mp_cost), (Some(1900), 20));
+        // 이미 가진 스킬의 비급은 거절되고 남는다 — 전사는 회오리 베기를 처음부터 가졌다.
         let slot = give(&mut s, 3001, 1);
         s.inventory(InventoryAction::Use(slot));
         s.tick(DT, None);
-        assert_eq!(s.world().unit(me).unwrap().skill_level(SkillId(5)), 2);
-        let after = s.world().effective_skill(me, SkillId(5)).unwrap();
-        assert_eq!((after.damage_mult, after.mp_cost), (1.9, 17));
-        assert!(s.log().any(|l| l == "강베기 레벨 2/5"), "{:?}", s.log);
+        assert!(s.log().any(|l| l.contains("이미 가진 스킬")), "{:?}", s.log);
     }
 
     #[test]
@@ -3964,12 +3943,7 @@ mod tests {
         });
         s.tick(DT, None);
         assert_eq!(s.world().unit(me).unwrap().progress().level(), 3);
-        assert_eq!(
-            s.world().unit(me).unwrap().skill_level(fireball),
-            1,
-            "{:?}",
-            s.log
-        );
+        assert!(s.world().unit(me).unwrap().knows(fireball), "{:?}", s.log);
         assert!(
             !s.hotbar.contains(&Some(fireball)),
             "새로 배운 스킬은 저절로 놓이지 않는다"
@@ -3981,11 +3955,11 @@ mod tests {
         assert!(!s.hotbar.contains(&Some(SkillId(8))));
         s.assign_hotbar(SkillId(8), Some(4));
 
-        // 저장 → 이어 하기: 배운 스킬·레벨·배치가 그대로.
+        // 저장 → 이어 하기: 가진 스킬·배치가 그대로.
         let save = s.save_data(String::new());
         let back = new_game(None, Some(save));
         let u = back.world().unit(back.player()).unwrap();
-        assert_eq!(u.skill_level(fireball), 1);
+        assert!(u.knows(fireball));
         assert_eq!(back.hotbar[0], Some(fireball));
         assert_eq!(back.hotbar[4], Some(SkillId(8)));
     }
@@ -3999,7 +3973,7 @@ mod tests {
         let u = s.world().unit(s.player()).unwrap();
         assert_eq!(
             u.learned_skills().collect::<Vec<_>>(),
-            [(SkillId(5), 1), (SkillId(6), 1)],
+            [SkillId(5), SkillId(6)],
             "궁수의 시작 스킬"
         );
         assert_eq!(s.hotbar[..2], [Some(SkillId(6)), Some(SkillId(5))]);
@@ -4018,10 +3992,7 @@ mod tests {
         );
         let lines = s.skill_lines();
         assert_eq!(lines.len(), 4, "전사의 시작 스킬 넷");
-        assert_eq!(
-            (lines[0].name.as_str(), lines[0].level, lines[0].max_level),
-            ("강베기", 1, 5)
-        );
+        assert_eq!((lines[0].name.as_str(), lines[0].mp_cost), ("강베기", 15));
         assert_eq!(lines[0].slot, Some(0));
     }
 

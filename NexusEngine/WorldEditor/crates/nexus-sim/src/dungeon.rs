@@ -68,14 +68,7 @@ mod tests {
     /// 플레이어 하나 + 보스 하나 + 졸개 하나. 플레이어는 한 방에 쓰러뜨린다.
     fn dungeon(def: ClearDef) -> (LocalAuthority, Entity, Entity, Entity) {
         let mut w = SimWorld::new(TileMap::new(30, 30, 1.0, Vec2::ZERO, Tile::default()));
-        w.define_skill(
-            HIT,
-            SkillDef {
-                range: 3.0,
-                damage_mult: 1.0,
-                ..SkillDef::default()
-            },
-        );
+        w.define_skill(HIT, SkillDef::legacy(3.0, 0, 1.0, 0, 0.0, 0));
         w.set_clear(def);
         let me = w.spawn_unit(
             Vec2::new(5.5, 5.5),

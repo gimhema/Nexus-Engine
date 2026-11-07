@@ -388,17 +388,7 @@ mod flow_tests {
 
     fn world() -> SimWorld {
         let mut w = SimWorld::new(TileMap::new(20, 20, 1.0, Vec2::ZERO, Tile::default()));
-        w.define_skill(
-            HIT,
-            SkillDef {
-                range: 2.0,
-                cooldown_ms: 500,
-                damage_mult: 1.0,
-                mp_cost: 0,
-                radius: 0.0,
-                heal: 0,
-            },
-        );
+        w.define_skill(HIT, SkillDef::legacy(2.0, 500, 1.0, 0, 0.0, 0));
         w.define_item(
             POTION,
             ItemDef {

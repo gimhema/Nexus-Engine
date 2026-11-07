@@ -213,8 +213,10 @@ pub enum Rejection {
     Stunned,
     /// 침묵 중이라 기본 공격 말고는 쓸 수 없다 (R2b).
     Silenced,
-    /// 이미 최대 레벨인 스킬 (R3).
-    SkillMaxed,
+    /// 이미 가진 스킬 (K1 — 스킬 레벨이 없으므로 두 번 배울 수 없다).
+    SkillKnown,
+    /// 지점·방향을 겨눠야 하는 스킬을 유닛 대상으로 썼다 (K1) — `Intent::Cast`(K2)로 쓴다.
+    NeedsAim,
     /// 배울 수 없는 스킬 — 직업이 맞지 않거나 습득 조건이 맞지 않는다 (R3).
     SkillRequirement,
     /// 그 NPC 에게 그런 기능이 없다 (기능이 없는 유닛에게 말 걸기 포함, R4).
@@ -317,12 +319,8 @@ pub enum Event {
     },
     /// 레벨이 올랐다 — HP·MP 가 가득 찬다. 한 번에 여러 레벨이 오르면 `from` 이 `level - 1` 보다 작다.
     LeveledUp { unit: Entity, from: u32, level: u32 },
-    /// 스킬을 배웠거나 레벨이 올랐다 (R3). `level` 은 새 레벨.
-    SkillLearned {
-        unit: Entity,
-        skill: SkillId,
-        level: u32,
-    },
+    /// 스킬을 배웠다 (R3).
+    SkillLearned { unit: Entity, skill: SkillId },
     /// 스킬을 잊었다 (R3).
     SkillForgotten { unit: Entity, skill: SkillId },
     /// NPC 에게 말을 걸었다 (R4) — 앱이 그 NPC 의 기능 메뉴를 연다.

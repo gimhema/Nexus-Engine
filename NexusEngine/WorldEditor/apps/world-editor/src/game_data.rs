@@ -40,7 +40,7 @@ use serde::Deserialize;
 use crate::class_file::{self, ClassFile, ClassLookFile, EquipRef, StatsFile};
 use crate::quest_file::{self, QuestFile, QuestLookFile};
 use crate::scene::{ActorId, ItemKind};
-use crate::skill_file::{self, NumOr, SkillLevelRef};
+use crate::skill_file::{self, NumOr, SkillRulesRef};
 use crate::sprites::{PartRef, SpriteSources};
 use crate::trade_file::{self, CraftFile, ServiceFile, ShopFile, TeleportFile, TradeRefs};
 use crate::trigger_file::{self, ConditionFile, TriggerFile};
@@ -290,12 +290,12 @@ enum RelationKindFile {
 #[serde(deny_unknown_fields)]
 struct SkillFile {
     range: f32,
-    /// 숫자 또는 수식 (R3 — 변수에 `skill_level`).
+    /// 숫자 또는 공식 (R3 — 변수는 기본 스탯·`level`·장비).
     cooldown_ms: NumOr,
     /// 피해 배율. `power`(천분율 수식)를 적으면 그것이 이긴다.
     #[serde(default = "one_f32")]
     damage_mult: f32,
-    /// 위력 천분율 수식 (R3) — `"1500 + skill_level * 100"` 이면 1.6배부터.
+    /// 위력 천분율 공식 (R3) — `"1500 + level * 20"` 이면 레벨 1 에 1.52배.
     #[serde(default)]
     power: String,
     /// 쓸 때 드는 MP. 적지 않으면 0 — MP 를 보지 않는다. 숫자 또는 수식.
@@ -307,9 +307,6 @@ struct SkillFile {
     /// 회복량. 0 보다 크면 피해 대신 회복하는 스킬이다. 숫자 또는 수식.
     #[serde(default)]
     heal: NumOr,
-    /// 최대 레벨 (R3). 적지 않으면 1.
-    #[serde(default = "one_u32")]
-    max_level: u32,
     /// 배울 수 있는 직업 (R3). 비우면 누구나.
     #[serde(default)]
     classes: Vec<u32>,
@@ -322,6 +319,125 @@ struct SkillFile {
     /// 날아가는 속도 (m/s, T8). 0 이면 바로 맞는다.
     #[serde(default)]
     projectile_speed: u32,
+    /// 무엇을 겨누는가 (K1) — `Unit`(기본)·`Point`·`Direction`·`Caster`.
+    #[serde(default)]
+    aim: AimFile,
+    /// 시전 시간 (ms, K1). 0 이면 바로 — 실제로 기다리는 것은 K2 부터.
+    #[serde(default)]
+    cast_ms: u32,
+    /// 판정 모양 (K1) — `Circle(radius: 2.5)`·`Line(width: 0.8)`·`Cone(radius: 3.0, angle: 90)`(각은 도).
+    /// 적지 않으면 대상 하나. 예전 `radius` 와 함께 쓰지 않는다.
+    #[serde(default)]
+    area: AreaFile,
+    /// 효과 목록 (K1) — `Damage(to: Enemies, power: "1500 + int * 30")`·`Heal(to: Caster, amount: 20)`·
+    /// `Buff(to: Enemies, id: 3)`. 적으면 예전 `damage_mult`·`power`·`heal`·`buff` 대신 이것을 쓴다.
+    #[serde(default)]
+    effects: Vec<EffectFile>,
+    /// 표지 (K1) — 스킬 특성(K9)이 스킬을 고를 이름. 지금은 읽어 두기만 한다.
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
+enum AimFile {
+    #[default]
+    Unit,
+    Point,
+    Direction,
+    Caster,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+enum AreaFile {
+    /// 대상 하나 — 적지 않은 것과 같다.
+    #[default]
+    Single,
+    Circle {
+        radius: f32,
+    },
+    Line {
+        width: f32,
+    },
+    /// 각은 **도** — 파일은 사람이 쓰므로.
+    Cone {
+        radius: f32,
+        angle: f32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, serde::Serialize)]
+enum AffectsFile {
+    Target,
+    Enemies,
+    Allies,
+    AlliesAndCaster,
+    Caster,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+enum EffectFile {
+    /// 위력 천분율 — 숫자 또는 공식.
+    Damage {
+        to: AffectsFile,
+        power: NumOr,
+    },
+    Heal {
+        to: AffectsFile,
+        amount: NumOr,
+    },
+    Buff {
+        to: AffectsFile,
+        id: u32,
+    },
+}
+
+impl From<AimFile> for nexus_sim::Aim {
+    fn from(a: AimFile) -> Self {
+        match a {
+            AimFile::Unit => Self::Unit,
+            AimFile::Point => Self::Point,
+            AimFile::Direction => Self::Direction,
+            AimFile::Caster => Self::Caster,
+        }
+    }
+}
+
+impl From<AreaFile> for nexus_sim::Area {
+    fn from(a: AreaFile) -> Self {
+        match a {
+            AreaFile::Single => Self::Single,
+            AreaFile::Circle { radius } => Self::Circle { radius },
+            AreaFile::Line { width } => Self::Line { width },
+            AreaFile::Cone { radius, angle } => Self::Cone {
+                radius,
+                angle: angle.to_radians(),
+            },
+        }
+    }
+}
+
+impl From<AffectsFile> for nexus_sim::Affects {
+    fn from(a: AffectsFile) -> Self {
+        match a {
+            AffectsFile::Target => Self::Target,
+            AffectsFile::Enemies => Self::Enemies,
+            AffectsFile::Allies => Self::Allies,
+            AffectsFile::AlliesAndCaster => Self::AlliesAndCaster,
+            AffectsFile::Caster => Self::Caster,
+        }
+    }
+}
+
+/// 값을 RON 한 줄로 (표 편집기가 다시 쓰는 칸).
+fn ron_text<T: serde::Serialize + ?Sized>(v: &T) -> String {
+    ron::to_string(v).unwrap_or_default()
+}
+
+/// 0 보다 큰 수 (NaN 은 아니다).
+fn positive(v: f32) -> bool {
+    v.is_finite() && v > 0.0
 }
 
 fn one_f32() -> f32 {
@@ -333,17 +449,172 @@ fn one_u32() -> u32 {
 }
 
 impl SkillFile {
-    fn level_ref(&self, id: u32) -> SkillLevelRef<'_> {
-        SkillLevelRef {
+    fn level_ref(&self, id: u32) -> SkillRulesRef<'_> {
+        // 효과 수치 공식 — 새 모양이면 효과마다, 예전 모양이면 `power`·`heal` 이 효과 0 번이다.
+        let mut amounts = Vec::new();
+        if self.effects.is_empty() {
+            if !self.power.trim().is_empty() {
+                amounts.push((0, String::from("power"), self.power.as_str()));
+            }
+            if let Some(f) = self.heal.formula() {
+                amounts.push((0, String::from("heal"), f));
+            }
+        } else {
+            for (i, e) in self.effects.iter().enumerate() {
+                let f = match e {
+                    EffectFile::Damage { power: n, .. } | EffectFile::Heal { amount: n, .. } => {
+                        n.formula()
+                    }
+                    EffectFile::Buff { .. } => None,
+                };
+                if let Some(f) = f {
+                    amounts.push((i, format!("effects[{i}]"), f));
+                }
+            }
+        }
+        SkillRulesRef {
             id,
-            max_level: self.max_level,
             classes: &self.classes,
             requires: &self.requires,
-            power: &self.power,
+            amounts,
             cooldown_ms: &self.cooldown_ms,
             mp_cost: &self.mp_cost,
-            heal: &self.heal,
         }
+    }
+
+    /// 규칙 정의 (K1). 공식 칸의 숫자 값은 자리만 채운다 — 쓸 때 `effective_skill` 이 공식으로 덮는다.
+    fn to_def(&self) -> SkillDef {
+        if self.effects.is_empty() {
+            // 예전 한 줄 — 회복 공식이면 1 로 두어 "회복 스킬" 로 분류되게 한다.
+            let mut def = SkillDef::legacy(
+                self.range,
+                self.cooldown_ms.base(0),
+                self.damage_mult,
+                self.mp_cost.base(0),
+                self.radius,
+                self.heal.base(1),
+            );
+            def.aim = self.aim.into();
+            def.cast_ms = self.cast_ms;
+            if self.area != AreaFile::Single {
+                let area = self.area;
+                // 예전 효과에 모양만 준 것 — 대상 하나가 아니므로 대상 필터를 넓힌다.
+                def.area = area.into();
+                let wide = if def.is_heal() {
+                    nexus_sim::Affects::AlliesAndCaster
+                } else {
+                    nexus_sim::Affects::Enemies
+                };
+                for e in &mut def.effects {
+                    e.to = wide;
+                }
+            }
+            return def;
+        }
+        let effects = self
+            .effects
+            .iter()
+            .map(|e| match e {
+                EffectFile::Damage { to, power } => nexus_sim::SkillEffect {
+                    to: (*to).into(),
+                    kind: nexus_sim::EffectKind::Damage {
+                        power_per_mille: power.base(1000),
+                    },
+                },
+                EffectFile::Heal { to, amount } => nexus_sim::SkillEffect {
+                    to: (*to).into(),
+                    kind: nexus_sim::EffectKind::Heal {
+                        amount: amount.base(1),
+                    },
+                },
+                EffectFile::Buff { to, id } => nexus_sim::SkillEffect {
+                    to: (*to).into(),
+                    kind: nexus_sim::EffectKind::Buff(BuffId(*id)),
+                },
+            })
+            .collect();
+        SkillDef {
+            range: self.range,
+            cooldown_ms: self.cooldown_ms.base(0),
+            mp_cost: self.mp_cost.base(0),
+            cast_ms: self.cast_ms,
+            aim: self.aim.into(),
+            area: self.area.into(),
+            effects,
+        }
+    }
+
+    /// 새 모양(K1) 칸을 RON 한 줄로 — 표 편집기가 보존·편집한다. 기본값인 칸은 적지 않는다.
+    fn shape_text(&self) -> String {
+        let mut parts = Vec::new();
+        if self.aim != AimFile::Unit {
+            parts.push(format!("aim: {}", ron_text(&self.aim)));
+        }
+        if self.cast_ms > 0 {
+            parts.push(format!("cast_ms: {}", self.cast_ms));
+        }
+        if self.area != AreaFile::Single {
+            parts.push(format!("area: {}", ron_text(&self.area)));
+        }
+        if !self.effects.is_empty() {
+            parts.push(format!("effects: {}", ron_text(&self.effects)));
+        }
+        if !self.tags.is_empty() {
+            parts.push(format!("tags: {}", ron_text(&self.tags)));
+        }
+        parts.join(", ")
+    }
+
+    /// 새 모양(K1) 칸의 검사 — 예전 칸과 섞어 쓰지 않았는지, 수치가 말이 되는지.
+    fn shape_errors(&self, id: u32, buff_exists: impl Fn(u32) -> bool) -> Vec<String> {
+        let mut out = Vec::new();
+        let new_style = !self.effects.is_empty();
+        if new_style
+            && (!self.power.trim().is_empty()
+                || !self.heal.is_zero()
+                || self.buff.is_some()
+                || (self.damage_mult - 1.0).abs() > f32::EPSILON)
+        {
+            out.push(format!(
+                "스킬 {id}: effects 를 쓰면 damage_mult·power·heal·buff 는 적지 않는다 (효과에 적는다)"
+            ));
+        }
+        if self.area != AreaFile::Single && self.radius > 0.0 {
+            out.push(format!("스킬 {id}: area 와 radius 를 함께 쓰지 않는다"));
+        }
+        match self.area {
+            AreaFile::Circle { radius } if !positive(radius) => {
+                out.push(format!("스킬 {id}: Circle 의 radius 는 0 보다 커야 함"));
+            }
+            AreaFile::Line { width } if !positive(width) => {
+                out.push(format!("스킬 {id}: Line 의 width 는 0 보다 커야 함"));
+            }
+            AreaFile::Cone { radius, angle }
+                if !positive(radius) || !(1.0..=360.0).contains(&angle) =>
+            {
+                out.push(format!("스킬 {id}: Cone 은 radius > 0, angle 1~360 (도)"));
+            }
+            _ => {}
+        }
+        if self.aim == AimFile::Unit
+            && matches!(self.area, AreaFile::Line { .. } | AreaFile::Cone { .. })
+            && self.range <= 0.0
+        {
+            out.push(format!("스킬 {id}: 직선·부채꼴은 range 가 있어야 함"));
+        }
+        for e in &self.effects {
+            if let EffectFile::Buff { id: b, .. } = e
+                && !buff_exists(*b)
+            {
+                out.push(format!("스킬 {id}: effects 의 없는 버프 {b}"));
+            }
+        }
+        for t in &self.tags {
+            if t.trim().is_empty() || t.chars().any(char::is_whitespace) {
+                out.push(format!("스킬 {id}: 표지 '{t}' — 빈칸 없는 낱말"));
+            }
+        }
+        out
     }
 }
 
@@ -1095,6 +1366,9 @@ impl GameData {
                     format!("스킬 {id}: 없는 버프 {b}"),
                 );
             }
+            for e in s.shape_errors(*id, |b| r.buffs.contains_key(&b)) {
+                check(false, e);
+            }
         }
         for (id, it) in &r.items {
             if let ItemFile::Consumable { buff: Some(b), .. } = it {
@@ -1272,21 +1546,7 @@ impl GameData {
             skills: r
                 .skills
                 .iter()
-                .map(|(id, s)| {
-                    (
-                        SkillId(*id),
-                        // 수식 칸의 숫자 값은 자리만 채운다 — 쓸 때 `effective_skill` 이 수식으로 덮는다.
-                        // 회복 수식이면 1 로 두어 "회복 스킬" 로 분류되게 한다.
-                        SkillDef {
-                            range: s.range,
-                            cooldown_ms: s.cooldown_ms.base(0),
-                            damage_mult: s.damage_mult,
-                            mp_cost: s.mp_cost.base(0),
-                            radius: s.radius,
-                            heal: s.heal.base(1),
-                        },
-                    )
-                })
+                .map(|(id, s)| (SkillId(*id), s.to_def()))
                 .collect(),
             items: r
                 .items
@@ -1593,8 +1853,8 @@ impl GameData {
         for &(a, b, relation) in &self.relations {
             world.set_relation(a, b, relation);
         }
-        for &(id, def) in &self.skills {
-            world.define_skill(id, def);
+        for (id, def) in &self.skills {
+            world.define_skill(*id, def.clone());
         }
         for &(id, def) in &self.items {
             world.define_item(id, def);
@@ -2648,14 +2908,13 @@ pub(crate) struct SkillForm {
     pub(crate) radius: f32,
     pub(crate) heal: u32,
     pub(crate) name: String,
-    /// 레벨·부착 규칙 (R3) — 고치지 않아도 저장할 때 그대로 다시 쓴다.
-    pub(crate) level: SkillLevelForm,
+    /// 부착 규칙·공식·새 모양 칸 (R3·K1) — 고치지 않아도 저장할 때 그대로 다시 쓴다.
+    pub(crate) level: SkillRulesForm,
 }
 
-/// 스킬의 R3 칸. **수식 칸이 비어 있지 않으면 같은 이름의 숫자 칸보다 이긴다.**
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SkillLevelForm {
-    pub(crate) max_level: u32,
+/// 스킬의 R3 칸. **공식 칸이 비어 있지 않으면 같은 이름의 숫자 칸보다 이긴다.**
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SkillRulesForm {
     pub(crate) classes: Vec<u32>,
     /// 습득 조건 — RON 텍스트(`Level(cmp: Ge, value: 3)`). 비우면 늘 참.
     pub(crate) requires: String,
@@ -2667,22 +2926,9 @@ pub(crate) struct SkillLevelForm {
     pub(crate) buff: u32,
     /// 날아가는 속도 (m/s, T8). 0 = 바로 맞는다.
     pub(crate) projectile_speed: u32,
-}
-
-impl Default for SkillLevelForm {
-    fn default() -> Self {
-        Self {
-            max_level: 1,
-            classes: Vec::new(),
-            requires: String::new(),
-            power: String::new(),
-            cooldown: String::new(),
-            mp_cost: String::new(),
-            heal: String::new(),
-            buff: 0,
-            projectile_speed: 0,
-        }
-    }
+    /// 새 모양 칸 (K1) — `aim: Point, cast_ms: 250, area: Circle(radius: 2.0), effects: [...], tags: [...]`
+    /// 를 RON 그대로. 표 편집기가 이 칸을 정식 폼으로 고치기 전까지(K8) **지우지 않고 다시 쓴다.**
+    pub(crate) shape: String,
 }
 
 impl SkillForm {
@@ -2695,7 +2941,7 @@ impl SkillForm {
             radius: 0.0,
             heal: 0,
             name: name.to_owned(),
-            level: SkillLevelForm::default(),
+            level: SkillRulesForm::default(),
         }
     }
 
@@ -2720,9 +2966,6 @@ impl SkillForm {
             extra.push_str(&format!(", heal: {}", num_or(self.heal, &l.heal)));
         }
         // R3 칸 — 기본값이면 적지 않는다.
-        if l.max_level > 1 {
-            extra.push_str(&format!(", max_level: {}", l.max_level));
-        }
         if !l.classes.is_empty() {
             let list: Vec<String> = l.classes.iter().map(u32::to_string).collect();
             extra.push_str(&format!(", classes: [{}]", list.join(", ")));
@@ -2736,14 +2979,19 @@ impl SkillForm {
         if l.projectile_speed != 0 {
             extra.push_str(&format!(", projectile_speed: {}", l.projectile_speed));
         }
-        // 위력 수식이 있으면 배율 대신 그것을 적는다.
-        let power = if set(&l.power) {
-            format!("power: {}", q(l.power.trim()))
+        if set(&l.shape) {
+            extra.push_str(&format!(", {}", l.shape.trim().trim_matches(',')));
+        }
+        // 위력 수식이 있으면 배율 대신 그것을 적는다. 효과 목록(K1)이 있으면 둘 다 적지 않는다.
+        let power = if l.shape.contains("effects") {
+            String::new()
+        } else if set(&l.power) {
+            format!(", power: {}", q(l.power.trim()))
         } else {
-            format!("damage_mult: {:?}", self.damage_mult)
+            format!(", damage_mult: {:?}", self.damage_mult)
         };
         format!(
-            "{id}: (range: {:?}, cooldown_ms: {}, {power}{mp}{extra}),",
+            "{id}: (range: {:?}, cooldown_ms: {}{power}{mp}{extra}),",
             self.range,
             num_or(self.cooldown_ms, &l.cooldown)
         )
@@ -3082,8 +3330,7 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
                     radius: s.radius,
                     heal: s.heal.base(0),
                     name: d.skills.get(id).map(|l| l.name.clone()).unwrap_or_default(),
-                    level: SkillLevelForm {
-                        max_level: s.max_level,
+                    level: SkillRulesForm {
                         classes: s.classes.clone(),
                         requires: if s.requires == ConditionFile::Always {
                             String::new()
@@ -3096,6 +3343,7 @@ pub(crate) fn table_forms(rules: &str, display: &str) -> Result<TableForms, Stri
                         heal: s.heal.formula().unwrap_or("").to_owned(),
                         buff: s.buff.unwrap_or(0),
                         projectile_speed: s.projectile_speed,
+                        shape: s.shape_text(),
                     },
                 },
             )
@@ -3756,6 +4004,96 @@ mod tests {
         assert_eq!(items[0].1[0].slot, None);
     }
 
+    /// 새 모양 스킬 (K1) — 조준·범위·효과 목록이 읽히고, 표 편집기를 지나도 그대로 남는다.
+    #[test]
+    fn a_new_shape_skill_reads_and_survives_the_table_editor() {
+        let entry = r#"
+        30: (range: 8.0, cooldown_ms: 6000, mp_cost: 20, aim: Caster, cast_ms: 300,
+             area: Cone(radius: 3.0, angle: 90.0),
+             effects: [Damage(to: Enemies, power: "1200 + int * 10"), Buff(to: Enemies, id: 1), Heal(to: Caster, amount: 15)],
+             tags: ["fire", "aoe"]),
+        "#;
+        let rules =
+            EMBEDDED_RULES.replacen("    skills: {\n", &format!("    skills: {{\n{entry}"), 1);
+        let data = GameData::parse(&rules, EMBEDDED_DISPLAY).unwrap();
+        let def = data
+            .skills
+            .iter()
+            .find(|(id, _)| *id == SkillId(30))
+            .unwrap()
+            .1
+            .clone();
+        assert_eq!(def.aim, nexus_sim::Aim::Caster);
+        assert_eq!(def.cast_ms, 300);
+        assert!(matches!(def.area, nexus_sim::Area::Cone { radius, .. } if radius == 3.0));
+        assert_eq!(def.effects.len(), 3);
+        assert_eq!(def.effects[2].to, nexus_sim::Affects::Caster);
+        // 위력은 공식이라 부착 규칙에 효과 0 번으로 들어간다.
+        assert!(
+            data.skill_rules
+                .iter()
+                .any(|(id, r)| *id == SkillId(30) && r.amounts.len() == 1)
+        );
+
+        // 표 편집기 — 폼으로 읽고 다시 써도 새 칸이 남는다.
+        let forms = table_forms(&rules, EMBEDDED_DISPLAY).unwrap();
+        let line = forms.skills[&30].rules_entry(30);
+        for want in [
+            "aim: Caster",
+            "cast_ms: 300",
+            "Cone(radius:3.0,angle:90.0)",
+            "Heal(to:Caster,amount:15)",
+            "tags: [\"fire\",\"aoe\"]",
+        ] {
+            assert!(line.contains(want), "{want} 없음 — {line}");
+        }
+        let again = EMBEDDED_RULES.replacen(
+            "    skills: {\n",
+            &format!("    skills: {{\n        {line}\n"),
+            1,
+        );
+        let back = GameData::parse(&again, EMBEDDED_DISPLAY).unwrap();
+        let def2 = back
+            .skills
+            .iter()
+            .find(|(id, _)| *id == SkillId(30))
+            .unwrap()
+            .1
+            .clone();
+        assert_eq!(def2, def);
+    }
+
+    #[test]
+    fn new_shape_fields_are_checked() {
+        for (bad, why) in [
+            (
+                "30: (range: 2.0, cooldown_ms: 1, damage_mult: 2.0, effects: [Heal(to: Caster, amount: 1)]),",
+                "effects 를 쓰면",
+            ),
+            (
+                "30: (range: 2.0, cooldown_ms: 1, radius: 1.0, area: Circle(radius: 2.0)),",
+                "area 와 radius",
+            ),
+            (
+                "30: (range: 2.0, cooldown_ms: 1, area: Cone(radius: 2.0, angle: 0.0)),",
+                "Cone 은",
+            ),
+            (
+                "30: (range: 2.0, cooldown_ms: 1, effects: [Buff(to: Enemies, id: 99)]),",
+                "없는 버프 99",
+            ),
+            ("30: (range: 2.0, cooldown_ms: 1, tags: [\"a b\"]),", "표지"),
+        ] {
+            let rules = EMBEDDED_RULES.replacen(
+                "    skills: {\n",
+                &format!("    skills: {{\n        {bad}\n"),
+                1,
+            );
+            let err = GameData::parse(&rules, EMBEDDED_DISPLAY).unwrap_err();
+            assert!(err.contains(why), "{bad} → {err}");
+        }
+    }
+
     #[test]
     fn accessory_kinds_need_slots_and_name_their_positions() {
         let data = GameData::embedded();
@@ -3986,14 +4324,17 @@ mod tests {
             .iter()
             .find(|(id, _)| *id == SkillId(7))
             .unwrap()
-            .1;
+            .1
+            .clone();
         let mend = data
             .skills
             .iter()
             .find(|(id, _)| *id == SkillId(8))
             .unwrap()
-            .1;
-        assert_eq!((whirl.radius, whirl.heal), (2.5, 0));
+            .1
+            .clone();
+        assert_eq!(whirl.area, nexus_sim::Area::Circle { radius: 2.5 });
+        assert!(whirl.heal_amount().is_none());
         // 치유는 회복량이 수식이다 (R3) — 정의의 숫자는 "회복 스킬" 로 분류되게 하는 자리 값이고,
         // 실제 양은 쓸 때 수식으로 계산한다 (`play::tests::skill_formulas_scale_with_level_and_stats`).
         assert!(mend.is_heal());

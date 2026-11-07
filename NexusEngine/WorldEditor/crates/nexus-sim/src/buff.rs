@@ -108,14 +108,7 @@ mod tests {
     }
 
     fn skill(mp_cost: u32) -> SkillDef {
-        SkillDef {
-            range: 5.0,
-            cooldown_ms: 0,
-            damage_mult: 1.0,
-            mp_cost,
-            radius: 0.0,
-            heal: 0,
-        }
+        SkillDef::legacy(5.0, 0, 1.0, mp_cost, 0.0, 0)
     }
 
     /// 서로 적대하는 둘 — 몬스터(공격 0, 스킬 대상)와 플레이어 역할.
