@@ -18,6 +18,7 @@
 //! 존 파일(`zones/*.zone.ron`)로 저장·로드한다 (S7-2). 서버 `ZoneConfig` 내보내기는 단계 2.
 
 mod actor_editor;
+mod appearance;
 mod asset_ops;
 mod class_file;
 mod content;
@@ -104,6 +105,8 @@ const HUD_SCREEN: &str = "hud";
 const NPC_SCREEN: &str = "npc";
 /// 캐릭터 창 (T2) — 스탯·장비·가방·스킬·퀘스트.
 const CHARACTER_SCREEN: &str = "character";
+/// 캐릭터 만들기 화면 (C3) — `Customize` 버튼이 띄운다.
+const CUSTOMIZE_SCREEN: &str = "customize";
 
 const BIAS_ART: f32 = 0.25 * DEPTH_LAYER;
 /// 타일 — 지면 층에서 그리드 바로 위.
@@ -253,6 +256,10 @@ struct Editor {
     continue_prompt: Option<String>,
     /// 새 게임 버튼이 고른 직업 (R2) — 다음 플레이 시작이 꺼내 쓴다.
     new_game: Option<ClassId>,
+    /// 캐릭터 만들기에서 고른 외형 (C3) — 새 게임과 함께 다음 플레이 시작이 꺼내 쓴다.
+    new_look: Option<appearance::Appearance>,
+    /// 캐릭터 만들기 창의 상태 (C3) — `(고르는 중인 외형, 직업, 시작할 레벨)`.
+    making: Option<(appearance::Creator, ClassId, String)>,
     /// 다른 레벨로 떠나는 텔레포트의 도착지 `(존 파일, 위치)` (R4-2) — 다음 저장이 꺼내 쓴다.
     arrival: Option<(String, Vec2)>,
     /// 에디터가 보는 게임 데이터 — **액터 타입 목록**(인스펙터)과 마커 그림에 쓴다.
@@ -329,6 +336,8 @@ impl Default for Editor {
             save_slot: 1,
             continue_prompt: None,
             new_game: None,
+            new_look: None,
+            making: None,
             arrival: None,
             data: None,
             fixed_zoom: None,
@@ -709,6 +718,8 @@ impl Editor {
     fn start_play(&mut self, choice: SaveChoice) {
         // 새 게임 버튼이 맡겨 둔 직업이 있으면 저장을 쓰지 않는 새 시작이다 (R2).
         let new_game = self.new_game.take();
+        // 캐릭터 만들기의 외형 (C3) — 새 게임일 때만 쓴다. 어느 쪽이든 꺼내 버려 다음 시작에 남지 않게.
+        let new_look = self.new_look.take().filter(|_| new_game.is_some());
         let choice = if new_game.is_some() {
             SaveChoice::Fresh
         } else {
@@ -794,7 +805,17 @@ impl Editor {
                 return;
             }
         }
+        // 외형은 새 게임이면 만든 것, 이어 하기면 저장한 것. 그릴 시트는 카탈로그로 푼다 —
+        // 카탈로그가 없으면 외형은 저장해 두되 액터의 기본 그림으로 그린다.
+        let appearance = new_look.or_else(|| save.as_ref().and_then(|s| s.appearance.clone()));
+        let look = appearance.map(|a| {
+            let resolved = appearance::Catalog::load(std::path::Path::new("."))
+                .ok()
+                .and_then(|c| a.resolve(&c));
+            (a, resolved)
+        });
         let options = PlayOptions {
+            look,
             spawn: self.selected_player_spawn(),
             save,
             class: new_game,
@@ -1296,7 +1317,99 @@ impl Editor {
                     play.list_pick(source, row as usize);
                 }
             }
+            Action::Customize { class, level } => {
+                match appearance::Catalog::load(std::path::Path::new(".")) {
+                    Ok(catalog) => {
+                        let seed = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(1, |d| d.as_nanos() as u64);
+                        self.making = Some((
+                            appearance::Creator::new(catalog, seed),
+                            ClassId(class),
+                            level,
+                        ));
+                        if self.screens.screen(CUSTOMIZE_SCREEN).is_none() {
+                            self.notify(format!("'{CUSTOMIZE_SCREEN}' 화면이 없습니다"), true);
+                        } else if let Some(shell) = self.shell.as_mut() {
+                            shell.push(CUSTOMIZE_SCREEN);
+                        }
+                    }
+                    // 생성기를 돌리지 않은 작업 폴더 — 외형 없이 바로 시작한다.
+                    Err(e) => {
+                        self.notify(format!("캐릭터 만들기를 건너뜁니다 — {e}"), true);
+                        self.new_game = Some(ClassId(class));
+                        self.open_level(&level);
+                    }
+                }
+            }
+            Action::Look { part, step } => {
+                if let Some((creator, ..)) = self.making.as_mut() {
+                    creator.step(&part, step);
+                }
+            }
+            Action::Begin => {
+                if let Some((creator, class, level)) = self.making.take() {
+                    self.new_game = Some(class);
+                    self.new_look = Some(creator.appearance());
+                    self.open_level(&level);
+                }
+            }
             Action::None => {}
+        }
+    }
+
+    /// 화면이 읽는 값 — 플레이 값에 캐릭터 만들기 미리보기(C3)를 얹는다.
+    fn screen_values(&self, show_items: bool) -> Values {
+        let mut values = Values::of(self.play.as_ref(), show_items);
+        values.look = self.look_view();
+        values
+    }
+
+    /// 캐릭터 만들기 창의 미리보기 — 남·동·북·서. 시트가 아직 올라가지 않았으면 문구만.
+    fn look_view(&self) -> Option<screen::LookView> {
+        use core::f32::consts::{FRAC_PI_2, PI};
+        let (creator, ..) = self.making.as_ref()?;
+        let mut view = screen::LookView {
+            texts: creator.texts(),
+            ..Default::default()
+        };
+        let sprites = self.sprites.as_ref()?;
+        let look = creator.resolved()?;
+        let Some((body, parts)) = sprites.look_parts(&look, &[], None) else {
+            return Some(view);
+        };
+        view.cell = body.cell();
+        for heading in [-FRAC_PI_2, 0.0, FRAC_PI_2, PI] {
+            let l = sprites::Look {
+                heading,
+                tint: look.skin,
+                fallback: sprites::NO_TINT,
+            };
+            view.views.push(body.stack(l, &parts, &creator.animator));
+        }
+        Some(view)
+    }
+
+    /// 외형 시트를 올린다 (C3) — 만드는 중인 캐릭터와 플레이 중인 플레이어. 프레임 바깥에서.
+    fn prepare_looks(&mut self) {
+        let mut paths: Vec<String> = Vec::new();
+        if let Some(look) = self.making.as_ref().and_then(|(c, ..)| c.resolved()) {
+            paths.extend(look.sheet_paths().map(str::to_owned));
+        }
+        if let Some(look) = self.play.as_ref().and_then(PlaySession::look) {
+            paths.extend(look.sheet_paths().map(str::to_owned));
+        }
+        if paths.is_empty() {
+            return;
+        }
+        let (Some(renderer), Some(sprites)) = (self.renderer.as_mut(), self.sprites.as_mut())
+        else {
+            return;
+        };
+        let mut warnings = Vec::new();
+        sprites.ensure_sheets(renderer, paths.iter().map(String::as_str), &mut warnings);
+        for w in warnings {
+            self.notify(w, true);
         }
     }
 
@@ -1392,7 +1505,7 @@ impl Editor {
         let Some(at) = p.screen else { return false };
         let Some(top) = shell.top() else { return false };
 
-        let values = Values::of(self.play.as_ref(), self.show_items);
+        let values = self.screen_values(self.show_items);
         let size = self.screen_size(actions.viewport_px);
         let hit = self.screens.button_at(top, &values, size, at);
         if p.over_viewport {
@@ -1494,7 +1607,7 @@ impl Editor {
             return false;
         }
         let Some(p) = pointer else { return false };
-        let values = Values::of(self.play.as_ref(), self.show_items);
+        let values = self.screen_values(self.show_items);
         let size = self.screen_size(actions.viewport_px);
         let grabbed = self
             .screen_editor
@@ -2283,7 +2396,7 @@ impl Editor {
         if ids.is_empty() {
             return;
         }
-        let mut values = Values::of(self.play.as_ref(), self.show_items || editing);
+        let mut values = self.screen_values(self.show_items || editing);
         if let Some(p) = &self.pending_level {
             values.loading = (p.elapsed.as_millis() as u32, p.min.as_millis() as u32);
         }
@@ -2615,6 +2728,14 @@ impl App for Editor {
         if let Some(sprites) = self.sprites.as_mut() {
             sprites.advance(dt);
         }
+        // 캐릭터 만들기·플레이어 외형 (C3) — 시트를 올리고 미리보기를 걷게 한다.
+        self.prepare_looks();
+        if let (Some((creator, ..)), Some(sprites)) = (self.making.as_mut(), self.sprites.as_ref())
+            && let Some(look) = creator.resolved()
+            && let Some((body, _)) = sprites.look_parts(&look, &[], None)
+        {
+            creator.animator.advance(body.anim(), dt);
+        }
         // 플레이 중이면 시뮬레이션이 여기서 돈다 — 게임 규칙은 20Hz 고정 timestep 에서만 진행한다.
         // 에디터 조작(카메라·선택·편집)은 뷰·저작 작업이므로 UI 프레임에서 처리한다.
         // 일시정지 화면이 떠 있으면 시뮬레이션을 멈춘다 (화면·애니메이션은 계속 돈다).
@@ -2662,7 +2783,7 @@ impl App for Editor {
         }
 
         // 값에서 오는 글(NPC 창·직업 이름)의 글자도 굽는다 (R4b).
-        let values = Values::of(self.play.as_ref(), self.show_items);
+        let values = self.screen_values(self.show_items);
         self.screens.note_values(&values);
         // 화면 문구에 새 글자(편집기에서 타이핑한 한글 등)가 생겼으면 글자 아틀라스를
         // 다시 굽는다 — 프레임 바깥에서 텍스처를 올려야 하므로 그리기 전에 한다.

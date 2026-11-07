@@ -46,7 +46,7 @@ use std::path::{Path, PathBuf};
 
 use nexus_assets::{AnimState, Clip, GridAtlas, Image, SpriteAnimator, SpriteSheet};
 use nexus_core::{Camera2d, Vec2, Vec3, units};
-use nexus_render::{RenderCommand, Renderer, SpriteAnchor, TextureId};
+use nexus_render::{RenderCommand, Renderer, SpriteAnchor, TextureId, UvRect};
 use serde::Deserialize;
 
 use nexus_sim::{EquipSlot, ItemId};
@@ -449,7 +449,29 @@ impl Sheet {
         let height = self.height(px);
         // 시트 칸 비율을 유지한다. 늘어나면 픽셀아트가 뭉개져 보인다.
         let width = height * self.cell.0 as f32 / self.cell.1 as f32;
+        let (uv, layers) = self.stack(look, parts, animator);
+        for (i, (texture, tint)) in layers.into_iter().enumerate() {
+            out.push(RenderCommand::DrawSprite {
+                // 앵커가 BottomCenter 라 발밑에서 위로 선다.
+                pos: Vec3::new(pos.x, pos.y, 0.0),
+                size: Vec2::new(width, height),
+                anchor: SpriteAnchor::BottomCenter,
+                depth_bias: depth_bias + i as f32 * PART_DEPTH_STEP,
+                uv,
+                texture,
+                tint,
+            });
+        }
+    }
 
+    /// 그릴 층 — 몸과 파츠를 앞뒤 순으로 `(텍스처, 색)`, 그리고 모두가 쓰는 칸 UV.
+    /// 월드([`push`](Self::push))와 화면 미리보기(커스터마이징 창)가 같은 규칙을 쓴다.
+    pub(crate) fn stack(
+        &self,
+        look: Look,
+        parts: &[Part<'_>],
+        animator: &SpriteAnimator,
+    ) -> (UvRect, Layers) {
         // 카메라 yaw 가 고정이라 방향을 그대로 넘긴다. 회전하는 카메라가 생기면
         // `heading - camera_yaw` 가 된다.
         let index = units::direction_index(look.heading, self.sheet.directions()) as usize;
@@ -472,19 +494,12 @@ impl Sheet {
         }
         // 안정 정렬 — 같은 앞뒤면 적은 순서 그대로.
         layers.sort_by_key(|(layer, ..)| *layer);
+        (uv, layers.into_iter().map(|(_, t, c)| (t, c)).collect())
+    }
 
-        for (i, (_, texture, tint)) in layers.into_iter().enumerate() {
-            out.push(RenderCommand::DrawSprite {
-                // 앵커가 BottomCenter 라 발밑에서 위로 선다.
-                pos: Vec3::new(pos.x, pos.y, 0.0),
-                size: Vec2::new(width, height),
-                anchor: SpriteAnchor::BottomCenter,
-                depth_bias: depth_bias + i as f32 * PART_DEPTH_STEP,
-                uv,
-                texture,
-                tint,
-            });
-        }
+    /// 칸 크기 (픽셀).
+    pub(crate) fn cell(&self) -> (u32, u32) {
+        self.cell
     }
 
     /// 이 시트를 `body` 위에 파츠로 겹칠 수 있는가 — 같은 칸을 같은 UV 로 가리키려면
@@ -552,6 +567,12 @@ pub(crate) fn compose<'a, T>(
 /// GPU 에 올라간 파츠 한 장과 데이터가 정한 색.
 type LoadedPart = (Sheet, [f32; 4]);
 
+/// 빌려 온 파츠 한 장과 색 — [`compose`] 에 넘길 때.
+type TintedRef<'a> = (&'a Sheet, [f32; 4]);
+
+/// 그릴 층 — 앞뒤 순 `(텍스처, 색)`.
+pub(crate) type Layers = Vec<(TextureId, [f32; 4])>;
+
 /// 몸 위에 겹치는 파츠 한 장과 그 색.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Part<'a> {
@@ -605,6 +626,9 @@ pub(crate) struct SpriteLibrary {
     parts_by_actor: BTreeMap<ActorId, Vec<(LoadedPart, Option<EquipSlot>)>>,
     /// 외형을 바꾸는 장비의 파츠. 입은 유닛의 몸과 맞는지는 그릴 때 본다([`Sheet::fits`]).
     parts_by_item: BTreeMap<ItemId, Vec<LoadedPart>>,
+    /// 캐릭터 외형(C3)이 쓰는 시트 — 경로별, 필요해질 때 올린다. 실패한 경로는 다시 시도하지 않는다.
+    by_path: BTreeMap<String, Sheet>,
+    failed_paths: std::collections::BTreeSet<String>,
     animator: SpriteAnimator,
 }
 
@@ -615,6 +639,7 @@ impl SpriteLibrary {
             .chain(self.by_actor.values())
             .chain(self.parts_by_actor.values().flatten().map(|((s, _), _)| s))
             .chain(self.parts_by_item.values().flatten().map(|(s, _)| s))
+            .chain(self.by_path.values())
             .map(|s| s.texture)
             .collect();
         all.sort_by_key(|t| t.index());
@@ -703,8 +728,76 @@ impl SpriteLibrary {
             by_actor,
             parts_by_actor,
             parts_by_item,
+            by_path: BTreeMap::new(),
+            failed_paths: std::collections::BTreeSet::new(),
             animator: SpriteAnimator::default(),
         })
+    }
+
+    /// 외형 시트를 올린다 (C3) — 이미 올렸거나 실패했던 경로는 건너뛴다. **프레임 바깥에서** 부른다.
+    /// 실패는 `warnings` 에 한 번만 남는다.
+    pub(crate) fn ensure_sheets<'p>(
+        &mut self,
+        renderer: &mut impl Renderer,
+        paths: impl IntoIterator<Item = &'p str>,
+        warnings: &mut Vec<String>,
+    ) {
+        for path in paths {
+            if self.by_path.contains_key(path) || self.failed_paths.contains(path) {
+                continue;
+            }
+            let p = Path::new(path);
+            let loaded = std::fs::read_to_string(p)
+                .map_err(|e| format!("{}: {e}", p.display()))
+                .and_then(|def| plan_sheet(&def, p.parent()))
+                .and_then(|plan| Sheet::upload(plan, renderer));
+            match loaded {
+                Ok(sheet) => {
+                    self.by_path.insert(path.to_owned(), sheet);
+                }
+                Err(e) => {
+                    warnings.push(format!("외형 시트를 쓸 수 없음 — {e}"));
+                    self.failed_paths.insert(path.to_owned());
+                }
+            }
+        }
+    }
+
+    /// 외형(C3) 하나를 그릴 몸 시트와 파츠 — 몸 시트가 아직 없으면 `None`(부른 쪽이 기본 그림으로).
+    /// 파츠와 장비 외형은 템플릿 기본 파츠와 같은 규칙으로 합친다([`compose`]).
+    pub(crate) fn look_parts<'a>(
+        &'a self,
+        look: &crate::appearance::ResolvedLook,
+        worn: &[(EquipSlot, ItemId)],
+        tint: Option<[f32; 4]>,
+    ) -> Option<(&'a Sheet, Vec<Part<'a>>)> {
+        let body = self.by_path.get(&look.body)?;
+        let template: Vec<(TintedRef<'_>, Option<EquipSlot>)> = look
+            .parts
+            .iter()
+            .filter_map(|p| Some(((self.by_path.get(&p.sheet)?, p.tint), p.slot)))
+            .collect();
+        let worn: Vec<(EquipSlot, Vec<TintedRef<'_>>)> = worn
+            .iter()
+            .map(|(slot, item)| {
+                let parts = self
+                    .parts_by_item
+                    .get(item)
+                    .map(|v| v.iter().map(|(s, c)| (s, *c)).collect())
+                    .unwrap_or_default();
+                (*slot, parts)
+            })
+            .collect();
+        let worn_refs: Vec<(EquipSlot, &[TintedRef<'_>])> =
+            worn.iter().map(|(s, v)| (*s, v.as_slice())).collect();
+        let parts = compose(&template, &worn_refs)
+            .into_iter()
+            .map(|(sheet, own)| Part {
+                sheet,
+                tint: tint.unwrap_or(*own),
+            })
+            .collect();
+        Some((body, parts))
     }
 
     /// 이 액터 타입(템플릿)이 `worn`(자리, 아이템)을 입었을 때 겹칠 파츠 — [`compose`] 규칙.
@@ -805,7 +898,6 @@ pub(crate) fn sheet_for_test(def: &str) -> SpriteSheet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nexus_render::UvRect;
 
     fn embedded() -> SheetPlan {
         plan_sheet(EMBEDDED_DEF, None).unwrap()

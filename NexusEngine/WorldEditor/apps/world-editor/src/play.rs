@@ -299,6 +299,11 @@ pub(crate) struct PlayOptions {
     pub(crate) class: Option<ClassId>,
     /// 포털이 가리키는 레벨들의 사정 (R6) — 지금 레벨과 입장 조건.
     pub(crate) links: LevelLinks,
+    /// 플레이어 외형 (C3) — 저장할 외형과, 카탈로그로 푼 그릴 외형(카탈로그가 없으면 `None`).
+    pub(crate) look: Option<(
+        crate::appearance::Appearance,
+        Option<crate::appearance::ResolvedLook>,
+    )>,
 }
 
 /// 포털을 sim 에 놓을 때 앱이 알려 주는 레벨 사정 (R6). 레벨 파일은 에디터가 읽으므로 여기로 건넨다.
@@ -536,6 +541,11 @@ pub(crate) struct SkillLine {
 /// 진행 중인 플레이 한 판.
 #[derive(Debug)]
 pub(crate) struct PlaySession {
+    /// 플레이어 외형 (C3) — 저장할 것과 그릴 것. 없으면 액터의 기본 그림.
+    look: Option<(
+        crate::appearance::Appearance,
+        Option<crate::appearance::ResolvedLook>,
+    )>,
     auth: LocalAuthority,
     player: Entity,
     labels: HashMap<Entity, Label>,
@@ -778,6 +788,7 @@ impl PlaySession {
         auth.set_script_host(Box::new(scripts));
 
         let mut session = Self {
+            look: options.look,
             auth,
             player,
             labels,
@@ -1371,7 +1382,39 @@ impl PlaySession {
                 })
                 .unwrap_or_default(),
             world_flags: self.world().world_flags().iter().collect(),
+            appearance: self.look.as_ref().map(|(a, _)| a.clone()),
         }
+    }
+
+    /// 플레이어를 그릴 외형 (C3) — 시트를 올릴 경로를 앱이 여기서 얻는다.
+    pub(crate) fn look(&self) -> Option<&crate::appearance::ResolvedLook> {
+        self.look.as_ref().and_then(|(_, r)| r.as_ref())
+    }
+
+    /// 이 유닛을 그릴 몸 시트와 파츠 — 플레이어 외형이 있고 시트가 올라갔으면 그것, 아니면 액터의 것.
+    fn body_and_parts<'a>(
+        &self,
+        unit: Entity,
+        worn: &[(EquipSlot, ItemId)],
+        effect: Option<[f32; 4]>,
+        sprites: &'a SpriteLibrary,
+    ) -> (
+        &'a crate::sprites::Sheet,
+        Vec<crate::sprites::Part<'a>>,
+        Option<[f32; 4]>,
+    ) {
+        if unit == self.player
+            && let Some(look) = self.look()
+            && let Some((body, parts)) = sprites.look_parts(look, worn, effect)
+        {
+            return (body, parts, Some(look.skin));
+        }
+        let actor = self.actor_of(unit);
+        (
+            sprites.sheet(actor),
+            sprites.parts(actor, worn, effect),
+            None,
+        )
     }
 
     /// 상태 바에 띄울 경고를 꺼낸다.
@@ -2475,7 +2518,6 @@ impl PlaySession {
             {
                 continue;
             }
-            let actor = self.actor_of(unit);
             // 시체는 어떤 시트든 회색 — 명시한 색으로 넘겨 컬러 아트에도 곱해지게 한다.
             // 시체·피격 색은 파츠까지 함께 물든다.
             let effect = if !u.is_alive() {
@@ -2502,8 +2544,13 @@ impl PlaySession {
                 .worn()
                 .map(|(pos, item)| (pos.slot, item))
                 .collect();
-            let parts = sprites.parts(actor, &worn, effect);
-            sprites.sheet(actor).push(
+            let (body, parts, skin) = self.body_and_parts(unit, &worn, effect, sprites);
+            // 외형의 피부색은 몸에 곱하는 색이다 — 시체·피격 색이 있으면 그쪽이 이긴다.
+            let look = match (effect, skin) {
+                (None, Some(skin)) => Look { tint: skin, ..look },
+                _ => look,
+            };
+            body.push(
                 u.render_pos(alpha),
                 look,
                 &parts,
@@ -2552,8 +2599,9 @@ impl PlaySession {
         const NO_SHEET_HEIGHT: f32 = 1.5;
 
         for (unit, u) in self.world().units().filter(|(_, u)| u.is_alive()) {
-            let height =
-                sprites.map_or(NO_SHEET_HEIGHT, |s| s.sheet(self.actor_of(unit)).height(px));
+            let height = sprites.map_or(NO_SHEET_HEIGHT, |s| {
+                self.body_and_parts(unit, &[], None, s).0.height(px)
+            });
             let above = height + GAP_PX * px;
             let at = u.render_pos(alpha);
             let ratio = u.hp() as f32 / u.max_hp() as f32;
@@ -2897,6 +2945,7 @@ mod tests {
             Camera2d::default(),
             GameData::embedded(),
             PlayOptions {
+                look: None,
                 spawn: Some(second),
                 save: None,
                 class: None,
@@ -2939,6 +2988,7 @@ mod tests {
             Camera2d::default(),
             GameData::embedded(),
             PlayOptions {
+                look: None,
                 spawn: None,
                 save: Some(save.clone()),
                 class: None,
@@ -3443,6 +3493,7 @@ mod tests {
             Camera2d::default(),
             GameData::embedded(),
             PlayOptions {
+                look: None,
                 spawn: None,
                 save: Some(save),
                 class: None,
@@ -3464,6 +3515,7 @@ mod tests {
             Camera2d::default(),
             GameData::embedded(),
             PlayOptions {
+                look: None,
                 spawn: None,
                 save: Some(save),
                 class: None,
@@ -3492,6 +3544,7 @@ mod tests {
             Camera2d::default(),
             GameData::embedded(),
             PlayOptions {
+                look: None,
                 spawn: None,
                 save: Some(save),
                 class: None,
@@ -3537,6 +3590,7 @@ mod tests {
             Camera2d::default(),
             GameData::embedded(),
             PlayOptions {
+                look: None,
                 spawn: None,
                 save: Some(save),
                 class: None,
@@ -3724,6 +3778,7 @@ mod tests {
             Camera2d::default(),
             GameData::embedded(),
             PlayOptions {
+                look: None,
                 spawn: None,
                 save,
                 class,
@@ -3731,6 +3786,40 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    /// 캐릭터 만들기의 외형 (C3) — 저장 데이터에 그대로 남는다. 이어 하기는 앱(`start_play`)이
+    /// 저장의 `appearance` 를 다시 넘긴다.
+    #[test]
+    fn a_created_look_is_saved() {
+        let look = crate::appearance::Appearance {
+            template: String::from("sd_elf"),
+            skin: (0.97, 0.8, 0.67),
+            parts: vec![(String::from("hair_long"), (0.8, 0.3, 0.2))],
+        };
+        let start = |look, save| {
+            PlaySession::start(
+                &Scene::server_default(),
+                Camera2d::default(),
+                GameData::embedded(),
+                PlayOptions {
+                    look,
+                    spawn: None,
+                    save,
+                    class: None,
+                    links: Default::default(),
+                },
+            )
+            .unwrap()
+        };
+        let s = start(Some((look.clone(), None)), None);
+        let saved = s.save_data(String::new());
+        assert_eq!(saved.appearance.as_ref(), Some(&look));
+        // 외형이 없는 예전 저장은 외형 없이 — 액터의 기본 그림이다.
+        assert_eq!(
+            new_game(None, None).save_data(String::new()).appearance,
+            None
+        );
     }
 
     #[test]
@@ -4192,6 +4281,7 @@ mod tests {
             Camera2d::default(),
             GameData::embedded(),
             PlayOptions {
+                look: None,
                 links: LevelLinks {
                     here: here.to_owned(),
                     clear: None,
@@ -4284,6 +4374,7 @@ mod tests {
             Camera2d::default(),
             data,
             PlayOptions {
+                look: None,
                 links: LevelLinks {
                     here: String::from("dungeon"),
                     requires: levels.entry_conditions(),
@@ -4410,6 +4501,7 @@ mod tests {
             Camera2d::default(),
             GameData::embedded(),
             PlayOptions {
+                look: None,
                 spawn: None,
                 save: Some(save),
                 class: None,
@@ -4558,6 +4650,7 @@ mod tests {
             Camera2d::default(),
             GameData::embedded(),
             PlayOptions {
+                look: None,
                 spawn: None,
                 save: Some(save),
                 class: None,

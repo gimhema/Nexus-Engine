@@ -32,7 +32,7 @@
                     pos: (0, -26),
                     kind: Button(
                         label: "전사",
-                        action: NewGame(
+                        action: Customize(
                             class: 1,
                             level: "village",
                         ),
@@ -44,7 +44,7 @@
                     pos: (0, 0),
                     kind: Button(
                         label: "마법사",
-                        action: NewGame(
+                        action: Customize(
                             class: 2,
                             level: "village",
                         ),
@@ -56,7 +56,7 @@
                     pos: (0, 26),
                     kind: Button(
                         label: "궁수",
-                        action: NewGame(
+                        action: Customize(
                             class: 3,
                             level: "village",
                         ),

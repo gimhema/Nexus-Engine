@@ -67,6 +67,7 @@ const EMBEDDED_SCREENS: &[(&str, &str)] = &[
     ),
     ("npc", include_str!("../../../ui/npc.ui.ron")),
     ("character", include_str!("../../../ui/character.ui.ron")),
+    ("customize", include_str!("../../../ui/customize.ui.ron")),
 ];
 
 const FORMAT_VERSION: u32 = 1;
@@ -138,6 +139,32 @@ pub(crate) const PLACEHOLDERS: &[&str] = &[
     "npc_name",
     "npc_profile",
     "npc_page",
+    // 캐릭터 커스터마이징 (C3) — `appearance::placeholder_names` 와 같은 목록.
+    "look_template",
+    "look_reference",
+    "look_skin",
+    "look_feature",
+    "look_feature_color",
+    "look_eyes",
+    "look_eyes_color",
+    "look_face",
+    "look_face_color",
+    "look_hair",
+    "look_hair_color",
+    "look_hair_back",
+    "look_hair_back_color",
+    "look_facial",
+    "look_facial_color",
+    "look_top",
+    "look_top_color",
+    "look_bottom",
+    "look_bottom_color",
+    "look_shoes",
+    "look_shoes_color",
+    "look_hat",
+    "look_hat_color",
+    "look_cape",
+    "look_cape_color",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -462,6 +489,9 @@ pub(crate) enum WidgetKind {
         #[serde(default, skip_serializing_if = "ListSource::is_npc")]
         source: ListSource,
     },
+    /// 만드는 중인 캐릭터 (C3) — 남·동·북·서 네 방향을 가로로, 제자리 걷기. 칸에 들어가는
+    /// 가장 큰 **정수 배율**로 그린다(픽셀이 뭉개지지 않게). `size` 가 없으면 240×80 UI 픽셀.
+    CharacterPreview,
 }
 
 /// 목록 위젯이 보여 주는 것 (T2).
@@ -556,6 +586,7 @@ impl WidgetKind {
             Self::Fill { .. } => "색 채움",
             Self::Paragraph { .. } => "문단",
             Self::List { .. } => "목록",
+            Self::CharacterPreview => "캐릭터 미리보기",
         }
     }
 
@@ -633,6 +664,14 @@ pub(crate) enum Action {
     NpcBack,
     /// NPC 창이 아닌 목록의 그 줄을 누른다 (T2) — 목록 위젯이 줄마다 낸다.
     ListRow { source: ListSource, row: u32 },
+    /// 그 직업으로 **캐릭터 만들기**를 연다 (C3) — 외형을 고른 뒤 [`Self::Begin`] 이 `level` 을 연다.
+    /// 카탈로그가 없는 작업 폴더면 바로 [`Self::NewGame`] 처럼 시작한다.
+    Customize { class: u32, level: String },
+    /// 캐릭터 만들기의 한 줄을 넘긴다 (C3). `part` 는 `template`·`skin`·`random`·분류(`hair`…)·`분류_color`·
+    /// `feature_color` (`appearance::look_target_ok`), `step` 은 넘길 칸 수(보통 ±1).
+    Look { part: String, step: i32 },
+    /// 만든 캐릭터로 새 게임을 시작한다 (C3).
+    Begin,
     /// 아무것도 하지 않는다 — 배치만 해 두는 버튼.
     None,
 }
@@ -652,6 +691,9 @@ impl Action {
             Self::NpcRow(_) => "NPC 목록 줄",
             Self::NpcBack => "NPC 처음으로",
             Self::ListRow { .. } => "목록 줄",
+            Self::Customize { .. } => "캐릭터 만들기",
+            Self::Look { .. } => "외형 고르기",
+            Self::Begin => "만든 캐릭터로 시작",
             Self::None => "없음",
         }
     }
@@ -716,6 +758,18 @@ pub(crate) struct Values {
     pub(crate) attack: u32,
     pub(crate) defense: u32,
     pub(crate) lists: ListValues,
+    /// 만드는 중인 캐릭터 (C3) — 캐릭터 만들기 창이 떠 있을 때만.
+    pub(crate) look: Option<LookView>,
+}
+
+/// 캐릭터 미리보기 (C3) — 방향마다 칸 UV 와 앞뒤 순 층, 그리고 `{look_*}` 문구.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct LookView {
+    /// 칸 크기 (그림 픽셀).
+    pub(crate) cell: (u32, u32),
+    /// 남·동·북·서 — `(칸 UV, [(텍스처, 색)])`.
+    pub(crate) views: Vec<(UvRect, crate::sprites::Layers)>,
+    pub(crate) texts: Vec<(String, String)>,
 }
 
 /// NPC 창 값 (R4b).
@@ -768,6 +822,7 @@ impl Values {
             attack: u.attack(),
             defense: u.defense(),
             lists: play.list_values(),
+            look: None,
             npc: play.npc_screen().map(|s| NpcValues {
                 name: s.name,
                 profile: s.profile,
@@ -829,6 +884,7 @@ impl Values {
             gold: 1250,
             attack: 24,
             defense: 7,
+            look: None,
             lists: ListValues {
                 tracker: vec![
                     preview_row("슬라임 소탕", ""),
@@ -1194,6 +1250,10 @@ impl Screens {
                 texts.extend([row.text.as_str(), row.right.as_str()]);
             }
         }
+        // 캐릭터 만들기 (C3) — 템플릿·파츠·색 이름.
+        if let Some(look) = &values.look {
+            texts.extend(look.texts.iter().map(|(_, t)| t.as_str()));
+        }
         for t in texts {
             if !t.chars().all(|c| self.extra_chars.contains(&c)) {
                 self.note_text(t);
@@ -1332,6 +1392,7 @@ impl Screens {
                 DEFAULT_LIST_WIDTH * s,
                 (*row_height).max(1) as f32 * s * DEFAULT_LIST_ROWS,
             ),
+            (None, WidgetKind::CharacterPreview) => (240.0 * s, 80.0 * s),
         };
         let pos = (w.pos.0 as f32 * s, w.pos.1 as f32 * s);
         let at = if matches!(
@@ -1582,6 +1643,13 @@ impl Screens {
                     }
                     WidgetKind::Buffs => {
                         self.buffs(values, r, &bias, out);
+                    }
+                    WidgetKind::CharacterPreview => {
+                        if let Some(look) = &values.look {
+                            character_preview(look, r, bias(BIAS_FILL), out);
+                        } else if editing {
+                            outline(r, GUIDE, bias(BIAS_EDGE), 1.0, out);
+                        }
                     }
                     WidgetKind::Button { label, .. } => {
                         let id = laid.widget.id.as_str();
@@ -2095,6 +2163,38 @@ pub(crate) fn patch_scale(text: &str, scale: u32) -> Result<String, String> {
     Ok(text)
 }
 
+/// 캐릭터 미리보기 (C3) — 네 방향을 가로로, 칸에 맞는 가장 큰 정수 배율로 가운데에.
+/// 층은 앞뒤 순으로 오므로 뒤에 낸 것이 앞에 오도록 깊이를 조금씩 민다 (월드의 `PART_DEPTH_STEP` 과 같은 뜻).
+fn character_preview(look: &LookView, r: Rect, bias: f32, out: &mut Vec<RenderCommand>) {
+    let (cw, ch) = (look.cell.0.max(1) as f32, look.cell.1.max(1) as f32);
+    let n = look.views.len().max(1) as f32;
+    let gap = 0.25;
+    let scale = (r.w / (n * cw * (1.0 + gap)))
+        .min(r.h / ch)
+        .floor()
+        .max(1.0);
+    let (w, h) = (cw * scale, ch * scale);
+    let step = w * (1.0 + gap);
+    let total = step * n - w * gap;
+    let x0 = (r.x + (r.w - total) * 0.5).round();
+    let y = (r.y + (r.h - h) * 0.5).round();
+    for (i, (uv, layers)) in look.views.iter().enumerate() {
+        let center = Vec2::new(x0 + i as f32 * step + w * 0.5, y + h * 0.5);
+        for (k, (texture, tint)) in layers.iter().enumerate() {
+            out.push(RenderCommand::DrawRect {
+                center,
+                size: Vec2::new(w, h),
+                rotation: 0.0,
+                z: 0.0,
+                depth_bias: bias + k as f32 * crate::sprites::PART_DEPTH_STEP,
+                color: *tint,
+                uv: *uv,
+                texture: *texture,
+            });
+        }
+    }
+}
+
 /// `{hp}` 같은 이름을 값으로 바꾼다. 없는 이름은 그대로 남긴다 — 읽을 때 이미 거부했다.
 fn fill(format: &str, v: &Values) -> String {
     let mut out = format.to_owned();
@@ -2114,7 +2214,8 @@ fn fill(format: &str, v: &Values) -> String {
     let revive = v
         .revive_in
         .map_or(String::new(), |s| format!("{:.1}", s.max(0.0)));
-    out.replace("{revive}", &revive)
+    out = out
+        .replace("{revive}", &revive)
         .replace("{class}", &v.class)
         .replace("{gold}", &v.gold.to_string())
         .replace("{attack}", &v.attack.to_string())
@@ -2124,7 +2225,21 @@ fn fill(format: &str, v: &Values) -> String {
             "{npc_profile}",
             v.npc.as_ref().map_or("", |n| n.profile.as_str()),
         )
-        .replace("{npc_page}", v.npc.as_ref().map_or("", |n| n.page.as_str()))
+        .replace("{npc_page}", v.npc.as_ref().map_or("", |n| n.page.as_str()));
+    // 캐릭터 만들기 (C3) — 창이 없으면 빈 글자.
+    for name in crate::appearance::placeholder_names() {
+        let key = format!("{{{name}}}");
+        if !out.contains(&key) {
+            continue;
+        }
+        let value = v
+            .look
+            .as_ref()
+            .and_then(|l| l.texts.iter().find(|(n, _)| *n == name))
+            .map_or("", |(_, t)| t.as_str());
+        out = out.replace(&key, value);
+    }
+    out
 }
 
 /// 위젯 트리 검사 — 빈 이름, 이름 중복(트리 전체), 없는 값 이름, 0 크기, 너무 깊은 트리.
@@ -2177,11 +2292,20 @@ fn check_widgets<'a>(
                 {
                     return Err(format!("'{}': 스킬 번호는 1~9", w.id));
                 }
-                if let Action::NewGame { class, level } = action
+                if let Action::NewGame { class, level } | Action::Customize { class, level } =
+                    action
                     && (*class == 0 || level.trim().is_empty())
                 {
                     return Err(format!(
                         "'{}': 새 게임은 직업 번호(1 이상)와 레벨이 있어야 함",
+                        w.id
+                    ));
+                }
+                if let Action::Look { part, .. } = action
+                    && !crate::appearance::look_target_ok(part)
+                {
+                    return Err(format!(
+                        "'{}': 외형 고르기 '{part}' — template·skin·random·분류(hair…)·분류_color·feature_color",
                         w.id
                     ));
                 }
@@ -2225,7 +2349,10 @@ fn check_widgets<'a>(
                     return Err(format!("'{}': color 는 0~1", w.id));
                 }
             }
-            WidgetKind::Panel { .. } | WidgetKind::Skills | WidgetKind::Buffs => {}
+            WidgetKind::Panel { .. }
+            | WidgetKind::Skills
+            | WidgetKind::Buffs
+            | WidgetKind::CharacterPreview => {}
         }
         check_widgets(&w.children, depth + 1, seen)?;
     }

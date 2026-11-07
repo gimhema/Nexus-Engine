@@ -293,6 +293,7 @@ pub(crate) fn simulate_level(
         Camera2d::default(),
         data,
         PlayOptions {
+            look: None,
             links: LevelLinks {
                 here: id.to_owned(),
                 requires: levels.entry_conditions(),
@@ -711,6 +712,7 @@ mod tests {
                 Camera2d::default(),
                 data(),
                 PlayOptions {
+                    look: None,
                     save,
                     links: LevelLinks {
                         here: id.to_owned(),

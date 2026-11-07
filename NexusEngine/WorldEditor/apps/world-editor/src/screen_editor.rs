@@ -434,6 +434,7 @@ impl ScreenEditor {
                 ),
                 ("+ 스킬 칸", WidgetKind::Skills),
                 ("+ 버프 칸", WidgetKind::Buffs),
+                ("+ 캐릭터 미리보기", WidgetKind::CharacterPreview),
                 (
                     "+ 문단",
                     WidgetKind::Paragraph {
@@ -995,6 +996,12 @@ fn kind_fields(
         WidgetKind::Buffs => {
             ui.weak("조작하는 액터에게 걸린 버프를 가로로 그립니다 — 표시 데이터의 색에 남은 초.");
         }
+        WidgetKind::CharacterPreview => {
+            ui.weak(
+                "캐릭터 만들기 창에서 고르는 중인 외형을 남·동·북·서로 그립니다 (제자리 걷기).",
+            );
+            ui.weak("칸에 들어가는 가장 큰 정수 배율로 그립니다 — 칸을 키우면 커집니다.");
+        }
         WidgetKind::Skills => {
             ui.weak("조작하는 액터의 단축키 스킬(액터 편집기의 \"단축키 스킬\")을 1번 키부터 가로로 그립니다.");
             ui.weak("쿨타임이 남은 만큼 어둡게 덮이고, MP 가 모자라면 흐려집니다.");
@@ -1024,6 +1031,15 @@ fn kind_fields(
                     class: 1,
                     level: String::from("village"),
                 },
+                Action::Customize {
+                    class: 1,
+                    level: String::from("village"),
+                },
+                Action::Look {
+                    part: String::from("hair"),
+                    step: 1,
+                },
+                Action::Begin,
                 Action::None,
             ];
             egui::ComboBox::from_label("동작")
@@ -1049,6 +1065,28 @@ fn kind_fields(
                         ui.label("레벨 번호");
                         ui.add(egui::TextEdit::singleline(target).desired_width(120.0));
                     });
+                }
+                Action::Customize { class, level } => {
+                    ui.horizontal(|ui| {
+                        ui.label("직업 번호");
+                        ui.add(egui::DragValue::new(class).range(1..=u32::MAX));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("레벨 번호");
+                        ui.add(egui::TextEdit::singleline(level).desired_width(120.0));
+                    });
+                    ui.weak("그 직업으로 캐릭터 만들기 창(ui/customize)을 연다 — 「만든 캐릭터로 시작」이 레벨을 연다.");
+                }
+                Action::Look { part, step } => {
+                    ui.horizontal(|ui| {
+                        ui.label("줄");
+                        ui.add(egui::TextEdit::singleline(part).desired_width(120.0));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("칸 수");
+                        ui.add(egui::DragValue::new(step).range(-9..=9));
+                    });
+                    ui.weak("template · skin · random · 분류(eyes face hair hair_back facial top bottom shoes hat cape) · 분류_color · feature_color");
                 }
                 Action::NewGame { class, level } => {
                     ui.horizontal(|ui| {

@@ -68,6 +68,8 @@ pub(crate) struct SaveData {
     pub(crate) storage: Vec<(u16, ItemId, u32)>,
     /// 퀘스트 기록 (R5).
     pub(crate) quests: Vec<QuestRecord>,
+    /// 캐릭터 외형 (C3). `None` = 커스터마이징이 생기기 전 — 액터의 기본 그림으로 그린다.
+    pub(crate) appearance: Option<crate::appearance::Appearance>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -116,6 +118,9 @@ struct SaveFile {
     /// 퀘스트 기록 (R5) — `번호: (stage: Some(1), counts: [2], completed: 0)`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     quests: BTreeMap<u32, QuestSaveFile>,
+    /// 캐릭터 외형 (C3) — 템플릿·피부색·(파츠, 색). 없는 예전 파일도 읽힌다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    appearance: Option<crate::appearance::Appearance>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -197,6 +202,7 @@ pub(crate) fn to_ron(save: &SaveData) -> String {
                 )
             })
             .collect(),
+        appearance: save.appearance.clone(),
     };
     let config = ron::ser::PrettyConfig::new()
         .new_line("\n")
@@ -271,6 +277,7 @@ pub(crate) fn from_ron(text: &str) -> Result<SaveData, String> {
             .into_iter()
             .map(|(q, f)| (QuestId(q), f.stage.map(|s| (s, f.counts)), f.completed))
             .collect(),
+        appearance: file.appearance,
     })
 }
 
@@ -340,6 +347,11 @@ mod tests {
 
     fn sample() -> SaveData {
         SaveData {
+            appearance: Some(crate::appearance::Appearance {
+                template: String::from("sd_elf"),
+                skin: (1.0, 0.8, 0.7),
+                parts: vec![(String::from("hair_long"), (0.8, 0.8, 0.9))],
+            }),
             actor: ActorId::new(1),
             class: Some(ClassId(2)),
             skills: Some(vec![(SkillId(6), 1), (SkillId(8), 3)]),
