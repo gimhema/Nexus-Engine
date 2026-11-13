@@ -53,22 +53,20 @@ pub(crate) fn build(camera: &Camera2d, out: &mut Vec<RenderCommand>) {
     let spacing = pick_spacing(camera.view_height);
     let (min, max) = camera.visible_bounds();
 
-    // 두께는 **화면 픽셀 기준**으로 정하고 축마다 따로 월드 길이로 바꾼다.
+    // 두께는 **화면 픽셀 기준**으로 정하고 선 방향마다 따로 월드 길이로 바꾼다
+    // ([`Camera2d::line_thickness`]).
     //
-    // 두 가지 이유로 축을 나눠야 한다:
-    //  1. 기울어지면 월드 Y 가 화면에서 `sin(pitch)` 만큼 눌린다. 같은 월드 두께를 쓰면
-    //     가로선이 세로선보다 얇게 보인다.
+    // 두 가지 이유로 방향을 나눠야 한다:
+    //  1. 기울어지면 화면 세로가 `sin(pitch)` 만큼 눌린다. 같은 월드 두께를 쓰면
+    //     눌리는 쪽 선이 더 얇게 보인다 (yaw 0 이면 가로선, 아이소면 양쪽 다 조금씩).
     //  2. 1px 미만이 되면 픽셀 경계에 걸렸을 때 어떤 픽셀 중심도 덮지 못해 선이
     //     통째로 사라진다. 고정 줌 + 픽셀 스냅에서는 **모든** 선이 정확히 경계에
     //     놓이므로 전부 사라진다 (실제로 겪은 버그).
-    let (vw, vh) = camera.viewport;
-    let px_x = camera.view_width() / f32::from(u16::try_from(vw.max(1)).unwrap_or(u16::MAX));
-    let px_y = camera.ground_height() / f32::from(u16::try_from(vh.max(1)).unwrap_or(u16::MAX));
-
-    let thin_x = THIN_LINE_PX * px_x;
-    let thin_y = THIN_LINE_PX * px_y;
-    let thick_x = AXIS_LINE_PX * px_x;
-    let thick_y = AXIS_LINE_PX * px_y;
+    // 세로선(X 상수)은 Y 방향으로 뻗고 굵기는 X 로, 가로선은 그 반대다.
+    let thin_x = camera.line_thickness(Vec2::Y, THIN_LINE_PX);
+    let thin_y = camera.line_thickness(Vec2::X, THIN_LINE_PX);
+    let thick_x = camera.line_thickness(Vec2::Y, AXIS_LINE_PX);
+    let thick_y = camera.line_thickness(Vec2::X, AXIS_LINE_PX);
 
     let width = max.x - min.x;
     let height = max.y - min.y;
@@ -128,7 +126,7 @@ pub(crate) fn build(camera: &Camera2d, out: &mut Vec<RenderCommand>) {
 
 /// 속이 빈 사각형 테두리를 그린다. 존 경계·마커 발판 표시에 쓴다.
 ///
-/// 두께는 **화면 픽셀**로 준다. 축마다 따로 환산해야 기울였을 때 가로변만 얇아지지 않고,
+/// 두께는 **화면 픽셀**로 준다. 변 방향마다 따로 환산해야 기울였을 때 한쪽 변만 얇아지지 않고,
 /// 1px 미만으로 내려가 사라지지도 않는다 (`build` 의 주석 참고).
 pub(crate) fn build_outline(
     camera: &Camera2d,
@@ -139,11 +137,8 @@ pub(crate) fn build_outline(
     color: [f32; 4],
     out: &mut Vec<RenderCommand>,
 ) {
-    let (vw, vh) = camera.viewport;
-    let tx = thickness_px * camera.view_width()
-        / f32::from(u16::try_from(vw.max(1)).unwrap_or(u16::MAX));
-    let ty = thickness_px * camera.ground_height()
-        / f32::from(u16::try_from(vh.max(1)).unwrap_or(u16::MAX));
+    let tx = camera.line_thickness(Vec2::Y, thickness_px);
+    let ty = camera.line_thickness(Vec2::X, thickness_px);
 
     let size = max - min;
     let center = (min + max) * 0.5;
@@ -216,6 +211,7 @@ mod tests {
                     view_height,
                     viewport: (1280, 720),
                     pitch: deg.to_radians(),
+                    yaw: 0.0,
                 };
                 let (v, h) = screen_thickness_px(&camera);
                 assert!(v >= 1.0, "{deg}° vh={view_height}: 세로선 {v}px");
@@ -232,6 +228,7 @@ mod tests {
             view_height: 21.1,
             viewport: (1280, 720),
             pitch: Camera2d::PITCH_QUARTER,
+            yaw: 0.0,
         };
         let (v, h) = screen_thickness_px(&camera);
         assert!((v - h).abs() < 0.05, "세로 {v}px vs 가로 {h}px");
@@ -262,6 +259,7 @@ mod tests {
             view_height: 2000.0,
             viewport: (1920, 1080),
             pitch: Camera2d::PITCH_QUARTER,
+            yaw: 0.0,
         };
         let mut out = Vec::new();
         build(&camera, &mut out);
@@ -283,6 +281,7 @@ mod tests {
                 view_height: vh,
                 viewport: (1600, 900),
                 pitch: Camera2d::PITCH_QUARTER,
+                yaw: 0.0,
             };
             let mut out = Vec::new();
             build(&camera, &mut out);
@@ -299,6 +298,7 @@ mod tests {
                 view_height: 100.0,
                 viewport: (1280, 720),
                 pitch: Camera2d::PITCH_QUARTER,
+                yaw: 0.0,
             },
             Vec2::new(-100.0, -100.0),
             Vec2::new(100.0, 100.0),

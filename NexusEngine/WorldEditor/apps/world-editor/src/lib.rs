@@ -134,6 +134,8 @@ const ENV_SELECT: &str = "NEXUS_SELECT";
 
 /// 카메라 pitch 를 도(°) 단위로 지정한다. 90 = 탑다운, 45 = 쿼터뷰(기본).
 const ENV_PITCH: &str = "NEXUS_PITCH";
+/// 카메라 yaw (도). 45 = 아이소메트릭. 기본 0.
+const ENV_YAW: &str = "NEXUS_YAW";
 
 /// 고정 줌 배율 (화면 px / 월드 m). 설정하면 자유 줌 대신 이 배율로 고정된다 — 게임 모드 확인용.
 const ENV_PIXELS_PER_METER: &str = "NEXUS_PIXELS_PER_METER";
@@ -413,8 +415,13 @@ impl Editor {
         /// 가장자리 여유.
         const MARGIN: f32 = 1.2;
 
+        // 지면 사각형을 화면 축에 투영한 크기 — 돌아간 카메라(아이소)에서는 마름모가 되고,
+        // 세로는 `sin(pitch)` 만큼 눌린다.
         let size = max - min;
-        let height = size.y.max(size.x / self.camera.aspect()) * MARGIN;
+        let (right, up) = self.camera.ground_axes();
+        let wide = size.x * right.x.abs() + size.y * right.y.abs();
+        let tall = (size.x * up.x.abs() + size.y * up.y.abs()) * self.camera.clamped_pitch().sin();
+        let height = tall.max(wide / self.camera.aspect()) * MARGIN;
         self.camera.center = (min + max) * 0.5;
         self.camera.view_height = height
             .max(MIN_FRAME_HEIGHT)
@@ -437,12 +444,18 @@ impl Editor {
         }
     }
 
-    /// `NEXUS_PITCH` / `NEXUS_PIXELS_PER_METER` 를 반영한다.
+    /// `NEXUS_PITCH` / `NEXUS_YAW` / `NEXUS_PIXELS_PER_METER` 를 반영한다.
     fn apply_env_camera(&mut self) {
         if let Ok(v) = std::env::var(ENV_PITCH) {
             match v.parse::<f32>() {
                 Ok(deg) => self.camera.pitch = deg.to_radians(),
                 Err(_) => eprintln!("{ENV_PITCH}: '{v}' 는 숫자가 아님"),
+            }
+        }
+        if let Ok(v) = std::env::var(ENV_YAW) {
+            match v.parse::<f32>() {
+                Ok(deg) => self.camera.yaw = deg.to_radians(),
+                Err(_) => eprintln!("{ENV_YAW}: '{v}' 는 숫자가 아님"),
             }
         }
         if let Ok(v) = std::env::var(ENV_PIXELS_PER_METER) {
@@ -832,7 +845,7 @@ impl Editor {
                 self.hover = None;
                 // 플레이 중에는 카메라가 플레이어를 따라가므로 예약된 시점 맞추기는 의미가 없다.
                 self.pending_view = None;
-                self.camera.pitch = view.pitch();
+                view.apply(&mut self.camera);
                 session.set_view(view);
                 self.play = Some(session);
                 self.shell = Some(self.shell_for_zone());
@@ -1756,8 +1769,9 @@ impl Editor {
         if actions.redo {
             self.editing.redo(&mut self.scene);
         }
-        if let Some(pitch) = actions.set_pitch {
+        if let Some((pitch, yaw)) = actions.set_view {
             self.camera.pitch = pitch;
+            self.camera.yaw = yaw;
         }
         if let Some(tool) = actions.set_tool {
             self.editing.set_tool(tool);
@@ -2254,7 +2268,15 @@ impl Editor {
             for item in self.scene.items.iter().filter(|i| i.kind.spawns_actor()) {
                 // 그림은 마커 종류가 아니라 **액터 타입**이 정한다 (P1).
                 let (actor, tint) = self.actor_look_of(item);
-                sprites.build(item, actor, tint, px, BIAS_SPRITE, &mut self.commands);
+                sprites.build(
+                    item,
+                    actor,
+                    tint,
+                    px,
+                    self.camera.yaw,
+                    BIAS_SPRITE,
+                    &mut self.commands,
+                );
             }
         }
 

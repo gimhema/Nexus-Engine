@@ -6,14 +6,14 @@
 //!
 //! 좌표계는 **미터(m), Z-up** 이다 ([`crate::units`]). 지면은 XY 평면이다.
 //!
-//! # 시점 고정
+//! # yaw
 //!
-//! **yaw 는 [`Camera2d::YAW`] 로 고정**이며 필드가 아니다. 회전을 허용하면
-//! 스프라이트 방향 선택·타일 배치·컬링이 전부 복잡해지는데, 목표 장르는 시점 고정이라
-//! 그 복잡도를 살 이유가 없다. yaw 가 0 이라 다음이 성립한다:
+//! 지면을 Z 축으로 돌려 보는 각도다. 기본은 **0** — 화면 가로 = 월드 +X, 화면 세로 = 월드 +Y
+//! (단, `sin(pitch)` 만큼 눌린다). 아이소메트릭은 [`Camera2d::YAW_ISO`](45°)로 돌린다.
 //!
-//! - 화면 가로 = 월드 +X, 화면 세로 = 월드 +Y (단, `sin(pitch)` 만큼 눌린다)
-//! - 보이는 지면 영역이 **축 정렬 사각형**으로 남는다 → 그리드·컬링이 단순하다
+//! **시점은 레벨마다 고정**이고 플레이 중에 돌리지 않는다. yaw 가 0 이 아니면 보이는 지면이
+//! 회전한 사각형이라 [`Camera2d::visible_bounds`] 는 그것을 감싸는 축 정렬 사각형을 준다(컬링이 넉넉해진다).
+//! 화면 가로·세로에 해당하는 지면 방향은 [`Camera2d::ground_axes`] 가 준다.
 //!
 //! # pitch
 //!
@@ -40,6 +40,8 @@ pub struct Camera2d {
     pub viewport: (u32, u32),
     /// 지면으로부터의 올려본 각도 (라디안). [`Camera2d::PITCH_QUARTER`] 참고.
     pub pitch: f32,
+    /// 지면을 Z 축으로 돌려 보는 각도 (라디안, 반시계가 +). 0 이면 화면 가로가 월드 +X.
+    pub yaw: f32,
 }
 
 impl Default for Camera2d {
@@ -49,13 +51,14 @@ impl Default for Camera2d {
             view_height: 20.0,
             viewport: (1, 1),
             pitch: Self::PITCH_QUARTER,
+            yaw: 0.0,
         }
     }
 }
 
 impl Camera2d {
-    /// 고정 yaw. 화면 가로가 월드 +X 가 되는 값이다. **필드가 아니다** — 모듈 문서 참고.
-    pub const YAW: f32 = 0.0;
+    /// 아이소메트릭 yaw (45°). 화면 가로가 월드 북동(+X+Y)이 되고, 월드 +X 는 오른쪽 아래·+Y 는 오른쪽 위로 뻗는다.
+    pub const YAW_ISO: f32 = core::f32::consts::FRAC_PI_4;
 
     /// 쿼터뷰 (45°). 목표 장르의 기본 시점이다.
     pub const PITCH_QUARTER: f32 = core::f32::consts::FRAC_PI_4;
@@ -64,6 +67,9 @@ impl Camera2d {
     /// 벨트스크롤 (25°). 옆에서 낮게 보는 시점 — 지면 앞뒤가 `sin(25°) ≈ 0.42` 로 눌려
     /// 화면 가로(월드 X)가 주된 이동 방향이 된다. 규칙은 그대로이고 **보는 각도만** 다르다.
     pub const PITCH_BELT: f32 = core::f32::consts::PI * 25.0 / 180.0;
+    /// 아이소메트릭 (30°). `sin(30°) = 0.5` 라 [`YAW_ISO`](Self::YAW_ISO)와 짝을 지으면
+    /// 1m 타일이 화면에서 **가로:세로 = 2:1 마름모**가 된다 — 픽셀아트 아이소의 관례.
+    pub const PITCH_ISO: f32 = core::f32::consts::FRAC_PI_6;
 
     /// pitch 하한. 0 에 가까우면 지면이 한 줄로 눌려 편집도 조준도 불가능해진다.
     pub const MIN_PITCH: f32 = 0.175; // 약 10°
@@ -102,7 +108,7 @@ impl Camera2d {
         w as f32 / h as f32
     }
 
-    /// 화면 가로 방향이 담는 월드 너비 (m). yaw 가 0 이라 그대로 월드 X 범위다.
+    /// 화면 가로 방향이 담는 월드 너비 (m) — 카메라 right 축 기준. yaw 가 0 이면 그대로 월드 X 범위다.
     #[must_use]
     pub fn view_width(&self) -> f32 {
         self.view_height * self.aspect()
@@ -117,6 +123,15 @@ impl Camera2d {
         self.view_height / self.clamped_pitch().sin()
     }
 
+    /// 화면 가로·세로에 해당하는 **지면 방향** `(right, up)` — 둘 다 단위 벡터, 서로 직교.
+    ///
+    /// yaw 가 0 이면 `(+X, +Y)` 다. 화면 위쪽은 지면에서 `up` 방향이고, `sin(pitch)` 만큼 눌려 보인다.
+    #[must_use]
+    pub fn ground_axes(&self) -> (Vec2, Vec2) {
+        let (sin_y, cos_y) = self.yaw.sin_cos();
+        (Vec2::new(cos_y, sin_y), Vec2::new(-sin_y, cos_y))
+    }
+
     /// 카메라 축 `(right, up, forward)`. 모두 단위 벡터이고 서로 직교한다.
     ///
     /// `look_at` 대신 이 기저를 직접 만든다 — `look_at` 은 up 벡터가 시선과 나란해지는
@@ -124,9 +139,10 @@ impl Camera2d {
     #[must_use]
     pub fn basis(&self) -> (Vec3, Vec3, Vec3) {
         let (sin_p, cos_p) = self.clamped_pitch().sin_cos();
-        let right = Vec3::X;
-        let up = Vec3::new(0.0, sin_p, cos_p);
-        let forward = Vec3::new(0.0, cos_p, -sin_p);
+        let (g_right, g_up) = self.ground_axes();
+        let right = g_right.extend(0.0);
+        let up = (g_up * sin_p).extend(cos_p);
+        let forward = (g_up * cos_p).extend(-sin_p);
         (right, up, forward)
     }
 
@@ -184,7 +200,8 @@ impl Camera2d {
         let nx = screen.x / w as f32 - 0.5;
         let ny = 0.5 - screen.y / h as f32;
 
-        self.center + Vec2::new(nx * self.view_width(), ny * self.ground_height())
+        let (right, up) = self.ground_axes();
+        self.center + right * (nx * self.view_width()) + up * (ny * self.ground_height())
     }
 
     /// 지면 월드 좌표를 화면 좌표(픽셀)로 변환한다. [`screen_to_world`](Self::screen_to_world) 의 역.
@@ -192,9 +209,10 @@ impl Camera2d {
     pub fn world_to_screen(&self, world: Vec2) -> Vec2 {
         let (w, h) = self.viewport;
         let d = world - self.center;
+        let (right, up) = self.ground_axes();
 
-        let nx = d.x / self.view_width() + 0.5;
-        let ny = 0.5 - d.y / self.ground_height();
+        let nx = d.dot(right) / self.view_width() + 0.5;
+        let ny = 0.5 - d.dot(up) / self.ground_height();
 
         Vec2::new(nx * w as f32, ny * h as f32)
     }
@@ -206,8 +224,9 @@ impl Camera2d {
             return;
         }
         // 화면을 오른쪽으로 끌면 월드가 오른쪽으로 따라와야 하므로 카메라는 왼쪽으로.
-        self.center.x -= delta_px.x / w as f32 * self.view_width();
-        self.center.y += delta_px.y / h as f32 * self.ground_height();
+        let (right, up) = self.ground_axes();
+        self.center -= right * (delta_px.x / w as f32 * self.view_width());
+        self.center += up * (delta_px.y / h as f32 * self.ground_height());
     }
 
     /// 커서 아래 지면 지점을 고정한 채 확대/축소한다.
@@ -226,14 +245,34 @@ impl Camera2d {
         self.center += anchor_before - anchor_after;
     }
 
-    /// 현재 보이는 **지면** 영역 `(min, max)`.
+    /// 현재 보이는 **지면** 영역을 감싸는 축 정렬 사각형 `(min, max)`.
     ///
-    /// yaw 가 고정이라 축 정렬 사각형이다. 높이가 있는 대상은 지면 위치가 이 범위 밖이어도
-    /// 화면에 걸칠 수 있으므로, 컬링에 쓸 때는 여유를 둘 것.
+    /// yaw 가 0 이면 보이는 영역 그대로다. 돌아가 있으면 보이는 영역(회전한 사각형)보다 넓다.
+    /// 높이가 있는 대상은 지면 위치가 이 범위 밖이어도 화면에 걸칠 수 있으므로, 컬링에 쓸 때는 여유를 둘 것.
     #[must_use]
     pub fn visible_bounds(&self) -> (Vec2, Vec2) {
-        let half = Vec2::new(self.view_width(), self.ground_height()) * 0.5;
+        let (right, up) = self.ground_axes();
+        let (hw, hh) = (self.view_width() * 0.5, self.ground_height() * 0.5);
+        let half = right.abs() * hw + up.abs() * hh;
         (self.center - half, self.center + half)
+    }
+
+    /// 지면에 `dir` 방향으로 그은 선이 화면에서 `px` 픽셀 굵기로 보이려면 필요한 **월드 굵기** (m).
+    ///
+    /// 선은 화면에서 방향마다 다르게 눌린다 — yaw 0 이면 세로선(Y 방향)은 그대로, 가로선(X 방향)은
+    /// `sin(pitch)` 만큼. 1px 미만이면 픽셀 경계에서 사라지므로 얇은 선은 이것으로 굵기를 잡는다.
+    #[must_use]
+    pub fn line_thickness(&self, dir: Vec2, px: f32) -> f32 {
+        let ppm = self.pixels_per_meter();
+        let sin_p = self.clamped_pitch().sin();
+        if ppm <= 0.0 || sin_p <= 0.0 {
+            return 0.0;
+        }
+        let (right, up) = self.ground_axes();
+        let dir = dir.normalize_or_zero();
+        // 선 방향의 화면 길이 / 넓이 배율(sin pitch) = 선에 수직인 화면 굵기의 역수.
+        let along = Vec2::new(dir.dot(right), dir.dot(up) * sin_p).length();
+        px * along / (ppm * sin_p)
     }
 
     // ── 고정 줌 (게임 모드) ──────────────────────────────────────────────────
@@ -265,7 +304,7 @@ impl Camera2d {
     /// 픽셀아트는 스프라이트가 픽셀 사이에 걸치면 카메라가 움직일 때마다 가장자리가
     /// 떨린다. 고정 줌과 짝으로 쓴다.
     ///
-    /// 화면 세로는 `sin(pitch)` 만큼 눌리므로 Y 는 그만큼 더 촘촘한 격자에 맞춘다.
+    /// 화면 축(가로·세로)을 따라 맞춘다. 화면 세로는 `sin(pitch)` 만큼 눌리므로 그만큼 더 촘촘한 격자에 맞춘다.
     pub fn snap_to_pixel_grid(&mut self) {
         let ppm = self.pixels_per_meter();
         if ppm <= 0.0 || !ppm.is_finite() {
@@ -275,8 +314,10 @@ impl Camera2d {
         if ppm_y <= 0.0 {
             return;
         }
-        self.center.x = (self.center.x * ppm).round() / ppm;
-        self.center.y = (self.center.y * ppm_y).round() / ppm_y;
+        let (right, up) = self.ground_axes();
+        let along = (self.center.dot(right) * ppm).round() / ppm;
+        let across = (self.center.dot(up) * ppm_y).round() / ppm_y;
+        self.center = right * along + up * across;
     }
 }
 
@@ -291,6 +332,15 @@ mod tests {
             view_height: 1000.0,
             viewport: (800, 400),
             pitch: Camera2d::PITCH_QUARTER,
+            yaw: 0.0,
+        }
+    }
+
+    fn iso() -> Camera2d {
+        Camera2d {
+            pitch: Camera2d::PITCH_ISO,
+            yaw: Camera2d::YAW_ISO,
+            ..cam()
         }
     }
 
@@ -364,7 +414,7 @@ mod tests {
 
     #[test]
     fn screen_center_maps_to_camera_center() {
-        for c in [cam(), topdown()] {
+        for c in [cam(), topdown(), iso()] {
             let mid = Vec2::new(400.0, 200.0);
             let w = c.screen_to_world(mid);
             assert!((w - c.center).length() < 1e-3, "{w:?} != {:?}", c.center);
@@ -373,7 +423,7 @@ mod tests {
 
     #[test]
     fn screen_world_round_trip() {
-        for c in [cam(), topdown()] {
+        for c in [cam(), topdown(), iso()] {
             for px in [
                 Vec2::new(0.0, 0.0),
                 Vec2::new(800.0, 400.0),
@@ -542,7 +592,7 @@ mod tests {
 
     #[test]
     fn view_proj_maps_center_to_ndc_origin() {
-        for c in [cam(), topdown()] {
+        for c in [cam(), topdown(), iso()] {
             let vp = c.view_proj();
             let clip = vp * glam::Vec4::new(c.center.x, c.center.y, 0.0, 1.0);
             let ndc = clip.truncate() / clip.w;
@@ -558,7 +608,7 @@ mod tests {
         // 깊이 규약: 일반 Z. 카메라에 가까울수록(월드 Z 가 클수록) 깊이 값이 작다.
         // 렌더러는 이를 전제로 LessEqual 비교를 쓴다. 이 테스트가 깨지면
         // 렌더러의 depth_compare 와 깊이 초기값도 함께 바꿔야 한다.
-        for c in [cam(), topdown()] {
+        for c in [cam(), topdown(), iso()] {
             let at = |z: f32| depth_at(&c, Vec3::new(c.center.x, c.center.y, z));
             assert!(at(1.0) < at(0.0), "마커(z=1)가 지면보다 앞이어야 한다");
             assert!(at(0.0) < at(-1.0), "지면이 그리드(z=-1)보다 앞이어야 한다");
@@ -601,6 +651,112 @@ mod tests {
 
             assert!((min.x - tl.x).abs() < 1e-2 && (max.y - tl.y).abs() < 1e-2);
             assert!((max.x - br.x).abs() < 1e-2 && (min.y - br.y).abs() < 1e-2);
+        }
+    }
+
+    #[test]
+    fn iso_projection_matches_screen_mapping_on_the_ground() {
+        // 돌아간 카메라에서도 그려진 곳 = 집는 곳.
+        let c = iso();
+        let vp = c.view_proj();
+        for world in [
+            Vec2::new(100.0, -50.0),
+            Vec2::new(500.0, 200.0),
+            Vec2::new(-300.0, -400.0),
+        ] {
+            let clip = vp * Vec3::new(world.x, world.y, 0.0).extend(1.0);
+            let ndc = clip.truncate() / clip.w;
+            let screen = c.world_to_screen(world);
+            let expect = Vec2::new(screen.x / 800.0 * 2.0 - 1.0, 1.0 - screen.y / 400.0 * 2.0);
+            assert!(
+                (ndc.truncate() - expect).length() < 1e-3,
+                "{world:?}: {ndc:?} vs {expect:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn iso_tiles_are_two_to_one_diamonds() {
+        // 1m 타일의 네 모서리 — 가로 폭이 세로 폭의 정확히 2배여야 픽셀아트 아이소 관례(2:1)다.
+        let c = iso();
+        let corners = [Vec2::ZERO, Vec2::X, Vec2::ONE, Vec2::Y].map(|p| c.world_to_screen(p));
+        let xs = corners.map(|p| p.x);
+        let ys = corners.map(|p| p.y);
+        let span = |v: [f32; 4]| {
+            v.iter().copied().fold(f32::MIN, f32::max) - v.iter().copied().fold(f32::MAX, f32::min)
+        };
+        assert!((span(xs) / span(ys) - 2.0).abs() < 1e-3, "{corners:?}");
+        // 월드 +X 는 오른쪽 아래, +Y 는 오른쪽 위로.
+        assert!(corners[1].x > corners[0].x && corners[1].y > corners[0].y);
+        assert!(corners[3].x > corners[0].x && corners[3].y < corners[0].y);
+    }
+
+    #[test]
+    fn iso_pan_follows_the_cursor() {
+        let mut c = iso();
+        let anchor = c.screen_to_world(Vec2::new(400.0, 200.0));
+        c.pan_by_pixels(Vec2::new(70.0, -40.0));
+        let moved = c.world_to_screen(anchor);
+        assert!(
+            (moved - Vec2::new(470.0, 160.0)).length() < 1e-2,
+            "{moved:?}"
+        );
+    }
+
+    #[test]
+    fn rotated_visible_bounds_still_cover_the_screen() {
+        let c = iso();
+        let (min, max) = c.visible_bounds();
+        for px in [
+            Vec2::ZERO,
+            Vec2::new(800.0, 0.0),
+            Vec2::new(0.0, 400.0),
+            Vec2::new(800.0, 400.0),
+        ] {
+            let w = c.screen_to_world(px);
+            assert!(
+                w.x >= min.x - 1e-2
+                    && w.x <= max.x + 1e-2
+                    && w.y >= min.y - 1e-2
+                    && w.y <= max.y + 1e-2,
+                "화면 모서리 {px:?} → {w:?} 가 {min:?}..{max:?} 밖"
+            );
+        }
+    }
+
+    #[test]
+    fn line_thickness_is_the_same_on_screen_for_every_direction() {
+        for c in [cam(), topdown(), iso()] {
+            for dir in [Vec2::X, Vec2::Y, Vec2::new(1.0, 1.0)] {
+                let t = c.line_thickness(dir, 2.0);
+                // 선에 수직인 지면 방향으로 t 만큼 벌린 두 점의 화면 거리를, 선의 화면 방향에 수직으로 잰다.
+                let n = dir.normalize().perp();
+                let a = c.world_to_screen(Vec2::ZERO);
+                let along = (c.world_to_screen(dir.normalize()) - a).normalize();
+                let off = c.world_to_screen(n * t) - a;
+                let px = along.perp_dot(off).abs();
+                assert!(
+                    (px - 2.0).abs() < 1e-2,
+                    "yaw={} pitch={} {dir:?}: {px}px",
+                    c.yaw,
+                    c.pitch
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn iso_pixel_snap_lands_on_whole_screen_pixels() {
+        let mut c = Camera2d {
+            center: Vec2::new(4.237_81, -1.593_64),
+            viewport: (800, 400),
+            ..iso()
+        };
+        c.set_pixels_per_meter(Camera2d::PIXELS_PER_METER);
+        c.snap_to_pixel_grid();
+        let origin = c.world_to_screen(Vec2::ZERO);
+        for v in [origin.x, origin.y] {
+            assert!((v - v.round()).abs() < 1e-2, "정수 픽셀이 아님: {origin:?}");
         }
     }
 

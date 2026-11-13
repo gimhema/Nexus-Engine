@@ -24,6 +24,7 @@ use crate::actor_editor::ActorEditor;
 use crate::content::{ContentAction, ContentBrowser};
 use crate::edit::{BrushShape, InspectorEdit, MAX_BRUSH_RADIUS, PointerInput, SpawnEdit, Tool};
 use crate::grid;
+use crate::level::ViewMode;
 use crate::level_editor::LevelEditor;
 use crate::palette::Palette;
 use crate::play::{InventoryAction, PlaySession};
@@ -206,7 +207,8 @@ pub(crate) struct UiActions {
     /// 선택된 마커 복제 (Ctrl+D).
     pub(crate) duplicate: bool,
     /// 카메라 pitch 변경 (라디안).
-    pub(crate) set_pitch: Option<f32>,
+    /// 보기 메뉴의 시점 `(pitch, yaw)`.
+    pub(crate) set_view: Option<(f32, f32)>,
     /// 뷰포트 포인터가 할 일 변경.
     pub(crate) set_tool: Option<Tool>,
     /// 타일 붓 변경.
@@ -988,17 +990,20 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
                 }
                 ui.separator();
 
-                // 쿼터뷰·벨트스크롤은 게임 화면과 같은 시점(WYSIWYG — 레벨의 `view` 에 맞춰 고른다),
+                // 게임 시점들은 화면과 같은 시점(WYSIWYG — 레벨의 `view` 에 맞춰 고른다),
                 // 탑다운은 좌표를 정밀하게 찍을 때 쓴다. 기울어져 있으면 세로 방향 거리감이 눌려서 배치가 어렵다.
-                for (pitch, label) in [
-                    (Camera2d::PITCH_QUARTER, "쿼터뷰 (게임 시점)"),
-                    (Camera2d::PITCH_BELT, "벨트스크롤 (게임 시점)"),
-                    (Camera2d::PITCH_TOPDOWN, "탑다운 (정밀 편집)"),
-                ] {
-                    let on = (model.camera.pitch - pitch).abs() < 1e-3;
-                    if ui.radio(on, label).clicked() {
-                        actions.set_pitch = Some(pitch);
+                for view in ViewMode::ALL {
+                    if ui
+                        .radio(view.matches(model.camera), format!("{} — 게임 시점", view.label()))
+                        .clicked()
+                    {
+                        actions.set_view = Some((view.pitch(), view.yaw()));
                     }
+                }
+                let topdown = (model.camera.pitch - Camera2d::PITCH_TOPDOWN).abs() < 1e-3
+                    && model.camera.yaw.abs() < 1e-3;
+                if ui.radio(topdown, "탑다운 (정밀 편집)").clicked() {
+                    actions.set_view = Some((Camera2d::PITCH_TOPDOWN, 0.0));
                 }
             });
         });

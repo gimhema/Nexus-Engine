@@ -118,6 +118,7 @@ mod tests {
             view_height,
             viewport: (800, 600),
             pitch: Camera2d::PITCH_QUARTER,
+            yaw: 0.0,
         }
     }
 

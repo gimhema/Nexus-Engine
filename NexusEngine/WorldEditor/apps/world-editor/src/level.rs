@@ -96,15 +96,18 @@ pub(crate) enum ViewMode {
     Quarter,
     /// 벨트스크롤 (25°) — 옆에서 낮게 본다. 캐릭터는 왼쪽·오른쪽만 바라본다.
     Belt,
+    /// 아이소메트릭 (yaw 45°, pitch 30°) — 지면을 돌려 2:1 마름모로 본다. 아트는 그대로 쓴다.
+    Iso,
 }
 
 impl ViewMode {
-    pub(crate) const ALL: [Self; 2] = [Self::Quarter, Self::Belt];
+    pub(crate) const ALL: [Self; 3] = [Self::Quarter, Self::Belt, Self::Iso];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Quarter => "쿼터뷰 (45°)",
             Self::Belt => "벨트스크롤 (25°)",
+            Self::Iso => "아이소메트릭 (45°·30°)",
         }
     }
 
@@ -113,7 +116,27 @@ impl ViewMode {
         match self {
             Self::Quarter => Camera2d::PITCH_QUARTER,
             Self::Belt => Camera2d::PITCH_BELT,
+            Self::Iso => Camera2d::PITCH_ISO,
         }
+    }
+
+    /// 카메라 yaw (라디안).
+    pub(crate) fn yaw(self) -> f32 {
+        match self {
+            Self::Quarter | Self::Belt => 0.0,
+            Self::Iso => Camera2d::YAW_ISO,
+        }
+    }
+
+    /// 이 시점으로 카메라를 돌린다 (위치·줌은 그대로).
+    pub(crate) fn apply(self, camera: &mut Camera2d) {
+        camera.pitch = self.pitch();
+        camera.yaw = self.yaw();
+    }
+
+    /// 카메라가 이 시점인가 — 보기 메뉴 표시용.
+    pub(crate) fn matches(self, camera: &Camera2d) -> bool {
+        (camera.pitch - self.pitch()).abs() < 1e-3 && (camera.yaw - self.yaw()).abs() < 1e-3
     }
 
     /// 스프라이트가 왼쪽·오른쪽만 바라보는가 — 옆에서 보면 등·정면 그림이 어색하다.
@@ -553,7 +576,7 @@ pub(crate) fn to_ron(level: &LevelFile) -> String {
 // on_enter = 들어갈 때 띄울 화면, pause = Esc 로 띄울 화면, loading = 여는 동안 띄울 화면
 // (전부 ui/<번호>.ui.ron). loading_ms = 로딩 화면을 최소로 보여 줄 시간(ms).
 // instance = 인스턴스 정책(Shared·Personal·Party — 단계 1 에서는 기록만),
-// view = 플레이 시점(Quarter = 쿼터뷰·Belt = 벨트스크롤, 없으면 쿼터뷰),
+// view = 플레이 시점(Quarter = 쿼터뷰·Belt = 벨트스크롤·Iso = 아이소메트릭, 없으면 쿼터뷰),
 // requires = 들어올 수 있는 조건(이 레벨로 가는 포털이 본다, 트리거의 when 과 같은 형식).
 // clear = 던전 클리어 — objectives(퀘스트 목표 형식)를 다 채우면 rewards(트리거 효과 형식)를 주고
 // Cleared 조건이 참이 된다(나가는 문 포털의 requires: Some(Cleared)).

@@ -472,8 +472,7 @@ impl Sheet {
         parts: &[Part<'_>],
         animator: &SpriteAnimator,
     ) -> (UvRect, Layers) {
-        // 카메라 yaw 가 고정이라 방향을 그대로 넘긴다. 회전하는 카메라가 생기면
-        // `heading - camera_yaw` 가 된다.
+        // `look.heading` 은 이미 화면 기준이다 — 돌아간 카메라면 부르는 쪽이 yaw 를 뺐다.
         let index = units::direction_index(look.heading, self.sheet.directions()) as usize;
         let row = self.direction_rows.get(index).copied().unwrap_or(0);
         let uv = animator.uv(&self.sheet, row);
@@ -604,7 +603,8 @@ pub(crate) const NO_TINT: [f32; 4] = [1.0; 4];
 /// 스프라이트를 어떻게 보이게 할지.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Look {
-    /// 바라보는 방향 (라디안) — 시트의 방향 행을 고른다.
+    /// 바라보는 방향 (라디안, **화면 기준** — 0 = 화면 오른쪽) — 시트의 방향 행을 고른다.
+    /// 월드 방향에서 카메라 yaw 를 빼서 넘긴다.
     pub(crate) heading: f32,
     /// 액터가 **명시한** 색 (sRGB). 정하지 않았으면 [`NO_TINT`]. 어느 시트에나 곱해진다.
     pub(crate) tint: [f32; 4],
@@ -848,17 +848,19 @@ impl SpriteLibrary {
     /// `actor` 는 마커가 실제로 쓸 액터 타입이다 (`GameData::resolve_actor` 가 푼 값).
     /// `tint` 는 그 타입이 **명시한** 색(없으면 [`NO_TINT`]) — 무채색 시트는 대신 마커 종류 색을 쓴다.
     /// `px` 는 화면 1픽셀에 해당하는 월드 길이 — 빌보드는 카메라 축을 쓰므로 가로·세로가 같은 배율이다.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
         &self,
         item: &Item,
         actor: ActorId,
         tint: [f32; 4],
         px: f32,
+        yaw: f32,
         depth_bias: f32,
         out: &mut Vec<RenderCommand>,
     ) {
         let look = Look {
-            heading: item.orientation,
+            heading: item.orientation - yaw,
             tint,
             fallback: item.kind.color(),
         };
