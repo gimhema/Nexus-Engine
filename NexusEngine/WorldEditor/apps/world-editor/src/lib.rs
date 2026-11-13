@@ -814,6 +814,7 @@ impl Editor {
                 .and_then(|c| a.resolve(&c));
             (a, resolved)
         });
+        let view = self.levels.view_of(&here);
         let options = PlayOptions {
             look,
             spawn: self.selected_player_spawn(),
@@ -826,12 +827,13 @@ impl Editor {
             },
         };
         match PlaySession::start(&self.scene, self.camera, data, options) {
-            Ok(session) => {
+            Ok(mut session) => {
                 println!("플레이 시작 — 유닛 {}명", session.world().unit_count());
                 self.hover = None;
                 // 플레이 중에는 카메라가 플레이어를 따라가므로 예약된 시점 맞추기는 의미가 없다.
                 self.pending_view = None;
-                self.camera.pitch = Camera2d::PITCH_QUARTER;
+                self.camera.pitch = view.pitch();
+                session.set_view(view);
                 self.play = Some(session);
                 self.shell = Some(self.shell_for_zone());
             }

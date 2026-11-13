@@ -276,7 +276,7 @@ python3 tools/paperdoll.py --preview  # + preview/paperdoll_templates.png (템�
 - 색을 고를 부위는 밝은 무채색 + `tinted: true`. 얼굴(입·볼)·엄니만 색 그대로.
 - 시트 배치는 `player.sheet.ron` 과 같다(Idle 2 + Walk 4, 동·북·서·남). 칸 위에 머리 크기만큼 **여백**(`pad`)을 둬 모자·뿔이 잘리지 않는다.
 - 앞뒤(`layer`/`layer_by_direction`)는 파츠마다 생성기가 적는다 — 망토·뒷머리·꼬리는 뒷모습에서 몸 앞으로 온다.
-- 템플릿 폴더의 `catalog.ron` 이 그 체형의 파츠(분류·색 묶음·장비 자리), 공용 `paperdoll/catalog.ron` 이 템플릿 목록과 색 묶음이다.
+- 템플릿 폴더의 `catalog.ron` 이 그 체형의 파츠(분류·색 묶음·`tinted`·장비 자리), 공용 `paperdoll/catalog.ron` 이 템플릿 목록과 색 묶음이다. WorldEditor 의 캐릭터 만들기(`appearance.rs`)가 이 둘을 읽는다 — 형식을 바꾸면 그쪽도 바꾼다.
 - 템플릿·파츠를 더하는 법: `TEMPLATES` 에 체형 한 줄, 또는 `draw_*` 함수 + `PARTS` 한 줄. 특정 게임 캐릭터를 옮기지 않는다 — 참고는 **장르의 비율**까지.
 - 결과물은 추적하지 않는 애셋 폴더다. WorldEditor 시험 `paperdoll_parts_fit_their_template_body` 가 모든 파츠가 몸과 맞는지 지킨다(폴더가 없으면 건너뛴다).
 

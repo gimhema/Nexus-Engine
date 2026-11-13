@@ -988,14 +988,17 @@ fn menu_bar(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
                 }
                 ui.separator();
 
-                // 쿼터뷰는 게임 화면과 같은 시점(WYSIWYG), 탑다운은 좌표를 정밀하게
-                // 찍을 때 쓴다. 기울어져 있으면 세로 방향 거리감이 눌려서 배치가 어렵다.
-                let topdown = model.camera.pitch >= Camera2d::PITCH_TOPDOWN - 1e-3;
-                if ui.radio(!topdown, "쿼터뷰 (게임 시점)").clicked() {
-                    actions.set_pitch = Some(Camera2d::PITCH_QUARTER);
-                }
-                if ui.radio(topdown, "탑다운 (정밀 편집)").clicked() {
-                    actions.set_pitch = Some(Camera2d::PITCH_TOPDOWN);
+                // 쿼터뷰·벨트스크롤은 게임 화면과 같은 시점(WYSIWYG — 레벨의 `view` 에 맞춰 고른다),
+                // 탑다운은 좌표를 정밀하게 찍을 때 쓴다. 기울어져 있으면 세로 방향 거리감이 눌려서 배치가 어렵다.
+                for (pitch, label) in [
+                    (Camera2d::PITCH_QUARTER, "쿼터뷰 (게임 시점)"),
+                    (Camera2d::PITCH_BELT, "벨트스크롤 (게임 시점)"),
+                    (Camera2d::PITCH_TOPDOWN, "탑다운 (정밀 편집)"),
+                ] {
+                    let on = (model.camera.pitch - pitch).abs() < 1e-3;
+                    if ui.radio(on, label).clicked() {
+                        actions.set_pitch = Some(pitch);
+                    }
                 }
             });
         });

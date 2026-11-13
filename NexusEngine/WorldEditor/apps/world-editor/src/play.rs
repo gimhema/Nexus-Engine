@@ -27,6 +27,7 @@ use nexus_sim::{
 };
 
 use crate::game_data::{ActorLook, GameData};
+use crate::level::ViewMode;
 use crate::save_file::SaveData;
 use crate::scene::{ActorId, ItemKind, Scene};
 use crate::sprites::{Look, NO_TINT, SpriteLibrary};
@@ -69,6 +70,30 @@ const ITEM_BLINK_MS: u128 = 250;
 const PROTECT_BLINK_MS: u128 = 100;
 /// 깜빡임 길이 (tick). 3 tick = 150ms.
 const HIT_FLASH_TICKS: u8 = 3;
+/// 클릭으로 집히는 몸통 높이 (m, 카메라 up 축 기준) — 시트마다 키가 달라도 누르기 판정에는 이 정도면 된다.
+const PICK_BODY_HEIGHT: f32 = 1.2;
+/// 벨트스크롤에서 좌우를 바꾸는 가로 성분 — 이보다 작으면(거의 위아래로 걸으면) 보던 쪽을 유지한다.
+const SIDE_FACING_DEADZONE: f32 = 0.1;
+
+/// 클릭 지점(지면)에서 유닛 몸통까지의 거리. 몸통은 발밑에서 지면 뒤쪽(+Y)으로 `lift` 만큼 뻗은 선분이다 —
+/// 화면에서 위로 선 스프라이트를 지면에 내려 놓은 자리.
+fn body_distance(at: Vec2, foot: Vec2, lift: f32) -> f32 {
+    let y = at.y.clamp(foot.y, foot.y + lift);
+    at.distance(Vec2::new(foot.x, y))
+}
+
+/// 벨트스크롤에서 왼쪽을 보는가. 가로로 움직일 때만 바뀌고, 위아래로 걸으면 보던 쪽을 유지한다 —
+/// 그러지 않으면 똑바로 위로 걷는 캐릭터가 부동소수 오차로 좌우를 오간다.
+fn side_facing_west(heading: f32, was_west: bool) -> bool {
+    let x = heading.cos();
+    if x > SIDE_FACING_DEADZONE {
+        false
+    } else if x < -SIDE_FACING_DEADZONE {
+        true
+    } else {
+        was_west
+    }
+}
 
 /// 단축키 칸 수 — 숫자키 1~9 (R3).
 pub(crate) const HOTBAR_SLOTS: usize = 9;
@@ -551,6 +576,10 @@ pub(crate) struct PlaySession {
     animators: HashMap<Entity, SpriteAnimator>,
     /// 맞은 유닛의 붉은 깜빡임 — 남은 tick.
     hit_flash: HashMap<Entity, u8>,
+    /// 플레이 시점 — 그리기와 클릭 판정만 바꾼다. 규칙은 시점을 모른다.
+    view: ViewMode,
+    /// 벨트스크롤에서 왼쪽을 보고 있는 유닛 — 마지막 가로 방향을 기억한다 ([`side_facing_west`]).
+    facing_west: HashMap<Entity, bool>,
     order: Order,
     /// 단축키 스킬 — 조작하는 액터 타입의 `skills`. 1번 키가 맨 앞.
     /// 단축키 칸 — [`HOTBAR_SLOTS`] 칸, 빈 칸은 `None` (R3). **플레이어가 직접 배치한다** — 새로 배운
@@ -783,6 +812,8 @@ impl PlaySession {
             labels,
             animators: HashMap::new(),
             hit_flash: HashMap::new(),
+            view: ViewMode::default(),
+            facing_west: HashMap::new(),
             order: Order::Idle,
             hotbar,
             abandon_armed: None,
@@ -803,6 +834,11 @@ impl PlaySession {
             "플레이 시작 — 클릭: 이동 · 적 클릭: 공격 · 아이템 클릭: 줍기 · 숫자키: 스킬",
         ));
         Ok(session)
+    }
+
+    /// 플레이 시점을 정한다 — 레벨 파일의 `view`.
+    pub(crate) fn set_view(&mut self, view: ViewMode) {
+        self.view = view;
     }
 
     /// 시작 전 에디터 카메라.
@@ -1484,10 +1520,13 @@ impl PlaySession {
         };
         let my_faction = me.def().faction;
 
+        // 스프라이트는 발밑에서 위로 서 있다 — 몸통을 눌러도 집히게, 지면에서는 그 높이가
+        // 발밑 뒤쪽으로 `1/sin(pitch)` 만큼 늘어난다. 시점이 낮을수록 길다.
+        let lift = PICK_BODY_HEIGHT / self.view.pitch().sin();
         let nearest_unit = world
             .units()
             .filter(|(e, u)| *e != self.player && u.is_alive())
-            .map(|(e, u)| (e, u.pos().distance(at)))
+            .map(|(e, u)| (e, body_distance(at, u.pos(), lift)))
             .filter(|&(_, d)| d <= (14.0 * px).max(0.6))
             .min_by(|a, b| a.1.total_cmp(&b.1));
         let nearest_item = world
@@ -1934,6 +1973,8 @@ impl PlaySession {
         let world = self.auth.world();
         for (unit, actor) in actors {
             let Some(u) = world.unit(unit) else { continue };
+            let west = self.facing_west.entry(unit).or_default();
+            *west = side_facing_west(u.heading(), *west);
             next_anim(
                 self.animators.entry(unit).or_default(),
                 sprites.map(|s| s.sheet(actor).anim()),
@@ -2052,6 +2093,7 @@ impl PlaySession {
             }
             self.animators.remove(&replaces);
             self.hit_flash.remove(&replaces);
+            self.facing_west.remove(&replaces);
             if self.player == replaces {
                 self.player = unit;
             }
@@ -2509,8 +2551,16 @@ impl PlaySession {
                 (None, Some(l)) => (l.tint, l.fallback),
                 (None, None) => (NO_TINT, NO_TINT),
             };
+            // 벨트스크롤은 왼쪽·오른쪽만 — 시트의 동(0)·서(π) 행을 쓴다.
+            let heading = if !self.view.side_facing() {
+                u.heading()
+            } else if self.facing_west.get(&unit).copied().unwrap_or(false) {
+                std::f32::consts::PI
+            } else {
+                0.0
+            };
             let look = Look {
-                heading: u.heading(),
+                heading,
                 tint,
                 fallback,
             };
@@ -3684,6 +3734,53 @@ mod tests {
         assert!(dead, "슬라임을 쓰러뜨리지 못했다: {:?}", s.log);
         assert!(s.world().unit(s.player()).unwrap().is_alive());
         assert_eq!(s.order, Order::Idle, "대상이 죽으면 주문이 끝난다");
+    }
+
+    /// 벨트스크롤은 시점이 낮아 몸통이 지면 뒤쪽으로 길게 내려앉는다 — 발밑보다 한참 뒤를 눌러도 집힌다.
+    #[test]
+    fn a_low_view_picks_a_monster_by_its_body() {
+        let mut s = session();
+        s.set_view(ViewMode::Belt);
+        let slime = find(&s, "슬라임");
+        let feet = s.world().unit(slime).unwrap().pos();
+        s.click(feet + Vec2::new(0.0, 2.5), 0.01);
+        assert_eq!(s.attack_target(), Some(slime));
+    }
+
+    #[test]
+    fn body_distance_covers_feet_to_head() {
+        let foot = Vec2::new(1.0, 2.0);
+        assert_eq!(body_distance(foot, foot, 2.0), 0.0);
+        assert_eq!(
+            body_distance(Vec2::new(1.0, 3.5), foot, 2.0),
+            0.0,
+            "몸통 위"
+        );
+        assert!(
+            (body_distance(Vec2::new(1.0, 5.0), foot, 2.0) - 1.0).abs() < 1e-6,
+            "머리 위"
+        );
+        assert!(
+            (body_distance(Vec2::new(1.0, 1.0), foot, 2.0) - 1.0).abs() < 1e-6,
+            "발 아래"
+        );
+        assert!(
+            (body_distance(Vec2::new(2.0, 3.0), foot, 2.0) - 1.0).abs() < 1e-6,
+            "옆"
+        );
+    }
+
+    #[test]
+    fn side_facing_keeps_its_side_when_walking_up_or_down() {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        assert!(!side_facing_west(0.0, true), "동쪽으로 걸으면 오른쪽");
+        assert!(side_facing_west(PI, false), "서쪽으로 걸으면 왼쪽");
+        assert!(side_facing_west(PI * 0.75, false), "북서도 왼쪽");
+        // 똑바로 위·아래 — cos 가 0 근처라 부호가 흔들려도 보던 쪽 그대로.
+        for heading in [FRAC_PI_2, -FRAC_PI_2, FRAC_PI_2 + 1e-4, -FRAC_PI_2 - 1e-4] {
+            assert!(side_facing_west(heading, true));
+            assert!(!side_facing_west(heading, false));
+        }
     }
 
     #[test]

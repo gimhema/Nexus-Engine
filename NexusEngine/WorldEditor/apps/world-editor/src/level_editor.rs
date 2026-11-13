@@ -28,7 +28,8 @@ use std::path::Path;
 use nexus_render_wgpu::egui;
 
 use crate::level::{
-    ClearFile, InstancePolicy, LevelFile, PROJECT_PATH, level_path, read_level, read_project,
+    ClearFile, InstancePolicy, LevelFile, PROJECT_PATH, ViewMode, level_path, read_level,
+    read_project,
 };
 use crate::trigger_file::ConditionFile;
 
@@ -395,6 +396,17 @@ impl LevelEditor {
                 .show_ui(ui, |ui| {
                     for p in InstancePolicy::ALL {
                         ui.selectable_value(&mut level.instance, p, p.label());
+                    }
+                });
+            ui.end_row();
+
+            ui.label("시점");
+            egui::ComboBox::from_id_salt("level-view")
+                .width(200.0)
+                .selected_text(level.view.label())
+                .show_ui(ui, |ui| {
+                    for v in ViewMode::ALL {
+                        ui.selectable_value(&mut level.view, v, v.label());
                     }
                 });
             ui.end_row();

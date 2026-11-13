@@ -21,6 +21,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
+use nexus_core::Camera2d;
 use serde::{Deserialize, Serialize};
 
 use crate::quest_file::{self, ObjectiveFile};
@@ -84,6 +85,48 @@ fn is_shared(p: &InstancePolicy) -> bool {
     *p == InstancePolicy::Shared
 }
 
+/// 플레이 시점 — 이 레벨을 **어느 각도에서 보는가**.
+///
+/// 보는 방식만 다르고 게임 규칙(`nexus-sim`)은 같다. 레벨마다 고를 수 있다
+/// (마을은 쿼터뷰, 던전은 벨트스크롤).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ViewMode {
+    /// 쿼터뷰 (45°) — 기본.
+    #[default]
+    Quarter,
+    /// 벨트스크롤 (25°) — 옆에서 낮게 본다. 캐릭터는 왼쪽·오른쪽만 바라본다.
+    Belt,
+}
+
+impl ViewMode {
+    pub(crate) const ALL: [Self; 2] = [Self::Quarter, Self::Belt];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Quarter => "쿼터뷰 (45°)",
+            Self::Belt => "벨트스크롤 (25°)",
+        }
+    }
+
+    /// 카메라 pitch (라디안).
+    pub(crate) fn pitch(self) -> f32 {
+        match self {
+            Self::Quarter => Camera2d::PITCH_QUARTER,
+            Self::Belt => Camera2d::PITCH_BELT,
+        }
+    }
+
+    /// 스프라이트가 왼쪽·오른쪽만 바라보는가 — 옆에서 보면 등·정면 그림이 어색하다.
+    pub(crate) fn side_facing(self) -> bool {
+        self == Self::Belt
+    }
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde 가 참조로 넘긴다
+fn is_quarter(v: &ViewMode) -> bool {
+    *v == ViewMode::Quarter
+}
+
 /// 레벨 한 개.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -115,6 +158,9 @@ pub(crate) struct LevelFile {
     /// 인스턴스 정책 (R6). 단계 1 에서는 기록만 한다.
     #[serde(default, skip_serializing_if = "is_shared")]
     pub(crate) instance: InstancePolicy,
+    /// 플레이 시점. 없으면 쿼터뷰.
+    #[serde(default, skip_serializing_if = "is_quarter")]
+    pub(crate) view: ViewMode,
     /// 들어올 수 있는 조건 (R6) — **이 레벨로 가는 포털**이 본다. 던전 입장 레벨·선행 퀘스트·열쇠 등.
     /// 트리거의 `when` 과 같은 형식이다. 없으면 누구나.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -342,6 +388,11 @@ impl Levels {
     }
 
     /// 그 레벨의 던전 클리어 (R6-2) — 존을 열 때 sim 에 등록한다.
+    /// 이 레벨의 플레이 시점. 레벨이 없으면 쿼터뷰.
+    pub(crate) fn view_of(&self, id: &str) -> ViewMode {
+        self.levels.get(id).map(|l| l.view).unwrap_or_default()
+    }
+
     pub(crate) fn clear_of(&self, id: &str) -> Option<nexus_sim::ClearDef> {
         self.levels
             .get(id)
@@ -502,6 +553,7 @@ pub(crate) fn to_ron(level: &LevelFile) -> String {
 // on_enter = 들어갈 때 띄울 화면, pause = Esc 로 띄울 화면, loading = 여는 동안 띄울 화면
 // (전부 ui/<번호>.ui.ron). loading_ms = 로딩 화면을 최소로 보여 줄 시간(ms).
 // instance = 인스턴스 정책(Shared·Personal·Party — 단계 1 에서는 기록만),
+// view = 플레이 시점(Quarter = 쿼터뷰·Belt = 벨트스크롤, 없으면 쿼터뷰),
 // requires = 들어올 수 있는 조건(이 레벨로 가는 포털이 본다, 트리거의 when 과 같은 형식).
 // clear = 던전 클리어 — objectives(퀘스트 목표 형식)를 다 채우면 rewards(트리거 효과 형식)를 주고
 // Cleared 조건이 참이 된다(나가는 문 포털의 requires: Some(Cleared)).
@@ -638,6 +690,20 @@ mod tests {
             let level = read_level(text).unwrap();
             std::fs::write(root.join(level_path(id)), to_ron(&level)).unwrap();
         }
+    }
+
+    /// 시점은 적은 레벨만 바뀌고, 쿼터뷰(기본)는 파일에 적지 않는다 — 예전 레벨 파일이 그대로 읽힌다.
+    #[test]
+    fn the_view_is_written_only_when_it_is_not_the_quarter_view() {
+        let (_, text) = EMBEDDED_LEVELS[0];
+        let mut level = read_level(text).unwrap();
+        assert_eq!(level.view, ViewMode::Quarter);
+        assert!(!to_ron(&level).contains("view:"));
+
+        level.view = ViewMode::Belt;
+        let out = to_ron(&level);
+        assert!(out.contains("view: Belt"));
+        assert_eq!(read_level(&out).unwrap().view, ViewMode::Belt);
     }
 
     #[test]
