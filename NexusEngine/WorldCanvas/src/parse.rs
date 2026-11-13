@@ -7,10 +7,11 @@
 //! 팔레트를 프레임보다 뒤에 적어도 되도록 색 검사는 파싱 중이 아니라 여기서 한다.
 
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
-use crate::color::{KEEP, Palette, Rgba};
+use crate::color::{KEEP, Palette, Rgba, generate_ramp};
 use crate::doc::{
-    AtlasDef, ClipDef, Document, ImageDef, ImageKind, Op, OpAt, OutputDef, STATES, SheetDef,
+    AtlasDef, ClipDef, Document, ImageDef, ImageKind, Op, OpAt, OutputDef, Ramp, STATES, SheetDef,
     VERSION,
 };
 use crate::error::{Error, Result};
@@ -34,10 +35,12 @@ impl<'a> Line<'a> {
 struct Parser<'a> {
     lines: Vec<Line<'a>>,
     pos: usize,
+    /// 원본 파일 폴더 — `use` 경로의 기준. 문자열에서 읽으면 없다.
+    dir: Option<PathBuf>,
 }
 
 impl<'a> Parser<'a> {
-    fn new(src: &'a str) -> Self {
+    fn new(src: &'a str, dir: Option<PathBuf>) -> Self {
         let lines = src
             .lines()
             .enumerate()
@@ -47,7 +50,7 @@ impl<'a> Parser<'a> {
             })
             .filter(|l| !l.text.is_empty())
             .collect();
-        Self { lines, pos: 0 }
+        Self { lines, pos: 0, dir }
     }
 
     fn next(&mut self) -> Option<Line<'a>> {
@@ -132,9 +135,45 @@ fn is_name(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
-/// 문서를 읽고 검사까지 마친다.
+/// 문서를 읽고 검사까지 마친다. 팔레트의 `use` 는 쓸 수 없다 — 기준 폴더가 없다.
 pub fn parse(src: &str) -> Result<Document> {
-    let mut p = Parser::new(src);
+    parse_in(src, None)
+}
+
+/// 파일에서 읽는다. 팔레트의 `use <경로>` 는 이 파일 폴더 기준이다.
+pub fn parse_file(path: &Path) -> Result<Document> {
+    let src = std::fs::read_to_string(path)
+        .map_err(|e| Error::new(format!("{}: {e}", path.display())))?;
+    let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    parse_in(&src, Some(dir))
+}
+
+/// 원본이 읽어 들이는 다른 파일들 (`use`) — 뷰어가 바뀜을 감시할 때.
+#[must_use]
+pub fn dependencies(path: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut todo = vec![path.to_path_buf()];
+    while let Some(p) = todo.pop() {
+        let Ok(src) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        let dir = p.parent().map(Path::to_path_buf).unwrap_or_default();
+        for line in src.lines() {
+            let text = line.find("//").map_or(line, |at| &line[..at]).trim();
+            if let Some(rest) = text.strip_prefix("use ") {
+                let dep = dir.join(rest.trim());
+                if !out.contains(&dep) && out.len() < 32 {
+                    out.push(dep.clone());
+                    todo.push(dep);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn parse_in(src: &str, dir: Option<PathBuf>) -> Result<Document> {
+    let mut p = Parser::new(src, dir);
     let mut doc = Document::default();
 
     let first = p.next().ok_or_else(|| Error::new("빈 문서"))?;
@@ -157,11 +196,17 @@ pub fn parse(src: &str) -> Result<Document> {
                 if palette.is_some() {
                     return Err(l.err("palette 블록이 두 번 나옴"));
                 }
-                palette = Some(parse_palette(&mut p, l)?);
+                let (pal, ramps) = parse_palette(&mut p, l)?;
+                palette = Some(pal);
+                doc.ramps = ramps;
             }
             "frame" | "part" => {
                 let def = parse_image(&mut p, l, &w, cell)?;
                 doc.images.push(def);
+            }
+            "frames" => {
+                let defs = parse_frames(&mut p, l, cell)?;
+                doc.images.extend(defs);
             }
             "sheet" => {
                 if doc.sheet.is_some() {
@@ -192,16 +237,126 @@ pub fn parse(src: &str) -> Result<Document> {
     Ok(doc)
 }
 
-fn parse_palette(p: &mut Parser<'_>, opened: Line<'_>) -> Result<Palette> {
+fn parse_palette(p: &mut Parser<'_>, opened: Line<'_>) -> Result<(Palette, Vec<Ramp>)> {
     let mut pal = Palette::default();
+    let mut ramps = Vec::new();
+    let dir = p.dir.clone();
     while let Some(l) = p.block_line(opened, "palette")? {
-        let w = l.words();
-        arity(&l, &w, 2, "<문자> #rrggbb")?;
-        let key = color(&l, w[0])?;
-        let rgba = Rgba::parse_hex(w[1]).map_err(|e| l.err(e))?;
-        pal.insert(key, rgba).map_err(|e| l.err(e))?;
+        palette_line(&l.words(), l.no, dir.as_deref(), &mut pal, &mut ramps, 0)
+            .map_err(|e| l.err(e))?;
     }
-    Ok(pal)
+    Ok((pal, ramps))
+}
+
+/// 팔레트 한 줄 — `<문자> #색`, `ramp …`, `use <경로>`.
+///
+/// 공용 팔레트 파일(`use`)도 같은 줄들로 되어 있다. 그 파일 안 오류는 `파일:N줄:` 을 붙여
+/// `use` 줄의 오류로 돌려준다.
+fn palette_line(
+    w: &[&str],
+    line: usize,
+    dir: Option<&Path>,
+    pal: &mut Palette,
+    ramps: &mut Vec<Ramp>,
+    depth: usize,
+) -> std::result::Result<(), String> {
+    match w[0] {
+        "use" => {
+            if w.len() != 2 {
+                return Err(String::from("형식: use <팔레트 파일 경로>"));
+            }
+            let dir = dir.ok_or("use 는 파일에서 읽을 때만 쓸 수 있음")?;
+            if depth > 8 {
+                return Err(String::from("use 가 너무 깊음 — 순환?"));
+            }
+            let path = dir.join(w[1]);
+            let src =
+                std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let sub = path.parent().unwrap_or(Path::new(""));
+            for (i, raw) in src.lines().enumerate() {
+                let text = raw.find("//").map_or(raw, |at| &raw[..at]).trim();
+                if text.is_empty() {
+                    continue;
+                }
+                let words: Vec<&str> = text.split_whitespace().collect();
+                palette_line(&words, line, Some(sub), pal, ramps, depth + 1)
+                    .map_err(|e| format!("{}:{}줄: {e}", w[1], i + 1))?;
+            }
+            Ok(())
+        }
+        "ramp" => parse_ramp(w, line, pal, ramps),
+        _ => {
+            if w.len() != 2 {
+                return Err(String::from(
+                    "형식: <문자> #rrggbb  |  ramp …  |  use <경로>",
+                ));
+            }
+            let key = match w[0].as_bytes() {
+                [c] => *c,
+                _ => return Err(format!("색은 팔레트 문자 한 글자: {}", w[0])),
+            };
+            pal.insert(key, Rgba::parse_hex(w[1])?)
+        }
+    }
+}
+
+/// `ramp <이름> <문자들>` — 이미 있는 색을 밝은 것부터 묶는다.
+/// `ramp <이름> <문자들> from #색 [at N] [step S] [hue H]` — 색을 만들어 팔레트에 넣는다.
+fn parse_ramp(
+    w: &[&str],
+    line: usize,
+    pal: &mut Palette,
+    ramps: &mut Vec<Ramp>,
+) -> std::result::Result<(), String> {
+    const USAGE: &str = "형식: ramp <이름> <문자들> [from #색 [at N] [step S] [hue H]]";
+    if w.len() < 3 {
+        return Err(USAGE.into());
+    }
+    let (name, keys) = (w[1], w[2].as_bytes().to_vec());
+    if !is_name(name) {
+        return Err(format!("램프 이름은 글자·숫자·_ 만: {name}"));
+    }
+    if keys.len() < 2 {
+        return Err(format!("램프 `{name}` 은 두 단계 이상"));
+    }
+    if ramps.iter().any(|r| r.name == name) {
+        return Err(format!("램프 `{name}` 이 두 번 나옴"));
+    }
+    match &w[3..] {
+        [] => {}
+        ["from", hex, opts @ ..] => {
+            let base = Rgba::parse_hex(hex)?;
+            let (mut at, mut step, mut hue) = (keys.len() / 2, 0.10_f32, 6.0_f32);
+            for kv in opts.chunks(2) {
+                let [k, v] = kv else { return Err(USAGE.into()) };
+                let num = |v: &str| v.parse::<f32>().map_err(|_| format!("수가 아님: {v}"));
+                match *k {
+                    "at" => {
+                        at = v.parse().map_err(|_| format!("at 은 0 이상 정수: {v}"))?;
+                        if at >= keys.len() {
+                            return Err(format!("at {at} 이 단계 수 {} 밖", keys.len()));
+                        }
+                    }
+                    "step" => step = num(v)?,
+                    "hue" => hue = num(v)?,
+                    other => return Err(format!("ramp 옵션은 at·step·hue: {other}")),
+                }
+            }
+            for (k, c) in keys
+                .iter()
+                .zip(generate_ramp(base, keys.len(), at, step, hue))
+            {
+                pal.insert(*k, c)?;
+            }
+        }
+        _ => return Err(USAGE.into()),
+    }
+    ramps.push(Ramp {
+        name: name.to_owned(),
+        keys,
+        line,
+    });
+    Ok(())
 }
 
 /// `frame <이름> [= <바탕>]` / `part <이름> <가로> <세로> [= <바탕>]`.
@@ -250,6 +405,108 @@ fn parse_image(
         ops,
         line: opened.no,
     })
+}
+
+/// `frames <접두사> <수> [= <바탕>]` — 연산 줄을 공유하는 프레임 묶음.
+///
+/// 프레임 `<접두사>0` … `<접두사><수-1>` 을 만든다. 연산 줄 안의 `[a b c d]` 는 프레임마다 다른
+/// 값 — i 번째 프레임은 i 번째 값을 쓴다. 걷기 프레임의 상체 오르내림, 한 박자 늦게 따라오는
+/// 망토·머리카락, 칼 각도를 한 표로 적는다. 바탕도 `= [a b c d]` 로 프레임마다 다르게 둘 수 있다.
+fn parse_frames(
+    p: &mut Parser<'_>,
+    opened: Line<'_>,
+    cell: Option<(u32, u32)>,
+) -> Result<Vec<ImageDef>> {
+    const USAGE: &str = "frames <접두사> <수> [= <바탕> | = [바탕들]]";
+    let size = cell.ok_or_else(|| opened.err("frames 보다 `cell` 이 먼저 와야 함"))?;
+    let (head, rest) = opened
+        .text
+        .split_once('=')
+        .map_or((opened.text, None), |(h, r)| (h, Some(r.trim())));
+    let hw: Vec<&str> = head.split_whitespace().collect();
+    let [_, prefix, count] = hw.as_slice() else {
+        return Err(opened.err(format!("형식: {USAGE}")));
+    };
+    let count = positive(&opened, count)? as usize;
+    let names: Vec<String> = (0..count).map(|i| format!("{prefix}{i}")).collect();
+    if !is_name(&names[0]) {
+        return Err(opened.err(format!("이름은 글자·숫자·_ 만: {prefix}")));
+    }
+    let bases: Vec<Option<String>> = match rest {
+        None => vec![None; count],
+        Some(r) => (0..count)
+            .map(|i| {
+                let b = per_frame(r, i, count).map_err(|e| opened.err(e))?;
+                match b.split_whitespace().collect::<Vec<_>>().as_slice() {
+                    [one] => Ok(Some((*one).to_owned())),
+                    _ => Err(opened.err(format!("형식: {USAGE}"))),
+                }
+            })
+            .collect::<Result<_>>()?,
+    };
+
+    let mut ops: Vec<Vec<OpAt>> = vec![Vec::new(); count];
+    while let Some(l) = p.block_line(opened, "frames")? {
+        if l.text.contains('[') {
+            for (i, list) in ops.iter_mut().enumerate() {
+                let text = per_frame(l.text, i, count).map_err(|e| l.err(e))?;
+                let one = Line {
+                    no: l.no,
+                    text: &text,
+                };
+                if matches!(one.words()[0], "grid" | "patch") {
+                    return Err(l.err("grid·patch 머리에는 [ ] 값을 쓸 수 없음"));
+                }
+                list.push(OpAt {
+                    op: parse_op(p, one)?,
+                    line: l.no,
+                });
+            }
+        } else {
+            let op = parse_op(p, l)?;
+            for list in &mut ops {
+                list.push(OpAt {
+                    op: op.clone(),
+                    line: l.no,
+                });
+            }
+        }
+    }
+    Ok(names
+        .into_iter()
+        .zip(bases)
+        .zip(ops)
+        .map(|((name, base), ops)| ImageDef {
+            name,
+            kind: ImageKind::Frame,
+            size,
+            base,
+            ops,
+            line: opened.no,
+        })
+        .collect())
+}
+
+/// `[a b c]` 묶음을 i 번째 값으로 바꾼 줄. 묶음의 값 수는 프레임 수와 같아야 한다.
+fn per_frame(text: &str, i: usize, count: usize) -> std::result::Result<String, String> {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let close = rest[open..].find(']').ok_or("`[` 가 `]` 로 닫히지 않음")? + open;
+        let values: Vec<&str> = rest[open + 1..close].split_whitespace().collect();
+        if values.len() != count {
+            return Err(format!(
+                "[{}] 의 값이 {} 개 — 프레임 수 {count} 와 같아야 함",
+                rest[open + 1..close].trim(),
+                values.len()
+            ));
+        }
+        out.push_str(&rest[..open]);
+        out.push_str(values[i]);
+        rest = &rest[close + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
 }
 
 fn parse_op(p: &mut Parser<'_>, l: Line<'_>) -> Result<Op> {
@@ -409,6 +666,51 @@ fn parse_op(p: &mut Parser<'_>, l: Line<'_>) -> Result<Op> {
                 points,
             }
         }
+        "stamp_rot" => {
+            let pivot = match w.len() {
+                5 => None,
+                7 => Some((int(&l, w[5])?, int(&l, w[6])?)),
+                _ => {
+                    return Err(l.err("형식: stamp_rot <이름> <x> <y> <각도> [<피벗 x> <피벗 y>]"));
+                }
+            };
+            Op::StampRot {
+                name: w[1].to_owned(),
+                x: int(&l, w[2])?,
+                y: int(&l, w[3])?,
+                deg: int(&l, w[4])?,
+                pivot,
+            }
+        }
+        "shade" => {
+            let region = match w.len() {
+                3 => None,
+                7 => Some((
+                    int(&l, w[3])?,
+                    int(&l, w[4])?,
+                    positive(&l, w[5])?,
+                    positive(&l, w[6])?,
+                )),
+                _ => return Err(l.err("형식: shade <램프> <단계> [<x> <y> <가로> <세로>]")),
+            };
+            Op::Shade {
+                ramp: w[1].to_owned(),
+                steps: int(&l, w[2])?,
+                region,
+            }
+        }
+        "light" => {
+            if !(2..=5).contains(&w.len()) {
+                return Err(l.err("형식: light <램프> [반경 0=자동] [어둡게 2] [밝게 1]"));
+            }
+            let opt = |i: usize, d: u32| w.get(i).map_or(Ok(d), |s| uint(&l, s));
+            Op::Light {
+                ramp: w[1].to_owned(),
+                radius: opt(2, 0)?,
+                dark: opt(3, 2)?,
+                light: opt(4, 1)?,
+            }
+        }
         "stamp" => {
             arity(&l, &w, 4, "stamp <이름> <x> <y>")?;
             Op::Stamp {
@@ -541,6 +843,24 @@ fn parse_output(p: &mut Parser<'_>, opened: Line<'_>) -> Result<OutputDef> {
 /// 바탕·스탬프의 **순환**은 여기서 보지 않는다 — 실제로 따라가 봐야 알 수 있어
 /// [`crate::resolve`] 가 잡는다.
 pub fn validate(doc: &Document) -> Result<()> {
+    for ramp in &doc.ramps {
+        let mut seen = HashSet::new();
+        for &k in &ramp.keys {
+            if !doc.palette.contains(k) || k == b'.' {
+                return Err(Error::at(
+                    ramp.line,
+                    format!("램프 `{}`: 팔레트에 없는 색 '{}'", ramp.name, k as char),
+                ));
+            }
+            if !seen.insert(k) {
+                return Err(Error::at(
+                    ramp.line,
+                    format!("램프 `{}`: '{}' 가 두 번 나옴", ramp.name, k as char),
+                ));
+            }
+        }
+    }
+
     let mut names = HashSet::new();
     for img in &doc.images {
         if !names.insert(img.name.as_str()) {
@@ -632,8 +952,11 @@ fn check_op(doc: &Document, img: &ImageDef, at: &OpAt) -> Result<()> {
                 )));
             }
         }
-        Op::Stamp { name, .. } if doc.image(name).is_none() => {
+        Op::Stamp { name, .. } | Op::StampRot { name, .. } if doc.image(name).is_none() => {
             return Err(err(format!("stamp 대상 `{name}` 이(가) 없음")));
+        }
+        Op::Shade { ramp, .. } | Op::Light { ramp, .. } if doc.ramp(ramp).is_none() => {
+            return Err(err(format!("램프 `{ramp}` 이(가) 없음")));
         }
         Op::Swap { to, .. } if *to == KEEP => {
             return Err(err(String::from("swap 의 결과로 `~` 는 쓸 수 없음")));
@@ -793,6 +1116,78 @@ end
     fn errors_carry_line_numbers() {
         let e = fails("px 0 0 K", "px 0 0 Q");
         assert!(e.starts_with("16줄") && e.contains("'Q'"), "{e}");
+    }
+
+    #[test]
+    fn ramps_group_and_generate_colors() {
+        let doc = parse(&MINI.replacen(
+            "  W #ffffff\nend",
+            "  W #ffffff\n  ramp mono WK\n  ramp skin abc from #e0a080 hue 12\nend",
+            1,
+        ))
+        .unwrap();
+        assert_eq!(doc.ramp("mono").unwrap().keys, b"WK");
+        let skin: Vec<_> = b"abc"
+            .iter()
+            .map(|&k| doc.palette.get(k).unwrap())
+            .collect();
+        assert_eq!(skin[1].to_string(), "#e0a080", "가운데가 기준색");
+        let l: Vec<f32> = skin.iter().map(|c| c.oklab().l).collect();
+        assert!(l[0] > l[1] && l[1] > l[2], "밝은 것부터: {l:?}");
+
+        assert!(fails("  W #ffffff\nend", "  W #ffffff\n  ramp bad WQ\nend").contains("'Q'"));
+        assert!(fails("  px 0 0 K", "  shade nope 1").contains("nope"));
+        assert!(fails("  W #ffffff\nend", "  W #ffffff\n  use x.palette\nend").contains("파일"));
+    }
+
+    #[test]
+    fn shared_palette_is_used_relative_to_the_file() {
+        let sprites = Path::new(env!("CARGO_MANIFEST_DIR")).join("sprites");
+        let src = MINI.replacen(
+            "  W #ffffff\n",
+            "  W #ffffff\n  use ../palettes/common.palette\n",
+            1,
+        );
+        let doc = parse_in(&src, Some(sprites)).unwrap();
+        assert_eq!(doc.ramp("skin").unwrap().keys, b"12345");
+        assert!(doc.palette.contains(b'!'));
+    }
+
+    #[test]
+    fn frames_expand_per_frame_values() {
+        let src = MINI.replacen(
+            "part dot 1 1",
+            "frames f 3 = [a b a]\n  px [0 1 2] 1 K\n  swap W K\nend\npart dot 1 1",
+            1,
+        );
+        let doc = parse(&src).unwrap();
+        let f: Vec<_> = (0..3)
+            .map(|i| doc.image(&format!("f{i}")).unwrap())
+            .collect();
+        assert_eq!(f[1].base.as_deref(), Some("b"));
+        assert_eq!(
+            f[2].ops[0].op,
+            Op::Px {
+                x: 2,
+                y: 1,
+                c: b'K'
+            }
+        );
+        assert_eq!(
+            f[0].ops[1].op,
+            Op::Swap {
+                from: b'W',
+                to: b'K',
+                region: None
+            }
+        );
+
+        let bad = MINI.replacen(
+            "part dot 1 1",
+            "frames f 3\n  px [0 1] 1 K\nend\npart dot 1 1",
+            1,
+        );
+        assert!(parse(&bad).unwrap_err().to_string().contains("프레임 수 3"));
     }
 
     #[test]

@@ -15,15 +15,24 @@ pub struct Resolver<'a> {
     done: HashMap<String, Bitmap>,
     /// 지금 계산 중인 이름들 — 순환 검출용 경로.
     stack: Vec<String>,
+    /// 반투명 팔레트 문자 — `stamp` 가 빈 자리에만 얹는다.
+    soft: Vec<u8>,
 }
 
 impl<'a> Resolver<'a> {
     #[must_use]
     pub fn new(doc: &'a Document) -> Self {
+        let soft = doc
+            .palette
+            .iter()
+            .filter(|(_, c)| (1..0xFF).contains(&c.0[3]))
+            .map(|(k, _)| k)
+            .collect();
         Self {
             doc,
             done: HashMap::new(),
             stack: Vec::new(),
+            soft,
         }
     }
 
@@ -64,6 +73,13 @@ impl<'a> Resolver<'a> {
         Ok(bm)
     }
 
+    fn ramp(&self, name: &str) -> Result<Vec<u8>> {
+        self.doc
+            .ramp(name)
+            .map(|r| r.keys.clone())
+            .ok_or_else(|| Error::new(format!("램프 `{name}` 이(가) 없음")))
+    }
+
     fn apply(&mut self, bm: &mut Bitmap, op: &Op) -> Result<()> {
         match op {
             Op::Grid(rows) => bm.patch(0, 0, rows),
@@ -88,8 +104,33 @@ impl<'a> Resolver<'a> {
             Op::Poly { c, points } => bm.poly(points, *c),
             Op::Stamp { name, x, y } => {
                 let src = self.get(name)?;
-                bm.stamp(&src, *x, *y);
+                bm.stamp(&src, *x, *y, &self.soft);
             }
+            Op::StampRot {
+                name,
+                x,
+                y,
+                deg,
+                pivot,
+            } => {
+                let src = self.get(name)?;
+                let pivot = match pivot {
+                    Some((px, py)) => (*px as f32 + 0.5, *py as f32 + 0.5),
+                    None => (src.width() as f32 / 2.0, src.height() as f32 / 2.0),
+                };
+                bm.stamp_rotated(&src, *x, *y, *deg as f32, pivot, &self.soft);
+            }
+            Op::Shade {
+                ramp,
+                steps,
+                region,
+            } => bm.shade(&self.ramp(ramp)?, *steps, *region),
+            Op::Light {
+                ramp,
+                radius,
+                dark,
+                light,
+            } => bm.light(&self.ramp(ramp)?, *radius, *dark, *light),
         }
         Ok(())
     }

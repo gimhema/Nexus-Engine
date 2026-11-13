@@ -7,12 +7,14 @@
 
 #![forbid(unsafe_code)]
 
+pub mod analyze;
 pub mod bitmap;
 pub mod color;
 pub mod doc;
 pub mod error;
 pub mod export;
 pub mod import;
+pub mod lint;
 pub mod parse;
 pub mod preview;
 pub mod resolve;

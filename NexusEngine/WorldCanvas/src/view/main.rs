@@ -31,7 +31,7 @@ use eframe::egui::{
 };
 use worldcanvas::doc::{Document, ImageKind, Placed};
 use worldcanvas::export::{self, Rgba8};
-use worldcanvas::parse::parse;
+use worldcanvas::parse;
 use worldcanvas::resolve::Resolver;
 
 /// 파일 변경 확인 주기.
@@ -230,7 +230,11 @@ impl Viewer {
     /// 바뀐 원본을 다시 읽는다.
     fn refresh(&mut self, ctx: &egui::Context) {
         for src in &mut self.sources {
-            let modified = std::fs::metadata(&src.path).and_then(|m| m.modified()).ok();
+            // 원본과 그것이 `use` 하는 공용 팔레트 중 가장 늦게 바뀐 시각.
+            let modified = std::iter::once(src.path.clone())
+                .chain(parse::dependencies(&src.path))
+                .filter_map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+                .max();
             if modified.is_some() && modified == src.modified {
                 continue;
             }
@@ -289,8 +293,7 @@ impl Viewer {
 
 /// 원본을 읽어 텍스처까지 만든다.
 fn load(ctx: &egui::Context, path: &Path) -> Result<Loaded, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let doc = parse(&text).map_err(|e| e.to_string())?;
+    let doc = parse::parse_file(path).map_err(|e| e.to_string())?;
     let mut r = Resolver::new(&doc);
     let key = path.display().to_string();
     let mut images = HashMap::new();

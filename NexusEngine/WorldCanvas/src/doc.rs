@@ -19,6 +19,8 @@ pub struct Document {
     /// 프레임 한 칸의 픽셀 크기 — 시트 칸 크기와 같다.
     pub cell: (u32, u32),
     pub palette: Palette,
+    /// 명도 단계 묶음 — `shade`·`light` 가 따라 오르내린다.
+    pub ramps: Vec<Ramp>,
     /// 프레임과 부품. 적은 순서를 유지한다.
     pub images: Vec<ImageDef>,
     pub sheet: Option<SheetDef>,
@@ -30,6 +32,30 @@ impl Document {
     #[must_use]
     pub fn image(&self, name: &str) -> Option<&ImageDef> {
         self.images.iter().find(|i| i.name == name)
+    }
+
+    #[must_use]
+    pub fn ramp(&self, name: &str) -> Option<&Ramp> {
+        self.ramps.iter().find(|r| r.name == name)
+    }
+}
+
+/// 한 재질의 명도 단계 — 팔레트 문자를 **밝은 것부터** 늘어놓은 것.
+///
+/// `ramp hair WwvxD` 처럼 팔레트에 적는다. 같은 재질의 색을 단계로 묶어 두면 그늘을 "한 단계
+/// 어둡게" 처럼 칠할 수 있고, 어느 색이 어느 재질인지 원본에 남는다.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ramp {
+    pub name: String,
+    pub keys: Vec<u8>,
+    pub line: usize,
+}
+
+impl Ramp {
+    /// 문자의 단계 (0 이 가장 밝다).
+    #[must_use]
+    pub fn index(&self, key: u8) -> Option<usize> {
+        self.keys.iter().position(|&k| k == key)
     }
 }
 
@@ -150,6 +176,31 @@ pub enum Op {
         x: i32,
         y: i32,
     },
+    /// 돌려서 올린다 (RotSprite). `pivot` 은 부품 안 회전 중심 픽셀 — 없으면 부품 한가운데.
+    /// 돌리지 않은 `stamp` 와 같은 자리에 피벗이 온다. `deg` 양수 = 시계 방향.
+    StampRot {
+        name: String,
+        x: i32,
+        y: i32,
+        deg: i32,
+        pivot: Option<(i32, i32)>,
+    },
+    /// 램프 색 픽셀을 `steps` 단계 옮긴다 (양수 = 어둡게). 끝에서 멈춘다.
+    Shade {
+        ramp: String,
+        steps: i32,
+        region: Option<(i32, i32, u32, u32)>,
+    },
+    /// 왼쪽 위 빛으로 램프 색 덩어리에 명암을 자동으로 깐다.
+    ///
+    /// 램프 색 픽셀을 덩어리로 보고 반경 `radius`(0 = 두께에 맞춰 자동)로 흐려 높이로 삼은 뒤, 빛을 등진 쪽은
+    /// 최대 `dark` 단계 어둡게, 빛을 받는 쪽은 최대 `light` 단계 밝게 한다. 밑칠 — 손으로 다듬는다.
+    Light {
+        ramp: String,
+        radius: u32,
+        dark: u32,
+        light: u32,
+    },
 }
 
 impl Op {
@@ -175,7 +226,10 @@ impl Op {
             | Self::Shift { .. }
             | Self::Move { .. }
             | Self::Mirror
-            | Self::Stamp { .. } => Vec::new(),
+            | Self::Stamp { .. }
+            | Self::StampRot { .. }
+            | Self::Shade { .. }
+            | Self::Light { .. } => Vec::new(),
         }
     }
 }
@@ -228,6 +282,36 @@ impl fmt::Display for Op {
                 Ok(())
             }
             Self::Stamp { name, x, y } => write!(f, "stamp {name} {x} {y}"),
+            Self::StampRot {
+                name,
+                x,
+                y,
+                deg,
+                pivot,
+            } => {
+                write!(f, "stamp_rot {name} {x} {y} {deg}")?;
+                match pivot {
+                    Some((px, py)) => write!(f, " {px} {py}"),
+                    None => Ok(()),
+                }
+            }
+            Self::Shade {
+                ramp,
+                steps,
+                region,
+            } => {
+                write!(f, "shade {ramp} {steps}")?;
+                match region {
+                    Some((x, y, w, h)) => write!(f, " {x} {y} {w} {h}"),
+                    None => Ok(()),
+                }
+            }
+            Self::Light {
+                ramp,
+                radius,
+                dark,
+                light,
+            } => write!(f, "light {ramp} {radius} {dark} {light}"),
         }
     }
 }

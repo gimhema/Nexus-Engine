@@ -3,11 +3,13 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use worldcanvas::analyze;
 use worldcanvas::doc::{Document, ImageKind};
 use worldcanvas::error::{Error, Result};
 use worldcanvas::export::{self, Rgba8};
 use worldcanvas::import::{self, ClipSpec};
-use worldcanvas::parse::parse;
+use worldcanvas::lint;
+use worldcanvas::parse::{parse, parse_file};
 use worldcanvas::preview;
 use worldcanvas::resolve::Resolver;
 
@@ -18,8 +20,14 @@ worldcanvas — 텍스트 원본(.canvas)으로 픽셀 스프라이트 시트를
   list    <원본.canvas>                         팔레트·그림·시트 배치 요약
   show    <원본.canvas> <이름>                   계산된 그림을 텍스트로 출력
   preview <원본.canvas> [-o 파일.png] [--scale N] [--grid] [--all | --frames a,b,c]
+          [--value | --silhouette] [--actual] [--onion]
                                                 확대 미리보기 (기본: 시트 배치, ./preview/<이름>.png)
+                                                명도·실루엣 보기, 1·2배 덧붙임, 이전 프레임 잔상
+  lint    <원본.canvas> [--frames a,b] [--detail] [--limit N] [-o 표시.png] [--scale N]
+                                                도트 품질 검사 — 계단·밴딩·줄무늬·고립 픽셀·명도·팔레트·움직임
   build   <원본.canvas> [--out 폴더]             시트 PNG + .sheet.ron 출력 (경로는 output 블록)
+  analyze <그림.png> [--crop x,y,w,h] [--colors N]
+                                                참고 그림의 색 수·재질별 램프·단계 폭·색상 회전, 팔레트 초안
   import  <시트.png> --cell WxH -o <원본.canvas> [--directions N] [--clip 상태:프레임:ms:loop|once]...
                                                 기존 PNG 를 원본 형식으로 가져오기
 ";
@@ -42,7 +50,15 @@ struct Args {
     flags: Vec<(String, String)>,
 }
 
-const BOOL_FLAGS: &[&str] = &["--grid", "--all"];
+const BOOL_FLAGS: &[&str] = &[
+    "--grid",
+    "--all",
+    "--detail",
+    "--value",
+    "--silhouette",
+    "--actual",
+    "--onion",
+];
 
 impl Args {
     fn parse(raw: &[String]) -> Result<Self> {
@@ -104,18 +120,16 @@ fn run(raw: &[String]) -> Result<()> {
         "list" => cmd_list(&args),
         "show" => cmd_show(&args),
         "preview" => cmd_preview(&args),
+        "lint" => cmd_lint(&args),
         "build" => cmd_build(&args),
         "import" => cmd_import(&args),
+        "analyze" => cmd_analyze(&args),
         "help" | "-h" | "--help" => {
             print!("{USAGE}");
             Ok(())
         }
         other => Err(Error::new(format!("알 수 없는 명령: {other}\n\n{USAGE}"))),
     }
-}
-
-fn read(path: &str) -> Result<String> {
-    std::fs::read_to_string(path).map_err(|e| Error::new(format!("{path}: {e}")))
 }
 
 fn write(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -128,7 +142,7 @@ fn write(path: &Path, bytes: &[u8]) -> Result<()> {
 /// 원본을 읽고 모든 그림을 한 번 계산해 본다. 오류에 파일 이름을 붙인다.
 fn load(path: &str) -> Result<Document> {
     let tag = |e: Error| Error::new(format!("{path}:{e}"));
-    let doc = parse(&read(path)?).map_err(tag)?;
+    let doc = parse_file(Path::new(path)).map_err(tag)?;
     export::resolve_all(&doc).map_err(tag)?;
     Ok(doc)
 }
@@ -250,14 +264,22 @@ fn cmd_preview(a: &Args) -> Result<()> {
             .map_err(|_| Error::new(format!("--scale 은 정수: {s}")))?,
         None => 4,
     };
-    let img = preview::render(
-        &doc,
-        &layout,
-        preview::Options {
-            scale,
-            grid: a.has("--grid"),
+    let opt = preview::Options {
+        scale,
+        grid: a.has("--grid"),
+        mode: if a.has("--value") {
+            preview::Mode::Value
+        } else if a.has("--silhouette") {
+            preview::Mode::Silhouette
+        } else {
+            preview::Mode::Color
         },
-    )?;
+        onion: a.has("--onion"),
+    };
+    let mut img = preview::render(&doc, &layout, opt)?;
+    if a.has("--actual") {
+        img = preview::with_actual(img, &doc, &layout, opt)?;
+    }
     let out = match a.flag(&["-o", "--out"]) {
         Some(o) => PathBuf::from(o),
         None => {
@@ -270,6 +292,65 @@ fn cmd_preview(a: &Args) -> Result<()> {
     };
     write(&out, &export::encode_png(&img)?)?;
     println!("{} ({}x{})", out.display(), img.width, img.height);
+    Ok(())
+}
+
+fn cmd_lint(a: &Args) -> Result<()> {
+    let path = a.pos(0, "원본 파일")?;
+    let doc = load(path)?;
+    let names: Vec<String> = match a.flag(&["--frames"]) {
+        Some(list) => list.split(',').map(|s| s.trim().to_owned()).collect(),
+        None => lint::targets(&doc),
+    };
+    let limit = match a.flag(&["--limit"]) {
+        Some(n) => n
+            .parse()
+            .map_err(|_| Error::new(format!("--limit 은 정수: {n}")))?,
+        None => 6,
+    };
+    let report = lint::lint(&doc, &names).map_err(|e| Error::new(format!("{path}:{e}")))?;
+    // 좌표는 그림을 좁혔을 때(--frames)나 --detail 일 때만 — 시트 전체는 개수만.
+    let detail = a.has("--frames") || a.has("--detail");
+    print!("{}", lint::format(&report, &doc.palette, limit, detail));
+
+    // 표시 그림 — 걸린 픽셀에 종류별 색 테두리. 시트 배치(없으면 검사한 순서 8개씩).
+    if let Some(out) = a.flag(&["-o", "--out"]) {
+        let mut marks = preview::Marks::new();
+        for (name, found) in &report.images {
+            let list = marks.entry(name.clone()).or_default();
+            for f in found {
+                list.extend(f.pixels().map(|(x, y)| (x, y, f.kind.mark())));
+            }
+        }
+        let layout = if a.has("--frames") {
+            names
+                .chunks(8)
+                .map(|c| c.iter().cloned().map(Some).collect())
+                .collect()
+        } else if let Some(atlas) = &doc.atlas {
+            atlas
+                .rows
+                .iter()
+                .map(|r| r.iter().cloned().map(Some).collect())
+                .collect()
+        } else {
+            preview::sheet_layout(&doc).unwrap_or_else(|| {
+                names
+                    .chunks(8)
+                    .map(|c| c.iter().cloned().map(Some).collect())
+                    .collect()
+            })
+        };
+        let scale = match a.flag(&["--scale"]) {
+            Some(s) => s
+                .parse()
+                .map_err(|_| Error::new(format!("--scale 은 정수: {s}")))?,
+            None => 6,
+        };
+        let img = preview::render_marked(&doc, &layout, preview::Options::new(scale), &marks)?;
+        write(Path::new(out), &export::encode_png(&img)?)?;
+        println!("\n표시: {out} (청록 계단 · 노랑 밴딩 · 초록 줄무늬 · 자홍 고립)");
+    }
     Ok(())
 }
 
@@ -321,6 +402,31 @@ fn cmd_build(a: &Args) -> Result<()> {
     )?;
     println!("{} ({}x{})", image_path.display(), img.width, img.height);
     println!("{}", sheet_path.display());
+    Ok(())
+}
+
+fn cmd_analyze(a: &Args) -> Result<()> {
+    let png = a.pos(0, "PNG 파일")?;
+    let bytes = std::fs::read(png).map_err(|e| Error::new(format!("{png}: {e}")))?;
+    let img = export::decode_png(&bytes).map_err(|e| Error::new(format!("{png}: {e}")))?;
+    let crop = match a.flag(&["--crop"]) {
+        Some(c) => {
+            let v: Vec<u32> = c.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+            match v.as_slice() {
+                [x, y, w, h] => Some((*x, *y, *w, *h)),
+                _ => return Err(Error::new(format!("--crop 은 x,y,w,h: {c}"))),
+            }
+        }
+        None => None,
+    };
+    let colors = match a.flag(&["--colors"]) {
+        Some(n) => n
+            .parse()
+            .map_err(|_| Error::new(format!("--colors 는 정수: {n}")))?,
+        None => 24,
+    };
+    let result = analyze::analyze(&img, &analyze::Options { crop, colors });
+    print!("{}", analyze::format(&result));
     Ok(())
 }
 
