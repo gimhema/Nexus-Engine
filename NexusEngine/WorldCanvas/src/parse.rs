@@ -666,6 +666,82 @@ fn parse_op(p: &mut Parser<'_>, l: Line<'_>) -> Result<Op> {
                 points,
             }
         }
+        "mask" => {
+            if w.len() != 2 {
+                return Err(l.err("형식: mask <색들> … end"));
+            }
+            let mut ops = Vec::new();
+            while let Some(inner) = p.block_line(l, "mask")? {
+                ops.push(OpAt {
+                    op: parse_op(p, inner)?,
+                    line: inner.no,
+                });
+            }
+            Op::Mask {
+                keys: w[1].as_bytes().to_vec(),
+                ops,
+            }
+        }
+        "pattern" => {
+            let (x, y) = match w.len() {
+                2 => (0, 0),
+                4 => (int(&l, w[2])?, int(&l, w[3])?),
+                _ => return Err(l.err("형식: pattern <부품> [<x> <y>]")),
+            };
+            Op::Pattern {
+                name: w[1].to_owned(),
+                x,
+                y,
+            }
+        }
+        "aa" => {
+            if w.len() < 3 {
+                return Err(l.err("형식: aa <외곽색> <안쪽색><결과색> ..."));
+            }
+            let mut pairs = Vec::with_capacity(w.len() - 2);
+            for pair in &w[2..] {
+                match pair.as_bytes() {
+                    [from, to] => pairs.push((*from, *to)),
+                    _ => return Err(l.err(format!("안쪽색·결과색 두 글자여야 함: {pair}"))),
+                }
+            }
+            Op::Aa {
+                c: color(&l, w[1])?,
+                pairs,
+            }
+        }
+        "dither" => {
+            let region = match w.len() {
+                3 => None,
+                7 => Some((
+                    int(&l, w[3])?,
+                    int(&l, w[4])?,
+                    positive(&l, w[5])?,
+                    positive(&l, w[6])?,
+                )),
+                _ => return Err(l.err("형식: dither <색> <섞을 색> [<x> <y> <가로> <세로>]")),
+            };
+            Op::Dither {
+                a: color(&l, w[1])?,
+                b: color(&l, w[2])?,
+                region,
+            }
+        }
+        "speckle" => {
+            if !(4..=5).contains(&w.len()) {
+                return Err(l.err("형식: speckle <색> <반점 색> <퍼센트> [<씨앗>]"));
+            }
+            let percent = uint(&l, w[3])?;
+            if percent > 100 {
+                return Err(l.err("퍼센트는 0~100"));
+            }
+            Op::Speckle {
+                a: color(&l, w[1])?,
+                b: color(&l, w[2])?,
+                percent,
+                seed: w.get(4).map_or(Ok(0), |s| uint(&l, s))?,
+            }
+        }
         "stamp_rot" => {
             let pivot = match w.len() {
                 5 => None,
@@ -952,7 +1028,14 @@ fn check_op(doc: &Document, img: &ImageDef, at: &OpAt) -> Result<()> {
                 )));
             }
         }
-        Op::Stamp { name, .. } | Op::StampRot { name, .. } if doc.image(name).is_none() => {
+        Op::Mask { ops, .. } => {
+            for inner in ops {
+                check_op(doc, img, inner)?;
+            }
+        }
+        Op::Stamp { name, .. } | Op::StampRot { name, .. } | Op::Pattern { name, .. }
+            if doc.image(name).is_none() =>
+        {
             return Err(err(format!("stamp 대상 `{name}` 이(가) 없음")));
         }
         Op::Shade { ramp, .. } | Op::Light { ramp, .. } if doc.ramp(ramp).is_none() => {

@@ -80,7 +80,7 @@ pub struct ImageDef {
 }
 
 /// 연산과 그 줄 번호.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpAt {
     pub op: Op,
     pub line: usize,
@@ -201,6 +201,35 @@ pub enum Op {
         dark: u32,
         light: u32,
     },
+    /// 안쪽 연산을 **원래 `keys` 색이던 픽셀에만** 적용한다 — 재질 안에서만 결·주름·무늬.
+    Mask {
+        keys: Vec<u8>,
+        ops: Vec<OpAt>,
+    },
+    /// 부품을 그림 전체에 타일로 깐다 (`(x, y)` 는 무늬 시작점). 보통 `mask` 안에서 쓴다.
+    Pattern {
+        name: String,
+        x: i32,
+        y: i32,
+    },
+    /// 외곽선 계단 안쪽 모서리 — 안쪽 색 `from` 픽셀이 외곽선 `c` 에 세로·가로로 함께 닿으면 `to` 로.
+    Aa {
+        c: u8,
+        pairs: Vec<(u8, u8)>,
+    },
+    /// 색 `a` 픽셀 중 체크무늬 자리를 `b` 로.
+    Dither {
+        a: u8,
+        b: u8,
+        region: Option<(i32, i32, u32, u32)>,
+    },
+    /// 색 `a` 픽셀 중 `percent`% 를 `b` 로 — 좌표 해시라 늘 같은 자리. 돌·가죽·천의 결.
+    Speckle {
+        a: u8,
+        b: u8,
+        percent: u32,
+        seed: u32,
+    },
 }
 
 impl Op {
@@ -218,8 +247,14 @@ impl Op {
             | Self::Poly { c, .. }
             | Self::Outline { c } => vec![*c],
             Self::Swap { from, to, .. } => vec![*from, *to],
-            Self::Selout { c, pairs } => std::iter::once(*c)
+            Self::Selout { c, pairs } | Self::Aa { c, pairs } => std::iter::once(*c)
                 .chain(pairs.iter().flat_map(|(from, to)| [*from, *to]))
+                .collect(),
+            Self::Dither { a, b, .. } | Self::Speckle { a, b, .. } => vec![*a, *b],
+            Self::Mask { keys, ops } => keys
+                .iter()
+                .copied()
+                .chain(ops.iter().flat_map(|at| at.op.colors()))
                 .collect(),
             Self::FlipH
             | Self::FlipV
@@ -229,7 +264,8 @@ impl Op {
             | Self::Stamp { .. }
             | Self::StampRot { .. }
             | Self::Shade { .. }
-            | Self::Light { .. } => Vec::new(),
+            | Self::Light { .. }
+            | Self::Pattern { .. } => Vec::new(),
         }
     }
 }
@@ -312,6 +348,36 @@ impl fmt::Display for Op {
                 dark,
                 light,
             } => write!(f, "light {ramp} {radius} {dark} {light}"),
+            Self::Mask { keys, ops } => {
+                writeln!(f, "mask {}", String::from_utf8_lossy(keys))?;
+                for at in ops {
+                    writeln!(f, "{}", at.op)?;
+                }
+                write!(f, "end")
+            }
+            Self::Pattern { name, x, y } => write!(f, "pattern {name} {x} {y}"),
+            Self::Aa { c, pairs } => {
+                write!(f, "aa {}", ch(c))?;
+                for (from, to) in pairs {
+                    write!(f, " {}{}", ch(from), ch(to))?;
+                }
+                Ok(())
+            }
+            Self::Dither { a, b, region } => {
+                write!(f, "dither {} {}", ch(a), ch(b))?;
+                match region {
+                    Some((x, y, w, h)) => write!(f, " {x} {y} {w} {h}"),
+                    None => Ok(()),
+                }
+            }
+            Self::Speckle {
+                a,
+                b,
+                percent,
+                seed,
+            } => {
+                write!(f, "speckle {} {} {percent} {seed}", ch(a), ch(b))
+            }
         }
     }
 }

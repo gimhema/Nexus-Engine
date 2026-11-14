@@ -245,6 +245,39 @@ fn stack(parts: &[Rgba8]) -> Rgba8 {
     out
 }
 
+/// 여러 그림을 왼쪽부터 **발 높이(아래 끝)를 맞춰** 늘어놓고 `scale` 배로 키운다 — 원본끼리 비교.
+#[must_use]
+pub fn lineup(images: &[Rgba8], scale: u32) -> Rgba8 {
+    let gap = 2;
+    let h = images.iter().map(|i| i.height).max().unwrap_or(0);
+    let w: u32 = images.iter().map(|i| i.width + gap).sum::<u32>() + gap;
+    let s = scale.max(1);
+    let mut out = Rgba8::new(w * s, h * s);
+    out.data
+        .chunks_exact_mut(4)
+        .for_each(|p| p.copy_from_slice(&BACKGROUND));
+    let mut ox = gap;
+    for img in images {
+        let oy = h - img.height;
+        for y in 0..img.height {
+            for x in 0..img.width {
+                let c = img.at(x, y);
+                if c[3] == 0 {
+                    continue;
+                }
+                let c = blend(BACKGROUND, c);
+                for sy in 0..s {
+                    for sx in 0..s {
+                        out.put((ox + x) * s + sx, (oy + y) * s + sy, c);
+                    }
+                }
+            }
+        }
+        ox += img.width + gap;
+    }
+    out
+}
+
 /// 반투명 색을 배경 위에 얹는다.
 fn blend(bg: [u8; 4], fg: [u8; 4]) -> [u8; 4] {
     mix(bg, [fg[0], fg[1], fg[2], 255], f32::from(fg[3]) / 255.0)

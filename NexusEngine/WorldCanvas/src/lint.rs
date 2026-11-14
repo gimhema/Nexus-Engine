@@ -121,10 +121,25 @@ pub struct Step {
     pub shape: f32,
 }
 
+/// 디테일 밀도 — 같은 색으로 이어진 덩어리(4방향)의 크기. 검사한 그림들의 평균.
+///
+/// 참고 화풍(`style/sheet_style.png`)은 평균 1.7~2.4px 이다. 크면 넓고 매끈한 면이 많다는 뜻 —
+/// 결·주름·반사로 면을 쪼개야 한다.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Density {
+    /// 덩어리 평균 크기 (px).
+    pub mean: f32,
+    /// 프레임당 20px 이상 덩어리 수.
+    pub large: f32,
+    /// 프레임당 색 수.
+    pub colors: f32,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Report {
     /// 그림 이름 → 결함. 검사한 순서.
     pub images: Vec<(String, Vec<Finding>)>,
+    pub density: Density,
     pub contacts: Vec<Contact>,
     pub palette: PaletteReport,
     pub motion: Vec<Motion>,
@@ -139,6 +154,42 @@ impl Report {
             .filter(|f| f.kind == kind)
             .count()
     }
+}
+
+/// 큰 덩어리로 세는 크기.
+const LARGE_CLUSTER: u32 = 20;
+/// 참고 화풍의 덩어리 평균 — 이보다 크면 보고서에 "면이 넓다" 를 붙인다.
+pub const DENSITY_TARGET: f32 = 3.0;
+
+/// 같은 색으로 4방향 이어진 덩어리들의 크기 (불투명만).
+fn clusters(bm: &Bitmap) -> Vec<u32> {
+    let (w, h) = (bm.width() as i32, bm.height() as i32);
+    let mut seen = vec![false; (w * h) as usize];
+    let mut out = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            let Some(c) = bm.get(x, y).filter(|&c| c != TRANSPARENT) else {
+                continue;
+            };
+            if seen[(y * w + x) as usize] {
+                continue;
+            }
+            let (mut n, mut stack) = (0, vec![(x, y)]);
+            seen[(y * w + x) as usize] = true;
+            while let Some((px, py)) = stack.pop() {
+                n += 1;
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let (qx, qy) = (px + dx, py + dy);
+                    if bm.get(qx, qy) == Some(c) && !seen[(qy * w + qx) as usize] {
+                        seen[(qy * w + qx) as usize] = true;
+                        stack.push((qx, qy));
+                    }
+                }
+            }
+            out.push(n);
+        }
+    }
+    out
 }
 
 /// 거의 같은 색으로 보는 OKLab 거리.
@@ -187,8 +238,18 @@ pub fn lint(doc: &Document, names: &[String]) -> Result<Report> {
     let mut report = Report::default();
     let mut usage: BTreeMap<u8, u32> = BTreeMap::new();
     let mut contacts = ContactMap::new();
+    let (mut sizes, mut large, mut colors) = (Vec::new(), 0u32, 0usize);
     for name in names {
         let bm = r.get(name)?;
+        let found = clusters(&bm);
+        large += found.iter().filter(|&&n| n >= LARGE_CLUSTER).count() as u32;
+        sizes.extend(found);
+        colors += bm
+            .pixels()
+            .iter()
+            .filter(|&&c| c != TRANSPARENT)
+            .collect::<HashSet<_>>()
+            .len();
         let mut found = Vec::new();
         orphans(&bm, &lab, &mut found);
         jaggies(&bm, &mut found);
@@ -225,6 +286,12 @@ pub fn lint(doc: &Document, names: &[String]) -> Result<Report> {
     low.sort_by_key(|c| std::cmp::Reverse(c.edges));
     report.contacts = low;
 
+    let n = names.len().max(1) as f32;
+    report.density = Density {
+        mean: sizes.iter().sum::<u32>() as f32 / sizes.len().max(1) as f32,
+        large: large as f32 / n,
+        colors: colors as f32 / n,
+    };
     report.palette = palette_report(doc, &mut r, &usage, &lab)?;
     report.motion = motion(doc, &mut r)?;
     Ok(report)
@@ -759,6 +826,19 @@ pub fn format(report: &Report, palette: &Palette, limit: usize, detail: bool) ->
         }
     }
 
+    let d = report.density;
+    let _ = writeln!(
+        s,
+        "\n디테일 밀도 — 덩어리 평균 {:.1}px (참고 화풍 1.7~2.4){} · 20px+ 덩어리 {:.1}개/프레임 · 색 {:.0}/프레임",
+        d.mean,
+        if d.mean > DENSITY_TARGET {
+            " 면이 넓다"
+        } else {
+            ""
+        },
+        d.large,
+        d.colors
+    );
     let total = |k| report.count(k);
     let _ = writeln!(
         s,
@@ -807,6 +887,13 @@ mod tests {
         );
         assert_eq!(out.len(), 1);
         assert_eq!((out[0].x, out[0].y), (1, 1));
+    }
+
+    #[test]
+    fn clusters_count_same_colour_regions() {
+        let mut c = clusters(&bm(&["AAB", "A.B", "CCB"]));
+        c.sort_unstable();
+        assert_eq!(c, [2, 3, 3]);
     }
 
     #[test]

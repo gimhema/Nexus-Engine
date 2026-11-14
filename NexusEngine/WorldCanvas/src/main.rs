@@ -25,6 +25,8 @@ worldcanvas — 텍스트 원본(.canvas)으로 픽셀 스프라이트 시트를
                                                 명도·실루엣 보기, 1·2배 덧붙임, 이전 프레임 잔상
   lint    <원본.canvas> [--frames a,b] [--detail] [--limit N] [-o 표시.png] [--scale N]
                                                 도트 품질 검사 — 계단·밴딩·줄무늬·고립 픽셀·명도·팔레트·움직임
+  lineup  <원본.canvas>… [--views s,e,n] [--clip Idle] [--frame 0] [--scale N] [-o 파일.png]
+                                                여러 원본의 같은 프레임을 발 높이 맞춰 한 장에 + 디테일 밀도
   build   <원본.canvas> [--out 폴더]             시트 PNG + .sheet.ron 출력 (경로는 output 블록)
   analyze <그림.png> [--crop x,y,w,h] [--colors N]
                                                 참고 그림의 색 수·재질별 램프·단계 폭·색상 회전, 팔레트 초안
@@ -120,6 +122,7 @@ fn run(raw: &[String]) -> Result<()> {
         "list" => cmd_list(&args),
         "show" => cmd_show(&args),
         "preview" => cmd_preview(&args),
+        "lineup" => cmd_lineup(&args),
         "lint" => cmd_lint(&args),
         "build" => cmd_build(&args),
         "import" => cmd_import(&args),
@@ -351,6 +354,69 @@ fn cmd_lint(a: &Args) -> Result<()> {
         write(Path::new(out), &export::encode_png(&img)?)?;
         println!("\n표시: {out} (청록 계단 · 노랑 밴딩 · 초록 줄무늬 · 자홍 고립)");
     }
+    Ok(())
+}
+
+fn cmd_lineup(a: &Args) -> Result<()> {
+    if a.positional.is_empty() {
+        return Err(Error::new(format!("원본 파일이 필요함\n\n{USAGE}")));
+    }
+    // 엔진 방향 순서(동·북·서·남)에서 방향 글자 → 행
+    let views: Vec<usize> = a
+        .flag(&["--views"])
+        .unwrap_or("s,e,n")
+        .split(',')
+        .map(|v| match v.trim() {
+            "e" => Ok(0),
+            "n" => Ok(1),
+            "w" => Ok(2),
+            "s" => Ok(3),
+            other => Err(Error::new(format!("--views 는 e·n·w·s: {other}"))),
+        })
+        .collect::<Result<_>>()?;
+    let clip = a.flag(&["--clip"]).unwrap_or("Idle");
+    let frame: usize = match a.flag(&["--frame"]) {
+        Some(f) => f
+            .parse()
+            .map_err(|_| Error::new(format!("--frame 은 정수: {f}")))?,
+        None => 0,
+    };
+    let scale = match a.flag(&["--scale"]) {
+        Some(s) => s
+            .parse()
+            .map_err(|_| Error::new(format!("--scale 은 정수: {s}")))?,
+        None => 4,
+    };
+    let mut images = Vec::new();
+    for path in &a.positional {
+        let doc = load(path)?;
+        let sheet = doc
+            .sheet
+            .as_ref()
+            .ok_or_else(|| Error::new(format!("{path}: sheet 가 없음")))?;
+        let c = sheet
+            .clips
+            .iter()
+            .find(|c| c.state == clip)
+            .ok_or_else(|| Error::new(format!("{path}: 클립 {clip} 이(가) 없음")))?;
+        let mut r = Resolver::new(&doc);
+        for &d in &views {
+            let Some(name) = c.rows.get(d).and_then(|row| row.get(frame)) else {
+                continue;
+            };
+            images.push(export::bitmap_rgba(&r.get(name)?, &doc.palette));
+        }
+        let report = lint::lint(&doc, &lint::targets(&doc))?;
+        let d = report.density;
+        println!(
+            "{path}: 덩어리 평균 {:.1}px · 20px+ {:.1}개/프레임 · 색 {:.0}/프레임",
+            d.mean, d.large, d.colors
+        );
+    }
+    let img = preview::lineup(&images, scale);
+    let out = a.flag(&["-o", "--out"]).unwrap_or("preview/lineup.png");
+    write(Path::new(out), &export::encode_png(&img)?)?;
+    println!("{out} ({}x{})", img.width, img.height);
     Ok(())
 }
 

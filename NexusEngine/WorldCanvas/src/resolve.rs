@@ -125,6 +125,27 @@ impl<'a> Resolver<'a> {
                 steps,
                 region,
             } => bm.shade(&self.ramp(ramp)?, *steps, *region),
+            Op::Mask { keys, ops } => {
+                let before = bm.clone();
+                let mut work = bm.clone();
+                for at in ops {
+                    self.apply(&mut work, &at.op)
+                        .map_err(|e| Error::at(at.line, e.msg))?;
+                }
+                bm.keep_where(&before, &work, keys);
+            }
+            Op::Pattern { name, x, y } => {
+                let src = self.get(name)?;
+                bm.tile(&src, *x, *y, &self.soft);
+            }
+            Op::Aa { c, pairs } => bm.aa(*c, pairs),
+            Op::Dither { a, b, region } => bm.dither(*a, *b, *region),
+            Op::Speckle {
+                a,
+                b,
+                percent,
+                seed,
+            } => bm.speckle(*a, *b, *percent, *seed),
             Op::Light {
                 ramp,
                 radius,
@@ -179,6 +200,26 @@ frame a
 end
 ");
         assert_eq!(Resolver::new(&d).get("a").unwrap().rows(), ["...", ".BB"]);
+    }
+
+    #[test]
+    fn mask_limits_ops_to_the_original_colours() {
+        let d = doc("
+part dots 2 1
+  px 0 0 B
+end
+frame a
+  grid
+    AA.
+    AB.
+  end
+  mask A
+    pattern dots
+  end
+end
+");
+        // A 였던 자리만 무늬가 깔린다 — B·투명은 그대로.
+        assert_eq!(Resolver::new(&d).get("a").unwrap().rows(), ["BA.", "BB."]);
     }
 
     #[test]

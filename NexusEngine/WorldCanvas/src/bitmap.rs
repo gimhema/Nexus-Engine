@@ -471,6 +471,81 @@ impl Bitmap {
         }
     }
 
+    /// `before` 에서 `keys` 색이던 픽셀만 `work` 의 결과로 바꾼다 — `mask` 블록.
+    pub fn keep_where(&mut self, before: &Self, work: &Self, keys: &[u8]) {
+        for (i, p) in self.px.iter_mut().enumerate() {
+            if keys.contains(&before.px[i]) {
+                *p = work.px[i];
+            }
+        }
+    }
+
+    /// 부품을 `(x, y)` 에서 시작해 그림 전체에 타일로 깐다.
+    pub fn tile(&mut self, src: &Self, x: i32, y: i32, soft: &[u8]) {
+        let (sw, sh) = (src.w.max(1) as i32, src.h.max(1) as i32);
+        let mut ty = y.rem_euclid(sh) - sh;
+        while ty < self.h as i32 {
+            let mut tx = x.rem_euclid(sw) - sw;
+            while tx < self.w as i32 {
+                self.stamp(src, tx, ty, soft);
+                tx += sw;
+            }
+            ty += sh;
+        }
+    }
+
+    /// 외곽선 계단의 안쪽 모서리를 중간색으로 — 안쪽 색 `from` 픽셀이 외곽선 `c` 에 세로 하나·가로 하나로
+    /// 함께 닿으면(계단이 꺾이는 자리) `to` 로. 외곽선이 계단처럼 끊겨 보이지 않고 부드럽게 꺾인다.
+    pub fn aa(&mut self, c: u8, pairs: &[(u8, u8)]) {
+        let src = self.clone();
+        for y in 0..self.h as i32 {
+            for x in 0..self.w as i32 {
+                let Some(p) = src.get(x, y) else { continue };
+                let Some(&(_, to)) = pairs.iter().find(|(from, _)| *from == p) else {
+                    continue;
+                };
+                let is = |dx: i32, dy: i32| src.get(x + dx, y + dy) == Some(c);
+                let vertical = is(0, -1) || is(0, 1);
+                let horizontal = is(-1, 0) || is(1, 0);
+                if vertical && horizontal {
+                    self.set(x, y, to);
+                }
+            }
+        }
+    }
+
+    /// 색 `a` 픽셀 중 `(x + y)` 가 짝수인 자리를 `b` 로. 사각형을 주면 그 안만.
+    pub fn dither(&mut self, a: u8, b: u8, region: Option<(i32, i32, u32, u32)>) {
+        let (x0, y0, w, h) = region.unwrap_or((0, 0, self.w, self.h));
+        for y in y0..y0 + h as i32 {
+            for x in x0..x0 + w as i32 {
+                if (x + y).rem_euclid(2) == 0 && self.get(x, y) == Some(a) {
+                    self.set(x, y, b);
+                }
+            }
+        }
+    }
+
+    /// 색 `a` 픽셀 중 `percent`% 를 `b` 로. 자리는 좌표 해시라 다시 계산해도 같다.
+    pub fn speckle(&mut self, a: u8, b: u8, percent: u32, seed: u32) {
+        for y in 0..self.h as i32 {
+            for x in 0..self.w as i32 {
+                if self.get(x, y) != Some(a) {
+                    continue;
+                }
+                let mut z = (x as u32).wrapping_mul(0x9E37_79B1)
+                    ^ (y as u32).wrapping_mul(0x85EB_CA77)
+                    ^ seed.wrapping_mul(0xC2B2_AE3D);
+                z ^= z >> 15;
+                z = z.wrapping_mul(0x2C1B_3C6D);
+                z ^= z >> 12;
+                if z % 100 < percent {
+                    self.set(x, y, b);
+                }
+            }
+        }
+    }
+
     /// 색 있는 외곽선 — 색 `c` 픽셀을 맞닿은 안쪽 색에 따라 `pairs` 의 결과색으로 바꾼다.
     ///
     /// 이웃은 위·왼쪽·오른쪽·아래 순서로 보고, 먼저 찾은 쌍을 쓴다. 맞는 쌍이 없으면 그대로 둔다.
@@ -726,6 +801,36 @@ mod tests {
         // 모서리는 안팎 모두 둥글게.
         let b = bm(&["AA", "A."]).scale2x();
         assert_eq!(text(&b), [".AAA", "AAAA", "AAA.", "AA.."]);
+    }
+
+    #[test]
+    fn aa_softens_inner_staircase_corners() {
+        let mut b = bm(&["oo..", "Aoo.", "AAoo"]);
+        b.aa(b'o', &[(b'A', b'a')]);
+        assert_eq!(text(&b), ["oo..", "aoo.", "Aaoo"]);
+    }
+
+    #[test]
+    fn tile_repeats_from_its_origin() {
+        let mut b = Bitmap::new(5, 1);
+        b.tile(&bm(&["A."]), 1, 0, &[]);
+        assert_eq!(text(&b), [".A.A."]);
+    }
+
+    #[test]
+    fn dither_and_speckle_touch_only_their_colour() {
+        let mut b = bm(&["AAAB", "AAAB"]);
+        b.dither(b'A', b'C', None);
+        assert_eq!(text(&b), ["CACB", "ACAB"]);
+        let mut b = Bitmap::new(20, 20);
+        b.rect(0, 0, 20, 20, b'A');
+        b.speckle(b'A', b'B', 25, 7);
+        let n = b.pixels().iter().filter(|&&p| p == b'B').count();
+        assert!((60..=140).contains(&n), "{n}");
+        let mut again = Bitmap::new(20, 20);
+        again.rect(0, 0, 20, 20, b'A');
+        again.speckle(b'A', b'B', 25, 7);
+        assert_eq!(b, again, "같은 씨앗이면 같은 자리");
     }
 
     #[test]
