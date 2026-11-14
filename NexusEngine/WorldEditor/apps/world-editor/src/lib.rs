@@ -32,6 +32,7 @@ mod palette;
 mod play;
 mod quest_designer;
 mod quest_file;
+mod ramp_tint;
 mod ron_patch;
 mod rules_editor;
 mod save_file;
@@ -1390,14 +1391,14 @@ impl Editor {
         };
         let sprites = self.sprites.as_ref()?;
         let look = creator.resolved()?;
-        let Some((body, parts)) = sprites.look_parts(&look, &[], None) else {
+        let Some((body, skin, parts)) = sprites.look_parts(&look, &[], None) else {
             return Some(view);
         };
         view.cell = body.cell();
         for heading in [-FRAC_PI_2, 0.0, FRAC_PI_2, PI] {
             let l = sprites::Look {
                 heading,
-                tint: look.skin,
+                tint: skin,
                 fallback: sprites::NO_TINT,
             };
             view.views.push(body.stack(l, &parts, &creator.animator));
@@ -1423,6 +1424,16 @@ impl Editor {
         };
         let mut warnings = Vec::new();
         sprites.ensure_sheets(renderer, paths.iter().map(String::as_str), &mut warnings);
+        // 램프 시트는 고른 색으로 칠해 올린다 — 시트가 올라간 뒤에
+        for look in [
+            self.making.as_ref().and_then(|(c, ..)| c.resolved()),
+            self.play.as_ref().and_then(PlaySession::look).cloned(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            sprites.ensure_ramps(renderer, &look, &mut warnings);
+        }
         for w in warnings {
             self.notify(w, true);
         }
@@ -2756,7 +2767,7 @@ impl App for Editor {
         self.prepare_looks();
         if let (Some((creator, ..)), Some(sprites)) = (self.making.as_mut(), self.sprites.as_ref())
             && let Some(look) = creator.resolved()
-            && let Some((body, _)) = sprites.look_parts(&look, &[], None)
+            && let Some((body, ..)) = sprites.look_parts(&look, &[], None)
         {
             creator.animator.advance(body.anim(), dt);
         }

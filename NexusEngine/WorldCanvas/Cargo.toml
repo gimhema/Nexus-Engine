@@ -32,3 +32,26 @@ missing_debug_implementations = "warn"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# 고해상도(32px/m) 시트는 그림이 커서 디버그 빌드의 결과물 동기화 검사가 느리다(78초) —
+# 이 크레이트와 PNG 쪽만 최적화해 컴파일한다. 뷰어 의존성(eframe·wgpu)은 그대로라 컴파일 시간은 거의 같다.
+[profile.dev.package.worldcanvas]
+opt-level = 2
+
+[profile.dev.package.png]
+opt-level = 2
+
+[profile.dev.package.fdeflate]
+opt-level = 2
+
+[profile.dev.package.miniz_oxide]
+opt-level = 2
+
+[profile.dev.package.flate2]
+opt-level = 2
+
+[profile.dev.package.crc32fast]
+opt-level = 2
+
+[profile.dev.package.simd-adler32]
+opt-level = 2

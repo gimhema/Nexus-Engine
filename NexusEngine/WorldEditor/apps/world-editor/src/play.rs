@@ -1433,9 +1433,9 @@ impl PlaySession {
     ) {
         if unit == self.player
             && let Some(look) = self.look()
-            && let Some((body, parts)) = sprites.look_parts(look, worn, effect)
+            && let Some((body, skin, parts)) = sprites.look_parts(look, worn, effect)
         {
-            return (body, parts, Some(look.skin));
+            return (body, parts, Some(skin));
         }
         let actor = self.actor_of(unit);
         (

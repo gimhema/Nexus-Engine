@@ -99,6 +99,10 @@ struct SheetFile {
     /// 뒷모습(북)에서 무기를 몸 뒤로 보내려면 4방향 시트에서 `[1, -1, 1, 1]`.
     #[serde(default)]
     layer_by_direction: Vec<i32>,
+    /// 무채색 시트를 색을 **곱하는 대신 램프로 칠한다** — 그늘에서 색상이 돈다 ([`crate::ramp_tint`]).
+    /// 외형(C3) 파츠에만 쓴다. `tinted` 와 함께 적는다.
+    #[serde(default)]
+    ramp: bool,
     /// 파츠 시트는 클립을 읽지 않으므로 비워도 된다.
     #[serde(default)]
     clips: Vec<ClipFile>,
@@ -160,6 +164,7 @@ struct SheetPlan {
     cell: (u32, u32),
     direction_rows: Vec<u32>,
     tinted: bool,
+    ramp: bool,
     pixels_per_meter: f32,
     /// 엔진 방향 → 파츠 앞뒤.
     layers: Vec<i32>,
@@ -265,6 +270,7 @@ fn plan_sheet(def: &str, base: Option<&Path>) -> Result<SheetPlan, String> {
         cell: file.cell,
         direction_rows,
         tinted: file.tinted,
+        ramp: file.ramp,
         pixels_per_meter: file.pixels_per_meter,
         layers,
     })
@@ -388,6 +394,8 @@ pub(crate) struct Sheet {
     /// 엔진 방향 → 시트 행.
     direction_rows: Vec<u32>,
     tinted: bool,
+    /// 색을 곱하지 않고 램프로 칠한 텍스처를 쓰는 시트 — [`SpriteLibrary::ensure_ramps`].
+    ramp: bool,
     /// 그림 1미터의 픽셀 수 — 월드 크기의 기준.
     pixels_per_meter: f32,
     /// 파츠로 쓸 때 엔진 방향별 앞뒤 (몸 = 0).
@@ -405,6 +413,7 @@ impl Sheet {
             cell: plan.cell,
             direction_rows: plan.direction_rows,
             tinted: plan.tinted,
+            ramp: plan.ramp,
             pixels_per_meter: plan.pixels_per_meter,
             layers: plan.layers,
         })
@@ -629,7 +638,16 @@ pub(crate) struct SpriteLibrary {
     /// 캐릭터 외형(C3)이 쓰는 시트 — 경로별, 필요해질 때 올린다. 실패한 경로는 다시 시도하지 않는다.
     by_path: BTreeMap<String, Sheet>,
     failed_paths: std::collections::BTreeSet<String>,
+    /// `ramp` 시트의 회색 원본 (경로별) — 색마다 다시 칠할 바탕.
+    ramp_source: BTreeMap<String, Image>,
+    /// 램프로 칠해 올린 시트 — (경로, 색 sRGB 8bit). 그릴 때 색을 곱하지 않는다.
+    ramped: BTreeMap<(String, [u8; 3]), Sheet>,
     animator: SpriteAnimator,
+}
+
+/// 램프 캐시 키의 색 — 같은 색 묶음 값이 실수 오차로 다른 텍스처가 되지 않게 8bit 로.
+fn colour_key(c: [f32; 4]) -> [u8; 3] {
+    [c[0], c[1], c[2]].map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
 }
 
 impl SpriteLibrary {
@@ -640,6 +658,7 @@ impl SpriteLibrary {
             .chain(self.parts_by_actor.values().flatten().map(|((s, _), _)| s))
             .chain(self.parts_by_item.values().flatten().map(|(s, _)| s))
             .chain(self.by_path.values())
+            .chain(self.ramped.values())
             .map(|s| s.texture)
             .collect();
         all.sort_by_key(|t| t.index());
@@ -730,6 +749,8 @@ impl SpriteLibrary {
             parts_by_item,
             by_path: BTreeMap::new(),
             failed_paths: std::collections::BTreeSet::new(),
+            ramp_source: BTreeMap::new(),
+            ramped: BTreeMap::new(),
             animator: SpriteAnimator::default(),
         })
     }
@@ -750,7 +771,12 @@ impl SpriteLibrary {
             let loaded = std::fs::read_to_string(p)
                 .map_err(|e| format!("{}: {e}", p.display()))
                 .and_then(|def| plan_sheet(&def, p.parent()))
-                .and_then(|plan| Sheet::upload(plan, renderer));
+                .and_then(|plan| {
+                    if plan.ramp {
+                        self.ramp_source.insert(path.to_owned(), plan.image.clone());
+                    }
+                    Sheet::upload(plan, renderer)
+                });
             match loaded {
                 Ok(sheet) => {
                     self.by_path.insert(path.to_owned(), sheet);
@@ -763,19 +789,73 @@ impl SpriteLibrary {
         }
     }
 
-    /// 외형(C3) 하나를 그릴 몸 시트와 파츠 — 몸 시트가 아직 없으면 `None`(부른 쪽이 기본 그림으로).
+    /// `ramp` 시트를 외형의 색으로 칠해 올린다 — 이미 있는 (경로, 색) 은 건너뛴다. **프레임 바깥에서** 부른다.
+    /// 시트는 [`ensure_sheets`](Self::ensure_sheets) 로 먼저 올라가 있어야 한다.
+    pub(crate) fn ensure_ramps(
+        &mut self,
+        renderer: &mut impl Renderer,
+        look: &crate::appearance::ResolvedLook,
+        warnings: &mut Vec<String>,
+    ) {
+        let wanted = std::iter::once((look.body.as_str(), look.skin))
+            .chain(look.parts.iter().map(|p| (p.sheet.as_str(), p.tint)));
+        for (path, colour) in wanted {
+            let key = (path.to_owned(), colour_key(colour));
+            if self.ramped.contains_key(&key) {
+                continue;
+            }
+            let (Some(src), Some(sheet)) = (self.ramp_source.get(path), self.by_path.get(path))
+            else {
+                continue;
+            };
+            let rgba = crate::ramp_tint::recolor(src.desc("").rgba, colour);
+            let painted = Image::from_rgba(src.width(), src.height(), rgba)
+                .map_err(|e| e.to_string())
+                .and_then(|img| {
+                    renderer
+                        .load_texture(&img.desc("sprite-ramp"))
+                        .map_err(|e| e.to_string())
+                });
+            match painted {
+                Ok(texture) => {
+                    self.ramped.insert(
+                        key,
+                        Sheet {
+                            texture,
+                            ..sheet.clone()
+                        },
+                    );
+                }
+                Err(e) => warnings.push(format!("외형 시트를 칠하지 못함 — {path}: {e}")),
+            }
+        }
+    }
+
+    /// 경로의 시트와 그 위에 곱할 색 — 램프로 칠해 둔 것이 있으면 그것(색 곱하지 않음).
+    fn painted(&self, path: &str, colour: [f32; 4]) -> Option<(&Sheet, [f32; 4])> {
+        let sheet = self.by_path.get(path)?;
+        if sheet.ramp
+            && let Some(done) = self.ramped.get(&(path.to_owned(), colour_key(colour)))
+        {
+            return Some((done, NO_TINT));
+        }
+        Some((sheet, colour))
+    }
+
+    /// 외형(C3) 하나를 그릴 몸 시트, 몸에 곱할 색, 파츠 — 몸 시트가 아직 없으면 `None`(부른 쪽이 기본 그림으로).
     /// 파츠와 장비 외형은 템플릿 기본 파츠와 같은 규칙으로 합친다([`compose`]).
+    /// 램프 시트(`ramp`)는 칠해 둔 텍스처를 색 없이 — 몸 색도 그래서 돌려준다.
     pub(crate) fn look_parts<'a>(
         &'a self,
         look: &crate::appearance::ResolvedLook,
         worn: &[(EquipSlot, ItemId)],
         tint: Option<[f32; 4]>,
-    ) -> Option<(&'a Sheet, Vec<Part<'a>>)> {
-        let body = self.by_path.get(&look.body)?;
+    ) -> Option<(&'a Sheet, [f32; 4], Vec<Part<'a>>)> {
+        let (body, skin) = self.painted(&look.body, look.skin)?;
         let template: Vec<(TintedRef<'_>, Option<EquipSlot>)> = look
             .parts
             .iter()
-            .filter_map(|p| Some(((self.by_path.get(&p.sheet)?, p.tint), p.slot)))
+            .filter_map(|p| Some((self.painted(&p.sheet, p.tint)?, p.slot)))
             .collect();
         let worn: Vec<(EquipSlot, Vec<TintedRef<'_>>)> = worn
             .iter()
@@ -797,7 +877,7 @@ impl SpriteLibrary {
                 tint: tint.unwrap_or(*own),
             })
             .collect();
-        Some((body, parts))
+        Some((body, skin, parts))
     }
 
     /// 이 액터 타입(템플릿)이 `worn`(자리, 아이템)을 입었을 때 겹칠 파츠 — [`compose`] 규칙.
@@ -1003,6 +1083,7 @@ mod tests {
             cell: plan.cell,
             direction_rows: plan.direction_rows,
             tinted: plan.tinted,
+            ramp: plan.ramp,
             pixels_per_meter: plan.pixels_per_meter,
             layers: plan.layers,
         }
@@ -1186,6 +1267,7 @@ mod tests {
                 cell: plan.cell,
                 direction_rows: plan.direction_rows,
                 tinted: plan.tinted,
+                ramp: plan.ramp,
                 pixels_per_meter: plan.pixels_per_meter,
                 layers: plan.layers,
             }

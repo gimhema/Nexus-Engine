@@ -118,7 +118,12 @@ impl<'a> Resolver<'a> {
                     Some((px, py)) => (*px as f32 + 0.5, *py as f32 + 0.5),
                     None => (src.width() as f32 / 2.0, src.height() as f32 / 2.0),
                 };
-                bm.stamp_rotated(&src, *x, *y, *deg as f32, pivot, &self.soft);
+                if *deg == 0 {
+                    // 돌리지 않으면 피벗이 제자리 — 8배 확대·표본을 건너뛴다 (결과는 같다)
+                    bm.stamp(&src, *x, *y, &self.soft);
+                } else {
+                    bm.stamp_rotated(&src, *x, *y, *deg as f32, pivot, &self.soft);
+                }
             }
             Op::Shade {
                 ramp,
