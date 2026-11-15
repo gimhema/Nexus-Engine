@@ -192,8 +192,35 @@ fn draw_scaled(
     }
 }
 
+/// 그림 전체를 보기 방식대로 — 뷰어가 명도·실루엣 보기에 쓴다. 투명은 그대로.
+#[must_use]
+pub fn shown_image(img: &Rgba8, mode: Mode) -> Rgba8 {
+    let mut out = img.clone();
+    if mode != Mode::Color {
+        for px in out.data.chunks_exact_mut(4) {
+            if px[3] > 0 {
+                let c = shown([px[0], px[1], px[2], px[3]], mode);
+                px.copy_from_slice(&c);
+            }
+        }
+    }
+    out
+}
+
+/// 잔상 — 불투명 픽셀을 반투명 붉은색 한 가지로 (미리보기 `onion` 과 같은 색).
+#[must_use]
+pub fn ghost_image(img: &Rgba8) -> Rgba8 {
+    let mut out = img.clone();
+    for px in out.data.chunks_exact_mut(4) {
+        if px[3] > 0 {
+            px.copy_from_slice(&[ONION[0], ONION[1], ONION[2], 0x60]);
+        }
+    }
+    out
+}
+
 /// 보기 방식에 따른 색.
-fn shown(c: [u8; 4], mode: Mode) -> [u8; 4] {
+pub fn shown(c: [u8; 4], mode: Mode) -> [u8; 4] {
     match mode {
         Mode::Color => c,
         Mode::Value => {

@@ -14,6 +14,8 @@
 //! | `WORLDCANVAS_SELECT=player` | 시작할 때 이 원본을 고른다 (파일 이름, 확장자 없이) |
 //! | `WORLDCANVAS_TAB=anim\|sheet\|images` | 시작 탭 |
 //! | `WORLDCANVAS_ZOOM=4` | 시작 배율 |
+//! | `WORLDCANVAS_VIEW=value\|silhouette` | 명도만 / 실루엣만 보기 (생략하면 색) |
+//! | `WORLDCANVAS_ONION=1` | 애니메이션 탭에 이전 프레임 잔상 |
 //! | `WORLDCANVAS_SCREENSHOT=out.png` | 몇 프레임 뒤 창을 PNG 로 저장하고 종료 |
 //! | `WORLDCANVAS_SCREENSHOT_FRAME=15` | 캡처 프레임 (기본 15). 실행 중 파일 변경을 확인할 때 늘린다 |
 //! | `WORLDCANVAS_FONT=/path/font.ttc` | 한글 폰트 직접 지정 |
@@ -32,6 +34,7 @@ use eframe::egui::{
 use worldcanvas::doc::{Document, ImageKind, Placed};
 use worldcanvas::export::{self, Rgba8};
 use worldcanvas::parse;
+use worldcanvas::preview::{self, Mode};
 use worldcanvas::resolve::Resolver;
 
 /// 파일 변경 확인 주기.
@@ -112,11 +115,40 @@ enum Background {
 /// 읽어 둔 원본 하나 — 마지막으로 성공한 결과와 텍스처.
 struct Loaded {
     doc: Document,
-    /// 그림 이름 → 텍스처 (프레임·부품 전부).
+    /// 그림 이름 → 텍스처 (프레임·부품 전부). 보기 방식 `mode` 대로 칠한 것.
     images: HashMap<String, TextureHandle>,
+    /// 그림 이름 → 잔상 텍스처 (붉은 실루엣).
+    ghosts: HashMap<String, TextureHandle>,
     /// 시트 또는 아틀라스 전체.
     composite: Option<TextureHandle>,
     placed: Vec<Placed>,
+    /// 원래 색 그림 — 보기 방식을 바꿀 때 텍스처를 다시 만든다.
+    rgba: HashMap<String, Rgba8>,
+    composite_rgba: Option<Rgba8>,
+    /// 지금 텍스처의 보기 방식.
+    mode: Mode,
+    key: String,
+}
+
+impl Loaded {
+    /// 텍스처를 보기 방식 `mode` 로 다시 만든다 (이미 그 방식이면 그대로).
+    fn set_mode(&mut self, ctx: &egui::Context, mode: Mode) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
+        for (name, img) in &self.rgba {
+            let tex = texture(
+                ctx,
+                &format!("{}#{name}", self.key),
+                &preview::shown_image(img, mode),
+            );
+            self.images.insert(name.clone(), tex);
+        }
+        if let Some(img) = &self.composite_rgba {
+            self.composite = Some(texture(ctx, &self.key, &preview::shown_image(img, mode)));
+        }
+    }
 }
 
 struct Source {
@@ -143,6 +175,10 @@ struct Viewer {
     tab: Tab,
     zoom: u32,
     background: Background,
+    /// 색 · 명도만 · 실루엣만.
+    mode: Mode,
+    /// 애니메이션 탭에 이전 프레임을 붉은 잔상으로.
+    onion: bool,
     playing: bool,
     /// 재생 시간 (초). 멈춰도 그 자리에서 이어진다.
     clock: f64,
@@ -173,6 +209,12 @@ impl Viewer {
                 .and_then(|z| z.parse().ok())
                 .unwrap_or(4),
             background: Background::Dark,
+            mode: match env("WORLDCANVAS_VIEW").as_deref() {
+                Some("value") => Mode::Value,
+                Some("silhouette") => Mode::Silhouette,
+                _ => Mode::Color,
+            },
+            onion: env("WORLDCANVAS_ONION").is_some_and(|v| v != "0"),
             playing: true,
             clock: 0.0,
             last_time: None,
@@ -240,7 +282,8 @@ impl Viewer {
             }
             src.modified = modified;
             match load(ctx, &src.path) {
-                Ok(l) => {
+                Ok(mut l) => {
+                    l.set_mode(ctx, self.mode);
                     src.loaded = Some(l);
                     src.error = None;
                 }
@@ -296,31 +339,46 @@ fn load(ctx: &egui::Context, path: &Path) -> Result<Loaded, String> {
     let doc = parse::parse_file(path).map_err(|e| e.to_string())?;
     let mut r = Resolver::new(&doc);
     let key = path.display().to_string();
-    let mut images = HashMap::new();
+    let (mut images, mut ghosts, mut rgba) = (HashMap::new(), HashMap::new(), HashMap::new());
     for img in &doc.images {
         let bm = r.get(&img.name).map_err(|e| e.to_string())?;
-        let rgba = export::bitmap_rgba(&bm, &doc.palette);
+        let pixels = export::bitmap_rgba(&bm, &doc.palette);
         images.insert(
             img.name.clone(),
-            texture(ctx, &format!("{key}#{}", img.name), &rgba),
+            texture(ctx, &format!("{key}#{}", img.name), &pixels),
         );
+        ghosts.insert(
+            img.name.clone(),
+            texture(
+                ctx,
+                &format!("{key}#{}~", img.name),
+                &preview::ghost_image(&pixels),
+            ),
+        );
+        rgba.insert(img.name.clone(), pixels);
     }
-    let (composite, placed) = match (&doc.sheet, &doc.atlas) {
+    let (composite_rgba, placed) = match (&doc.sheet, &doc.atlas) {
         (_, Some(atlas)) => {
             let (img, placed) = export::build_atlas(&doc, atlas).map_err(|e| e.to_string())?;
-            (Some(texture(ctx, &key, &img)), placed)
+            (Some(img), placed)
         }
-        (Some(_), None) => {
-            let img = export::build_sheet(&doc).map_err(|e| e.to_string())?;
-            (Some(texture(ctx, &key, &img)), Vec::new())
-        }
+        (Some(_), None) => (
+            Some(export::build_sheet(&doc).map_err(|e| e.to_string())?),
+            Vec::new(),
+        ),
         (None, None) => (None, Vec::new()),
     };
+    let composite = composite_rgba.as_ref().map(|img| texture(ctx, &key, img));
     Ok(Loaded {
         doc,
         images,
+        ghosts,
         composite,
         placed,
+        rgba,
+        composite_rgba,
+        mode: Mode::Color,
+        key,
     })
 }
 
@@ -340,6 +398,15 @@ impl eframe::App for Viewer {
             self.refresh(&ctx);
         }
         self.tick_clock(ui.input(|i| i.time));
+        // 보기 방식이 바뀌었으면 고른 원본의 텍스처를 다시 만든다 (다른 원본은 고를 때)
+        let mode = self.mode;
+        if let Some(l) = self
+            .sources
+            .get_mut(self.selected)
+            .and_then(|s| s.loaded.as_mut())
+        {
+            l.set_mode(&ctx, mode);
+        }
         if self.auto_tab
             && let Some(doc) = self
                 .sources
@@ -385,6 +452,17 @@ impl Viewer {
             ui.selectable_value(&mut self.background, Background::Dark, "어두움");
             ui.selectable_value(&mut self.background, Background::Light, "밝음");
             ui.selectable_value(&mut self.background, Background::Checker, "체커");
+            ui.separator();
+            ui.label("보기");
+            ui.selectable_value(&mut self.mode, Mode::Color, "색")
+                .on_hover_text("원래 색");
+            ui.selectable_value(&mut self.mode, Mode::Value, "명도")
+                .on_hover_text("OKLab 명도만 — 덩어리끼리 흑백에서 갈리는가");
+            ui.selectable_value(&mut self.mode, Mode::Silhouette, "실루엣")
+                .on_hover_text("모양만 — 누군지·어느 방향인지 읽히는가");
+            ui.toggle_value(&mut self.onion, "잔상").on_hover_text(
+                "애니메이션 탭 — 이전 프레임을 붉은 잔상으로. 무엇이 얼마나 움직이는가",
+            );
             ui.separator();
             let label = if self.playing {
                 "⏸ 멈춤"
@@ -450,11 +528,11 @@ impl Viewer {
         ui.separator();
 
         let tab = self.tab;
-        let (zoom, bg, clock) = (self.zoom as f32, self.background, self.clock);
+        let (zoom, bg, clock, onion) = (self.zoom as f32, self.background, self.clock, self.onion);
         egui::ScrollArea::both()
             .auto_shrink([false, false])
             .show(ui, |ui| match tab {
-                Tab::Anim => anim_tab(ui, loaded, zoom, bg, clock),
+                Tab::Anim => anim_tab(ui, loaded, zoom, bg, clock, onion),
                 Tab::Sheet => sheet_tab(ui, loaded, zoom, bg),
                 Tab::Images => images_tab(ui, loaded, zoom, bg),
             });
@@ -493,7 +571,14 @@ fn direction_label(d: usize, n: u32) -> String {
     }
 }
 
-fn anim_tab(ui: &mut egui::Ui, loaded: &Loaded, zoom: f32, bg: Background, clock: f64) {
+fn anim_tab(
+    ui: &mut egui::Ui,
+    loaded: &Loaded,
+    zoom: f32,
+    bg: Background,
+    clock: f64,
+    onion: bool,
+) {
     let doc = &loaded.doc;
     let Some(sheet) = &doc.sheet else {
         ui.label("sheet 블록이 없어 애니메이션이 없음 — 시트 / 아틀라스 탭을 볼 것");
@@ -521,7 +606,11 @@ fn anim_tab(ui: &mut egui::Ui, loaded: &Loaded, zoom: f32, bg: Background, clock
             for (d, row) in clip.rows.iter().enumerate() {
                 ui.vertical(|ui| {
                     if let Some(tex) = row.get(index).and_then(|n| loaded.images.get(n)) {
-                        show(ui, tex, zoom, bg);
+                        // 잔상 — 같은 행의 이전 프레임 (첫 프레임은 마지막 프레임)
+                        let ghost = (onion && row.len() > 1)
+                            .then(|| &row[(index + row.len() - 1) % row.len()])
+                            .and_then(|n| loaded.ghosts.get(n));
+                        show_over(ui, tex, ghost, zoom, bg);
                     }
                     ui.label(direction_label(d, sheet.directions));
                 });
@@ -580,6 +669,17 @@ fn images_tab(ui: &mut egui::Ui, loaded: &Loaded, zoom: f32, bg: Background) {
 
 /// 텍스처를 배율대로 배경 위에 그린다. 그린 자리를 돌려준다.
 fn show(ui: &mut egui::Ui, tex: &TextureHandle, zoom: f32, bg: Background) -> Rect {
+    show_over(ui, tex, None, zoom, bg)
+}
+
+/// [`show`] — 배경과 그림 사이에 잔상(`ghost`)을 깐다.
+fn show_over(
+    ui: &mut egui::Ui,
+    tex: &TextureHandle,
+    ghost: Option<&TextureHandle>,
+    zoom: f32,
+    bg: Background,
+) -> Rect {
     let size = tex.size_vec2() * zoom;
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter_at(rect);
@@ -609,6 +709,9 @@ fn show(ui: &mut egui::Ui, tex: &TextureHandle, zoom: f32, bg: Background) -> Re
         }
     }
     let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+    if let Some(g) = ghost {
+        painter.image(g.id(), rect, uv, Color32::WHITE);
+    }
     painter.image(tex.id(), rect, uv, Color32::WHITE);
     rect
 }

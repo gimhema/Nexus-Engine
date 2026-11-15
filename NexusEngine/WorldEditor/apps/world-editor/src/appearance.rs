@@ -17,6 +17,9 @@
 //!
 //! 귀·뿔·꼬리·엄니(`feature`)는 고르지 않는다 — 그 템플릿에 있으면 늘 붙는다. 색은 색 묶음을 따른다:
 //! 머리색 묶음이면 머리색, 피부 묶음이면 피부색, 그 밖(뿔)이면 「특징 색」 줄에서 고른다.
+//!
+//! 몸을 층으로 나눈 조각(`body_part` — 손·얼굴)도 늘 붙고 피부색을 따른다. 특징 문구에는 나오지 않는다.
+//! 옆모습 손은 윗옷 앞, 얼굴은 옷깃 앞에 와야 해서 몸(층 0)과 따로 둔다 (`tools/sd_paperdoll.py`).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -528,7 +531,7 @@ impl Creator {
             .palette("horn")
             .get(self.colour.get("feature").copied().unwrap_or(0))
             .map_or([1.0; 4], |(_, c)| *c);
-        for p in t.of("feature") {
+        for p in t.of("body_part").chain(t.of("feature")) {
             let colour = match p.palette.as_str() {
                 "hair" => hair,
                 "skin" => skin,
