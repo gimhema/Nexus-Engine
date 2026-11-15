@@ -192,6 +192,69 @@ pub(crate) struct LevelFile {
     /// (나가는 문 포털의 `requires: Some(Cleared)`). 없으면 클리어가 없는 레벨.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) clear: Option<ClearFile>,
+    /// 장면 조명 — 플레이 화면에 GPU 조명을 켠다 (주변광·고정 광원). 없으면 그림 색 그대로.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) lighting: Option<LightingFile>,
+}
+
+/// 레벨 조명. 색은 sRGB (0~1).
+///
+/// 스프라이트가 지닌 광원(시트 정의의 `lights`)은 여기 적지 않아도 함께 비춘다.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LightingFile {
+    /// 주변광 — 밤이면 짙은 남색 `(0.32, 0.36, 0.5)`, 낮이면 `(1, 1, 1)`.
+    pub(crate) ambient: (f32, f32, f32),
+    /// 밝기 단계 수 — 빛이 픽셀아트처럼 띠지게 끊는다. 0 이면 매끈하게.
+    #[serde(default = "default_light_steps")]
+    pub(crate) steps: u32,
+    /// 단계 경계를 4×4 베이어 디더로 섞는다.
+    #[serde(default)]
+    pub(crate) dither: bool,
+    /// 고정 광원 — 벽 횃불·화톳불. 월드 좌표 (m).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) lights: Vec<LevelLightFile>,
+}
+
+fn default_light_steps() -> u32 {
+    5
+}
+
+/// 레벨의 고정 광원 하나.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LevelLightFile {
+    /// 월드 위치 (m) — z 는 높이.
+    pub(crate) pos: (f32, f32, f32),
+    pub(crate) color: (f32, f32, f32),
+    pub(crate) radius: f32,
+    #[serde(default = "default_light_intensity")]
+    pub(crate) intensity: f32,
+}
+
+fn default_light_intensity() -> f32 {
+    1.0
+}
+
+impl LightingFile {
+    /// 렌더 명령 — `SetLighting` 과 고정 광원들.
+    pub(crate) fn commands(&self) -> impl Iterator<Item = nexus_render::RenderCommand> + '_ {
+        use nexus_render::{Lighting, PointLight, RenderCommand};
+        let (r, g, b) = self.ambient;
+        std::iter::once(RenderCommand::SetLighting(Lighting {
+            ambient: [r, g, b],
+            steps: self.steps,
+            dither: self.dither,
+        }))
+        .chain(self.lights.iter().map(|l| {
+            RenderCommand::AddLight(PointLight {
+                pos: nexus_core::Vec3::new(l.pos.0, l.pos.1, l.pos.2),
+                color: [l.color.0, l.color.1, l.color.2],
+                radius: l.radius,
+                intensity: l.intensity,
+            })
+        }))
+    }
 }
 
 /// 던전 클리어 (R6-2). 목표는 퀘스트 목표, 보상은 트리거 효과와 **같은 형식**이다.

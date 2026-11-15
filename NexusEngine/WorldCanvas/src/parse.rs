@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 use crate::color::{KEEP, Palette, Rgba, generate_ramp};
 use crate::doc::{
-    AtlasDef, ClipDef, Document, ImageDef, ImageKind, Op, OpAt, OutputDef, Ramp, STATES, SheetDef,
-    VERSION,
+    AtlasDef, ClipDef, Document, ImageDef, ImageKind, LightDef, Op, OpAt, OutputDef, Ramp, STATES,
+    SheetDef, VERSION,
 };
 use crate::error::{Error, Result};
 
@@ -285,6 +285,13 @@ fn palette_line(
             Ok(())
         }
         "ramp" => parse_ramp(w, line, pal, ramps),
+        "glow" => {
+            if w.len() != 2 {
+                return Err(String::from("형식: glow <문자들> — 발광 색 (예: glow EFy)"));
+            }
+            pal.add_glow(w[1].as_bytes());
+            Ok(())
+        }
         _ => {
             if w.len() != 2 {
                 return Err(String::from(
@@ -807,6 +814,7 @@ fn parse_sheet(p: &mut Parser<'_>, opened: Line<'_>) -> Result<SheetDef> {
         pixels_per_meter: None,
         tinted: false,
         clips: Vec::new(),
+        lights: Vec::new(),
         line: opened.no,
     };
     while let Some(l) = p.block_line(opened, "sheet")? {
@@ -835,6 +843,29 @@ fn parse_sheet(p: &mut Parser<'_>, opened: Line<'_>) -> Result<SheetDef> {
                 sheet.tinted = boolean(&l, w[1])?;
             }
             "clip" => sheet.clips.push(parse_clip(p, l, &w)?),
+            "light" => {
+                // light X Y #색 반지름 [세기] [깜빡임]
+                if !(5..=7).contains(&w.len()) {
+                    return Err(l.err("형식: light <X> <Y> #rrggbb <반지름 m> [세기 1] [깜빡임 0]"));
+                }
+                let num = |s: &str| -> Result<f32> {
+                    s.parse::<f32>()
+                        .ok()
+                        .filter(|v| v.is_finite())
+                        .ok_or_else(|| l.err(format!("수가 아님: {s}")))
+                };
+                let radius = num(w[4])?;
+                if radius <= 0.0 {
+                    return Err(l.err("light 의 반지름은 양수"));
+                }
+                sheet.lights.push(LightDef {
+                    at: (num(w[1])?, num(w[2])?),
+                    color: Rgba::parse_hex(w[3]).map_err(|e| l.err(e))?,
+                    radius,
+                    intensity: w.get(5).map_or(Ok(1.0), |s| num(s))?,
+                    flicker: w.get(6).map_or(Ok(0.0), |s| num(s))?,
+                });
+            }
             other => return Err(l.err(format!("sheet 안에 알 수 없는 항목: {other}"))),
         }
     }

@@ -190,9 +190,31 @@ pub fn is_palette_key(c: u8) -> bool {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Palette {
     entries: Vec<(u8, Rgba)>,
+    /// 발광 문자 — `glow` 줄. 조명이 켜진 게임 화면에서 어둠과 상관없이 빛난다 (등불 유리·불씨 눈).
+    glow: Vec<u8>,
 }
 
 impl Palette {
+    /// 발광 문자를 더한다 (`glow 문자들`).
+    pub fn add_glow(&mut self, keys: &[u8]) {
+        for &k in keys {
+            if !self.glow.contains(&k) {
+                self.glow.push(k);
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn is_glow(&self, key: u8) -> bool {
+        self.glow.contains(&key)
+    }
+
+    /// 발광 문자 목록 (적은 순서).
+    #[must_use]
+    pub fn glow(&self) -> &[u8] {
+        &self.glow
+    }
+
     pub fn insert(&mut self, key: u8, color: Rgba) -> Result<(), String> {
         if !is_palette_key(key) {
             return Err(format!("'{}' 는 팔레트 문자로 쓸 수 없음", key as char));

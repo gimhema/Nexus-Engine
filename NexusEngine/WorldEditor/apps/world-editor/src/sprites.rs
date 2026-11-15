@@ -46,7 +46,7 @@ use std::path::{Path, PathBuf};
 
 use nexus_assets::{AnimState, Clip, GridAtlas, Image, SpriteAnimator, SpriteSheet};
 use nexus_core::{Camera2d, Vec2, Vec3, units};
-use nexus_render::{RenderCommand, Renderer, SpriteAnchor, TextureId, UvRect};
+use nexus_render::{PointLight, RenderCommand, Renderer, SpriteAnchor, TextureId, UvRect};
 use serde::Deserialize;
 
 use nexus_sim::{EquipSlot, ItemId};
@@ -106,6 +106,34 @@ struct SheetFile {
     /// 파츠 시트는 클립을 읽지 않으므로 비워도 된다.
     #[serde(default)]
     clips: Vec<ClipFile>,
+    /// 발광 마스크 그림 (같은 크기) — 조명이 켜진 장면에서 불투명 픽셀이 어둠과 상관없이 빛난다.
+    /// WorldCanvas 팔레트의 `glow` 문자가 만든다.
+    #[serde(default)]
+    emissive: Option<String>,
+    /// 이 스프라이트가 지닌 점광원 — 등불·횃불을 든 캐릭터. 조명이 켜진 장면에서만 비춘다.
+    #[serde(default)]
+    lights: Vec<SheetLightFile>,
+}
+
+/// 시트가 지닌 점광원 하나.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SheetLightFile {
+    /// 칸 안의 픽셀 자리 (좌상단 원점) — 동쪽을 보는 그림 기준. 왼쪽을 보는 방향에서는 좌우를 뒤집는다.
+    pub(crate) at: (f32, f32),
+    /// sRGB 색 (0~1).
+    pub(crate) color: (f32, f32, f32),
+    /// 빛이 닿는 거리 (m).
+    pub(crate) radius: f32,
+    #[serde(default = "one")]
+    pub(crate) intensity: f32,
+    /// 깜빡임 (0~1) — 애니메이션 짝수 프레임에서 세기가 이만큼 줄어든다 (그림의 불꽃 키와 맞춘다).
+    #[serde(default)]
+    pub(crate) flicker: f32,
+}
+
+fn one() -> f32 {
+    1.0
 }
 
 #[derive(Debug, Deserialize)]
@@ -168,6 +196,8 @@ struct SheetPlan {
     pixels_per_meter: f32,
     /// 엔진 방향 → 파츠 앞뒤.
     layers: Vec<i32>,
+    emissive: Option<Image>,
+    lights: Vec<SheetLightFile>,
 }
 
 /// 시트 정의를 읽고 그림에 맞는지 확인한다.
@@ -264,6 +294,33 @@ fn plan_sheet(def: &str, base: Option<&Path>) -> Result<SheetPlan, String> {
         ));
     }
 
+    let emissive = match &file.emissive {
+        Some(rel) => {
+            let path = resolve(rel, base);
+            let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let glow = Image::decode_png(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+            if (glow.width(), glow.height()) != (image.width(), image.height()) {
+                return Err(format!(
+                    "{}: 발광 마스크 크기 {}x{} 가 그림 {}x{} 와 다름",
+                    path.display(),
+                    glow.width(),
+                    glow.height(),
+                    image.width(),
+                    image.height()
+                ));
+            }
+            Some(glow)
+        }
+        None => None,
+    };
+    if let Some(l) = file
+        .lights
+        .iter()
+        .find(|l| l.radius.is_nan() || l.radius <= 0.0)
+    {
+        return Err(format!("lights: 반지름은 양수여야 함 (지금 {})", l.radius));
+    }
+
     Ok(SheetPlan {
         image,
         sheet: SpriteSheet::new(atlas, directions, clips),
@@ -273,6 +330,8 @@ fn plan_sheet(def: &str, base: Option<&Path>) -> Result<SheetPlan, String> {
         ramp: file.ramp,
         pixels_per_meter: file.pixels_per_meter,
         layers,
+        emissive,
+        lights: file.lights,
     })
 }
 
@@ -400,13 +459,18 @@ pub(crate) struct Sheet {
     pixels_per_meter: f32,
     /// 파츠로 쓸 때 엔진 방향별 앞뒤 (몸 = 0).
     layers: Vec<i32>,
+    /// 지닌 점광원 — [`push`](Self::push) 가 그릴 때 함께 낸다.
+    lights: Vec<SheetLightFile>,
 }
 
 impl Sheet {
     fn upload(plan: SheetPlan, renderer: &mut impl Renderer) -> Result<Self, String> {
-        let texture = renderer
-            .load_texture(&plan.image.desc("sprite-sheet"))
-            .map_err(|e| e.to_string())?;
+        let desc = plan.image.desc("sprite-sheet");
+        let texture = match &plan.emissive {
+            Some(glow) => renderer.load_texture_emissive(&desc, glow.desc("sprite-glow").rgba),
+            None => renderer.load_texture(&desc),
+        }
+        .map_err(|e| e.to_string())?;
         Ok(Self {
             texture,
             sheet: plan.sheet,
@@ -416,6 +480,7 @@ impl Sheet {
             ramp: plan.ramp,
             pixels_per_meter: plan.pixels_per_meter,
             layers: plan.layers,
+            lights: plan.lights,
         })
     }
 
@@ -458,6 +523,10 @@ impl Sheet {
         let height = self.height(px);
         // 시트 칸 비율을 유지한다. 늘어나면 픽셀아트가 뭉개져 보인다.
         let width = height * self.cell.0 as f32 / self.cell.1 as f32;
+        out.extend(
+            self.lights_at(pos, look.heading, animator.frame(), width, height)
+                .map(RenderCommand::AddLight),
+        );
         let (uv, layers) = self.stack(look, parts, animator);
         for (i, (texture, tint)) in layers.into_iter().enumerate() {
             out.push(RenderCommand::DrawSprite {
@@ -471,6 +540,38 @@ impl Sheet {
                 tint,
             });
         }
+    }
+
+    /// 이 스프라이트가 지닌 점광원의 월드 자리 — 발밑 `pos`, 화면 기준 방향 `heading`.
+    ///
+    /// 칸 픽셀 `at` 을 그려지는 크기(`width`·`height`)로 옮긴다: 세로는 높이(z), 가로는 월드 X.
+    /// 왼쪽을 보는 방향(서쪽 행은 반전 그림)이면 좌우를 뒤집는다. 짝수 프레임은 `flicker` 만큼 어둡다.
+    pub(crate) fn lights_at(
+        &self,
+        pos: Vec2,
+        heading: f32,
+        frame: u32,
+        width: f32,
+        height: f32,
+    ) -> impl Iterator<Item = PointLight> + '_ {
+        let (cw, ch) = (self.cell.0 as f32, self.cell.1 as f32);
+        let mirror = heading.cos() < -0.01;
+        self.lights.iter().map(move |l| {
+            let fx = l.at.0 / cw - 0.5;
+            let dx = if mirror { -fx } else { fx } * width;
+            let z = (1.0 - l.at.1 / ch) * height;
+            let dim = if frame.is_multiple_of(2) {
+                1.0 - l.flicker
+            } else {
+                1.0
+            };
+            PointLight {
+                pos: Vec3::new(pos.x + dx, pos.y, z),
+                color: [l.color.0, l.color.1, l.color.2],
+                radius: l.radius,
+                intensity: l.intensity * dim,
+            }
+        })
     }
 
     /// 그릴 층 — 몸과 파츠를 앞뒤 순으로 `(텍스처, 색)`, 그리고 모두가 쓰는 칸 UV.
@@ -1074,6 +1175,36 @@ mod tests {
         assert_eq!(tint_of(true, recoloured), recoloured.tint);
     }
 
+    #[test]
+    fn sheet_lights_follow_the_sprite_and_mirror_when_facing_west() {
+        let def = r#"(version: 1, image: "", cell: (32, 32), directions: 4, pixels_per_meter: 32.0,
+            lights: [(at: (24.0, 8.0), color: (1.0, 0.8, 0.5), radius: 3.0, flicker: 0.25)],
+            clips: [(state: Idle, row: 0, frames: 2, frame_ms: 200, looping: true)])"#;
+        let sheet = sheet_with(def, 1);
+        let east: Vec<_> = sheet
+            .lights_at(Vec2::new(10.0, 5.0), 0.0, 1, 1.0, 1.0)
+            .collect();
+        assert_eq!(east.len(), 1);
+        assert!(
+            (east[0].pos.x - 10.25).abs() < 1e-5,
+            "동쪽 — 칸 오른쪽 3/4 자리 {:?}",
+            east[0].pos
+        );
+        assert!((east[0].pos.z - 0.75).abs() < 1e-5, "위에서 1/4 → 높이 3/4");
+        assert!(
+            (east[0].intensity - 1.0).abs() < 1e-6,
+            "홀수 프레임은 그대로"
+        );
+        let west: Vec<_> = sheet
+            .lights_at(Vec2::new(10.0, 5.0), core::f32::consts::PI, 0, 1.0, 1.0)
+            .collect();
+        assert!((west[0].pos.x - 9.75).abs() < 1e-5, "서쪽은 좌우 반전");
+        assert!(
+            (west[0].intensity - 0.75).abs() < 1e-6,
+            "짝수 프레임은 깜빡여 어둡다"
+        );
+    }
+
     /// GPU 없이 시트를 만든다 — 텍스처 번호만 가짜로 붙인다.
     fn sheet_with(def: &str, texture: u32) -> Sheet {
         let plan = plan_sheet(def, None).unwrap();
@@ -1086,6 +1217,7 @@ mod tests {
             ramp: plan.ramp,
             pixels_per_meter: plan.pixels_per_meter,
             layers: plan.layers,
+            lights: plan.lights,
         }
     }
 
@@ -1270,6 +1402,7 @@ mod tests {
                 ramp: plan.ramp,
                 pixels_per_meter: plan.pixels_per_meter,
                 layers: plan.layers,
+                lights: plan.lights,
             }
         };
         let mut templates = 0;

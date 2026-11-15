@@ -2351,6 +2351,15 @@ impl Editor {
         let Some(play) = self.play.as_ref() else {
             return;
         };
+        // 레벨 조명 — 주변광과 고정 광원. 스프라이트가 지닌 광원은 그릴 때 함께 나온다 (Sheet::push)
+        if let Some(lighting) = self
+            .levels
+            .find_by_zone(self.zone_path.as_deref())
+            .and_then(|id| self.levels.level(id))
+            .and_then(|l| l.lighting.as_ref())
+        {
+            self.commands.extend(lighting.commands());
+        }
         self.commands
             .push(RenderCommand::SetLayer(DrawLayer::Ground));
         terrain::build_ground(

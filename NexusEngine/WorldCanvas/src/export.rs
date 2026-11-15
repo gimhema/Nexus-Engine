@@ -50,9 +50,24 @@ impl Rgba8 {
 
     /// 팔레트 비트맵을 `(ox, oy)` 에 그린다.
     pub fn draw(&mut self, bm: &Bitmap, pal: &Palette, ox: u32, oy: u32) {
+        self.draw_only(bm, pal, ox, oy, |_| true);
+    }
+
+    /// [`draw`](Self::draw) — `keep` 이 참인 문자만 (발광 마스크).
+    pub fn draw_only(
+        &mut self,
+        bm: &Bitmap,
+        pal: &Palette,
+        ox: u32,
+        oy: u32,
+        keep: impl Fn(u8) -> bool,
+    ) {
         for y in 0..bm.height() {
             for x in 0..bm.width() {
-                let c = bm.get(x as i32, y as i32).and_then(|c| pal.get(c));
+                let c = bm
+                    .get(x as i32, y as i32)
+                    .filter(|&k| keep(k))
+                    .and_then(|c| pal.get(c));
                 if let Some(c) = c {
                     self.put(ox + x, oy + y, c.normalized().0);
                 }
@@ -71,6 +86,18 @@ pub fn bitmap_rgba(bm: &Bitmap, pal: &Palette) -> Rgba8 {
 
 /// 시트 한 장을 그린다.
 pub fn build_sheet(doc: &Document) -> Result<Rgba8> {
+    build_sheet_with(doc, |_| true)
+}
+
+/// 발광 마스크 — 시트와 같은 배치에 팔레트 `glow` 문자만. 발광 문자가 없으면 `None`.
+pub fn build_emissive(doc: &Document) -> Result<Option<Rgba8>> {
+    if doc.palette.glow().is_empty() || doc.sheet.is_none() {
+        return Ok(None);
+    }
+    build_sheet_with(doc, |k| doc.palette.is_glow(k)).map(Some)
+}
+
+fn build_sheet_with(doc: &Document, keep: impl Fn(u8) -> bool + Copy) -> Result<Rgba8> {
     let sheet = doc
         .sheet
         .as_ref()
@@ -83,7 +110,7 @@ pub fn build_sheet(doc: &Document) -> Result<Rgba8> {
             let sheet_row = sheet.clip_row(k) + d as u32;
             for (col, name) in row.iter().enumerate() {
                 let bm = r.get(name)?;
-                out.draw(&bm, &doc.palette, col as u32 * cw, sheet_row * ch);
+                out.draw_only(&bm, &doc.palette, col as u32 * cw, sheet_row * ch, keep);
             }
         }
     }
@@ -120,7 +147,13 @@ pub fn resolve_all(doc: &Document) -> Result<()> {
 
 /// `.sheet.ron` 본문.
 #[must_use]
-pub fn sheet_ron(doc: &Document, sheet: &SheetDef, image_ref: &str, source: &str) -> String {
+pub fn sheet_ron(
+    doc: &Document,
+    sheet: &SheetDef,
+    image_ref: &str,
+    emissive_ref: Option<&str>,
+    source: &str,
+) -> String {
     let mut s = String::new();
     s.push_str(&format!(
         "// WorldCanvas 가 {source} 에서 만든 파일 — 직접 고치지 말고 원본을 고친 뒤 다시 빌드한다.\n"
@@ -140,6 +173,21 @@ pub fn sheet_ron(doc: &Document, sheet: &SheetDef, image_ref: &str, source: &str
         s.push_str(&format!("    pixels_per_meter: {ppm:?},\n"));
     }
     s.push_str(&format!("    tinted: {},\n", sheet.tinted));
+    if let Some(e) = emissive_ref {
+        s.push_str(&format!("    emissive: Some({}),\n", ron_string(e)));
+    }
+    if !sheet.lights.is_empty() {
+        s.push_str("    lights: [\n");
+        for l in &sheet.lights {
+            let [r, g, b, _] = l.color.0;
+            let c = |v: u8| f32::from(v) / 255.0;
+            s.push_str(&format!(
+                "        (at: ({:?}, {:?}), color: ({:.3}, {:.3}, {:.3}), radius: {:?}, intensity: {:?}, flicker: {:?}),\n",
+                l.at.0, l.at.1, c(r), c(g), c(b), l.radius, l.intensity, l.flicker
+            ));
+        }
+        s.push_str("    ],\n");
+    }
     s.push_str("    clips: [\n");
     for (k, clip) in sheet.clips.iter().enumerate() {
         s.push_str(&format!(
@@ -153,6 +201,12 @@ pub fn sheet_ron(doc: &Document, sheet: &SheetDef, image_ref: &str, source: &str
     }
     s.push_str("    ],\n)\n");
     s
+}
+
+/// 발광 마스크 파일 자리 — `foo.png` → `foo.emissive.png`.
+#[must_use]
+pub fn emissive_path(image: &Path) -> PathBuf {
+    image.with_extension("emissive.png")
 }
 
 fn ron_string(s: &str) -> String {
@@ -260,6 +314,53 @@ mod tests {
     }
 
     #[test]
+    fn glow_keys_make_an_emissive_mask_and_lights_go_to_the_ron() {
+        let doc = parse(
+            "canvas 1
+cell 2 1
+palette
+  A #ff0000
+  E #ffe08a
+  glow E
+end
+frame a
+  px 0 0 A
+  px 1 0 E
+end
+sheet
+  directions 1
+  light 1 0 #ffffff 3.5 1.2 0.25
+  clip Idle 100 loop
+    row a
+  end
+end
+",
+        )
+        .unwrap();
+        let glow = build_emissive(&doc)
+            .unwrap()
+            .expect("glow 가 있으면 마스크");
+        assert_eq!(glow.at(0, 0), [0, 0, 0, 0], "발광이 아닌 색은 비운다");
+        assert_eq!(glow.at(1, 0), [0xff, 0xe0, 0x8a, 255]);
+        let ron = sheet_ron(
+            &doc,
+            doc.sheet.as_ref().unwrap(),
+            "x.png",
+            Some("x.emissive.png"),
+            "t.canvas",
+        );
+        assert!(ron.contains("emissive: Some(\"x.emissive.png\")"), "{ron}");
+        assert!(ron.contains("(at: (1.0, 0.0), color: (1.000, 1.000, 1.000), radius: 3.5, intensity: 1.2, flicker: 0.25)"), "{ron}");
+        assert_eq!(
+            emissive_path(Path::new("a/b.png")),
+            Path::new("a/b.emissive.png")
+        );
+        // glow 가 없으면 마스크도 없다
+        let plain = parse("canvas 1\ncell 1 1\npalette\n  A #ff0000\nend\nframe a\n  px 0 0 A\nend\nsheet\n  directions 1\n  clip Idle 100 loop\n    row a\n  end\nend\n").unwrap();
+        assert!(build_emissive(&plain).unwrap().is_none());
+    }
+
+    #[test]
     fn sheet_layout_and_ron_follow_the_engine_rules() {
         let doc = parse(
             "canvas 1
@@ -303,7 +404,7 @@ end
             "Idle 은 1프레임 — 나머지 칸은 투명"
         );
 
-        let ron = sheet_ron(&doc, doc.sheet.as_ref().unwrap(), "x.png", "t.canvas");
+        let ron = sheet_ron(&doc, doc.sheet.as_ref().unwrap(), "x.png", None, "t.canvas");
         assert!(ron.contains("image: \"x.png\""));
         assert!(ron.contains("direction_rows: [1, 0]"));
         assert!(ron.contains("pixels_per_meter: 16.0"));

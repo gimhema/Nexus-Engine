@@ -390,7 +390,22 @@ pub struct SheetDef {
     pub pixels_per_meter: Option<f32>,
     pub tinted: bool,
     pub clips: Vec<ClipDef>,
+    /// 이 스프라이트가 지닌 점광원 — `.sheet.ron` 의 `lights` (WorldEditor 가 조명 켠 장면에서 비춘다).
+    pub lights: Vec<LightDef>,
     pub line: usize,
+}
+
+/// 시트 점광원 — `light X Y #색 반지름 [세기] [깜빡임]`.
+#[derive(Clone, Debug)]
+pub struct LightDef {
+    /// 칸 안 픽셀 자리 (좌상단 원점, 동쪽을 보는 그림 기준).
+    pub at: (f32, f32),
+    pub color: crate::color::Rgba,
+    /// 빛이 닿는 거리 (m).
+    pub radius: f32,
+    pub intensity: f32,
+    /// 깜빡임 (0~1) — 짝수 프레임에서 세기가 이만큼 준다.
+    pub flicker: f32,
 }
 
 impl SheetDef {

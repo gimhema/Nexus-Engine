@@ -462,9 +462,29 @@ fn cmd_build(a: &Args) -> Result<()> {
         .unwrap_or_default()
         .to_string_lossy();
     write(&image_path, &export::encode_png(&img)?)?;
+    // 발광 마스크 — 팔레트에 glow 가 있으면 `<그림>.emissive.png` 를 옆에
+    let emissive_ref = match export::build_emissive(&doc).map_err(tag)? {
+        Some(glow) => {
+            let glow_path = export::emissive_path(&image_path);
+            write(&glow_path, &export::encode_png(&glow)?)?;
+            println!("{}", glow_path.display());
+            Some(export::relative(
+                &glow_path,
+                sheet_path.parent().unwrap_or(Path::new("")),
+            ))
+        }
+        None => None,
+    };
     write(
         &sheet_path,
-        export::sheet_ron(&doc, sheet_def, &image_ref, &source).as_bytes(),
+        export::sheet_ron(
+            &doc,
+            sheet_def,
+            &image_ref,
+            emissive_ref.as_deref(),
+            &source,
+        )
+        .as_bytes(),
     )?;
     println!("{} ({}x{})", image_path.display(), img.width, img.height);
     println!("{}", sheet_path.display());

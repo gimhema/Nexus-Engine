@@ -107,6 +107,35 @@ impl Default for UvRect {
     }
 }
 
+/// 점광원 하나 — [`RenderCommand::AddLight`].
+///
+/// 빛은 월드 공간(m)에서 거리로 줄어든다: `반지름` 밖은 0, 안쪽은 `(1 - d/r)²`.
+/// 높이(`pos.z`)가 있으므로 바닥은 광원 바로 아래가 가장 밝고, 서 있는 스프라이트는 광원 높이 근처가 밝다.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PointLight {
+    pub pos: Vec3,
+    /// sRGB 색 (0~1). 셰이더는 선형으로 바꿔 곱한다.
+    pub color: [f32; 3],
+    /// 빛이 닿는 거리 (m).
+    pub radius: f32,
+    /// 세기 배수 — 1 이면 광원 바로 옆이 `color` 만큼 밝아진다.
+    pub intensity: f32,
+}
+
+/// 장면 조명 — [`RenderCommand::SetLighting`]. 내지 않은 프레임은 조명이 꺼져 그림 색 그대로다.
+///
+/// 픽셀아트와 섞기 위한 규칙 두 가지를 렌더러가 지킨다:
+/// - 빛은 **스프라이트 텍셀 중심**에서 계산한다 — 빛의 경계도 그림 1픽셀 단위로 끊긴다.
+/// - 밝기는 `steps` 단계로 끊는다 (지각 명도 기준). `dither` 면 경계를 4×4 베이어로 섞는다.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lighting {
+    /// 주변광 — sRGB 색 (0~1). 밤이면 짙은 남색, 낮이면 `[1.0; 3]`.
+    pub ambient: [f32; 3],
+    /// 밝기 단계 수. 0 이면 끊지 않는다.
+    pub steps: u32,
+    pub dither: bool,
+}
+
 /// 한 프레임에 제출하는 그리기 명령.
 ///
 /// 인스턴스 버퍼에 누적되며, **파이프라인과 텍스처가 바뀌는 지점에서만** 드로우 콜이 나뉜다.
@@ -138,6 +167,14 @@ pub enum RenderCommand {
     /// **층으로 묶어서 제출하면 드로우 콜도 줄어든다** — 배치가 파이프라인·텍스처가
     /// 바뀌는 지점에서만 끊기기 때문이다.
     SetLayer(DrawLayer),
+
+    /// 이번 프레임의 장면 조명을 켠다. 지면·오브젝트 층의 월드 그림만 받는다 —
+    /// 표시 층(편집 표시·머리 위 막대)과 화면 좌표(HUD)는 늘 그림 색 그대로다.
+    SetLighting(Lighting),
+
+    /// 점광원 하나를 더한다 (프레임당 최대 [`MAX_LIGHTS`] 개, 넘치면 버린다).
+    /// 조명이 꺼진 프레임에는 무시된다.
+    AddLight(PointLight),
 
     /// 카메라 설정. 드로우 명령보다 먼저 제출해야 한다.
     ///
@@ -222,6 +259,9 @@ pub enum RenderCommand {
         tint: [f32; 4],
     },
 }
+
+/// 한 프레임에 쓸 수 있는 점광원 수.
+pub const MAX_LIGHTS: usize = 64;
 
 /// [`RenderCommand::DrawSprite`] 의 `pos` 가 스프라이트의 어디를 가리키는가.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -426,6 +466,22 @@ pub trait Renderer {
     /// 크기가 0 이거나 `rgba` 길이가 `width * height * 4` 와 다르면
     /// [`RenderError::TextureFailed`].
     fn load_texture(&mut self, desc: &TextureDesc<'_>) -> Result<TextureId, RenderError>;
+
+    /// [`load_texture`](Self::load_texture) + **발광 마스크** — 같은 크기의 sRGB RGBA.
+    /// 조명이 켜진 장면에서 마스크의 불투명 픽셀은 어둠과 상관없이 그 색으로 빛난다 (등불 유리·불씨 눈).
+    ///
+    /// 기본 구현은 마스크를 버린다 — 조명을 모르는 백엔드는 그대로 둬도 된다.
+    ///
+    /// # Errors
+    /// [`load_texture`](Self::load_texture) 와 같다.
+    fn load_texture_emissive(
+        &mut self,
+        desc: &TextureDesc<'_>,
+        emissive: &[u8],
+    ) -> Result<TextureId, RenderError> {
+        let _ = emissive;
+        self.load_texture(desc)
+    }
 
     /// 올린 텍스처를 푼다 — 그림을 갈아끼울 때 옛 것이 GPU 에 쌓이지 않게. **프레임 바깥에서** 호출한다.
     ///

@@ -18,8 +18,28 @@ struct Camera {
 
 @group(0) @binding(0) var<uniform> camera: Camera;
 
+// ── 장면 조명 ────────────────────────────────────────────────────────────────
+// 픽셀아트와 섞기 위해 (1) 빛을 **텍셀 중심**에서 계산하고 (2) 밝기를 단계로 끊는다.
+// 그래서 빛의 경계가 그림 1픽셀 단위로 계단지고, 손으로 칠한 명암처럼 띠가 진다.
+const MAX_LIGHTS: u32 = 64u;
+
+struct Light {
+    pos_radius: vec4<f32>, // 월드 위치 (m), 반지름 (m)
+    color: vec4<f32>,      // 선형 색 × 세기
+};
+
+struct Lighting {
+    ambient: vec4<f32>, // 선형 주변광, w = 1 이면 조명 켜짐
+    params: vec4<f32>,  // x = 밝기 단계 수 (0 = 끊지 않음), y = 광원 수, z = 디더 (0/1)
+    lights: array<Light, MAX_LIGHTS>,
+};
+
+@group(0) @binding(1) var<uniform> lighting: Lighting;
+
 @group(1) @binding(0) var t_color: texture_2d<f32>;
 @group(1) @binding(1) var s_color: sampler;
+// 발광 마스크 — 불투명 픽셀은 어둠과 상관없이 그 색으로 빛난다. 없는 텍스처는 1×1 투명.
+@group(1) @binding(2) var t_emissive: texture_2d<f32>;
 
 struct Instance {
     @location(0) center:   vec2<f32>, // 월드 중심 (m)
@@ -33,12 +53,15 @@ struct Instance {
     @location(8) billboard:  f32,     // 0 = 지면에 눕는 쿼드, 1 = 카메라를 향해 서는 빌보드
     @location(9) anchor:     f32,     // 빌보드 전용. 0 = 중앙, 0.5 = 발밑
     @location(10) depth_span: vec2<f32>, // 층의 NDC 깊이 구간 (시작, 크기)
+    @location(11) lit: f32,               // 1 = 장면 조명을 받는다 (지면·오브젝트 층의 월드 그림)
 };
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) color: vec4<f32>,
     @location(1) uv:    vec2<f32>,
+    @location(2) world: vec3<f32>,
+    @location(3) lit:   f32,
 };
 
 // 두 삼각형으로 이루어진 단위 쿼드의 코너 오프셋 (-0.5 ~ +0.5)
@@ -95,23 +118,102 @@ fn vs_main(@builtin(vertex_index) vi: u32, inst: Instance) -> VsOut {
     out.clip.z = inst.depth_span.x + out.clip.z * inst.depth_span.y - inst.depth_bias;
     out.color = inst.color;
     out.uv = uv;
+    out.world = world;
+    out.lit = inst.lit;
     return out;
+}
+
+// 4×4 베이어 행렬 (0..15) / 16.
+fn bayer(p: vec2<u32>) -> f32 {
+    let m = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+    return m[(p.y % 4u) * 4u + (p.x % 4u)] / 16.0;
+}
+
+// 이 프래그먼트가 받는 빛 (선형 배수). 조명이 꺼졌거나 받지 않는 그림이면 1.
+//
+// 텍셀 중심 맞추기: 프래그먼트의 UV 를 텍셀 중심으로 옮기고, 그만큼 월드 위치도 옮긴다.
+// UV→월드 변환은 화면 미분(dpdx/dpdy)으로 푼다 — 눕는 쿼드·서는 빌보드 모두 같은 식.
+// 미분은 분기 전에 구해야 해서(균일 제어 흐름) 호출자가 먼저 넘긴다.
+fn scene_light(world: vec3<f32>, uv: vec2<f32>, lit: f32,
+               dwx: vec3<f32>, dwy: vec3<f32>, dux: vec2<f32>, duy: vec2<f32>) -> vec3<f32> {
+    if (lighting.ambient.w < 0.5 || lit < 0.5) {
+        return vec3<f32>(1.0);
+    }
+    let dims = vec2<f32>(textureDimensions(t_color));
+    var p = world;
+    var texel = vec2<u32>(0u, 0u);
+    if (dims.x > 1.0 || dims.y > 1.0) {
+        let su = (floor(uv * dims) + 0.5) / dims;
+        let d = su - uv;
+        let det = dux.x * duy.y - duy.x * dux.y;
+        if (abs(det) > 1e-12) {
+            let a = (d.x * duy.y - duy.x * d.y) / det;
+            let b = (dux.x * d.y - d.x * dux.y) / det;
+            p = world + dwx * a + dwy * b;
+        }
+        texel = vec2<u32>(floor(uv * dims));
+    }
+    // 광원이 더하는 빛만 단계로 끊는다 — 주변광은 매끈하게 둬야 빛이 닿지 않는 곳에 디더 잡티가 없다.
+    var add = vec3<f32>(0.0);
+    let count = min(u32(lighting.params.y), MAX_LIGHTS);
+    for (var i = 0u; i < count; i = i + 1u) {
+        let light = lighting.lights[i];
+        let r = light.pos_radius.w;
+        let dist = distance(p, light.pos_radius.xyz);
+        if (dist < r) {
+            let t = 1.0 - dist / r;
+            add = add + light.color.rgb * (t * t);
+        }
+    }
+    // 지각 명도(감마 2.2)에서 끊어야 단계가 고르게 보인다. 색 비율은 지킨다.
+    let steps = lighting.params.x;
+    let k = max(max(add.r, add.g), add.b);
+    if (steps > 0.5 && k > 1e-4) {
+        let dither = select(0.5, bayer(texel), lighting.params.z > 0.5);
+        let kp = pow(min(k, 2.0), 1.0 / 2.2);
+        let q = max(floor(kp * steps + dither), 0.0) / steps;
+        add = add * (pow(q, 2.2) / k);
+    }
+    let l = lighting.ambient.rgb + add;
+    return min(l, vec3<f32>(2.0));
+}
+
+fn emissive_at(uv: vec2<f32>, lit: f32) -> vec3<f32> {
+    let e = textureSample(t_emissive, s_color, uv);
+    if (lighting.ambient.w < 0.5 || lit < 0.5) {
+        return vec3<f32>(0.0);
+    }
+    return e.rgb * e.a;
 }
 
 // 알파 블렌딩용. 그리드·에디터 표시처럼 반투명이 필요한 것에 쓴다.
 @fragment
 fn fs_blend(in: VsOut) -> @location(0) vec4<f32> {
-    return textureSample(t_color, s_color, in.uv) * in.color;
+    let dwx = dpdx(in.world);
+    let dwy = dpdy(in.world);
+    let dux = dpdx(in.uv);
+    let duy = dpdy(in.uv);
+    let c = textureSample(t_color, s_color, in.uv) * in.color;
+    let e = emissive_at(in.uv, in.lit);
+    let l = scene_light(in.world, in.uv, in.lit, dwx, dwy, dux, duy);
+    return vec4<f32>(max(c.rgb * l, e), c.a);
 }
 
 // 알파 컷아웃용. 스프라이트 전용 — 깊이 쓰기를 켠 채로도 정렬이 깨지지 않는다.
 @fragment
 fn fs_cutout(in: VsOut) -> @location(0) vec4<f32> {
+    // 미분·샘플링은 discard 앞에서 — 균일 제어 흐름이어야 한다.
+    let dwx = dpdx(in.world);
+    let dwy = dpdy(in.world);
+    let dux = dpdx(in.uv);
+    let duy = dpdy(in.uv);
     let c = textureSample(t_color, s_color, in.uv) * in.color;
+    let e = emissive_at(in.uv, in.lit);
     if (c.a < ALPHA_CUTOFF) {
         discard;
     }
+    let l = scene_light(in.world, in.uv, in.lit, dwx, dwy, dux, duy);
     // 통과한 픽셀은 완전 불투명으로 취급한다. 반투명 가장자리를 남기면
     // 블렌딩이 꺼져 있어 배경색이 아니라 쓰레기 값이 섞인다.
-    return vec4<f32>(c.rgb, 1.0);
+    return vec4<f32>(max(c.rgb * l, e), 1.0);
 }

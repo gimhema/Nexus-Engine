@@ -42,8 +42,8 @@ pub use ui::{TextureCarry, UiFrame, egui};
 use bytemuck::{Pod, Zeroable};
 use nexus_core::{Mat4, Vec2, Vec3};
 use nexus_render::{
-    Capture, DrawLayer, FrameStatus, RenderBackend, RenderCommand, RenderDeviceInfo, RenderError,
-    Renderer, Space, TextureDesc, TextureId, UvRect,
+    Capture, DrawLayer, FrameStatus, Lighting, MAX_LIGHTS, PointLight, RenderBackend,
+    RenderCommand, RenderDeviceInfo, RenderError, Renderer, Space, TextureDesc, TextureId, UvRect,
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
@@ -91,6 +91,52 @@ const _: () = {
 };
 
 /// 깊이 버퍼 포맷. 스텐실 없이 32bit float — 데스크톱 어디서나 지원된다.
+/// 점광원 하나 (셰이더 `Light`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+struct LightUniform {
+    pos_radius: [f32; 4],
+    color: [f32; 4],
+}
+
+/// 장면 조명 (셰이더 `Lighting`). `ambient.w` 가 1 이면 켜짐.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+struct LightingUniform {
+    ambient: [f32; 4],
+    params: [f32; 4],
+    lights: [LightUniform; MAX_LIGHTS],
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<LightingUniform>() == 32 + 32 * MAX_LIGHTS);
+};
+
+impl LightingUniform {
+    /// 이번 프레임 조명 — 꺼졌으면 모두 0 (셰이더가 그림 색 그대로 낸다).
+    fn new(lighting: Option<Lighting>, lights: &[PointLight]) -> Self {
+        let mut u = Self::zeroed();
+        let Some(l) = lighting else {
+            return u;
+        };
+        let [r, g, b, _] = linear_rgba([l.ambient[0], l.ambient[1], l.ambient[2], 1.0]);
+        u.ambient = [r, g, b, 1.0];
+        let n = lights.len().min(MAX_LIGHTS);
+        u.params = [
+            l.steps as f32,
+            n as f32,
+            if l.dither { 1.0 } else { 0.0 },
+            0.0,
+        ];
+        for (slot, p) in u.lights.iter_mut().zip(lights) {
+            let [r, g, b, _] = linear_rgba([p.color[0], p.color[1], p.color[2], 1.0]);
+            slot.pos_radius = [p.pos.x, p.pos.y, p.pos.z, p.radius.max(1e-3)];
+            slot.color = [r * p.intensity, g * p.intensity, b * p.intensity, 0.0];
+        }
+        u
+    }
+}
+
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// 인스턴스 버퍼 초기 용량 (쿼드 개수).
@@ -125,11 +171,14 @@ struct QuadInstance {
     anchor: f32,
     /// 층이 쓰는 NDC 깊이 구간 `(시작, 크기)`.
     depth_span: [f32; 2],
+    /// `1.0` = 장면 조명을 받는다 (지면·오브젝트 층의 월드 그림). 표시 층·HUD 는 `0.0`.
+    lit: f32,
 }
 
 /// 레이아웃이 셰이더 속성 오프셋과 맞는지 컴파일 타임에 확인한다.
 const _: () = {
-    assert!(core::mem::size_of::<QuadInstance>() == 76);
+    assert!(core::mem::size_of::<QuadInstance>() == 80);
+    assert!(core::mem::offset_of!(QuadInstance, lit) == 76);
     assert!(core::mem::offset_of!(QuadInstance, center) == 0);
     assert!(core::mem::offset_of!(QuadInstance, size) == 8);
     assert!(core::mem::offset_of!(QuadInstance, z) == 16);
@@ -173,6 +222,8 @@ struct Batch {
 struct TextureEntry {
     _texture: wgpu::Texture,
     _view: wgpu::TextureView,
+    /// 발광 마스크 (있으면).
+    _glow: Option<(wgpu::Texture, wgpu::TextureView)>,
     bind_group: wgpu::BindGroup,
 }
 
@@ -180,12 +231,57 @@ struct TextureEntry {
 ///
 /// 포맷은 `Rgba8UnormSrgb` 다 — 입력이 sRGB 이므로 GPU 가 샘플링할 때 선형으로 바꿔 준다.
 /// 인스턴스 색도 이미 선형이라, 셰이더의 곱셈이 선형 공간에서 일어난다.
-fn create_texture_entry(
+/// GPU 텍스처 하나를 만들어 올린다 (sRGB RGBA8).
+fn upload_rgba(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    layout: &wgpu::BindGroupLayout,
-    sampler: &wgpu::Sampler,
+    label: &str,
+    (width, height): (u32, u32),
+    rgba: &[u8],
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let size = wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        texture.as_image_copy(),
+        rgba,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width * 4),
+            rows_per_image: Some(height),
+        },
+        size,
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
+/// 텍스처 묶음을 만드는 데 필요한 것 — 렌더러가 들고 있다.
+struct TextureContext<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    layout: &'a wgpu::BindGroupLayout,
+    sampler: &'a wgpu::Sampler,
+    /// 발광 마스크가 없는 텍스처가 쓰는 1×1 투명.
+    no_emissive: &'a wgpu::TextureView,
+}
+
+fn create_texture_entry(
+    ctx: &TextureContext<'_>,
     desc: &TextureDesc<'_>,
+    emissive: Option<&[u8]>,
 ) -> Result<TextureEntry, RenderError> {
     if desc.width == 0 || desc.height == 0 {
         return Err(RenderError::TextureFailed(format!(
@@ -204,39 +300,24 @@ fn create_texture_entry(
             desc.rgba.len()
         )));
     }
+    // 발광 마스크는 같은 크기여야 같은 UV 로 읽힌다
+    if let Some(e) = emissive
+        && e.len() != expected
+    {
+        return Err(RenderError::TextureFailed(format!(
+            "'{}': 발광 마스크 바이트 수가 그림과 다름 ({} / {expected})",
+            desc.label,
+            e.len()
+        )));
+    }
 
-    let size = wgpu::Extent3d {
-        width: desc.width,
-        height: desc.height,
-        depth_or_array_layers: 1,
-    };
-
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let dims = (desc.width, desc.height);
+    let (texture, view) = upload_rgba(ctx.device, ctx.queue, desc.label, dims, desc.rgba);
+    let glow = emissive.map(|e| upload_rgba(ctx.device, ctx.queue, desc.label, dims, e));
+    let glow_view = glow.as_ref().map_or(ctx.no_emissive, |(_, v)| v);
+    let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(desc.label),
-        size,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-
-    queue.write_texture(
-        texture.as_image_copy(),
-        desc.rgba,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(desc.width * 4),
-            rows_per_image: Some(desc.height),
-        },
-        size,
-    );
-
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some(desc.label),
-        layout,
+        layout: ctx.layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -244,7 +325,11 @@ fn create_texture_entry(
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::Sampler(sampler),
+                resource: wgpu::BindingResource::Sampler(ctx.sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(glow_view),
             },
         ],
     });
@@ -252,6 +337,7 @@ fn create_texture_entry(
     Ok(TextureEntry {
         _texture: texture,
         _view: view,
+        _glow: glow,
         bind_group,
     })
 }
@@ -309,11 +395,20 @@ struct Frame {
     viewport: Option<ViewportRect>,
     quads: Vec<QuadInstance>,
     batches: Vec<Batch>,
+    /// 이번 프레임 조명 — `SetLighting` 이 없으면 꺼짐.
+    lighting: Option<Lighting>,
+    lights: Vec<PointLight>,
     #[cfg(feature = "ui")]
     ui: Option<UiFrame>,
 }
 
 impl Frame {
+    /// 지금 내는 그림이 장면 조명을 받는가 — 월드 좌표의 지면·오브젝트 층만.
+    fn lit(&self) -> f32 {
+        let lit = !self.space.is_screen() && self.layer != DrawLayer::Overlay;
+        if lit { 1.0 } else { 0.0 }
+    }
+
     /// 인스턴스를 쌓으면서 배치를 잇는다.
     ///
     /// 직전과 파이프라인·텍스처가 같으면 배치를 늘리고, 다르면 새로 연다.
@@ -361,6 +456,10 @@ pub struct WgpuRenderer {
     pipeline_cutout: wgpu::RenderPipeline,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
+    /// 장면 조명 유니폼 — 카메라 그룹의 binding 1 (월드·화면 그룹이 같은 버퍼를 본다).
+    lighting_buffer: wgpu::Buffer,
+    /// 발광 마스크 없는 텍스처가 쓰는 1×1 투명.
+    no_emissive: (wgpu::Texture, wgpu::TextureView),
     /// 화면 좌표(HUD)용 유니폼 — 뷰포트 픽셀을 NDC 로 옮기는 정사영 (P5).
     screen_buffer: wgpu::Buffer,
     screen_bind_group: wgpu::BindGroup,
@@ -474,16 +573,35 @@ impl WgpuRenderer {
 
         let camera_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("nexus-camera-layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                // 장면 조명 — 프래그먼트가 읽는다
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let lighting_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nexus-lighting"),
+            size: core::mem::size_of::<LightingUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
         let screen_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -496,19 +614,31 @@ impl WgpuRenderer {
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("nexus-camera-bind-group"),
             layout: &camera_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: lighting_buffer.as_entire_binding(),
+                },
+            ],
         });
 
         let screen_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("nexus-screen-bind-group"),
             layout: &camera_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: screen_buffer.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: screen_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: lighting_buffer.as_entire_binding(),
+                },
+            ],
         });
 
         // ── 파이프라인 ───────────────────────────────────────────────────────
@@ -537,6 +667,17 @@ impl WgpuRenderer {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                // 발광 마스크
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
             ],
@@ -585,6 +726,7 @@ impl WgpuRenderer {
                             8 => Float32,    // billboard  — 오프셋 60
                             9 => Float32,    // anchor     — 오프셋 64
                             10 => Float32x2, // depth_span — 오프셋 68
+                            11 => Float32,   // lit        — 오프셋 76
                         ],
                     })],
                 },
@@ -630,17 +772,22 @@ impl WgpuRenderer {
 
         // TextureId::WHITE — 단색 쿼드가 샘플링할 1×1 흰색.
         // 이것이 있어야 DrawRect 와 DrawSprite 가 같은 셰이더를 지난다.
+        let no_emissive = upload_rgba(&device, &queue, "nexus-no-emissive", (1, 1), &[0; 4]);
         let white = create_texture_entry(
-            &device,
-            &queue,
-            &texture_layout,
-            &sampler,
+            &TextureContext {
+                device: &device,
+                queue: &queue,
+                layout: &texture_layout,
+                sampler: &sampler,
+                no_emissive: &no_emissive.1,
+            },
             &TextureDesc {
                 label: "nexus-white",
                 width: 1,
                 height: 1,
                 rgba: &[0xFF; 4],
             },
+            None,
         )?;
 
         let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -671,6 +818,8 @@ impl WgpuRenderer {
             pipeline_cutout,
             camera_buffer,
             camera_bind_group,
+            lighting_buffer,
+            no_emissive,
             screen_buffer,
             screen_bind_group,
             texture_layout,
@@ -779,6 +928,46 @@ impl WgpuRenderer {
     }
 }
 
+impl WgpuRenderer {
+    fn upload_texture(
+        &mut self,
+        desc: &TextureDesc<'_>,
+        emissive: Option<&[u8]>,
+    ) -> Result<TextureId, RenderError> {
+        let entry = create_texture_entry(
+            &TextureContext {
+                device: &self.device,
+                queue: &self.queue,
+                layout: &self.texture_layout,
+                sampler: &self.sampler,
+                no_emissive: &self.no_emissive.1,
+            },
+            desc,
+            emissive,
+        )?;
+
+        let index = u32::try_from(self.textures.len())
+            .map_err(|_| RenderError::TextureFailed(String::from("텍스처 수가 u32 를 넘음")))?;
+        self.textures.push(Some(entry));
+        Ok(TextureId::from_index(index))
+    }
+
+    fn release_texture(&mut self, texture: TextureId) -> Result<(), RenderError> {
+        if self.frame.is_some() {
+            return Err(RenderError::TextureFailed(String::from(
+                "프레임 도중에는 텍스처를 풀 수 없음",
+            )));
+        }
+        // 흰색은 단색 쿼드가 늘 쓴다 — 풀지 않는다. 자리는 None 으로 남겨 번호를 다시 쓰지 않는다.
+        if texture != TextureId::WHITE
+            && let Some(slot) = self.textures.get_mut(texture.index() as usize)
+        {
+            *slot = None;
+        }
+        Ok(())
+    }
+}
+
 impl Renderer for WgpuRenderer {
     fn backend(&self) -> RenderBackend {
         self.info.backend
@@ -833,6 +1022,8 @@ impl Renderer for WgpuRenderer {
             viewport: None,
             quads: Vec::new(),
             batches: Vec::new(),
+            lighting: None,
+            lights: Vec::new(),
             #[cfg(feature = "ui")]
             ui: None,
         });
@@ -841,33 +1032,19 @@ impl Renderer for WgpuRenderer {
     }
 
     fn load_texture(&mut self, desc: &TextureDesc<'_>) -> Result<TextureId, RenderError> {
-        let entry = create_texture_entry(
-            &self.device,
-            &self.queue,
-            &self.texture_layout,
-            &self.sampler,
-            desc,
-        )?;
+        self.upload_texture(desc, None)
+    }
 
-        let index = u32::try_from(self.textures.len())
-            .map_err(|_| RenderError::TextureFailed(String::from("텍스처 수가 u32 를 넘음")))?;
-        self.textures.push(Some(entry));
-        Ok(TextureId::from_index(index))
+    fn load_texture_emissive(
+        &mut self,
+        desc: &TextureDesc<'_>,
+        emissive: &[u8],
+    ) -> Result<TextureId, RenderError> {
+        self.upload_texture(desc, Some(emissive))
     }
 
     fn unload_texture(&mut self, texture: TextureId) -> Result<(), RenderError> {
-        if self.frame.is_some() {
-            return Err(RenderError::TextureFailed(String::from(
-                "프레임 도중에는 텍스처를 풀 수 없음",
-            )));
-        }
-        // 흰색은 단색 쿼드가 늘 쓴다 — 풀지 않는다. 자리는 None 으로 남겨 번호를 다시 쓰지 않는다.
-        if texture != TextureId::WHITE
-            && let Some(slot) = self.textures.get_mut(texture.index() as usize)
-        {
-            *slot = None;
-        }
-        Ok(())
+        self.release_texture(texture)
     }
 
     fn submit(&mut self, command: RenderCommand) -> Result<(), RenderError> {
@@ -908,6 +1085,14 @@ impl Renderer for WgpuRenderer {
             }
             RenderCommand::SetLayer(layer) => {
                 frame.layer = layer;
+            }
+            RenderCommand::SetLighting(lighting) => {
+                frame.lighting = Some(lighting);
+            }
+            RenderCommand::AddLight(light) => {
+                if frame.lights.len() < MAX_LIGHTS {
+                    frame.lights.push(light);
+                }
             }
             RenderCommand::SetSpace(space) => {
                 frame.space = space;
@@ -955,6 +1140,7 @@ impl Renderer for WgpuRenderer {
                         billboard: 0.0,
                         anchor: 0.0,
                         depth_span: span,
+                        lit: frame.lit(),
                     },
                 );
             }
@@ -993,6 +1179,7 @@ impl Renderer for WgpuRenderer {
                         billboard: 1.0,
                         anchor: anchor.offset(),
                         depth_span: span,
+                        lit: frame.lit(),
                     },
                 );
             }
@@ -1041,6 +1228,9 @@ impl Renderer for WgpuRenderer {
         };
         self.queue
             .write_buffer(&self.screen_buffer, 0, bytemuck::bytes_of(&screen));
+        let lighting = LightingUniform::new(frame.lighting, &frame.lights);
+        self.queue
+            .write_buffer(&self.lighting_buffer, 0, bytemuck::bytes_of(&lighting));
 
         if !frame.quads.is_empty() {
             self.ensure_instance_capacity(frame.quads.len());
@@ -1236,6 +1426,46 @@ fn map_backend(backend: wgpu::Backend) -> RenderBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 셰이더는 실행할 때 파이프라인을 만들며 컴파일된다 — 창 없이도 문법·검증 오류를 잡는다.
+    #[test]
+    fn quad_shader_parses_and_validates() {
+        use wgpu::naga;
+        let module = naga::front::wgsl::parse_str(include_str!("quad.wgsl")).expect("WGSL 문법");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .expect("WGSL 검증");
+    }
+
+    #[test]
+    fn lighting_is_off_without_set_lighting_and_caps_lights() {
+        let off = LightingUniform::new(None, &[]);
+        assert_eq!(off.ambient[3], 0.0, "조명을 켜지 않은 프레임은 꺼짐");
+        let light = PointLight {
+            pos: Vec3::ZERO,
+            color: [1.0; 3],
+            radius: 2.0,
+            intensity: 0.5,
+        };
+        let on = LightingUniform::new(
+            Some(Lighting {
+                ambient: [0.5; 3],
+                steps: 4,
+                dither: true,
+            }),
+            &[light; 3],
+        );
+        assert_eq!(on.ambient[3], 1.0);
+        assert_eq!(on.params, [4.0, 3.0, 1.0, 0.0]);
+        assert!((on.lights[0].color[0] - 0.5).abs() < 1e-6, "흰색 × 세기");
+        assert!(
+            on.ambient[0] < 0.5,
+            "주변광은 선형으로 — sRGB 0.5 는 선형 0.21"
+        );
+    }
 
     #[test]
     fn srgb_endpoints_are_preserved() {
