@@ -815,6 +815,7 @@ fn parse_sheet(p: &mut Parser<'_>, opened: Line<'_>) -> Result<SheetDef> {
         tinted: false,
         clips: Vec::new(),
         lights: Vec::new(),
+        layer: None,
         line: opened.no,
     };
     while let Some(l) = p.block_line(opened, "sheet")? {
@@ -843,6 +844,20 @@ fn parse_sheet(p: &mut Parser<'_>, opened: Line<'_>) -> Result<SheetDef> {
                 sheet.tinted = boolean(&l, w[1])?;
             }
             "clip" => sheet.clips.push(parse_clip(p, l, &w)?),
+            "layer" => {
+                // layer N  |  layer 동 북 서 남 (방향 수만큼)
+                let v = w[1..]
+                    .iter()
+                    .map(|s| {
+                        s.parse::<i32>()
+                            .map_err(|_| l.err(format!("정수가 아님: {s}")))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                if v.is_empty() {
+                    return Err(l.err("형식: layer <앞뒤>  |  layer <방향마다 앞뒤 …>"));
+                }
+                sheet.layer = Some(v);
+            }
             "light" => {
                 // light X Y #색 반지름 [세기] [깜빡임]
                 if !(5..=7).contains(&w.len()) {
@@ -1096,6 +1111,19 @@ fn check_sheet(doc: &Document, sheet: &SheetDef) -> Result<()> {
     }
     if sheet.clips.is_empty() {
         return Err(err(sheet.line, String::from("sheet 에 clip 이 없음")));
+    }
+    if let Some(layer) = &sheet.layer
+        && layer.len() != 1
+        && layer.len() != sheet.directions as usize
+    {
+        return Err(err(
+            sheet.line,
+            format!(
+                "layer 는 하나 또는 방향 수({})만큼 (지금 {})",
+                sheet.directions,
+                layer.len()
+            ),
+        ));
     }
     if let Some(rows) = &sheet.direction_rows {
         if rows.len() != sheet.directions as usize {

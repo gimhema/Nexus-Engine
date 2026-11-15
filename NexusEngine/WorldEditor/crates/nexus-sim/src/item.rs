@@ -16,7 +16,8 @@ pub struct ItemId(pub u32);
 
 /// 장비가 들어가는 **자리 종류** — 아이템 정의가 적는다.
 ///
-/// 앞의 다섯은 서버 `EQUIPMENT_POS_TYPE` (1~5) 와 같은 순서이고 한 칸씩이다.
+/// 앞의 다섯은 서버 `EQUIPMENT_POS_TYPE` (1~5) 와 같은 순서이고 한 칸씩이다. `Legs`(하의)는 클라이언트에서
+/// 먼저 더한 여섯째 자리다 — 서버 장비 자리는 단계 2 에서 맞춘다 (2026-11-15).
 /// 장신구는 [`AccessoryKind`] 로 종류를 나누고, 종류마다 칸 수를 **데이터가 정한다**
 /// ([`SimWorld::set_accessory_slots`](crate::SimWorld::set_accessory_slots)) — 반지 2칸, 귀걸이 2칸처럼.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -26,17 +27,20 @@ pub enum EquipSlot {
     Body,
     Hand,
     Shoes,
+    /// 하의 — 상의(`Body`)와 따로 입는다.
+    Legs,
     Accessory(AccessoryKind),
 }
 
 impl EquipSlot {
     /// 칸 수가 하나로 고정된 자리.
-    pub const FIXED: [Self; 5] = [
+    pub const FIXED: [Self; 6] = [
         Self::Weapon,
         Self::Head,
         Self::Body,
         Self::Hand,
         Self::Shoes,
+        Self::Legs,
     ];
 }
 
@@ -756,7 +760,7 @@ mod flow_tests {
         );
         // 반지 2칸, 귀걸이는 칸이 없다.
         w.set_accessory_slots([(RING, 2), (EARRING, 0)]);
-        assert_eq!(w.equip_positions().len(), 5 + 2);
+        assert_eq!(w.equip_positions().len(), EquipSlot::FIXED.len() + 2);
 
         let h = w.spawn_unit(Vec2::new(1.5, 1.5), 0.0, hero());
         for id in [2201, 2202, 2203, 2301] {

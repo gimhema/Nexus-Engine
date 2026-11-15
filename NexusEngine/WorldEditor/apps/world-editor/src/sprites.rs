@@ -523,8 +523,12 @@ impl Sheet {
         let height = self.height(px);
         // 시트 칸 비율을 유지한다. 늘어나면 픽셀아트가 뭉개져 보인다.
         let width = height * self.cell.0 as f32 / self.cell.1 as f32;
+        // 지닌 광원 — 몸과 파츠 모두 (오브젝트헤드의 등불은 파츠다)
+        let frame = animator.frame();
         out.extend(
-            self.lights_at(pos, look.heading, animator.frame(), width, height)
+            std::iter::once(self)
+                .chain(parts.iter().map(|p| p.sheet).filter(|s| s.fits(self)))
+                .flat_map(|s| s.lights_at(pos, look.heading, frame, width, height))
                 .map(RenderCommand::AddLight),
         );
         let (uv, layers) = self.stack(look, parts, animator);
@@ -740,7 +744,7 @@ pub(crate) struct SpriteLibrary {
     by_path: BTreeMap<String, Sheet>,
     failed_paths: std::collections::BTreeSet<String>,
     /// `ramp` 시트의 회색 원본 (경로별) — 색마다 다시 칠할 바탕.
-    ramp_source: BTreeMap<String, Image>,
+    ramp_source: BTreeMap<String, (Image, Option<Image>)>,
     /// 램프로 칠해 올린 시트 — (경로, 색 sRGB 8bit). 그릴 때 색을 곱하지 않는다.
     ramped: BTreeMap<(String, [u8; 3]), Sheet>,
     animator: SpriteAnimator,
@@ -823,17 +827,20 @@ impl SpriteLibrary {
             let mut kept = Vec::new();
             for part in list {
                 match load_once(renderer, &part.sheet, &mut uploaded) {
-                    Ok(sheet)
-                        if std::iter::once(&fallback)
+                    Ok(sheet) => {
+                        // 캐릭터 만들기 템플릿의 몸(종이 인형 폴더)은 외형이 정해질 때 올라가므로 지금은 없다 —
+                        // 그 폴더의 장비 파츠는 그대로 둔다. 몸과 맞는지는 그릴 때 다시 본다(`Sheet::fits`).
+                        let fits_actor = std::iter::once(&fallback)
                             .chain(by_actor.values())
-                            .any(|b| sheet.fits(b)) =>
-                    {
+                            .any(|b| sheet.fits(b));
+                        if !fits_actor && !part.sheet.starts_with(crate::appearance::CATALOG_DIR) {
+                            warnings.push(format!(
+                                "아이템 {} 파츠 {} — 칸 크기·행·열·방향이 맞는 몸 시트가 없다",
+                                item.0, part.sheet
+                            ));
+                        }
                         kept.push((sheet, part.tint));
                     }
-                    Ok(_) => warnings.push(format!(
-                        "아이템 {} 파츠 {} — 칸 크기·행·열·방향이 맞는 몸 시트가 없다",
-                        item.0, part.sheet
-                    )),
                     Err(e) => warnings.push(format!("아이템 {} 파츠를 쓸 수 없음 — {e}", item.0)),
                 }
             }
@@ -874,7 +881,8 @@ impl SpriteLibrary {
                 .and_then(|def| plan_sheet(&def, p.parent()))
                 .and_then(|plan| {
                     if plan.ramp {
-                        self.ramp_source.insert(path.to_owned(), plan.image.clone());
+                        self.ramp_source
+                            .insert(path.to_owned(), (plan.image.clone(), plan.emissive.clone()));
                     }
                     Sheet::upload(plan, renderer)
                 });
@@ -905,17 +913,24 @@ impl SpriteLibrary {
             if self.ramped.contains_key(&key) {
                 continue;
             }
-            let (Some(src), Some(sheet)) = (self.ramp_source.get(path), self.by_path.get(path))
+            let (Some((src, glow)), Some(sheet)) =
+                (self.ramp_source.get(path), self.by_path.get(path))
             else {
                 continue;
             };
             let rgba = crate::ramp_tint::recolor(src.desc("").rgba, colour);
+            // 발광 마스크는 칠하지 않고 그대로 — 램프로 칠한 그림에도 불꽃·유리는 제 색으로 빛난다
             let painted = Image::from_rgba(src.width(), src.height(), rgba)
                 .map_err(|e| e.to_string())
                 .and_then(|img| {
-                    renderer
-                        .load_texture(&img.desc("sprite-ramp"))
-                        .map_err(|e| e.to_string())
+                    let desc = img.desc("sprite-ramp");
+                    match glow {
+                        Some(g) => {
+                            renderer.load_texture_emissive(&desc, g.desc("sprite-glow").rgba)
+                        }
+                        None => renderer.load_texture(&desc),
+                    }
+                    .map_err(|e| e.to_string())
                 });
             match painted {
                 Ok(texture) => {
@@ -935,6 +950,10 @@ impl SpriteLibrary {
     /// 경로의 시트와 그 위에 곱할 색 — 램프로 칠해 둔 것이 있으면 그것(색 곱하지 않음).
     fn painted(&self, path: &str, colour: [f32; 4]) -> Option<(&Sheet, [f32; 4])> {
         let sheet = self.by_path.get(path)?;
+        // 컬러 시트(`tinted: false`)에는 외형 색을 곱하지 않는다 — 오브젝트헤드 몸·머리처럼 그림이 곧 색이다
+        if !sheet.tinted {
+            return Some((sheet, NO_TINT));
+        }
         if sheet.ramp
             && let Some(done) = self.ramped.get(&(path.to_owned(), colour_key(colour)))
         {

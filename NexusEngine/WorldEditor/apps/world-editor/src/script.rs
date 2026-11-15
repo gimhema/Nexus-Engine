@@ -25,6 +25,7 @@
 //! scripts [경로]               스크립트 편집기 열기 (경로는 data/ 기준, 예: scripts/goblin.rhai)
 //! compile                      스크립트 편집기의 "컴파일" 버튼
 //! savegame | deletesave       진행 상황 저장 / 저장 데이터 삭제 (P3)
+//! equip 아이템번호             장비 가방에서 그 아이템을 입는다 (플레이 중, 인벤토리와 같은 경로)
 //! items | panels              HUD 인벤토리 창 / 에디터 패널 숨기기 (P5)
 //! skill 번호                  단축키 스킬 (숫자키 1~9 와 같다, 플레이 중)
 //! hotbar 칸 스킬번호          단축키 배치 (R3, 칸 0 = 그 스킬 빼기) — 스킬 창의 칸 고르기와 같다
@@ -118,6 +119,8 @@ pub(crate) enum Step {
     Compile,
     /// 진행 상황 저장 (플레이 메뉴의 "게임 저장").
     SaveGame,
+    /// 장비 가방의 아이템을 입는다 (아이템 번호).
+    Equip(u32),
     /// 저장 데이터 삭제.
     DeleteSave,
     /// 저장 칸 바꾸기 (1부터).
@@ -288,6 +291,13 @@ fn parse_step(text: &str) -> Result<Step, String> {
         "scripts" => return Ok(Step::Scripts(words.get(1).map(|w| (*w).to_string()))),
         "compile" => return Ok(Step::Compile),
         "savegame" => return Ok(Step::SaveGame),
+        "equip" => {
+            return words
+                .get(1)
+                .and_then(|w| w.parse().ok())
+                .map(Step::Equip)
+                .ok_or_else(|| format!("'{text}': equip 뒤에 아이템 번호"));
+        }
         "deletesave" => return Ok(Step::DeleteSave),
         "slot" => {
             return words

@@ -173,6 +173,14 @@ pub fn sheet_ron(
         s.push_str(&format!("    pixels_per_meter: {ppm:?},\n"));
     }
     s.push_str(&format!("    tinted: {},\n", sheet.tinted));
+    match sheet.layer.as_deref() {
+        Some([one]) => s.push_str(&format!("    layer: {one},\n")),
+        Some(v) => {
+            let list: Vec<String> = v.iter().map(i32::to_string).collect();
+            s.push_str(&format!("    layer_by_direction: [{}],\n", list.join(", ")));
+        }
+        None => {}
+    }
     if let Some(e) = emissive_ref {
         s.push_str(&format!("    emissive: Some({}),\n", ron_string(e)));
     }
@@ -358,6 +366,29 @@ end
         // glow 가 없으면 마스크도 없다
         let plain = parse("canvas 1\ncell 1 1\npalette\n  A #ff0000\nend\nframe a\n  px 0 0 A\nend\nsheet\n  directions 1\n  clip Idle 100 loop\n    row a\n  end\nend\n").unwrap();
         assert!(build_emissive(&plain).unwrap().is_none());
+    }
+
+    #[test]
+    fn layer_goes_to_the_ron_as_one_or_per_direction() {
+        let src = |layer: &str| {
+            format!(
+                "canvas 1\ncell 1 1\npalette\n  A #ff0000\nend\nframe a\n  px 0 0 A\nend\nsheet\n  directions 2\n  {layer}\n  clip Idle 100 loop\n    row a\n    row a\n  end\nend\n"
+            )
+        };
+        let one = parse(&src("layer 4")).unwrap();
+        assert!(
+            sheet_ron(&one, one.sheet.as_ref().unwrap(), "x.png", None, "t")
+                .contains("    layer: 4,\n")
+        );
+        let two = parse(&src("layer 7 -1")).unwrap();
+        assert!(
+            sheet_ron(&two, two.sheet.as_ref().unwrap(), "x.png", None, "t")
+                .contains("layer_by_direction: [7, -1],")
+        );
+        assert!(
+            parse(&src("layer 1 2 3")).is_err(),
+            "방향 수와 맞지 않으면 오류"
+        );
     }
 
     #[test]

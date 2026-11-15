@@ -122,6 +122,7 @@
                     id: "eyes_label",
                     anchor: TopLeft,
                     pos: (278, 50),
+                    show: LookRow,
                     kind: Text(
                         format: "눈",
                     ),
@@ -131,6 +132,7 @@
                     anchor: TopLeft,
                     pos: (330, 51),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "◀",
                         action: Look(
@@ -143,6 +145,7 @@
                     id: "eyes_value",
                     anchor: TopLeft,
                     pos: (348, 50),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_eyes}",
                     ),
@@ -152,6 +155,7 @@
                     anchor: TopLeft,
                     pos: (470, 51),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "▶",
                         action: Look(
@@ -165,6 +169,7 @@
                     anchor: TopLeft,
                     pos: (490, 51),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "◀",
                         action: Look(
@@ -177,6 +182,7 @@
                     id: "eyes_color",
                     anchor: TopLeft,
                     pos: (508, 50),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_eyes_color}",
                     ),
@@ -186,6 +192,7 @@
                     anchor: TopLeft,
                     pos: (572, 51),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "▶",
                         action: Look(
@@ -198,6 +205,7 @@
                     id: "face_label",
                     anchor: TopLeft,
                     pos: (278, 71),
+                    show: LookRow,
                     kind: Text(
                         format: "입",
                     ),
@@ -207,6 +215,7 @@
                     anchor: TopLeft,
                     pos: (330, 72),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "◀",
                         action: Look(
@@ -219,6 +228,7 @@
                     id: "face_value",
                     anchor: TopLeft,
                     pos: (348, 71),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_face}",
                     ),
@@ -228,6 +238,7 @@
                     anchor: TopLeft,
                     pos: (470, 72),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "▶",
                         action: Look(
@@ -240,6 +251,7 @@
                     id: "hair_label",
                     anchor: TopLeft,
                     pos: (278, 92),
+                    show: LookRow,
                     kind: Text(
                         format: "머리",
                     ),
@@ -249,6 +261,7 @@
                     anchor: TopLeft,
                     pos: (330, 93),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "◀",
                         action: Look(
@@ -261,6 +274,7 @@
                     id: "hair_value",
                     anchor: TopLeft,
                     pos: (348, 92),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_hair}",
                     ),
@@ -270,6 +284,7 @@
                     anchor: TopLeft,
                     pos: (470, 93),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "▶",
                         action: Look(
@@ -283,6 +298,7 @@
                     anchor: TopLeft,
                     pos: (490, 93),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "◀",
                         action: Look(
@@ -295,6 +311,7 @@
                     id: "hair_color",
                     anchor: TopLeft,
                     pos: (508, 92),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_hair_color}",
                     ),
@@ -304,6 +321,7 @@
                     anchor: TopLeft,
                     pos: (572, 93),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "▶",
                         action: Look(
@@ -316,6 +334,7 @@
                     id: "hair_back_label",
                     anchor: TopLeft,
                     pos: (278, 113),
+                    show: LookRow,
                     kind: Text(
                         format: "뒷머리",
                     ),
@@ -325,6 +344,7 @@
                     anchor: TopLeft,
                     pos: (330, 114),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "◀",
                         action: Look(
@@ -337,6 +357,7 @@
                     id: "hair_back_value",
                     anchor: TopLeft,
                     pos: (348, 113),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_hair_back}",
                     ),
@@ -346,6 +367,7 @@
                     anchor: TopLeft,
                     pos: (470, 114),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "▶",
                         action: Look(
@@ -358,6 +380,7 @@
                     id: "hair_back_color",
                     anchor: TopLeft,
                     pos: (508, 113),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_hair_back_color}",
                     ),
@@ -366,6 +389,7 @@
                     id: "facial_label",
                     anchor: TopLeft,
                     pos: (278, 134),
+                    show: LookRow,
                     kind: Text(
                         format: "꾸미기",
                     ),
@@ -375,6 +399,7 @@
                     anchor: TopLeft,
                     pos: (330, 135),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "◀",
                         action: Look(
@@ -387,6 +412,7 @@
                     id: "facial_value",
                     anchor: TopLeft,
                     pos: (348, 134),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_facial}",
                     ),
@@ -396,6 +422,7 @@
                     anchor: TopLeft,
                     pos: (470, 135),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "▶",
                         action: Look(
@@ -409,6 +436,7 @@
                     anchor: TopLeft,
                     pos: (490, 135),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "◀",
                         action: Look(
@@ -421,6 +449,7 @@
                     id: "facial_color",
                     anchor: TopLeft,
                     pos: (508, 134),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_facial_color}",
                     ),
@@ -430,6 +459,7 @@
                     anchor: TopLeft,
                     pos: (572, 135),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "▶",
                         action: Look(
@@ -442,6 +472,7 @@
                     id: "top_label",
                     anchor: TopLeft,
                     pos: (278, 155),
+                    show: LookRow,
                     kind: Text(
                         format: "상의",
                     ),
@@ -451,6 +482,7 @@
                     anchor: TopLeft,
                     pos: (330, 156),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "◀",
                         action: Look(
@@ -463,6 +495,7 @@
                     id: "top_value",
                     anchor: TopLeft,
                     pos: (348, 155),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_top}",
                     ),
@@ -472,6 +505,7 @@
                     anchor: TopLeft,
                     pos: (470, 156),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "▶",
                         action: Look(
@@ -485,6 +519,7 @@
                     anchor: TopLeft,
                     pos: (490, 156),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "◀",
                         action: Look(
@@ -497,6 +532,7 @@
                     id: "top_color",
                     anchor: TopLeft,
                     pos: (508, 155),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_top_color}",
                     ),
@@ -506,6 +542,7 @@
                     anchor: TopLeft,
                     pos: (572, 156),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "▶",
                         action: Look(
@@ -518,6 +555,7 @@
                     id: "bottom_label",
                     anchor: TopLeft,
                     pos: (278, 176),
+                    show: LookRow,
                     kind: Text(
                         format: "하의",
                     ),
@@ -527,6 +565,7 @@
                     anchor: TopLeft,
                     pos: (330, 177),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "◀",
                         action: Look(
@@ -539,6 +578,7 @@
                     id: "bottom_value",
                     anchor: TopLeft,
                     pos: (348, 176),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_bottom}",
                     ),
@@ -548,6 +588,7 @@
                     anchor: TopLeft,
                     pos: (470, 177),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "▶",
                         action: Look(
@@ -561,6 +602,7 @@
                     anchor: TopLeft,
                     pos: (490, 177),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "◀",
                         action: Look(
@@ -573,6 +615,7 @@
                     id: "bottom_color",
                     anchor: TopLeft,
                     pos: (508, 176),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_bottom_color}",
                     ),
@@ -582,6 +625,7 @@
                     anchor: TopLeft,
                     pos: (572, 177),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "▶",
                         action: Look(
@@ -594,6 +638,7 @@
                     id: "shoes_label",
                     anchor: TopLeft,
                     pos: (278, 197),
+                    show: LookRow,
                     kind: Text(
                         format: "신발",
                     ),
@@ -603,6 +648,7 @@
                     anchor: TopLeft,
                     pos: (330, 198),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "◀",
                         action: Look(
@@ -615,6 +661,7 @@
                     id: "shoes_value",
                     anchor: TopLeft,
                     pos: (348, 197),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_shoes}",
                     ),
@@ -624,6 +671,7 @@
                     anchor: TopLeft,
                     pos: (470, 198),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "▶",
                         action: Look(
@@ -637,6 +685,7 @@
                     anchor: TopLeft,
                     pos: (490, 198),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "◀",
                         action: Look(
@@ -649,6 +698,7 @@
                     id: "shoes_color",
                     anchor: TopLeft,
                     pos: (508, 197),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_shoes_color}",
                     ),
@@ -658,6 +708,7 @@
                     anchor: TopLeft,
                     pos: (572, 198),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "▶",
                         action: Look(
@@ -670,6 +721,7 @@
                     id: "hat_label",
                     anchor: TopLeft,
                     pos: (278, 218),
+                    show: LookRow,
                     kind: Text(
                         format: "모자",
                     ),
@@ -679,6 +731,7 @@
                     anchor: TopLeft,
                     pos: (330, 219),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "◀",
                         action: Look(
@@ -691,6 +744,7 @@
                     id: "hat_value",
                     anchor: TopLeft,
                     pos: (348, 218),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_hat}",
                     ),
@@ -700,6 +754,7 @@
                     anchor: TopLeft,
                     pos: (470, 219),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "▶",
                         action: Look(
@@ -713,6 +768,7 @@
                     anchor: TopLeft,
                     pos: (490, 219),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "◀",
                         action: Look(
@@ -725,6 +781,7 @@
                     id: "hat_color",
                     anchor: TopLeft,
                     pos: (508, 218),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_hat_color}",
                     ),
@@ -734,6 +791,7 @@
                     anchor: TopLeft,
                     pos: (572, 219),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "▶",
                         action: Look(
@@ -746,6 +804,7 @@
                     id: "cape_label",
                     anchor: TopLeft,
                     pos: (278, 239),
+                    show: LookRow,
                     kind: Text(
                         format: "망토",
                     ),
@@ -755,6 +814,7 @@
                     anchor: TopLeft,
                     pos: (330, 240),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "◀",
                         action: Look(
@@ -767,6 +827,7 @@
                     id: "cape_value",
                     anchor: TopLeft,
                     pos: (348, 239),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_cape}",
                     ),
@@ -776,6 +837,7 @@
                     anchor: TopLeft,
                     pos: (470, 240),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "▶",
                         action: Look(
@@ -789,6 +851,7 @@
                     anchor: TopLeft,
                     pos: (490, 240),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "◀",
                         action: Look(
@@ -801,6 +864,7 @@
                     id: "cape_color",
                     anchor: TopLeft,
                     pos: (508, 239),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_cape_color}",
                     ),
@@ -810,6 +874,7 @@
                     anchor: TopLeft,
                     pos: (572, 240),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "▶",
                         action: Look(
@@ -822,6 +887,7 @@
                     id: "feature_label",
                     anchor: TopLeft,
                     pos: (278, 260),
+                    show: LookRow,
                     kind: Text(
                         format: "특징",
                     ),
@@ -830,6 +896,7 @@
                     id: "feature_value",
                     anchor: TopLeft,
                     pos: (348, 260),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_feature}",
                     ),
@@ -839,6 +906,7 @@
                     anchor: TopLeft,
                     pos: (490, 261),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "◀",
                         action: Look(
@@ -851,6 +919,7 @@
                     id: "feature_color",
                     anchor: TopLeft,
                     pos: (508, 260),
+                    show: LookRow,
                     kind: Text(
                         format: "{look_feature_color}",
                     ),
@@ -860,10 +929,57 @@
                     anchor: TopLeft,
                     pos: (572, 261),
                     size: Some((14, 14)),
+                    show: LookRow,
                     kind: Button(
                         label: "▶",
                         action: Look(
                             part: "feature_color",
+                            step: 1,
+                        ),
+                    ),
+                ),
+                (
+                    id: "head_label",
+                    anchor: TopLeft,
+                    pos: (278, 281),
+                    show: LookRow,
+                    kind: Text(
+                        format: "머리 사물",
+                    ),
+                ),
+                (
+                    id: "head_prev",
+                    anchor: TopLeft,
+                    pos: (330, 282),
+                    size: Some((14, 14)),
+                    show: LookRow,
+                    kind: Button(
+                        label: "◀",
+                        action: Look(
+                            part: "head",
+                            step: -1,
+                        ),
+                    ),
+                ),
+                (
+                    id: "head_value",
+                    anchor: TopLeft,
+                    pos: (348, 281),
+                    show: LookRow,
+                    kind: Text(
+                        format: "{look_head}",
+                    ),
+                ),
+                (
+                    id: "head_next",
+                    anchor: TopLeft,
+                    pos: (470, 282),
+                    size: Some((14, 14)),
+                    show: LookRow,
+                    kind: Button(
+                        label: "▶",
+                        action: Look(
+                            part: "head",
                             step: 1,
                         ),
                     ),

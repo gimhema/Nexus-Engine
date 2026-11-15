@@ -165,6 +165,8 @@ pub(crate) const PLACEHOLDERS: &[&str] = &[
     "look_hat_color",
     "look_cape",
     "look_cape_color",
+    "look_head",
+    "look_head_color",
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -409,10 +411,13 @@ pub(crate) enum Show {
     ItemsOpen,
     /// 플레이어가 쓰러져 있는 동안만 — 어둡게 덮기·"N초 뒤 일어납니다".
     Down,
+    /// 캐릭터 만들기(C3)의 한 줄 — **위젯 이름 앞부분이 분류**(`eyes_prev`·`hair_back_label`)이고, 고른 템플릿에
+    /// 그 분류의 파츠가 없으면 숨는다 (오브젝트헤드 템플릿에는 눈·입·머리카락 줄이 없다). 분류가 아닌 이름은 늘 보인다.
+    LookRow,
 }
 
 impl Show {
-    pub(crate) const ALL: [Self; 3] = [Self::Always, Self::ItemsOpen, Self::Down];
+    pub(crate) const ALL: [Self; 4] = [Self::Always, Self::ItemsOpen, Self::Down, Self::LookRow];
 
     fn is_default(&self) -> bool {
         matches!(self, Self::Always)
@@ -423,14 +428,19 @@ impl Show {
             Self::Always => "항상",
             Self::ItemsOpen => "인벤토리 열었을 때",
             Self::Down => "쓰러져 있을 때",
+            Self::LookRow => "템플릿에 그 분류가 있을 때",
         }
     }
 
-    fn visible(self, values: &Values) -> bool {
+    fn visible(self, values: &Values, id: &str) -> bool {
         match self {
             Self::Always => true,
             Self::ItemsOpen => values.show_items,
             Self::Down => values.down,
+            Self::LookRow => values.look.as_ref().is_none_or(|look| {
+                crate::appearance::row_category(id)
+                    .is_none_or(|cat| !look.absent.iter().any(|a| a == cat))
+            }),
         }
     }
 }
@@ -770,6 +780,8 @@ pub(crate) struct LookView {
     /// 남·동·북·서 — `(칸 UV, [(텍스처, 색)])`.
     pub(crate) views: Vec<(UvRect, crate::sprites::Layers)>,
     pub(crate) texts: Vec<(String, String)>,
+    /// 고른 템플릿에 없는 분류 — [`Show::LookRow`] 줄을 숨긴다.
+    pub(crate) absent: Vec<String>,
 }
 
 /// NPC 창 값 (R4b).
@@ -1355,7 +1367,7 @@ impl Screens {
             return;
         }
         for w in widgets {
-            if !w.show.visible(values) || out.len() >= MAX_DRAWN {
+            if !w.show.visible(values, &w.id) || out.len() >= MAX_DRAWN {
                 continue;
             }
             let rect = self.rect_in(w, parent, values);

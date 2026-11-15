@@ -78,6 +78,28 @@
         // 장비는 기본 스탯 보너스(stats)와 입을 수 있는 직업(classes, 비우면 누구나)을 가질 수 있다 (R2).
         1101: Equipment(slot: Weapon, attack: 12, defense: 0, classes: [1, 3], value: 200),  // 숏소드 — 마법사는 못 든다
         2101: Equipment(slot: Head, attack: 0, defense: 4, value: 120),     // 모자
+        // grim 오브젝트헤드 장비 — 외형 파츠는 display.ron (2026-11-15). 투구(Head)는 외형 없이 능력치만 — 모자(2101).
+        1201: Equipment(slot: Weapon, attack: 14, defense: 0, value: 240),  // 장검
+        1202: Equipment(slot: Weapon, attack: 9, defense: 0, value: 160),  // 지팡이
+        1203: Equipment(slot: Weapon, attack: 11, defense: 0, value: 120),  // 나무 망치
+        1204: Equipment(slot: Weapon, attack: 12, defense: 0, value: 300),  // 지팡이칼
+        2201: Equipment(slot: Body, attack: 0, defense: 3, value: 140),  // 수도복
+        2202: Equipment(slot: Body, attack: 0, defense: 4, value: 320),  // 귀족 외투
+        2203: Equipment(slot: Body, attack: 0, defense: 1, value: 20),  // 넝마
+        2204: Equipment(slot: Body, attack: 0, defense: 3, value: 160),  // 여행 외투
+        2205: Equipment(slot: Body, attack: 0, defense: 9, value: 600),  // 판금 갑옷
+        2301: Equipment(slot: Legs, attack: 0, defense: 2, value: 80),  // 바지
+        2302: Equipment(slot: Legs, attack: 0, defense: 2, value: 80),  // 여행 바지
+        2303: Equipment(slot: Legs, attack: 0, defense: 1, value: 10),  // 해진 바지
+        2304: Equipment(slot: Legs, attack: 0, defense: 5, value: 380),  // 정강이받이
+        2401: Equipment(slot: Shoes, attack: 0, defense: 2, value: 120),  // 장화
+        2402: Equipment(slot: Shoes, attack: 0, defense: 1, value: 60),  // 가죽 신
+        2403: Equipment(slot: Shoes, attack: 0, defense: 1, value: 30),  // 샌들
+        2404: Equipment(slot: Shoes, attack: 0, defense: 4, value: 300),  // 철화
+        2405: Equipment(slot: Shoes, attack: 0, defense: 0, value: 5),  // 감은 천
+        2501: Equipment(slot: Hand, attack: 0, defense: 1, value: 90),  // 흰 장갑
+        2502: Equipment(slot: Hand, attack: 0, defense: 1, value: 60),  // 가죽 장갑
+        2503: Equipment(slot: Hand, attack: 1, defense: 3, value: 260),  // 건틀릿
         // 스킬북 (R3) — 쓰면 그 스킬을 배운다 / 한 레벨 올린다. 드롭 표·상점에 실으면 그것이 습득 경로다.
         3001: SkillBook(skill: 7, max_stack: 5, value: 300),   // 회오리 베기 비급 — 전사는 이미 가졌다
         3002: SkillBook(skill: 9, max_stack: 5, value: 800),   // 화염구 마도서 — 상점 1 이 판다
@@ -252,6 +274,12 @@
         (item: 501, count: 3),
         (item: 502, count: 2),
         (item: 1101, count: 1),
+        // 나그네 한 벌 — 오브젝트헤드 장비 외형 견본 (인벤토리에서 입는다)
+        (item: 2204, count: 1),
+        (item: 2302, count: 1),
+        (item: 2402, count: 1),
+        (item: 2502, count: 1),
+        (item: 1202, count: 1),
     ],
     // 플레이어 기본 부활 — 쓰러지면 delay_ms 뒤 저장 지점(처음 선 자리, 이어 하기면 저장한 자리)에서
     // 최대치의 hp_percent 로 일어나고, 지금 레벨의 경험치를 exp_loss_percent 만큼 잃는다.
@@ -292,6 +320,23 @@
                 (item: 504, price: 80),
                 (item: 2101, price: 250),
                 (item: 3002, price: 1000),
+                // grim 장비 — 값의 1.5배
+                (item: 1201, price: 360),
+                (item: 1203, price: 180),
+                (item: 1204, price: 450),
+                (item: 2201, price: 210),
+                (item: 2202, price: 480),
+                (item: 2203, price: 30),
+                (item: 2205, price: 900),
+                (item: 2301, price: 120),
+                (item: 2303, price: 15),
+                (item: 2304, price: 570),
+                (item: 2401, price: 180),
+                (item: 2403, price: 45),
+                (item: 2404, price: 450),
+                (item: 2405, price: 7),
+                (item: 2501, price: 135),
+                (item: 2503, price: 390),
             ],
             buy_rate: 500,
         ),

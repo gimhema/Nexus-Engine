@@ -693,6 +693,7 @@ enum SlotFile {
     Body,
     Hand,
     Shoes,
+    Legs,
     /// 장신구 종류 번호 — 칸 수는 `accessory_slots`, 이름은 `display.ron` 의 `accessories`.
     Accessory(u16),
 }
@@ -2014,6 +2015,7 @@ impl GameData {
             EquipSlot::Body => "몸".to_owned(),
             EquipSlot::Hand => "손".to_owned(),
             EquipSlot::Shoes => "신발".to_owned(),
+            EquipSlot::Legs => "하의".to_owned(),
             EquipSlot::Accessory(kind) => self.accessory_name(kind.0),
         };
         if count > 1 {
@@ -2310,6 +2312,7 @@ impl From<SlotFile> for EquipSlot {
             SlotFile::Body => Self::Body,
             SlotFile::Hand => Self::Hand,
             SlotFile::Shoes => Self::Shoes,
+            SlotFile::Legs => Self::Legs,
             SlotFile::Accessory(kind) => Self::Accessory(AccessoryKind(kind)),
         }
     }
@@ -2751,18 +2754,20 @@ pub(crate) enum SlotChoice {
     Body,
     Hand,
     Shoes,
+    Legs,
     /// 장신구 종류 번호.
     Accessory(u16),
 }
 
 impl SlotChoice {
     /// 칸 수가 하나로 고정된 자리. 장신구는 데이터의 종류 목록에서 고른다.
-    pub(crate) const FIXED: [Self; 5] = [
+    pub(crate) const FIXED: [Self; 6] = [
         Self::Weapon,
         Self::Head,
         Self::Body,
         Self::Hand,
         Self::Shoes,
+        Self::Legs,
     ];
 
     /// 화면 이름. 장신구는 `names`(`display.ron` 의 `accessories`)에서 찾는다.
@@ -2773,6 +2778,7 @@ impl SlotChoice {
             Self::Body => "몸".to_owned(),
             Self::Hand => "손".to_owned(),
             Self::Shoes => "신발".to_owned(),
+            Self::Legs => "하의".to_owned(),
             Self::Accessory(kind) => accessory_name(names, kind),
         }
     }
@@ -2784,6 +2790,7 @@ impl SlotChoice {
             Self::Body => "Body".to_owned(),
             Self::Hand => "Hand".to_owned(),
             Self::Shoes => "Shoes".to_owned(),
+            Self::Legs => "Legs".to_owned(),
             Self::Accessory(kind) => format!("Accessory({kind})"),
         }
     }
@@ -2805,6 +2812,7 @@ impl From<SlotFile> for SlotChoice {
             SlotFile::Body => Self::Body,
             SlotFile::Hand => Self::Hand,
             SlotFile::Shoes => Self::Shoes,
+            SlotFile::Legs => Self::Legs,
             SlotFile::Accessory(kind) => Self::Accessory(kind),
         }
     }
@@ -3998,10 +4006,22 @@ mod tests {
         );
         let data = GameData::parse(EMBEDDED_RULES, &display).unwrap();
         let items = data.sprite_sources().item_parts;
-        assert_eq!(items.len(), 1, "{items:?}");
-        assert_eq!(items[0].0, ItemId(2101));
-        assert_eq!(items[0].1[0].tint, [1.0, 0.5, 0.5, 1.0]);
-        assert_eq!(items[0].1[0].slot, None);
+        // grim 장비(1201~2503)도 외형 파츠를 가진다 — 모자와 숏소드만 본다
+        assert!(
+            !items.iter().any(|(id, _)| *id == ItemId(1101)),
+            "숏소드는 외형이 없다"
+        );
+        let hat = items
+            .iter()
+            .find(|(id, _)| *id == ItemId(2101))
+            .expect("모자");
+        assert_eq!(hat.1[0].tint, [1.0, 0.5, 0.5, 1.0]);
+        assert_eq!(hat.1[0].slot, None);
+        let plate = items
+            .iter()
+            .find(|(id, _)| *id == ItemId(2205))
+            .expect("판금 갑옷");
+        assert_eq!(plate.1.len(), 2, "판금 = 상의 + 망토 두 장");
     }
 
     /// 새 모양 스킬 (K1) — 조준·범위·효과 목록이 읽히고, 표 편집기를 지나도 그대로 남는다.

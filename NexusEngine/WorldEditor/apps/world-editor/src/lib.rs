@@ -1387,6 +1387,7 @@ impl Editor {
         let (creator, ..) = self.making.as_ref()?;
         let mut view = screen::LookView {
             texts: creator.texts(),
+            absent: creator.absent_categories(),
             ..Default::default()
         };
         let sprites = self.sprites.as_ref()?;
@@ -2015,6 +2016,18 @@ impl Editor {
                 if let Some(session) = self.play.take() {
                     self.save_game(&session);
                     self.play = Some(session);
+                }
+            }
+            Step::Equip(item) => {
+                let done = self
+                    .play
+                    .as_mut()
+                    .is_some_and(|p| p.equip_item(nexus_sim::ItemId(item)));
+                if !done {
+                    self.notify(
+                        format!("NEXUS_SCRIPT: 장비 가방에 아이템 {item} 이 없습니다"),
+                        true,
+                    );
                 }
             }
             Step::DeleteSave => {

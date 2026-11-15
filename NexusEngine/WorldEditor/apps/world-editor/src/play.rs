@@ -1859,6 +1859,24 @@ impl PlaySession {
         Ok((target, skill))
     }
 
+    /// 장비 가방에서 `item` 을 찾아 입는다 — 인벤토리 패널과 같은 경로(`Intent::Equip`). 없으면 `false`.
+    pub(crate) fn equip_item(&mut self, item: ItemId) -> bool {
+        let slot = self.world().unit(self.player).and_then(|u| {
+            u.inventory()
+                .bag(BagKind::Equipment)
+                .iter()
+                .find(|(_, st)| st.item == item)
+                .and_then(|(slot, _)| u16::try_from(slot).ok())
+        });
+        match slot {
+            Some(slot) => {
+                self.inventory(InventoryAction::Equip(slot));
+                true
+            }
+            None => false,
+        }
+    }
+
     /// 인벤토리 패널 조작.
     pub(crate) fn inventory(&mut self, action: InventoryAction) {
         let unit = self.player;
@@ -3620,7 +3638,8 @@ mod tests {
     #[test]
     fn items_that_no_longer_exist_are_dropped_instead_of_blocking_play() {
         let mut save = session().save_data(String::new());
-        save.bags.push((5, ItemId(9_999), 1));
+        // 시작 소지품이 앞 칸을 쓰므로 비어 있는 먼 칸에 둔다
+        save.bags.push((100, ItemId(9_999), 1));
         save.equipped.push(ItemId(9_998));
         let s = PlaySession::start(
             &Scene::server_default(),
@@ -3636,7 +3655,7 @@ mod tests {
         )
         .expect("없는 아이템 때문에 플레이가 막히면 안 된다");
         let inv = s.world().unit(s.player()).unwrap().inventory();
-        assert_eq!(inv.bag(BagKind::Equipment).get(5), None);
+        assert_eq!(inv.bag(BagKind::Equipment).get(100), None);
     }
 
     #[test]

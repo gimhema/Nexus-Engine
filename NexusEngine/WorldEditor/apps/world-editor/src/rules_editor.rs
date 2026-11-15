@@ -529,7 +529,8 @@ mod tests {
             nexus_sim::Tile::default(),
         ));
         data.install(&mut world);
-        assert_eq!(world.equip_positions().len(), 5 + 1 + 4 + 2 + 2);
+        // 고정 여섯 곳(무기·머리·몸·손·신발·하의) + 목걸이 1 · 반지 4 · 귀걸이 2 · 발찌 2
+        assert_eq!(world.equip_positions().len(), 6 + 1 + 4 + 2 + 2);
         assert_eq!(data.accessory_name(4), "발찌");
 
         let twice = [rows[0].clone(), rows[0].clone()];

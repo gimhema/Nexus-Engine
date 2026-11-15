@@ -34,7 +34,9 @@ use crate::sprites::PartRef;
 pub(crate) const CATALOG_DIR: &str = "assets/worldcanvas/paperdoll";
 
 /// 커스터마이징 화면에서 고르는 분류 — `(분류, 화면 이름, 비울 수 있나)`. 화면의 줄 순서다.
-pub(crate) const CATEGORIES: [(&str, &str, bool); 10] = [
+pub(crate) const CATEGORIES: [(&str, &str, bool); 11] = [
+    // 오브젝트헤드 템플릿의 머리 사물 (등불·새장·종·촛대 …) — 그 템플릿에는 눈·입·머리카락이 없다
+    ("head", "머리 사물", false),
     ("eyes", "눈", false),
     ("face", "입", false),
     ("hair", "머리", true),
@@ -101,6 +103,7 @@ enum SlotName {
     Body,
     Hand,
     Shoes,
+    Legs,
 }
 
 impl From<SlotName> for EquipSlot {
@@ -111,6 +114,7 @@ impl From<SlotName> for EquipSlot {
             SlotName::Body => Self::Body,
             SlotName::Hand => Self::Hand,
             SlotName::Shoes => Self::Shoes,
+            SlotName::Legs => Self::Legs,
         }
     }
 }
@@ -399,6 +403,18 @@ impl Creator {
         &self.catalog.templates[self.template]
     }
 
+    /// 고른 템플릿에 파츠가 하나도 없는 분류 (종족 특징 `feature` 포함) — 그 줄은 화면에서 숨긴다.
+    pub(crate) fn absent_categories(&self) -> Vec<String> {
+        let t = self.template();
+        CATEGORIES
+            .iter()
+            .map(|(c, ..)| *c)
+            .chain(["feature"])
+            .filter(|c| t.of(c).next().is_none())
+            .map(str::to_owned)
+            .collect()
+    }
+
     /// 버튼 하나 — `what` 을 `step` 칸 넘긴다 ([`look_target_ok`] 의 이름).
     pub(crate) fn step(&mut self, what: &str, step: i32) {
         match what {
@@ -481,7 +497,7 @@ impl Creator {
             let roll = self.next_random(n);
             // 눈·입은 늘 있고, 상의·하의는 대체로 입힌다 — 맨몸이 너무 자주 나오지 않게.
             let pick = match (cat, roll) {
-                ("eyes" | "face", r) => r.max(1),
+                ("head" | "eyes" | "face", r) => r.max(1),
                 ("top" | "bottom" | "shoes", 0) => 1,
                 (_, r) => r,
             };
@@ -514,15 +530,25 @@ impl Creator {
             .get(self.skin)
             .map_or([1.0; 4], |(_, c)| *c);
         let mut parts = Vec::new();
-        for (cat, ..) in CATEGORIES {
-            let Some(Some(key)) = self.pick.get(cat) else {
-                continue;
+        for (cat, _, optional) in CATEGORIES {
+            let picked = self
+                .pick
+                .get(cat)
+                .cloned()
+                .flatten()
+                .filter(|key| t.part(key).is_some());
+            // 비울 수 없는 분류는 고른 것이 이 템플릿에 없으면 첫 파츠 — 템플릿마다 분류가 다르다
+            // (오브젝트헤드는 머리 사물만, 사람 템플릿은 눈·입). 그 분류가 아예 없는 템플릿은 건너뛴다.
+            let key = match picked {
+                Some(k) => k,
+                None if !optional => match t.of(cat).next() {
+                    Some(p) => p.key.clone(),
+                    None => continue,
+                },
+                None => continue,
             };
-            if t.part(key).is_none() {
-                continue;
-            }
             let colour = self.colour_of(cat).map_or([1.0; 4], |(_, c)| *c);
-            parts.push((key.clone(), rgb(colour)));
+            parts.push((key, rgb(colour)));
         }
         // 종족 특징 — 늘 붙는다. 색은 색 묶음을 따른다.
         let hair = self.colour_of("hair").map_or([1.0; 4], |(_, c)| *c);
@@ -564,11 +590,17 @@ impl Creator {
                     .map_or_else(String::new, |(n, _)| n.clone()),
             ),
         ];
-        for (cat, ..) in CATEGORIES {
+        for (cat, _, optional) in CATEGORIES {
             let name = match self.pick.get(cat) {
-                Some(Some(key)) => t
-                    .part(key)
+                Some(Some(key)) if t.part(key).is_some() => {
+                    t.part(key).map_or_else(String::new, |p| short(&p.name))
+                }
+                // 비울 수 없는 분류는 고른 것이 없으면 첫 파츠를 입는다 (appearance 와 같은 규칙)
+                _ if !optional => t
+                    .of(cat)
+                    .next()
                     .map_or_else(|| String::from("—"), |p| short(&p.name)),
+                Some(Some(_)) => String::from("—"),
                 _ => String::from("없음"),
             };
             out.push((format!("look_{cat}"), name));
@@ -597,6 +629,17 @@ impl Creator {
         out.push((String::from("look_feature_color"), horn));
         out
     }
+}
+
+/// 캐릭터 만들기 화면의 줄 이름(`eyes_prev`·`hair_back_label`·`feature_color`)이 가리키는 분류 —
+/// 가장 긴 분류 이름이 앞에 오는 것 (`hair_back_…` 은 `hair` 가 아니라 `hair_back`). 분류가 아니면 `None`.
+pub(crate) fn row_category(id: &str) -> Option<&'static str> {
+    CATEGORIES
+        .iter()
+        .map(|(c, ..)| *c)
+        .chain(["feature"])
+        .filter(|c| id.strip_prefix(c).is_some_and(|rest| rest.starts_with('_')))
+        .max_by_key(|c| c.len())
 }
 
 /// `눈 — 동그란` → `동그란`. 화면 칸이 좁다.
@@ -728,6 +771,55 @@ mod tests {
                 "{look:?}"
             );
         }
+    }
+
+    #[test]
+    fn object_head_templates_always_wear_a_head_and_no_face() {
+        let Some(cat) = catalog() else { return };
+        if !cat.templates.iter().any(|t| t.key == "grim") {
+            return; // grim 생성기를 돌리지 않은 작업 폴더
+        }
+        let mut c = Creator::new(cat, 3);
+        while c.appearance().template != "grim" {
+            c.step("template", 1);
+        }
+        let heads = |c: &Creator| {
+            c.appearance()
+                .parts
+                .iter()
+                .filter(|(k, _)| k.starts_with("head_"))
+                .count()
+        };
+        // 고르지 않아도 첫 머리 사물 — 머리는 비울 수 없다. 눈·입·머리카락은 이 템플릿에 없다.
+        assert_eq!(heads(&c), 1);
+        let first = c.appearance().parts.clone();
+        assert!(
+            first.iter().all(|(k, _)| k.starts_with("head_")),
+            "{first:?}"
+        );
+        c.step("head", 1);
+        assert_eq!(heads(&c), 1);
+        assert_ne!(c.appearance().parts, first, "다음 머리 사물로");
+        for _ in 0..10 {
+            c.step("random", 0);
+            assert_eq!(heads(&c), 1);
+        }
+    }
+
+    #[test]
+    fn row_names_map_to_the_longest_category() {
+        assert_eq!(row_category("hair_back_label"), Some("hair_back"));
+        assert_eq!(row_category("hair_prev"), Some("hair"));
+        assert_eq!(row_category("eyes_color_next"), Some("eyes"));
+        assert_eq!(row_category("feature_value"), Some("feature"));
+        assert_eq!(row_category("head_next"), Some("head"));
+        assert_eq!(row_category("skin_label"), None);
+        assert_eq!(row_category("random"), None);
+        assert_eq!(
+            row_category("hairdo"),
+            None,
+            "밑줄 없이 이어지면 분류가 아니다"
+        );
     }
 
     #[test]

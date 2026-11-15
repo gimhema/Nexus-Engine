@@ -392,6 +392,8 @@ pub struct SheetDef {
     pub clips: Vec<ClipDef>,
     /// 이 스프라이트가 지닌 점광원 — `.sheet.ron` 의 `lights` (WorldEditor 가 조명 켠 장면에서 비춘다).
     pub lights: Vec<LightDef>,
+    /// 파츠로 쓸 때의 앞뒤 — 하나면 `layer`, 방향 수만큼이면 `layer_by_direction` (몸 = 0, 큰 쪽이 앞).
+    pub layer: Option<Vec<i32>>,
     pub line: usize,
 }
 
