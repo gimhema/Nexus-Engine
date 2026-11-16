@@ -33,6 +33,14 @@ pub enum Intent {
     MoveTo { unit: Entity, target: Vec2 },
     /// 제자리에 멈춘다.
     Stop { unit: Entity },
+    /// 횡스크롤 — 키보드로 걷는다. `dir` 의 부호만 본다(-1 왼쪽 · 0 멈춤 · 1 오른쪽).
+    /// 방향을 바꿀 때만 내면 된다. 쿼터뷰 존이면 `NotPlatformer` 로 거절된다.
+    Walk { unit: Entity, dir: i8 },
+    /// 횡스크롤 — 뛴다. 땅·발판 위나 사다리에서만.
+    Jump { unit: Entity },
+    /// 횡스크롤 — 사다리를 오르내린다(1 위 · -1 아래 · 0 매달려 멈춤). 사다리가 없는 발판 위에서
+    /// 아래면 발판에서 내려선다.
+    Climb { unit: Entity, dir: i8 },
     /// `skill` 로 `target` 유닛을 공격한다. 사거리 밖이면 거절된다 —
     /// 다가가는 것은 Intent 를 내는 쪽(입력·AI)의 일이다.
     Attack {
@@ -144,6 +152,9 @@ impl Intent {
         match *self {
             Self::MoveTo { unit, .. }
             | Self::Stop { unit }
+            | Self::Walk { unit, .. }
+            | Self::Jump { unit }
+            | Self::Climb { unit, .. }
             | Self::Attack { unit, .. }
             | Self::PickUp { unit, .. }
             | Self::DropItem { unit, .. }
@@ -173,6 +184,12 @@ pub enum Rejection {
     UnknownEntity,
     /// 목적지까지 걸어서 갈 길이 없다 (벽·레벨·맵 밖).
     NoPath,
+    /// 횡스크롤 존이 아니다 — 걷기·점프·사다리 Intent 는 횡스크롤 존에서만.
+    NotPlatformer,
+    /// 공중에서는 뛸 수 없다.
+    NotOnGround,
+    /// 잡을 사다리가 없다 (내려설 발판도 없다).
+    NoLadder,
     /// 이동 속도가 0 인 유닛.
     Immobile,
     /// Intent 를 낸 유닛이 죽어 있다.
@@ -538,6 +555,9 @@ fn apply(world: &mut SimWorld, intent: Intent, events: &mut Vec<Event>) -> Resul
     match intent {
         Intent::MoveTo { unit, target } => world.plan_move(unit, target),
         Intent::Stop { unit } => world.stop(unit),
+        Intent::Walk { unit, dir } => world.walk(unit, dir),
+        Intent::Jump { unit } => world.jump(unit),
+        Intent::Climb { unit, dir } => world.climb(unit, dir),
         Intent::Attack {
             unit,
             target,

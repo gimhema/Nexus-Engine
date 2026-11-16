@@ -220,6 +220,10 @@ struct Editor {
     hover: Option<Pick>,
     /// 다음 뷰포트 확정 후 실행할 시점 맞추기.
     pending_view: Option<ViewRequest>,
+    /// 스크립트가 누르고 있는 횡스크롤 키 `(걷기, 사다리)` — `key` 단계가 바꾼다.
+    script_keys: (i8, i8),
+    /// 스크립트의 `jump` — 다음 프레임에 한 번.
+    script_jump: bool,
     /// 프레임마다 재사용하는 명령 버퍼 — 매 프레임 할당을 피한다.
     commands: Vec<RenderCommand>,
     /// 마커 스프라이트 시트. 렌더러 초기화 후에 올라간다.
@@ -319,6 +323,8 @@ impl Default for Editor {
             camera: Camera2d::default(),
             hover: None,
             pending_view: None,
+            script_keys: (0, 0),
+            script_jump: false,
             commands: Vec::new(),
             sprites: None,
             terrain: Terrain::default(),
@@ -369,6 +375,14 @@ impl Editor {
     fn reset_view(&mut self) {
         let zone = self.scene.zone;
         self.frame_rect(zone.min, zone.max);
+    }
+
+    /// 열려 있는 존을 쓰는 레벨의 시점. 레벨에 묶이지 않은 존이면 쿼터뷰.
+    fn scene_view(&self) -> level::ViewMode {
+        self.levels
+            .find_by_zone(self.zone_path.as_deref())
+            .map(|id| self.levels.view_of(id))
+            .unwrap_or_default()
     }
 
     /// 선택 항목이 보이도록 (F). 선택이 없으면 모든 마커를 담는다.
@@ -613,6 +627,10 @@ impl Editor {
         self.scene = scene;
         self.zone_path = Some(path);
         self.hover = None;
+        // 횡스크롤 존은 단면을 정면에서 본다 — 쿼터뷰로 열면 위아래가 눌려 배치가 어렵다.
+        if self.scene_view().platformer() {
+            level::ViewMode::Side.apply(&mut self.camera);
+        }
         // 선택이 없으면 모든 마커가 보이도록 맞춘다.
         self.pending_view = Some(ViewRequest::Selection);
     }
@@ -1335,7 +1353,16 @@ impl Editor {
             }
             Action::Customize { class, level } => {
                 match appearance::Catalog::load(std::path::Path::new(".")) {
-                    Ok(catalog) => {
+                    Ok(mut catalog) => {
+                        // 게임의 캐릭터 컨셉 (data/project.ron) — 오브젝트헤드 게임이면 그 체형만 고른다.
+                        if !catalog.keep_concept(self.levels.characters()) {
+                            self.notify(
+                                String::from(
+                                    "캐릭터 컨셉에 맞는 템플릿이 카탈로그에 없어 전부 보여 줍니다 — 생성기를 돌렸는지 확인하세요",
+                                ),
+                                true,
+                            );
+                        }
                         let seed = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map_or(1, |d| d.as_nanos() as u64);
@@ -1583,6 +1610,19 @@ impl Editor {
         if let Some(key) = actions.skill_key {
             session.use_skill(key);
         }
+        // 횡스크롤 키보드 — 실제 키와 스크립트의 `key`·`jump` 를 합친다.
+        let jump = actions.side_jump || std::mem::take(&mut self.script_jump);
+        let walk = if actions.side_walk != 0 {
+            actions.side_walk
+        } else {
+            self.script_keys.0
+        };
+        let climb = if actions.side_climb != 0 {
+            actions.side_climb
+        } else {
+            self.script_keys.1
+        };
+        session.side_input(walk, climb, jump);
         if !grabbed
             && let Some(p) = pointer
             && p.pressed
@@ -1654,6 +1694,12 @@ impl Editor {
         self.camera.center = at;
         self.camera
             .set_pixels_per_meter(self.fixed_zoom.unwrap_or(Camera2d::PIXELS_PER_METER));
+        if self.play.as_ref().is_some_and(|s| s.view().platformer()) {
+            // 횡스크롤 — 존 경계(벽·바닥) 밖은 보여 주지 않는다. 땅 밑이 화면 절반을 먹지 않게.
+            let (min, max) = self.camera.visible_bounds();
+            let zone = self.scene.zone;
+            self.camera.center = side_camera_center(at, (max - min) * 0.5, zone.min, zone.max);
+        }
         self.camera.snap_to_pixel_grid();
     }
 
@@ -2042,6 +2088,8 @@ impl Editor {
                     play.use_skill(key);
                 }
             }
+            Step::Key { walk, climb } => self.script_keys = (walk, climb),
+            Step::Jump => self.script_jump = true,
             Step::Trade(action) => {
                 if let Some(play) = self.play.as_mut() {
                     play.trade(action);
@@ -2247,13 +2295,23 @@ impl Editor {
             BIAS_ART,
             &mut self.commands,
         );
-        tiles::build(
-            &self.scene.tiles,
-            &self.camera,
-            BIAS_TILE,
-            None,
-            &mut self.commands,
-        );
+        if self.scene_view().platformer() {
+            // 횡스크롤 존은 블록·발판·사다리 모양이 곧 규칙 표시다 — 게임과 같은 그림으로.
+            tiles::build_side(
+                &self.scene.tiles,
+                &self.camera,
+                BIAS_TILE,
+                &mut self.commands,
+            );
+        } else {
+            tiles::build(
+                &self.scene.tiles,
+                &self.camera,
+                BIAS_TILE,
+                None,
+                &mut self.commands,
+            );
+        }
         self.draw_zone_bounds();
 
         for item in &self.scene.items {
@@ -2375,6 +2433,11 @@ impl Editor {
         }
         self.commands
             .push(RenderCommand::SetLayer(DrawLayer::Ground));
+        let side = play.view().platformer();
+        if side {
+            // 횡스크롤 — 하늘을 맨 뒤에 깐다. 존 경계는 벽이라 따로 그리지 않는다.
+            tiles::build_side_sky(&self.camera, 0.0, &mut self.commands);
+        }
         terrain::build_ground(
             &self.scene.art,
             &self.scene.tiles,
@@ -2383,24 +2446,33 @@ impl Editor {
             BIAS_ART,
             &mut self.commands,
         );
-        // 그림이 있는 칸은 규칙 색을 덮지 않는다 — 플레이 중에는 게임 화면이어야 한다.
-        tiles::build(
-            &self.scene.tiles,
-            &self.camera,
-            BIAS_TILE,
-            Some(&self.scene.art),
-            &mut self.commands,
-        );
-        let zone = self.scene.zone;
-        grid::build_outline(
-            &self.camera,
-            zone.min,
-            zone.max,
-            2.0,
-            BIAS_ZONE,
-            ZONE_BOUNDS_COLOR,
-            &mut self.commands,
-        );
+        if side {
+            tiles::build_side(
+                &self.scene.tiles,
+                &self.camera,
+                BIAS_TILE,
+                &mut self.commands,
+            );
+        } else {
+            // 그림이 있는 칸은 규칙 색을 덮지 않는다 — 플레이 중에는 게임 화면이어야 한다.
+            tiles::build(
+                &self.scene.tiles,
+                &self.camera,
+                BIAS_TILE,
+                Some(&self.scene.art),
+                &mut self.commands,
+            );
+            let zone = self.scene.zone;
+            grid::build_outline(
+                &self.camera,
+                zone.min,
+                zone.max,
+                2.0,
+                BIAS_ZONE,
+                ZONE_BOUNDS_COLOR,
+                &mut self.commands,
+            );
+        }
         play.build_ground(&self.camera, alpha, px, &mut self.commands);
 
         self.commands
@@ -2907,6 +2979,50 @@ impl App for Editor {
         self.ui = None;
         // wgpu 는 Drop 에서 GPU 유휴 대기 후 자원을 해제한다.
         self.renderer = None;
+    }
+}
+
+/// 횡스크롤 카메라 중심 — 플레이어를 화면 아래쪽 1/3 쯤에 두고(위쪽 발판이 더 보이게),
+/// 보이는 범위(`half` = 반 폭·반 높이)가 존 `[min, max]` 를 벗어나지 않게 민다.
+/// 존이 화면보다 작은 축은 존 가운데에 둔다.
+fn side_camera_center(at: Vec2, half: Vec2, min: Vec2, max: Vec2) -> Vec2 {
+    let want = Vec2::new(at.x, at.y + half.y * 0.35);
+    let axis = |v: f32, h: f32, lo: f32, hi: f32| {
+        if hi - lo <= h * 2.0 {
+            (lo + hi) * 0.5
+        } else {
+            v.clamp(lo + h, hi - h)
+        }
+    };
+    Vec2::new(
+        axis(want.x, half.x, min.x, max.x),
+        axis(want.y, half.y, min.y, max.y),
+    )
+}
+
+#[cfg(test)]
+mod side_camera_tests {
+    use super::*;
+
+    #[test]
+    fn the_side_camera_stays_inside_the_zone() {
+        let (min, max) = (Vec2::new(-40.0, -4.0), Vec2::new(40.0, 24.0));
+        let half = Vec2::new(17.0, 10.0);
+        // 마을 왼쪽 끝 — 왼쪽 벽 밖·땅 밑을 보이지 않는다.
+        let c = side_camera_center(Vec2::new(-38.0, 0.0), half, min, max);
+        assert_eq!(c.x, -40.0 + 17.0);
+        assert_eq!(c.y, -4.0 + 10.0);
+        // 가운데·높은 곳은 따라간다 (위로 조금 더 보이게).
+        let c = side_camera_center(Vec2::new(0.0, 7.0), half, min, max);
+        assert_eq!(c, Vec2::new(0.0, 7.0 + 3.5));
+        // 존이 화면보다 작은 축은 가운데.
+        let c = side_camera_center(
+            Vec2::ZERO,
+            Vec2::new(30.0, 20.0),
+            Vec2::splat(-8.0),
+            Vec2::splat(8.0),
+        );
+        assert_eq!(c, Vec2::ZERO);
     }
 }
 

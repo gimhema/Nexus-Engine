@@ -109,6 +109,9 @@ struct RulesFile {
     ground_item_ms: u32,
     #[serde(default)]
     revive: ReviveFile,
+    /// 횡스크롤 물리 — `view: Side` 레벨에서만 쓴다. 적지 않으면 `nexus_sim::Platformer` 기본값.
+    #[serde(default)]
+    platformer: PlatformerFile,
     /// 트리거 — 언제·만약·한다 (R1). 번호 순으로 판정한다. 형식은 `trigger_file` 모듈 doc.
     #[serde(default)]
     triggers: BTreeMap<u32, TriggerFile>,
@@ -225,6 +228,43 @@ struct BuffLookFile {
 
 fn default_buff_color() -> (f32, f32, f32) {
     (0.6, 0.6, 0.6)
+}
+
+/// 횡스크롤 물리 수치 (m, m/s, m/s²). 빠진 칸은 기본값.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct PlatformerFile {
+    gravity: f32,
+    jump_speed: f32,
+    max_fall_speed: f32,
+    climb_speed: f32,
+    /// 몸 상자 `(폭, 키)`.
+    body: (f32, f32),
+}
+
+impl Default for PlatformerFile {
+    fn default() -> Self {
+        let d = nexus_sim::Platformer::default();
+        Self {
+            gravity: d.gravity,
+            jump_speed: d.jump_speed,
+            max_fall_speed: d.max_fall_speed,
+            climb_speed: d.climb_speed,
+            body: (d.body.x, d.body.y),
+        }
+    }
+}
+
+impl PlatformerFile {
+    fn to_sim(self) -> nexus_sim::Platformer {
+        nexus_sim::Platformer {
+            gravity: self.gravity,
+            jump_speed: self.jump_speed,
+            max_fall_speed: self.max_fall_speed,
+            climb_speed: self.climb_speed,
+            body: nexus_core::Vec2::new(self.body.0, self.body.1),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -996,6 +1036,8 @@ pub(crate) struct GameData {
     /// 땅의 아이템 소멸 시간 — `None` 이면 남는다.
     ground_item_lifetime: Option<Duration>,
     revive: RevivePolicy,
+    /// 횡스크롤 물리 — `view: Side` 레벨에서 켠다.
+    platformer: nexus_sim::Platformer,
     /// 경로 → 스크립트 본문. 컴파일은 플레이를 시작할 때 한다.
     script_sources: BTreeMap<String, String>,
     /// 트리거 (R1) — 번호 순.
@@ -1421,6 +1463,20 @@ impl GameData {
             r.ground_item_ms <= MAX_RESPAWN_MS,
             String::from("ground_item_ms 는 1시간 이하"),
         );
+        let p = r.platformer;
+        check(
+            [
+                p.gravity,
+                p.jump_speed,
+                p.max_fall_speed,
+                p.climb_speed,
+                p.body.0,
+                p.body.1,
+            ]
+            .iter()
+            .all(|v| v.is_finite() && *v > 0.0),
+            String::from("platformer: 모든 값은 0 보다 커야 한다"),
+        );
         let equipment: Vec<EquipRef<'_>> = r
             .items
             .iter()
@@ -1690,6 +1746,7 @@ impl GameData {
                 .collect(),
             ground_item_lifetime: (r.ground_item_ms > 0)
                 .then(|| Duration::from_millis(u64::from(r.ground_item_ms))),
+            platformer: r.platformer.to_sim(),
             revive: RevivePolicy {
                 delay: Duration::from_millis(u64::from(r.revive.delay_ms)),
                 hp_per_mille: r.revive.hp_percent * 10,
@@ -2150,6 +2207,11 @@ impl GameData {
     /// 플레이어 기본 부활 규칙.
     pub(crate) fn revive(&self) -> RevivePolicy {
         self.revive
+    }
+
+    /// 횡스크롤 물리 수치 (`rules.ron` 의 `platformer`).
+    pub(crate) fn platformer(&self) -> nexus_sim::Platformer {
+        self.platformer
     }
 
     /// 이 액터 타입이 부활을 스크립트로 맡는가 — 스크립트가 `on_dead` 를 정의했으면.

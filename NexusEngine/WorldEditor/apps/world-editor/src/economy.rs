@@ -302,6 +302,8 @@ pub(crate) fn simulate_level(
             ..PlayOptions::default()
         },
     )?;
+    // 횡스크롤 레벨은 중력이 켜져야 게임과 같다.
+    s.set_view(levels.view_of(id));
 
     let me = s.player();
     let start_gold = gold_of(&s, currency);
@@ -701,6 +703,8 @@ mod tests {
     #[test]
     fn the_sample_rpg_plays_from_new_game_to_the_dungeon_exit() {
         const QUEST: nexus_sim::QuestId = nexus_sim::QuestId(1);
+        // 동굴 입구 — zones/village.zone.ron (마을 오른쪽 끝).
+        const CAVE: nexus_core::Vec2 = nexus_core::Vec2::new(38.0, 0.6);
         let (levels, _) = Levels::load();
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let open = |id: &str, save: Option<crate::save_file::SaveData>| {
@@ -722,6 +726,10 @@ mod tests {
                     ..PlayOptions::default()
                 },
             )
+            .map(|mut s| {
+                s.set_view(levels.view_of(id));
+                s
+            })
             .unwrap()
         };
         // 조건이 설 때까지 틱을 돌린다.
@@ -778,10 +786,10 @@ mod tests {
 
         // 동굴 입구 포털을 밟으면 던전으로.
         let mut to = None;
-        s.click(nexus_core::Vec2::new(8.0, -10.0), 0.01);
+        s.click(CAVE, 0.01);
         until(&mut s, "동굴로 가기", |s| {
             if !s.busy() && s.world().unit(s.player()).unwrap().is_alive() {
-                s.click(nexus_core::Vec2::new(8.0, -10.0), 0.01);
+                s.click(CAVE, 0.01);
             }
             to = s.take_travel();
             to.is_some()
@@ -800,7 +808,7 @@ mod tests {
             let _ = s.take_travel();
             s.clear_lines().is_some_and(|(cleared, _)| cleared)
         });
-        let exit = nexus_core::Vec2::new(0.0, -5.5); // 나가는 문 — zones/dungeon.zone.ron
+        let exit = nexus_core::Vec2::new(-18.5, 0.6); // 나가는 문 — zones/dungeon.zone.ron (왼쪽 끝)
         let mut out = None;
         until(&mut d, "나가는 문", |s| {
             if !s.busy() && s.world().unit(s.player()).unwrap().is_alive() {

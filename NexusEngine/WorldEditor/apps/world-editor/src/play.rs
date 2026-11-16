@@ -581,8 +581,10 @@ pub(crate) struct PlaySession {
     animators: HashMap<Entity, SpriteAnimator>,
     /// 맞은 유닛의 붉은 깜빡임 — 남은 tick.
     hit_flash: HashMap<Entity, u8>,
-    /// 플레이 시점 — 그리기와 클릭 판정만 바꾼다. 규칙은 시점을 모른다.
+    /// 플레이 시점 — 그리기와 클릭 판정을 바꾼다. 횡스크롤만은 규칙(중력)도 켠다 ([`Self::set_view`]).
     view: ViewMode,
+    /// 횡스크롤 — 지난번에 넘긴 사다리 키 방향 ([`Self::side_input`]).
+    side_climb: i8,
     /// 벨트스크롤에서 왼쪽을 보고 있는 유닛 — 마지막 가로 방향을 기억한다 ([`side_facing_west`]).
     facing_west: HashMap<Entity, bool>,
     order: Order,
@@ -819,6 +821,7 @@ impl PlaySession {
             hit_flash: HashMap::new(),
             view: ViewMode::default(),
             facing_west: HashMap::new(),
+            side_climb: 0,
             order: Order::Idle,
             hotbar,
             abandon_armed: None,
@@ -841,9 +844,53 @@ impl PlaySession {
         Ok(session)
     }
 
-    /// 플레이 시점을 정한다 — 레벨 파일의 `view`.
+    /// 플레이 시점을 정한다 — 레벨 파일의 `view`. 횡스크롤이면 중력도 켠다 (설정 작업).
     pub(crate) fn set_view(&mut self, view: ViewMode) {
         self.view = view;
+        let physics = view.platformer().then(|| self.data.platformer());
+        self.auth.world_mut().set_platformer(physics);
+    }
+
+    /// 횡스크롤 키보드 입력. 매 tick 지금 눌린 상태를 넘기면 **바뀐 것만** Intent 로 낸다.
+    /// `walk`·`climb` 는 -1·0·1, `jump` 는 이번에 눌렸는가.
+    pub(crate) fn side_input(&mut self, walk: i8, climb: i8, jump: bool) {
+        if !self.view.platformer() {
+            return;
+        }
+        let me = self.player;
+        let Some(u) = self.auth.world().unit(me).filter(|u| u.is_alive()) else {
+            return;
+        };
+        let (cur_walk, climbing) = (u.walk_dir(), u.is_climbing());
+        if walk != 0 || climb != 0 || jump {
+            // 직접 움직이면 클릭으로 낸 주문(치기·줍기·말 걸기 다가가기)은 그만둔다.
+            self.order = Order::Idle;
+            self.chase_goal = None;
+        }
+        if walk != cur_walk {
+            self.auth.submit(Intent::Walk {
+                unit: me,
+                dir: walk,
+            });
+        }
+        // 사다리는 누르고 있는 동안만 움직인다 — 떼면 매달려 멈춘다.
+        if climb != self.side_climb || (climb != 0 && !climbing) {
+            self.side_climb = climb;
+            if climb != 0 || climbing {
+                self.auth.submit(Intent::Climb {
+                    unit: me,
+                    dir: climb,
+                });
+            }
+        }
+        if jump {
+            self.auth.submit(Intent::Jump { unit: me });
+        }
+    }
+
+    /// 플레이 시점.
+    pub(crate) fn view(&self) -> ViewMode {
+        self.view
     }
 
     /// 시작 전 에디터 카메라.
@@ -2054,6 +2101,26 @@ impl PlaySession {
             }
         };
 
+        // 횡스크롤 — 대상 바로 아래(위)까지 걸어왔는데도 닿지 않으면 다른 발판에 있는 것이다.
+        // 클릭 주문은 길찾기가 없으므로(점프·사다리는 사람이 한다) 여기서 그만둔다.
+        let out_of_reach = self.view.platformer()
+            && self.chase_goal.is_some()
+            && u.is_grounded()
+            && !u.is_moving()
+            && (u.pos().x - goal.x).abs() < 0.5
+            && u.pos().distance(goal) > reach;
+        if out_of_reach {
+            self.order = Order::Idle;
+            self.chase_goal = None;
+            if self.log.len() == LOG_LINES {
+                self.log.pop_front();
+            }
+            self.log.push_back(String::from(
+                "닿지 않는 곳입니다 — 점프하거나 사다리로 올라가세요",
+            ));
+            return Vec::new();
+        }
+
         let mut out = Vec::new();
         if u.pos().distance(goal) <= reach {
             if u.is_moving() {
@@ -2353,6 +2420,14 @@ impl PlaySession {
                 // 쿨타임은 주문이 계속 기다리면 되는 일이다. 그 밖의 거절은 주문을 끝낸다
                 // — 그대로 두면 매 tick 같은 거절이 반복된다.
                 if matches!(reason, Rejection::OnCooldown | Rejection::Stunned) {
+                    return;
+                }
+                // 횡스크롤 키보드 조작(공중에서 점프·사다리 없는 데서 ↑)은 조용히 넘긴다 — 키를 누르고
+                // 있는 동안 매 tick 기록이 쌓이지 않게. 하던 주문도 그대로 둔다.
+                if matches!(
+                    intent,
+                    Intent::Walk { .. } | Intent::Jump { .. } | Intent::Climb { .. }
+                ) {
                     return;
                 }
                 self.order = Order::Idle;
@@ -2807,6 +2882,9 @@ mod text {
         match reason {
             Rejection::UnknownEntity | Rejection::UnknownItem => "대상이 없습니다",
             Rejection::NoPath => "갈 수 없는 곳입니다",
+            Rejection::NotPlatformer => "횡스크롤 존에서만 됩니다",
+            Rejection::NotOnGround => "공중에서는 뛸 수 없습니다",
+            Rejection::NoLadder => "잡을 사다리가 없습니다",
             Rejection::Immobile => "움직일 수 없습니다",
             Rejection::Dead => "쓰러진 상태입니다",
             Rejection::TargetDead => "대상이 이미 쓰러졌습니다",
@@ -4317,20 +4395,24 @@ mod tests {
     fn village() -> PlaySession {
         let scene = crate::zone_file::from_ron(include_str!("../../../zones/village.zone.ron"))
             .expect("마을 존");
-        PlaySession::start(
+        let mut s = PlaySession::start(
             &scene,
             Camera2d::default(),
             GameData::embedded(),
             PlayOptions::default(),
         )
-        .unwrap()
+        .unwrap();
+        // 마을은 횡스크롤 레벨이다 (levels/village.level.ron).
+        s.set_view(ViewMode::Side);
+        s
     }
 
-    /// 플레이용 맵은 존 전체를 덮는다 — 씬의 맵(마을은 64×64)은 그대로다 (R6-3, A안).
+    /// 플레이용 맵은 존 전체를 덮는다 — 씬의 맵(샘플 존은 64×64)은 그대로다 (R6-3, A안).
+    /// (마을은 횡스크롤이 되면서 맵이 존 경계와 같아져 샘플 존으로 본다.)
     #[test]
     fn the_play_map_covers_the_whole_zone_but_the_scene_does_not_change() {
-        let scene = crate::zone_file::from_ron(include_str!("../../../zones/village.zone.ron"))
-            .expect("마을 존");
+        let scene = crate::zone_file::from_ron(include_str!("../../../zones/sample.zone.ron"))
+            .expect("샘플 존");
         let before = (
             scene.tiles.width(),
             scene.tiles.origin(),
@@ -4375,9 +4457,10 @@ mod tests {
     // ── 포털 (R6) ─────────────────────────────────────────────────────────
 
     /// 이 존 파일로 새 게임 — 지금 레벨과 레벨별 입장 조건을 함께 준다.
+    /// 마을·집 안은 횡스크롤 레벨이라 그 시점(중력)으로 연다.
     fn in_level(zone: &str, here: &str, requires: &[(&str, Condition)]) -> PlaySession {
         let scene = crate::zone_file::from_ron(zone).expect("존");
-        PlaySession::start(
+        let mut s = PlaySession::start(
             &scene,
             Camera2d::default(),
             GameData::embedded(),
@@ -4394,7 +4477,9 @@ mod tests {
                 ..PlayOptions::default()
             },
         )
-        .unwrap()
+        .unwrap();
+        s.set_view(ViewMode::Side);
+        s
     }
 
     /// `at` 으로 걸어가며 다른 레벨로 가는 요청이 나올 때까지 돈다.
@@ -4411,19 +4496,21 @@ mod tests {
 
     const VILLAGE: &str = include_str!("../../../zones/village.zone.ron");
     const HOUSE: &str = include_str!("../../../zones/house.zone.ron");
+    /// 마을의 집 문 — `zones/village.zone.ron` (마을 왼쪽 끝).
+    const HOUSE_DOOR: Vec2 = Vec2::new(-38.0, 0.6);
 
     #[test]
     fn the_house_door_leads_inside_and_the_inside_door_leads_back() {
         let mut s = in_level(VILLAGE, "village", &[]);
         assert_eq!(
-            walk_until_travel(&mut s, Vec2::new(-6.5, 4.5)),
-            Some((String::from("house"), Vec2::new(0.0, -2.0)))
+            walk_until_travel(&mut s, HOUSE_DOOR),
+            Some((String::from("house"), Vec2::new(-4.0, 0.0)))
         );
         // 집 안에서 문을 밟으면 마을의 집 앞으로.
         let mut s = in_level(HOUSE, "house", &[]);
         assert_eq!(
-            walk_until_travel(&mut s, Vec2::new(0.0, -3.5)),
-            Some((String::from("village"), Vec2::new(-6.5, 3.0)))
+            walk_until_travel(&mut s, Vec2::new(-6.0, 0.6)),
+            Some((String::from("village"), Vec2::new(-35.5, 0.0)))
         );
     }
 
@@ -4434,7 +4521,7 @@ mod tests {
             value: 5,
         };
         let mut s = in_level(VILLAGE, "village", &[("house", lv5)]);
-        s.click(Vec2::new(-6.5, 4.5), 0.01);
+        s.click(HOUSE_DOOR, 0.01);
         let blocked = (0..400).any(|_| {
             s.tick(DT, None);
             assert_eq!(s.take_travel(), None);
@@ -4447,9 +4534,9 @@ mod tests {
     fn a_portal_to_the_level_you_are_in_moves_you_inside_it() {
         // 지금 레벨을 가리키는 포털은 레벨을 다시 열지 않고 그 자리로 옮긴다.
         let mut s = in_level(VILLAGE, "house", &[]);
-        assert_eq!(walk_until_travel(&mut s, Vec2::new(-6.5, 4.5)), None);
+        assert_eq!(walk_until_travel(&mut s, HOUSE_DOOR), None);
         let pos = s.world().unit(s.player()).unwrap().pos();
-        assert!(pos.distance(Vec2::new(0.0, -2.0)) < 0.01, "{pos}");
+        assert!(pos.distance(Vec2::new(-4.0, 0.0)) < 0.01, "{pos}");
     }
 
     /// R6-2 끝나는 조건: 던전 입장 → 나가는 문이 닫혀 있음 → 보스 처치 → 클리어·보상 → 나가는 문 열림.
@@ -4485,12 +4572,13 @@ mod tests {
             },
         )
         .unwrap();
+        s.set_view(levels.view_of("dungeon"));
         let (cleared, goals) = s.clear_lines().unwrap();
         assert!(!cleared);
         assert_eq!(goals, [(String::from("슬라임 왕 처치 0/1"), false)]);
 
         // 깨기 전에는 나가는 문이 닫혀 있다.
-        let exit = Vec2::new(0.0, -5.5);
+        let exit = Vec2::new(-18.5, 0.6); // 나가는 문 — zones/dungeon.zone.ron (왼쪽 끝)
         s.click(exit, 0.01);
         let blocked = (0..200).any(|_| {
             s.tick(DT, None);
@@ -4527,7 +4615,7 @@ mod tests {
 
         // 이제 열린다 — 마을로.
         let back = walk_until_travel(&mut s, exit);
-        assert_eq!(back, Some((String::from("village"), Vec2::new(8.0, -8.0))));
+        assert_eq!(back, Some((String::from("village"), Vec2::new(35.0, 0.0))));
     }
 
     /// 이름으로 NPC 에게 걸어가 말을 건다.
@@ -4619,13 +4707,13 @@ mod tests {
             2
         );
 
-        // 마을 안 텔레포트: 10 골드 → 광장(0, 0). 멀어지면 창이 닫힌다.
+        // 마을 안 텔레포트: 10 골드 → 광장(-22, 0). 멀어지면 창이 닫힌다.
         s.trade(TradeAction::Teleport {
             teleport: TeleportId(1),
             dest: 0,
         });
         s.tick(DT, None);
-        assert_eq!(s.world().unit(me).unwrap().pos(), Vec2::ZERO);
+        assert_eq!(s.world().unit(me).unwrap().pos(), Vec2::new(-22.0, 0.0));
         assert_eq!(s.gold(), 80);
         assert!(s.trade_view().is_none());
     }
@@ -4649,7 +4737,7 @@ mod tests {
         s.tick(DT, None);
         assert_eq!(
             s.take_travel(),
-            Some((String::from("village"), Vec2::new(-6.0, 10.0))),
+            Some((String::from("village"), Vec2::new(-26.0, 0.0))),
             "다른 레벨은 에디터가 연다"
         );
         assert!(s.log().any(|l| l == "다른 곳으로 떠난다…"));
@@ -4782,10 +4870,10 @@ mod tests {
             s.quest_lines()[0].goals,
             [(String::from("목표 지점에 가기"), false)]
         );
-        // 광장(0, 0)으로 걸어가면 보고 없이 끝난다.
-        s.auth.world_mut().set_position(me, Vec2::new(6.0, 0.0));
+        // 광장(-22, 0)으로 걸어가면 보고 없이 끝난다.
+        s.auth.world_mut().set_position(me, Vec2::new(-16.0, 0.0));
         let gold = s.gold();
-        s.click(Vec2::ZERO, 0.01);
+        s.click(Vec2::new(-22.0, 0.0), 0.01);
         for _ in 0..200 {
             s.tick(DT, None);
         }

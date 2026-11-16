@@ -13,23 +13,42 @@
             id: "window",
             anchor: Center,
             pos: (0, 0),
-            size: Some((170, 150)),
+            size: Some((320, 196)),
             kind: Panel(
                 frame: true,
             ),
             children: [
                 (
+                    id: "shade",
+                    anchor: Center,
+                    pos: (0, 0),
+                    size: Some((300, 176)),
+                    kind: Fill(
+                        color: (0.08, 0.07, 0.1, 0.85),
+                    ),
+                ),
+                (
                     id: "title",
                     anchor: Top,
                     pos: (0, 12),
                     kind: Text(
-                        format: "직업",
+                        format: "직업 고르기",
+                    ),
+                ),
+                (
+                    id: "intro",
+                    anchor: Top,
+                    pos: (0, 30),
+                    size: Some((280, 30)),
+                    kind: Paragraph(
+                        format: "이 세계 사람들은 머리 대신 사물을 얹고 산다. 직업을 고르면 다음 화면에서 머리 사물을 고른다.",
                     ),
                 ),
                 (
                     id: "warrior",
-                    anchor: Center,
-                    pos: (0, -26),
+                    anchor: TopLeft,
+                    pos: (20, 72),
+                    size: Some((70, 22)),
                     kind: Button(
                         label: "전사",
                         action: Customize(
@@ -39,9 +58,18 @@
                     ),
                 ),
                 (
+                    id: "warrior_note",
+                    anchor: TopLeft,
+                    pos: (100, 76),
+                    kind: Text(
+                        format: "단단한 몸 · 가까이서 벤다",
+                    ),
+                ),
+                (
                     id: "mage",
-                    anchor: Center,
-                    pos: (0, 0),
+                    anchor: TopLeft,
+                    pos: (20, 100),
+                    size: Some((70, 22)),
                     kind: Button(
                         label: "마법사",
                         action: Customize(
@@ -51,9 +79,18 @@
                     ),
                 ),
                 (
+                    id: "mage_note",
+                    anchor: TopLeft,
+                    pos: (100, 104),
+                    kind: Text(
+                        format: "마나로 멀리서 마법을 쏜다",
+                    ),
+                ),
+                (
                     id: "archer",
-                    anchor: Center,
-                    pos: (0, 26),
+                    anchor: TopLeft,
+                    pos: (20, 128),
+                    size: Some((70, 22)),
                     kind: Button(
                         label: "궁수",
                         action: Customize(
@@ -63,9 +100,18 @@
                     ),
                 ),
                 (
+                    id: "archer_note",
+                    anchor: TopLeft,
+                    pos: (100, 132),
+                    kind: Text(
+                        format: "발판 위에서 활로 노린다",
+                    ),
+                ),
+                (
                     id: "back",
                     anchor: Bottom,
-                    pos: (0, -10),
+                    pos: (0, -12),
+                    size: Some((64, 20)),
                     kind: Button(
                         label: "뒤로",
                         action: Close,

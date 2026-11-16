@@ -237,6 +237,21 @@ impl Catalog {
         })
     }
 
+    /// 게임의 캐릭터 컨셉에 맞는 템플릿만 남긴다 (`data/project.ron` 의 `characters`).
+    /// 맞는 템플릿이 하나도 없으면 **그대로 두고** `false` — 그 생성기를 돌리지 않은 작업 폴더다.
+    pub(crate) fn keep_concept(&mut self, concept: crate::level::CharacterConcept) -> bool {
+        use crate::level::CharacterConcept;
+        let keep = |t: &TemplateEntry| match concept {
+            CharacterConcept::Any => true,
+            CharacterConcept::ObjectHead => t.of("head").next().is_some(),
+        };
+        if !self.templates.iter().any(keep) {
+            return false;
+        }
+        self.templates.retain(keep);
+        true
+    }
+
     fn template(&self, key: &str) -> Option<&TemplateEntry> {
         self.templates.iter().find(|t| t.key == key)
     }
@@ -681,6 +696,56 @@ mod tests {
 
     fn catalog() -> Option<Catalog> {
         Catalog::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")).ok()
+    }
+
+    /// 손으로 만든 카탈로그 — 생성기 결과(애셋)가 없어도 규칙을 본다.
+    fn tiny_catalog(templates: &[(&str, &[&str])]) -> Catalog {
+        Catalog {
+            templates: templates
+                .iter()
+                .map(|(key, cats)| TemplateEntry {
+                    key: (*key).to_owned(),
+                    name: (*key).to_owned(),
+                    reference: String::new(),
+                    dir: String::new(),
+                    body: String::new(),
+                    parts: cats
+                        .iter()
+                        .map(|c| PartEntry {
+                            key: format!("{c}_1"),
+                            name: (*c).to_owned(),
+                            category: (*c).to_owned(),
+                            palette: String::new(),
+                            tinted: false,
+                            slot: None,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            palettes: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn the_object_head_concept_keeps_only_object_head_templates() {
+        use crate::level::CharacterConcept;
+        let both = [
+            ("sd_human", &["eyes", "face", "hair"][..]),
+            ("grim", &["head", "top"][..]),
+        ];
+        let mut cat = tiny_catalog(&both);
+        assert!(cat.keep_concept(CharacterConcept::ObjectHead));
+        let keys: Vec<_> = cat.templates.iter().map(|t| t.key.as_str()).collect();
+        assert_eq!(keys, ["grim"]);
+
+        let mut cat = tiny_catalog(&both);
+        assert!(cat.keep_concept(CharacterConcept::Any));
+        assert_eq!(cat.templates.len(), 2);
+
+        // 오브젝트헤드 템플릿이 없는 작업 폴더 — 비우지 않고 알린다.
+        let mut cat = tiny_catalog(&both[..1]);
+        assert!(!cat.keep_concept(CharacterConcept::ObjectHead));
+        assert_eq!(cat.templates.len(), 1);
     }
 
     #[test]
