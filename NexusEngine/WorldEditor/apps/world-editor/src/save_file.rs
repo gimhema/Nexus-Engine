@@ -70,6 +70,8 @@ pub(crate) struct SaveData {
     pub(crate) quests: Vec<QuestRecord>,
     /// 캐릭터 외형 (C3). `None` = 커스터마이징이 생기기 전 — 액터의 기본 그림으로 그린다.
     pub(crate) appearance: Option<crate::appearance::Appearance>,
+    /// 월드 시각 (0~24) — 레벨을 옮겨도·이어 해도 시각이 이어진다. `None` = 낮·밤이 생기기 전 파일.
+    pub(crate) time_of_day: Option<f32>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -121,6 +123,9 @@ struct SaveFile {
     /// 캐릭터 외형 (C3) — 템플릿·피부색·(파츠, 색). 없는 예전 파일도 읽힌다.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     appearance: Option<crate::appearance::Appearance>,
+    /// 월드 시각 (0~24). 없는 예전 파일도 읽힌다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    time_of_day: Option<f32>,
 }
 
 /// 가진 스킬 — 지금은 목록, 스킬 레벨이 있던 예전 파일은 `번호: 레벨` 표 (K1).
@@ -211,6 +216,7 @@ pub(crate) fn to_ron(save: &SaveData) -> String {
             })
             .collect(),
         appearance: save.appearance.clone(),
+        time_of_day: save.time_of_day,
     };
     let config = ron::ser::PrettyConfig::new()
         .new_line("\n")
@@ -288,6 +294,9 @@ pub(crate) fn from_ron(text: &str) -> Result<SaveData, String> {
             .map(|(q, f)| (QuestId(q), f.stage.map(|s| (s, f.counts)), f.completed))
             .collect(),
         appearance: file.appearance,
+        time_of_day: file
+            .time_of_day
+            .filter(|h| h.is_finite() && (0.0..24.0).contains(h)),
     })
 }
 
@@ -357,6 +366,7 @@ mod tests {
 
     fn sample() -> SaveData {
         SaveData {
+            time_of_day: Some(21.5),
             appearance: Some(crate::appearance::Appearance {
                 template: String::from("sd_elf"),
                 skin: (1.0, 0.8, 0.7),

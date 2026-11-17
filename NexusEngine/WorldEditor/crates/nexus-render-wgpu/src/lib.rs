@@ -405,7 +405,8 @@ struct Frame {
 impl Frame {
     /// 지금 내는 그림이 장면 조명을 받는가 — 월드 좌표의 지면·오브젝트 층만.
     fn lit(&self) -> f32 {
-        let lit = !self.space.is_screen() && self.layer != DrawLayer::Overlay;
+        let lit =
+            !self.space.is_screen() && matches!(self.layer, DrawLayer::Ground | DrawLayer::Object);
         if lit { 1.0 } else { 0.0 }
     }
 

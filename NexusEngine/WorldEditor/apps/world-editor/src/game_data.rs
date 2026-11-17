@@ -112,6 +112,9 @@ struct RulesFile {
     /// 횡스크롤 물리 — `view: Side` 레벨에서만 쓴다. 적지 않으면 `nexus_sim::Platformer` 기본값.
     #[serde(default)]
     platformer: PlatformerFile,
+    /// 월드 시계 — 하루 길이·새벽·해 질 녘 (`day_night` 모듈 doc). 적지 않으면 서버와 같은 기본값.
+    #[serde(default)]
+    day_cycle: crate::day_night::DayCycleFile,
     /// 트리거 — 언제·만약·한다 (R1). 번호 순으로 판정한다. 형식은 `trigger_file` 모듈 doc.
     #[serde(default)]
     triggers: BTreeMap<u32, TriggerFile>,
@@ -863,6 +866,9 @@ struct DisplayFile {
     /// 소리 (T8) — `sound.rs` 모듈 doc.
     #[serde(default)]
     sound: SoundFile,
+    /// 낮·밤의 색과 플레이어 주변 빛 — `day_night` 모듈 doc.
+    #[serde(default)]
+    day_night: crate::day_night::DayNightLook,
     /// 트리거의 이름 (T5) — 편집기에서만 보인다.
     #[serde(default)]
     triggers: BTreeMap<u32, SkillLookFile>,
@@ -1038,6 +1044,9 @@ pub(crate) struct GameData {
     revive: RevivePolicy,
     /// 횡스크롤 물리 — `view: Side` 레벨에서 켠다.
     platformer: nexus_sim::Platformer,
+    /// 월드 시계 (`rules.ron`) · 낮·밤 그리기 (`display.ron`).
+    day_cycle: crate::day_night::DayCycleFile,
+    day_night: crate::day_night::DayNightLook,
     /// 경로 → 스크립트 본문. 컴파일은 플레이를 시작할 때 한다.
     script_sources: BTreeMap<String, String>,
     /// 트리거 (R1) — 번호 순.
@@ -1463,6 +1472,9 @@ impl GameData {
             r.ground_item_ms <= MAX_RESPAWN_MS,
             String::from("ground_item_ms 는 1시간 이하"),
         );
+        for e in [r.day_cycle.check(), d.day_night.check()] {
+            check(e.is_ok(), e.err().unwrap_or_default());
+        }
         let p = r.platformer;
         check(
             [
@@ -1747,6 +1759,8 @@ impl GameData {
             ground_item_lifetime: (r.ground_item_ms > 0)
                 .then(|| Duration::from_millis(u64::from(r.ground_item_ms))),
             platformer: r.platformer.to_sim(),
+            day_cycle: r.day_cycle,
+            day_night: d.day_night,
             revive: RevivePolicy {
                 delay: Duration::from_millis(u64::from(r.revive.delay_ms)),
                 hp_per_mille: r.revive.hp_percent * 10,
@@ -2212,6 +2226,16 @@ impl GameData {
     /// 횡스크롤 물리 수치 (`rules.ron` 의 `platformer`).
     pub(crate) fn platformer(&self) -> nexus_sim::Platformer {
         self.platformer
+    }
+
+    /// 월드 시계 (`rules.ron` 의 `day_cycle`).
+    pub(crate) fn day_cycle(&self) -> crate::day_night::DayCycleFile {
+        self.day_cycle
+    }
+
+    /// 낮·밤 그리기 (`display.ron` 의 `day_night`).
+    pub(crate) fn day_night(&self) -> &crate::day_night::DayNightLook {
+        &self.day_night
     }
 
     /// 이 액터 타입이 부활을 스크립트로 맡는가 — 스크립트가 `on_dead` 를 정의했으면.

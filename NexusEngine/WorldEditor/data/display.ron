@@ -100,6 +100,18 @@
         3002: (name: "화염구 마도서", color: (0.95, 0.40, 0.20)),
     },
 
+    // 낮과 밤 — 색은 sRGB (0~1). 한낮에는 조명을 켜지 않는다(그림 색 그대로). 해 질 녘·새벽 twilight_hours 동안
+    // 낮 → 노을(dusk_ambient) → 밤(night_ambient) 으로 이어지고, 밤에는 플레이어 주변만 player_light 로 밝다.
+    // steps·dither 는 레벨 lighting 과 같은 뜻 (밝기를 픽셀아트처럼 끊는 단계 수).
+    day_night: (
+        dusk_ambient: (0.85, 0.55, 0.45),
+        night_ambient: (0.12, 0.14, 0.26),
+        twilight_hours: 1.0,
+        player_light: (color: (1.0, 0.86, 0.62), radius: 6.0, intensity: 1.1, height: 1.0),
+        steps: 5,
+        dither: false,
+    ),
+
     // 스킬의 표시 이름 (P10). 번호는 rules.ron 의 skills 와 같다. 이름이 없으면 "스킬 #번호" 로 보인다.
     // 소리 (T8) — 받아 둔 파일을 sound 블록에 적는다. 일 이름과 형식은 apps/world-editor/src/sound.rs 모듈 문서,
     // 레벨 배경음악은 레벨 파일의 bgm.

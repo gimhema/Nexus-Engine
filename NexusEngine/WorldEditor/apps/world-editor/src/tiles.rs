@@ -121,9 +121,15 @@ const SIDE_LADDER: [f32; 4] = [0.80, 0.62, 0.36, 1.0];
 const SIDE_SKY: [[f32; 4]; 2] = [[0.45, 0.70, 0.92, 1.0], [0.80, 0.90, 0.97, 1.0]];
 const SKY_BANDS: usize = 12;
 
-/// 횡스크롤 하늘 — 보이는 범위 전체를 덮는 바탕. 지면 층의 맨 뒤(`depth_bias`)에 깐다.
+/// 횡스크롤 하늘 — 보이는 범위 전체를 덮는 바탕. **배경 층**(`DrawLayer::Backdrop`, 조명을 받지 않음)에서 부른다.
+/// `tint` 는 낮·밤의 주변광(`day_night::DayNightLook::ambient`) — 한낮이면 흰색.
 /// 화면에 붙어 있다(카메라를 따라 움직인다) — 먼 하늘은 움직이지 않아 보여야 한다.
-pub(crate) fn build_side_sky(camera: &Camera2d, depth_bias: f32, out: &mut Vec<RenderCommand>) {
+pub(crate) fn build_side_sky(
+    camera: &Camera2d,
+    depth_bias: f32,
+    tint: [f32; 3],
+    out: &mut Vec<RenderCommand>,
+) {
     let (min, max) = camera.visible_bounds();
     let band = (max.y - min.y) / SKY_BANDS as f32;
     for i in 0..SKY_BANDS {
@@ -131,6 +137,9 @@ pub(crate) fn build_side_sky(camera: &Camera2d, depth_bias: f32, out: &mut Vec<R
         let mut color = [0.0; 4];
         for (c, (top, bottom)) in color.iter_mut().zip(SIDE_SKY[0].iter().zip(SIDE_SKY[1])) {
             *c = top + (bottom - top) * t;
+        }
+        for (c, k) in color.iter_mut().zip(tint) {
+            *c *= k;
         }
         out.push(RenderCommand::DrawRect {
             center: Vec2::new((min.x + max.x) * 0.5, max.y - band * (i as f32 + 0.5)),

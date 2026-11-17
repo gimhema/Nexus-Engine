@@ -304,6 +304,7 @@ pub(crate) fn simulate_level(
     )?;
     // 횡스크롤 레벨은 중력이 켜져야 게임과 같다.
     s.set_view(levels.view_of(id));
+    s.set_day_night(levels.day_night_of(id));
 
     let me = s.player();
     let start_gold = gold_of(&s, currency);
@@ -728,6 +729,7 @@ mod tests {
             )
             .map(|mut s| {
                 s.set_view(levels.view_of(id));
+                s.set_day_night(levels.day_night_of(id));
                 s
             })
             .unwrap()

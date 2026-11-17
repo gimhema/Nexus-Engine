@@ -136,6 +136,7 @@ pub(crate) const PLACEHOLDERS: &[&str] = &[
     "gold",
     "attack",
     "defense",
+    "clock",
     "npc_name",
     "npc_profile",
     "npc_page",
@@ -767,6 +768,8 @@ pub(crate) struct Values {
     /// 공격·방어 (`{attack}`·`{defense}`, T2).
     pub(crate) attack: u32,
     pub(crate) defense: u32,
+    /// 월드 시각 (`{clock}` — `"21:30 밤"`). 낮·밤이 흐르지 않는 레벨이면 빈 글자.
+    pub(crate) clock: String,
     pub(crate) lists: ListValues,
     /// 만드는 중인 캐릭터 (C3) — 캐릭터 만들기 창이 떠 있을 때만.
     pub(crate) look: Option<LookView>,
@@ -833,6 +836,7 @@ impl Values {
             gold: play.gold(),
             attack: u.attack(),
             defense: u.defense(),
+            clock: play.clock_text(),
             lists: play.list_values(),
             look: None,
             npc: play.npc_screen().map(|s| NpcValues {
@@ -896,6 +900,7 @@ impl Values {
             gold: 1250,
             attack: 24,
             defense: 7,
+            clock: String::from("21:30 밤"),
             look: None,
             lists: ListValues {
                 tracker: vec![
@@ -1244,7 +1249,7 @@ impl Screens {
 
     /// 화면 값에 든 글(직업 이름·NPC 창)을 [`Self::note_text`] 로 모은다.
     pub(crate) fn note_values(&mut self, values: &Values) {
-        let mut texts: Vec<&str> = vec![values.class.as_str()];
+        let mut texts: Vec<&str> = vec![values.class.as_str(), values.clock.as_str()];
         if let Some(npc) = &values.npc {
             texts.extend([npc.name.as_str(), npc.profile.as_str(), npc.page.as_str()]);
             for row in &npc.rows {
@@ -2146,7 +2151,7 @@ pub(crate) fn to_ron(screen: &ScreenFile) -> String {
 // 메뉴 UI → 위젯 편집기. 저장하면 이 파일이 통째로 다시 쓰이므로 주석은 남지 않는다.
 //
 // pos·size 는 UI 픽셀(테마의 scale 을 곱하기 전)이고, anchor 기준점에서 오른쪽·아래가 +다.
-// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {mp} {max_mp} {level} {exp} {exp_to_next} {loading}(로딩 %) {revive}(부활까지 초) {class}(직업) {gold}(기본 재화) {attack} {defense}
+// 글자 문구에 쓸 수 있는 값: {hp} {max_hp} {mp} {max_mp} {level} {exp} {exp_to_next} {loading}(로딩 %) {revive}(부활까지 초) {class}(직업) {gold}(기본 재화) {attack} {defense} {clock}(월드 시각)
 // NPC 창(R4b): {npc_name} {npc_profile}(인사말) {npc_page}(지금 쪽) — Paragraph 는 폭에 맞춰 줄을 바꾸고, List 는 NPC 창의 목록 줄이다.
 // Image 위젯의 path 는 작업 디렉터리 기준 PNG (소문자·'/'), region 은 그림의 픽셀 사각형이다.
 ";
@@ -2232,6 +2237,7 @@ fn fill(format: &str, v: &Values) -> String {
         .replace("{gold}", &v.gold.to_string())
         .replace("{attack}", &v.attack.to_string())
         .replace("{defense}", &v.defense.to_string())
+        .replace("{clock}", &v.clock)
         .replace("{npc_name}", v.npc.as_ref().map_or("", |n| n.name.as_str()))
         .replace(
             "{npc_profile}",

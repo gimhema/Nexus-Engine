@@ -14,6 +14,7 @@
 mod ai;
 mod authority;
 mod buff;
+mod clock;
 mod combat;
 mod dungeon;
 mod faction;
@@ -34,6 +35,7 @@ mod world;
 
 pub use authority::{Authority, Event, Intent, LocalAuthority, Rejection};
 pub use buff::{ActiveBuff, BuffDef, BuffId};
+pub use clock::DayCycle;
 pub use combat::{
     Affects, Aim, Area, EffectKind, Projectile, SkillDef, SkillEffect, SkillId, damage, in_area,
     per_mille,

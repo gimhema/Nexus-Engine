@@ -585,6 +585,11 @@ pub(crate) struct PlaySession {
     view: ViewMode,
     /// 횡스크롤 — 지난번에 넘긴 사다리 키 방향 ([`Self::side_input`]).
     side_climb: i8,
+    /// 월드 시계를 켤 때의 시각 — 새 게임은 규칙의 시작 시각, 이어 하기는 저장한 시각. 시계가 없는 레벨(집 안)은
+    /// 이 시각에 멈춰 있다가 저장에 그대로 실린다.
+    start_hour: f32,
+    /// 이 레벨에서 낮·밤이 흐르는가 (`set_day_night`).
+    day_night: bool,
     /// 벨트스크롤에서 왼쪽을 보고 있는 유닛 — 마지막 가로 방향을 기억한다 ([`side_facing_west`]).
     facing_west: HashMap<Entity, bool>,
     order: Order,
@@ -809,6 +814,8 @@ impl PlaySession {
             .get(&player)
             .is_some_and(|l: &Label| data.scripted_revive(l.actor));
 
+        // 새 게임은 규칙의 시작 시각, 이어 하기·레벨 이동은 저장한 시각부터 (시계는 레벨이 켤 때 — `set_day_night`).
+        let data_start_hour = data.day_cycle().start_hour;
         let mut auth = LocalAuthority::new(world);
         auth.set_script_host(Box::new(scripts));
 
@@ -822,6 +829,12 @@ impl PlaySession {
             view: ViewMode::default(),
             facing_west: HashMap::new(),
             side_climb: 0,
+            start_hour: options
+                .save
+                .as_ref()
+                .and_then(|s| s.time_of_day)
+                .unwrap_or(data_start_hour),
+            day_night: false,
             order: Order::Idle,
             hotbar,
             abandon_armed: None,
@@ -849,6 +862,56 @@ impl PlaySession {
         self.view = view;
         let physics = view.platformer().then(|| self.data.platformer());
         self.auth.world_mut().set_platformer(physics);
+    }
+
+    /// 이 레벨에서 낮·밤이 흐르게 한다 — 레벨 파일의 `day_night` (설정 작업). 끄면 시각은 멈춰 있고 저장에 그대로 실린다.
+    pub(crate) fn set_day_night(&mut self, on: bool) {
+        let hour = self.hour();
+        self.day_night = on;
+        let cycle = on.then(|| self.data.day_cycle().to_sim());
+        self.auth.world_mut().set_day_cycle(cycle, hour);
+    }
+
+    /// 지금 월드 시각 (0~24) — 시계가 멈춘 레벨이면 들어올 때의 시각.
+    pub(crate) fn hour(&self) -> f32 {
+        self.world().time_of_day().unwrap_or(self.start_hour)
+    }
+
+    /// 시각을 옮긴다 — 에디터 스크립트 `time` (시험·확인용 설정 작업).
+    pub(crate) fn set_hour(&mut self, hour: f32) {
+        self.start_hour = hour.rem_euclid(24.0);
+        self.auth.world_mut().set_time_of_day(self.start_hour);
+    }
+
+    /// HUD 의 `{clock}` — 낮·밤이 흐르는 레벨에서만 (`"21:30 밤"`), 아니면 빈 글.
+    pub(crate) fn clock_text(&self) -> String {
+        if self.day_night {
+            crate::day_night::clock_text(self.hour(), self.world().is_night())
+        } else {
+            String::new()
+        }
+    }
+
+    /// 조명을 받지 않는 배경(하늘)에 곱할 색 — 낮·밤 레벨이 아니거나 한낮이면 흰색.
+    pub(crate) fn sky_tint(&self) -> [f32; 3] {
+        match self.world().day_cycle().filter(|_| self.day_night) {
+            Some(cycle) => self.data.day_night().ambient(self.hour(), &cycle),
+            None => [1.0; 3],
+        }
+    }
+
+    /// 낮·밤 조명 — 한낮이면 비어 있다. 밤에는 주변광이 어둡고 플레이어 주변만 밝다 (`day_night` 모듈 doc).
+    pub(crate) fn day_night_commands(&self, alpha: f32) -> Vec<nexus_render::RenderCommand> {
+        let Some(cycle) = self.world().day_cycle().filter(|_| self.day_night) else {
+            return Vec::new();
+        };
+        let look = self.data.day_night();
+        let center = self
+            .world()
+            .unit(self.player)
+            .filter(|u| u.is_alive())
+            .map(|u| look.light_center(u.render_pos(alpha), self.view.platformer()));
+        look.commands(self.hour(), &cycle, center)
     }
 
     /// 횡스크롤 키보드 입력. 매 tick 지금 눌린 상태를 넘기면 **바뀐 것만** Intent 로 낸다.
@@ -1458,6 +1521,7 @@ impl PlaySession {
                 .unwrap_or_default(),
             world_flags: self.world().world_flags().iter().collect(),
             appearance: self.look.as_ref().map(|(a, _)| a.clone()),
+            time_of_day: Some(self.hour()),
         }
     }
 
@@ -2415,6 +2479,8 @@ impl PlaySession {
                 )
             }
             Event::Evading { unit } => format!("{} 추격 포기", self.name(unit)),
+            Event::NightBegan => String::from("해가 졌다 — 밤이다"),
+            Event::DayBegan => String::from("해가 떴다"),
             Event::Blocked { unit } if unit == self.player => String::from("길이 막혔습니다"),
             Event::Rejected { intent, reason } if intent.unit() == self.player => {
                 // 쿨타임은 주문이 계속 기다리면 되는 일이다. 그 밖의 거절은 주문을 끝낸다
@@ -4405,6 +4471,69 @@ mod tests {
         // 마을은 횡스크롤 레벨이다 (levels/village.level.ron).
         s.set_view(ViewMode::Side);
         s
+    }
+
+    /// 낮과 밤 — 마을(`day_night`)에서는 시각이 흐르고, 밤에는 주변광이 어둡고 플레이어 자리에만 빛이 든다.
+    /// 시각은 저장에 실려 다음 레벨로 이어지고, 시계가 없는 레벨에서는 멈춰 있다.
+    #[test]
+    fn night_lights_only_around_the_player_and_the_time_carries_over() {
+        use nexus_render::RenderCommand;
+        let mut s = village();
+        assert_eq!(s.clock_text(), "", "레벨이 켜기 전에는 시계가 없다");
+        assert!(s.day_night_commands(0.0).is_empty());
+        s.set_day_night(true);
+        assert_eq!(s.clock_text(), "08:00 낮", "새 게임은 규칙의 시작 시각");
+        assert!(
+            s.day_night_commands(0.0).is_empty(),
+            "한낮에는 조명을 켜지 않는다"
+        );
+
+        // 해 질 녘을 넘긴다 — 기록이 남고 밤 조명이 플레이어를 따라간다.
+        s.set_hour(18.99);
+        for _ in 0..40 {
+            s.tick(DT, None);
+        }
+        assert!(s.log().any(|l| l.contains("해가 졌다")), "{:?}", s.log);
+        s.set_hour(23.0);
+        let feet = s.world().unit(s.player()).unwrap().pos();
+        let cmds = s.day_night_commands(1.0);
+        assert!(
+            matches!(cmds[0], RenderCommand::SetLighting(l) if l.ambient[2] < 0.5),
+            "{cmds:?}"
+        );
+        let RenderCommand::AddLight(light) = cmds[1] else {
+            panic!("{cmds:?}")
+        };
+        assert!(
+            (light.pos.x - feet.x).abs() < 1e-4 && light.pos.y > feet.y,
+            "몸 한가운데"
+        );
+
+        // 저장 → 집 안(시계 없음)에서는 멈춰 있다가 그대로 저장된다.
+        let save = s.save_data(String::new());
+        let hour = save.time_of_day.unwrap();
+        assert!((hour - 23.0).abs() < 0.01, "{hour}");
+        let mut inside = in_level(HOUSE, "house", &[]);
+        assert_eq!(inside.hour(), 8.0, "새 게임이라 시작 시각");
+        let scene = crate::zone_file::from_ron(HOUSE).unwrap();
+        let mut inside2 = PlaySession::start(
+            &scene,
+            Camera2d::default(),
+            GameData::embedded(),
+            PlayOptions {
+                save: Some(save),
+                ..PlayOptions::default()
+            },
+        )
+        .unwrap();
+        inside2.set_day_night(false);
+        for _ in 0..40 {
+            inside2.tick(DT, None);
+            inside.tick(DT, None);
+        }
+        assert!((inside2.hour() - hour).abs() < 1e-4, "멈춰 있다");
+        assert!(inside2.day_night_commands(0.0).is_empty());
+        assert!((inside2.save_data(String::new()).time_of_day.unwrap() - hour).abs() < 1e-4);
     }
 
     /// 플레이용 맵은 존 전체를 덮는다 — 씬의 맵(샘플 존은 64×64)은 그대로다 (R6-3, A안).

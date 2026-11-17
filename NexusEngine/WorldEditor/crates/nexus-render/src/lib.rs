@@ -336,6 +336,9 @@ pub enum DrawLayer {
     Object,
     /// 표시 — 선택 테두리·핸들·조준선. **모든 것 위에** 그린다.
     Overlay,
+    /// 배경 — 하늘·먼 풍경. **지면보다도 뒤**이고 **조명을 받지 않는다** — 밤에 플레이어 둘레의 빛이
+    /// 하늘에 둥글게 비치면 안 되므로, 밤하늘의 색은 그리는 쪽이 정한다.
+    Backdrop,
 }
 
 impl DrawLayer {
@@ -350,7 +353,8 @@ impl DrawLayer {
             // 그 앞 [0, SCREEN_DEPTH] 를 화면 공간(HUD)에 내준다.
             Self::Overlay => (0.25, 0.08),
             Self::Object => (0.34, 0.32),
-            Self::Ground => (0.68, 0.32),
+            Self::Ground => (0.68, 0.30),
+            Self::Backdrop => (0.985, 0.012),
         }
     }
 }
@@ -534,7 +538,14 @@ mod tests {
 
     #[test]
     fn layers_do_not_overlap_and_the_screen_is_in_front_of_all_of_them() {
-        let layers = [DrawLayer::Overlay, DrawLayer::Object, DrawLayer::Ground];
+        let layers = [
+            DrawLayer::Overlay,
+            DrawLayer::Object,
+            DrawLayer::Ground,
+            DrawLayer::Backdrop,
+        ];
+        let (o, s) = DrawLayer::Backdrop.depth_range();
+        assert!(o + s <= 1.0, "배경도 깊이 범위 안");
         // 앞 층의 끝이 뒤 층의 시작보다 앞이다 (틈이 있다).
         for pair in layers.windows(2) {
             let (o, s) = pair[0].depth_range();

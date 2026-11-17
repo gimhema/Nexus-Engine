@@ -116,6 +116,8 @@ pub struct SimWorld {
     clear: Option<(ClearDef, ClearState)>,
     /// 횡스크롤 물리 ([`crate::platformer`]). `None` 이면 쿼터뷰 존 — 지면을 걷는다.
     platformer: Option<Platformer>,
+    /// 월드 시계 ([`crate::clock`]). `None` 이면 시각이 흐르지 않는 존(집 안·던전).
+    clock: Option<crate::clock::Clock>,
 }
 
 impl SimWorld {
@@ -157,6 +159,7 @@ impl SimWorld {
             instance_flags: Flags::default(),
             clear: None,
             platformer: None,
+            clock: None,
         }
     }
 
@@ -1798,6 +1801,38 @@ impl SimWorld {
         self.platformer
     }
 
+    /// 월드 시계를 켜거나 끈다 (설정 작업). `hour` 는 시작 시각 (0~24) — 이어 하기면 저장한 시각.
+    pub fn set_day_cycle(&mut self, cycle: Option<crate::DayCycle>, hour: f32) {
+        self.clock = cycle.map(|c| crate::clock::Clock::new(c, hour));
+    }
+
+    /// 시각을 옮긴다 (설정 작업 — 에디터의 시각 맞추기·시험). 낮·밤 이벤트는 내지 않는다.
+    pub fn set_time_of_day(&mut self, hour: f32) {
+        if let Some(c) = &mut self.clock {
+            c.set_hour(hour);
+        }
+    }
+
+    /// 지금 시각 (0~24). 시계가 없는 존이면 `None`.
+    #[must_use]
+    pub fn time_of_day(&self) -> Option<f32> {
+        self.clock.as_ref().map(crate::clock::Clock::hour)
+    }
+
+    /// 밤인가. 시계가 없는 존은 늘 낮이다.
+    #[must_use]
+    pub fn is_night(&self) -> bool {
+        self.clock
+            .as_ref()
+            .is_some_and(crate::clock::Clock::is_night)
+    }
+
+    /// 하루 정의 — 화면이 해 질 녘·새벽의 밝기를 잇는 데 쓴다.
+    #[must_use]
+    pub fn day_cycle(&self) -> Option<crate::DayCycle> {
+        self.clock.as_ref().map(|c| c.cycle)
+    }
+
     /// 땅의 아이템이 사라지기까지의 시간 (설정 작업). `None`·0 이면 영영 남는다 (기본).
     /// 떨어진 뒤 이 시간이 지나면 그 tick 에 치워지고 [`Event::ItemDespawned`] 가 난다.
     pub fn set_ground_item_lifetime(&mut self, lifetime: Option<Duration>) {
@@ -2936,6 +2971,13 @@ impl SimWorld {
     /// 한 tick 진행.
     pub(crate) fn step(&mut self, dt: Duration, events: &mut Vec<Event>) {
         self.now += dt;
+        if let Some(clock) = &mut self.clock {
+            match clock.advance(dt) {
+                crate::clock::Turn::Night => events.push(Event::NightBegan),
+                crate::clock::Turn::Day => events.push(Event::DayBegan),
+                crate::clock::Turn::None => {}
+            }
+        }
         self.respawn_due(events);
         self.expire_ground_items(events);
         self.run_buffs(events);

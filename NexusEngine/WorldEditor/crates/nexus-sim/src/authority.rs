@@ -377,6 +377,10 @@ pub enum Event {
     },
     /// 포털에 들어왔지만 입장 조건이 맞지 않았다 (R6). `portal` 은 놓은 순서.
     PortalBlocked { unit: Entity, portal: u16 },
+    /// 해가 졌다 — 월드 시계가 밤으로 넘어갔다 (서버 `WorldEventId::NightBegin` 자리).
+    NightBegan,
+    /// 해가 떴다 (서버 `WorldEventId::DayBegin` 자리).
+    DayBegan,
     /// 클리어 목표 하나가 늘었다 (R6-2) — 세는 목표만. `count` 는 늘어난 뒤의 수.
     ClearProgressed { objective: u16, count: u32 },
     /// 지금 존의 클리어 목표를 다 채웠다 (R6-2) — 보상을 적용했다. 존마다 한 번.

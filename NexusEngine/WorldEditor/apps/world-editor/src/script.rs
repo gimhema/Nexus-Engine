@@ -30,6 +30,7 @@
 //! skill 번호                  단축키 스킬 (숫자키 1~9 와 같다, 플레이 중)
 //! key left|right|up|down|none 횡스크롤 키를 누르고 있기 (다음 key 까지, none = 모두 뗌) — ←→ 걷기, ↑↓ 사다리
 //! jump                        횡스크롤 점프 (Space 와 같다)
+//! time 시각                   월드 시각을 옮긴다 (0~24, 낮·밤이 흐르는 레벨에서) — 밤 화면 확인용
 //! hotbar 칸 스킬번호          단축키 배치 (R3, 칸 0 = 그 스킬 빼기) — 스킬 창의 칸 고르기와 같다
 //! trade tp 표 목적지 | trade craft 표 레시피   NPC 창의 텔레포트·제작 단추 (R4-2, 말을 건 뒤)
 //! trade accept 퀘스트 | trade turnin 퀘스트     NPC 창의 퀘스트 받기·보고 (R5)
@@ -142,6 +143,8 @@ pub(crate) enum Step {
     },
     /// 횡스크롤 점프 (Space 와 같다).
     Jump,
+    /// 월드 시각을 옮긴다 (0~24) — 낮·밤 확인용.
+    Time(f32),
     /// 단축키 배치 (R3) — `key` 1~9 칸에 `skill` 을 놓는다. `key` 가 0 이면 그 스킬을 뺀다.
     Hotbar {
         key: usize,
@@ -328,6 +331,14 @@ fn parse_step(text: &str) -> Result<Step, String> {
         }
         "items" => return Ok(Step::ToggleItems),
         "jump" => return Ok(Step::Jump),
+        "time" => {
+            let hour: f32 = words
+                .get(1)
+                .and_then(|w| w.parse().ok())
+                .filter(|h: &f32| (0.0..24.0).contains(h))
+                .ok_or_else(|| format!("'{text}': time 0~24 (시각)"))?;
+            return Ok(Step::Time(hour));
+        }
         "key" => {
             let (walk, climb) = match words.get(1).copied() {
                 Some("left") => (-1, 0),

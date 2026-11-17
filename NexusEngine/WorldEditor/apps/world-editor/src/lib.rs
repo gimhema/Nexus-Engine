@@ -22,6 +22,7 @@ mod appearance;
 mod asset_ops;
 mod class_file;
 mod content;
+mod day_night;
 mod economy;
 mod edit;
 mod game_data;
@@ -847,6 +848,7 @@ impl Editor {
             (a, resolved)
         });
         let view = self.levels.view_of(&here);
+        let day_night = self.levels.day_night_of(&here);
         let options = PlayOptions {
             look,
             spawn: self.selected_player_spawn(),
@@ -866,6 +868,7 @@ impl Editor {
                 self.pending_view = None;
                 view.apply(&mut self.camera);
                 session.set_view(view);
+                session.set_day_night(day_night);
                 self.play = Some(session);
                 self.shell = Some(self.shell_for_zone());
             }
@@ -2090,6 +2093,11 @@ impl Editor {
             }
             Step::Key { walk, climb } => self.script_keys = (walk, climb),
             Step::Jump => self.script_jump = true,
+            Step::Time(hour) => {
+                if let Some(play) = self.play.as_mut() {
+                    play.set_hour(hour);
+                }
+            }
             Step::Trade(action) => {
                 if let Some(play) = self.play.as_mut() {
                     play.trade(action);
@@ -2430,14 +2438,20 @@ impl Editor {
             .and_then(|l| l.lighting.as_ref())
         {
             self.commands.extend(lighting.commands());
+        } else {
+            // 낮과 밤 (`day_night` 레벨) — 한낮이면 아무것도 내지 않아 그림 색 그대로다.
+            self.commands.extend(play.day_night_commands(alpha));
+        }
+        let side = play.view().platformer();
+        if side {
+            // 횡스크롤 — 하늘은 배경 층(조명을 받지 않는다 — 밤에 플레이어 둘레 빛이 하늘에 비치지 않게)에
+            // 깔고, 밤의 어둠은 주변광 색을 직접 곱한다. 존 경계는 벽이라 따로 그리지 않는다.
+            self.commands
+                .push(RenderCommand::SetLayer(DrawLayer::Backdrop));
+            tiles::build_side_sky(&self.camera, 0.0, play.sky_tint(), &mut self.commands);
         }
         self.commands
             .push(RenderCommand::SetLayer(DrawLayer::Ground));
-        let side = play.view().platformer();
-        if side {
-            // 횡스크롤 — 하늘을 맨 뒤에 깐다. 존 경계는 벽이라 따로 그리지 않는다.
-            tiles::build_side_sky(&self.camera, 0.0, &mut self.commands);
-        }
         terrain::build_ground(
             &self.scene.art,
             &self.scene.tiles,

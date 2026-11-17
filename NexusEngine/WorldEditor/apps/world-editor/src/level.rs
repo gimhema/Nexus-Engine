@@ -225,6 +225,15 @@ pub(crate) struct LevelFile {
     /// 장면 조명 — 플레이 화면에 GPU 조명을 켠다 (주변광·고정 광원). 없으면 그림 색 그대로.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) lighting: Option<LightingFile>,
+    /// 낮과 밤 — 월드 시계가 흐르고 시각에 따라 밝기가 바뀐다(밤에는 플레이어 주변만 밝다). 바깥 레벨에 켠다.
+    /// `lighting` 이 있으면 그쪽이 이긴다(동굴처럼 늘 같은 빛). 시계는 꺼진 레벨에서 멈춰 있다가 이어 흐른다.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub(crate) day_night: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde 가 참조로 넘긴다
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// 레벨 조명. 색은 sRGB (0~1).
@@ -515,6 +524,13 @@ impl Levels {
         self.levels.get(id).map(|l| l.view).unwrap_or_default()
     }
 
+    /// 낮과 밤이 흐르는 레벨인가 (`day_night`). 고정 조명(`lighting`)이 있으면 그쪽이 이긴다.
+    pub(crate) fn day_night_of(&self, id: &str) -> bool {
+        self.levels
+            .get(id)
+            .is_some_and(|l| l.day_night && l.lighting.is_none())
+    }
+
     pub(crate) fn clear_of(&self, id: &str) -> Option<nexus_sim::ClearDef> {
         self.levels
             .get(id)
@@ -680,6 +696,7 @@ pub(crate) fn to_ron(level: &LevelFile) -> String {
 // clear = 던전 클리어 — objectives(퀘스트 목표 형식)를 다 채우면 rewards(트리거 효과 형식)를 주고
 // Cleared 조건이 참이 된다(나가는 문 포털의 requires: Some(Cleared)).
 // bgm = 배경음악 파일(.ogg·.wav, 작업 디렉터리 기준 상대 경로).
+// day_night = 낮과 밤(월드 시계가 흐르고 밤에는 플레이어 주변만 밝다 — 바깥 레벨에 켠다, lighting 이 있으면 그쪽이 이긴다).
 ";
     format!("{header}{body}\n")
 }

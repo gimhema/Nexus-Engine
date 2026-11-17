@@ -292,6 +292,10 @@
     // 점프 높이 = jump_speed² / (2 × gravity) — 지금 값이면 약 1.67m (타일 한 칸 반 남짓).
     // body = 몸 상자 (폭, 키) — 발밑 가운데가 유닛 위치다.
     platformer: (gravity: 30.0, jump_speed: 10.0, max_fall_speed: 20.0, climb_speed: 3.0, body: (0.6, 1.2)),
+    // 월드 시계 — 하루(24시간)가 실제 day_minutes 분. 서버 GameLogic 과 같은 기본값(실제 1분 = 게임 1시간).
+    // dusk_hour 부터 다음 날 dawn_hour 전까지가 밤. start_hour = 새 게임의 시각 (이어 하기는 저장한 시각).
+    // 시각이 흐르는 것은 레벨 파일에 day_night: true 를 적은 레벨뿐 — 그 밖의 레벨에서는 멈춰 있다.
+    day_cycle: (day_minutes: 24.0, dawn_hour: 6.0, dusk_hour: 19.0, start_hour: 8.0),
 
     // 스탯 체계 (R2) — 기본 스탯의 이름·개수와 파생 스탯 수식을 여기서 정한다.
     // 수식은 정수 연산이다: + - * / %, 괄호, min(a, b) · max(a, b) · clamp(x, lo, hi).
