@@ -26,6 +26,13 @@ from pathlib import Path
 TOOLS = Path(__file__).resolve().parent
 ROOT = TOOLS.parent
 sys.path.insert(0, str(TOOLS))
+
+# 원본·스냅숏에 한글이 있다 — Windows 의 기본 인코딩(CP949 등)이 아니라 UTF-8 로 읽고 쓴다.
+# UTF-8 모드가 아니면 그 모드로 다시 띄운다 (하위 생성기들도 PYTHONUTF8 을 물려받는다).
+if __name__ == "__main__" and not sys.flags.utf8_mode:
+    os.environ["PYTHONUTF8"] = "1"
+    sys.exit(subprocess.run([sys.executable, "-X", "utf8", *sys.argv]).returncode)
+
 os.chdir(ROOT)
 
 import sd_template as T  # noqa: E402
@@ -61,7 +68,7 @@ def prepare_template(name, tmp):
 def check_template(name, path):
     """머리를 칠해 넣고(하위 프로세스 — 병렬) 원본과 비교."""
     b = T.BODIES[name]
-    r = subprocess.run(T.head_args(name, b, str(path)) if T.uses_head_engine(b) else ["true"],
+    r = subprocess.run(T.head_args(name, b, str(path)) if T.uses_head_engine(b) else [sys.executable, "-c", ""],
                        capture_output=True, text=True)
     if r.returncode:
         return f"template_{name}: 머리 생성 실패 — {r.stderr.strip()}"
@@ -76,7 +83,7 @@ def check_template(name, path):
 def check_head(name):
     src = (ROOT / "sprites" / f"{name}.canvas").read_text()
     res = int(src.split("\ncell ", 1)[1].split()[0]) // 56
-    r = subprocess.run(["python3", f"tools/{name}_head.py", f"--res={res}"], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, f"tools/{name}_head.py", f"--res={res}"], capture_output=True, text=True)
     if r.returncode:
         return f"{name}: 머리 생성 실패 — {r.stderr.strip()}"
     want = section(src, "// ── 머리 — ", "// ── 머리 끝 ──") + "\n"
@@ -87,7 +94,7 @@ def check_head(name):
 
 
 def check_legs(name):
-    r = subprocess.run(["python3", "tools/skeleton_legs.py", name], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, "tools/skeleton_legs.py", name], capture_output=True, text=True)
     if r.returncode:
         return f"{name}: 골격 다리 생성 실패 — {r.stderr.strip()}"
     got = r.stdout.split("\n", 1)[1]  # 첫 줄은 몸 오르내림 안내
@@ -112,7 +119,7 @@ def body_hashes(name):
 
 def check_whole(script, canvas, *args):
     """원본 하나를 통째로 쓰는 생성기 (`--print`) — 출력 = sprites/<canvas>."""
-    r = subprocess.run(["python3", f"tools/{script}", "--print", *args], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, f"tools/{script}", "--print", *args], capture_output=True, text=True)
     if r.returncode:
         return f"{script}: 실패 — {r.stderr.strip()}"
     want = (ROOT / "sprites" / canvas).read_text()

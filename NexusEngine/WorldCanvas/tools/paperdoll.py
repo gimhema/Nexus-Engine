@@ -1553,6 +1553,13 @@ def preview_parts(built, key="sd_human"):
 
 
 if __name__ == "__main__":
+    # 카탈로그·원본에 한글이 있다 — Windows 기본 인코딩(CP949 등)이 아니라 UTF-8 로 쓰도록 그 모드로 다시 띄운다.
+    if not sys.flags.utf8_mode:
+        import os as _os
+        import subprocess as _sp
+
+        _os.environ["PYTHONUTF8"] = "1"
+        sys.exit(_sp.run([sys.executable, "-X", "utf8", *sys.argv]).returncode)
     built = build()
     total = sum(len(v) for v in built.values()) + len(built)
     print(f"템플릿 {len(built)}개, 시트 {total}장 → {OUT}")

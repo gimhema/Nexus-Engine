@@ -1293,7 +1293,7 @@ def upscale(text, k):
 
 
 def head_args(name, b, path):
-    args = ["python3", f"tools/template_{b['sex']}_head.py", "--write", f"--canvas={path}", "--part",
+    args = [sys.executable, f"tools/template_{b['sex']}_head.py", "--write", f"--canvas={path}", "--part",
             f"--scale={b.get('head_scale', HEAD_SCALE)}", f"--res={b.get('res', 1)}"]
     if "hair_end" in b:
         args.append(f"--hair-end={b['hair_end']}")

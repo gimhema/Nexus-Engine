@@ -31,7 +31,8 @@ from grim_sd import P, L_, tatters, sway  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT.parent / "WorldEditor" / "assets" / "worldcanvas" / "paperdoll" / "grim"
-WC = Path(os.environ.get("WORLDCANVAS_BIN") or ROOT / "target" / "release" / "worldcanvas")
+# Windows 는 실행 파일에 .exe 가 붙는다.
+WC = Path(os.environ.get("WORLDCANVAS_BIN") or ROOT / "target" / "release" / ("worldcanvas.exe" if os.name == "nt" else "worldcanvas"))
 
 # 걷기 표 — grim_sd 와 같다 (bob 위아래 · phase 옷자락 · lf/rf 정면 발 들기 · arm 옆 팔 · side (먼 발, 가까운 발))
 CLIPS = {
@@ -605,4 +606,11 @@ def main():
 
 
 if __name__ == "__main__":
+    # 카탈로그·원본에 한글이 있다 — Windows 기본 인코딩(CP949 등)이 아니라 UTF-8 로 쓰도록 그 모드로 다시 띄운다.
+    if not sys.flags.utf8_mode:
+        import os as _os
+        import subprocess as _sp
+
+        _os.environ["PYTHONUTF8"] = "1"
+        sys.exit(_sp.run([sys.executable, "-X", "utf8", *sys.argv]).returncode)
     main()

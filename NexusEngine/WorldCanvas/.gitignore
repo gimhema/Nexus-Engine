@@ -4,3 +4,5 @@
 /reference/
 
 /CLAUDE.md
+# 파이썬 생성기의 바이트코드 캐시
+__pycache__/

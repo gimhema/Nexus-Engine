@@ -44,7 +44,7 @@ def main():
     after = re.sub(r"^(    aa o )", "    outline o\n\\1", after, flags=re.M)
     before = re.sub(r"^(    aa o )", "    outline o\n\\1", before, flags=re.M)
     path.write_text(before + src[a:head_line_end] + after)
-    subprocess.run(["python3", f"tools/{name}_head.py", "--write", f"--res={k}"], check=True, cwd=root)
+    subprocess.run([sys.executable, f"tools/{name}_head.py", "--write", f"--res={k}"], check=True, cwd=root)
     print(path)
 
 

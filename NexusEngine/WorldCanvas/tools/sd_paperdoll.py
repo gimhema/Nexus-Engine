@@ -42,7 +42,8 @@ import template_m_head as HM  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT.parent / "WorldEditor" / "assets" / "worldcanvas" / "paperdoll"
 # 실행 파일 — 검사(cargo test)는 WORLDCANVAS_BIN 으로 방금 빌드한 것을 넘긴다
-WC = Path(os.environ.get("WORLDCANVAS_BIN") or ROOT / "target" / "release" / "worldcanvas")
+# Windows 는 실행 파일에 .exe 가 붙는다.
+WC = Path(os.environ.get("WORLDCANVAS_BIN") or ROOT / "target" / "release" / ("worldcanvas.exe" if os.name == "nt" else "worldcanvas"))
 
 PAPERDOLL = ["std_m", "std_f", "tall_m", "tall_f", "small_m", "small_f", "dwarf_m", "dwarf_f", "big_m",
              "elf_m", "elf_f", "beast_m", "beast_f", "demon_m", "demon_f", "orc_m"]
@@ -388,4 +389,11 @@ def main():
 
 
 if __name__ == "__main__":
+    # 카탈로그·원본에 한글이 있다 — Windows 기본 인코딩(CP949 등)이 아니라 UTF-8 로 쓰도록 그 모드로 다시 띄운다.
+    if not sys.flags.utf8_mode:
+        import os as _os
+        import subprocess as _sp
+
+        _os.environ["PYTHONUTF8"] = "1"
+        sys.exit(_sp.run([sys.executable, "-X", "utf8", *sys.argv]).returncode)
     main()
