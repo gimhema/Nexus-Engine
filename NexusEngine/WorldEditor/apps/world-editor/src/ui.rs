@@ -178,6 +178,10 @@ pub(crate) struct UiActions {
     pub(crate) toggle_character: bool,
     /// 단축키 스킬 (숫자키 1~9, 플레이 중) — 1부터 센다.
     pub(crate) skill_key: Option<usize>,
+    /// 횡스크롤 키보드 (플레이 중) — 걷기(←/→, A/D) · 사다리(↑/↓, W/S) 는 -1·0·1, 점프(Space·Alt)는 이번에 눌렸나.
+    pub(crate) side_walk: i8,
+    pub(crate) side_climb: i8,
+    pub(crate) side_jump: bool,
     /// 에디터 패널 숨기기 (F9) — HUD 만으로 플레이되는지 보는 용도.
     pub(crate) toggle_panels: bool,
     /// 위젯 편집기 창 열고 닫기 (P7).
@@ -1147,6 +1151,8 @@ fn shortcuts(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
         actions.file_dialog = Some(FileDialogMode::Open);
     }
 
+    // 글자 입력 칸에 커서가 있을 때는 횡스크롤 조작으로 받지 않는다 (이름·수식 입력).
+    let typing = ctx.egui_wants_keyboard_input();
     ctx.input_mut(|i| {
         // Shift 는 "상관없음"으로 판정되므로 Ctrl+Shift+Z 를 Ctrl+Z 보다 먼저 소비해야 한다.
         actions.redo |= i.consume_shortcut(&KeyboardShortcut::new(ctrl_shift, Key::Z));
@@ -1171,6 +1177,16 @@ fn shortcuts(ui: &mut egui::Ui, model: &UiModel<'_>, actions: &mut UiActions) {
             ];
             if let Some(n) = DIGITS.iter().position(|k| i.key_pressed(*k)) {
                 actions.skill_key = Some(n + 1);
+            }
+            if !typing {
+                let axis = |neg: [Key; 2], pos: [Key; 2]| {
+                    let held = |ks: [Key; 2]| ks.iter().any(|k| i.key_down(*k));
+                    i8::from(held(pos)) - i8::from(held(neg))
+                };
+                actions.side_walk = axis([Key::ArrowLeft, Key::A], [Key::ArrowRight, Key::D]);
+                actions.side_climb = axis([Key::ArrowDown, Key::S], [Key::ArrowUp, Key::W]);
+                actions.side_jump =
+                    i.key_pressed(Key::Space) || (i.modifiers.alt && !i.modifiers.ctrl);
             }
         }
         actions.toggle_panels |= i.key_pressed(Key::F9);

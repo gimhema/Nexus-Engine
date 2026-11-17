@@ -12,21 +12,24 @@
     actors: {
         1: (
             name: "플레이어",
-            // WorldCanvas 원본: WorldCanvas/sprites/player.canvas
-            sheet: "assets/worldcanvas/player.sheet.ron",
+            // 캐릭터 만들기로 고른 외형(종이 인형 — 머리 사물·옷을 자유롭게)이 있으면 그것을 그리고,
+            // 이 시트는 외형이 없을 때의 기본 그림이다 (등불 머리).
+            // WorldCanvas 원본: WorldCanvas/sprites/grim_obj_lantern.canvas
+            sheet: "assets/worldcanvas/grim_obj_lantern.sheet.ron",
         ),
+        // NPC 는 오브젝트헤드 한 벌 시트 — 머리·차림이 한 그림이다 (WorldCanvas/sprites/grim_obj_*.canvas).
         10: (
             name: "마을 사람",
-            sheet: "assets/third_party/zelda-like-armm1998/npc.sheet.ron",
+            sheet: "assets/worldcanvas/grim_obj_candle_robe.sheet.ron",
         ),
         11: (
             name: "상인",
-            sheet: "assets/third_party/zelda-like-armm1998/npc.sheet.ron",
+            sheet: "assets/worldcanvas/grim_obj_cage_coat.sheet.ron",
             profile: "마을 잡화점 주인. 물약과 마도서를 팔고, 먼 곳으로 가는 길도 안다.",
         ),
         12: (
             name: "대장장이",
-            sheet: "assets/third_party/zelda-like-armm1998/npc.sheet.ron",
+            sheet: "assets/worldcanvas/grim_obj_bell_rags.sheet.ron",
             profile: "젤리만 넉넉하면 뭐든 만들어 준다. 짐도 맡아 준다.",
         ),
         100: (

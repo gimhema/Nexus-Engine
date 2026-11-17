@@ -51,6 +51,24 @@ pub(crate) struct ProjectFile {
     pub(crate) version: u32,
     /// 게임을 시작할 때 여는 레벨 — 보통 메인 화면.
     pub(crate) startup_level: String,
+    /// 캐릭터 컨셉 — 캐릭터 만들기에서 고를 수 있는 체형(템플릿). 적지 않으면 전부.
+    #[serde(default, skip_serializing_if = "is_any_character")]
+    pub(crate) characters: CharacterConcept,
+}
+
+/// 게임의 캐릭터 컨셉 — 캐릭터 만들기가 보여 줄 종이 인형 템플릿을 고른다 (`appearance::Catalog`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum CharacterConcept {
+    /// 카탈로그의 템플릿 전부.
+    #[default]
+    Any,
+    /// **오브젝트헤드만** — 머리가 사물(등불·새장·종·촛대 …)인 템플릿. 머리 사물(`head`) 파츠가 있는 템플릿이다.
+    ObjectHead,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde 가 참조로 넘긴다
+fn is_any_character(c: &CharacterConcept) -> bool {
+    *c == CharacterConcept::Any
 }
 
 /// 인스턴스 정책 (R6) — 이 레벨에 들어온 사람들이 같은 세계를 보는가.
@@ -87,8 +105,11 @@ fn is_shared(p: &InstancePolicy) -> bool {
 
 /// 플레이 시점 — 이 레벨을 **어느 각도에서 보는가**.
 ///
-/// 보는 방식만 다르고 게임 규칙(`nexus-sim`)은 같다. 레벨마다 고를 수 있다
+/// 쿼터뷰·벨트·아이소는 보는 방식만 다르고 게임 규칙(`nexus-sim`)은 같다. 레벨마다 고를 수 있다
 /// (마을은 쿼터뷰, 던전은 벨트스크롤).
+///
+/// **횡스크롤(`Side`)만은 규칙도 바뀐다** — 지면(XY)을 옆에서 자른 단면으로 읽어 Y 가 높이가 되고
+/// 중력·점프·발판·사다리가 켜진다 (`nexus_sim::Platformer`). 화면은 탑다운 카메라로 그 단면을 정면에서 본다.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ViewMode {
     /// 쿼터뷰 (45°) — 기본.
@@ -98,34 +119,43 @@ pub(crate) enum ViewMode {
     Belt,
     /// 아이소메트릭 (yaw 45°, pitch 30°) — 지면을 돌려 2:1 마름모로 본다. 아트는 그대로 쓴다.
     Iso,
+    /// 횡스크롤 — 단면을 정면에서 본다. 중력·점프·발판·사다리 (위 설명).
+    Side,
 }
 
 impl ViewMode {
-    pub(crate) const ALL: [Self; 3] = [Self::Quarter, Self::Belt, Self::Iso];
+    pub(crate) const ALL: [Self; 4] = [Self::Quarter, Self::Belt, Self::Iso, Self::Side];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Quarter => "쿼터뷰 (45°)",
             Self::Belt => "벨트스크롤 (25°)",
             Self::Iso => "아이소메트릭 (45°·30°)",
+            Self::Side => "횡스크롤 (중력)",
         }
     }
 
-    /// 카메라 pitch (라디안).
+    /// 카메라 pitch (라디안). 횡스크롤은 단면을 정면에서 보므로 탑다운과 같다.
     pub(crate) fn pitch(self) -> f32 {
         match self {
             Self::Quarter => Camera2d::PITCH_QUARTER,
             Self::Belt => Camera2d::PITCH_BELT,
             Self::Iso => Camera2d::PITCH_ISO,
+            Self::Side => Camera2d::PITCH_TOPDOWN,
         }
     }
 
     /// 카메라 yaw (라디안).
     pub(crate) fn yaw(self) -> f32 {
         match self {
-            Self::Quarter | Self::Belt => 0.0,
+            Self::Quarter | Self::Belt | Self::Side => 0.0,
             Self::Iso => Camera2d::YAW_ISO,
         }
+    }
+
+    /// 횡스크롤 규칙(중력)을 켜는 시점인가.
+    pub(crate) fn platformer(self) -> bool {
+        self == Self::Side
     }
 
     /// 이 시점으로 카메라를 돌린다 (위치·줌은 그대로).
@@ -141,7 +171,7 @@ impl ViewMode {
 
     /// 스프라이트가 왼쪽·오른쪽만 바라보는가 — 옆에서 보면 등·정면 그림이 어색하다.
     pub(crate) fn side_facing(self) -> bool {
-        self == Self::Belt
+        matches!(self, Self::Belt | Self::Side)
     }
 }
 
@@ -407,6 +437,7 @@ impl Default for Levels {
             project: ProjectFile {
                 version: FORMAT_VERSION,
                 startup_level: String::new(),
+                characters: CharacterConcept::Any,
             },
             levels: BTreeMap::new(),
         }
@@ -455,6 +486,11 @@ impl Levels {
     /// 시작 레벨 번호 — 언리얼의 Game Default Map.
     pub(crate) fn startup(&self) -> &str {
         &self.project.startup_level
+    }
+
+    /// 게임의 캐릭터 컨셉 (`data/project.ron` 의 `characters`).
+    pub(crate) fn characters(&self) -> CharacterConcept {
+        self.project.characters
     }
 
     /// `(번호, 이름)` 목록 (사전 순) — 메뉴에 쓴다.
@@ -639,7 +675,7 @@ pub(crate) fn to_ron(level: &LevelFile) -> String {
 // on_enter = 들어갈 때 띄울 화면, pause = Esc 로 띄울 화면, loading = 여는 동안 띄울 화면
 // (전부 ui/<번호>.ui.ron). loading_ms = 로딩 화면을 최소로 보여 줄 시간(ms).
 // instance = 인스턴스 정책(Shared·Personal·Party — 단계 1 에서는 기록만),
-// view = 플레이 시점(Quarter = 쿼터뷰·Belt = 벨트스크롤·Iso = 아이소메트릭, 없으면 쿼터뷰),
+// view = 플레이 시점(Quarter = 쿼터뷰·Belt = 벨트스크롤·Iso = 아이소메트릭·Side = 횡스크롤(중력), 없으면 쿼터뷰),
 // requires = 들어올 수 있는 조건(이 레벨로 가는 포털이 본다, 트리거의 when 과 같은 형식).
 // clear = 던전 클리어 — objectives(퀘스트 목표 형식)를 다 채우면 rewards(트리거 효과 형식)를 주고
 // Cleared 조건이 참이 된다(나가는 문 포털의 requires: Some(Cleared)).

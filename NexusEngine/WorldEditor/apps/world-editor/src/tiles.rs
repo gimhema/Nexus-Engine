@@ -107,10 +107,211 @@ pub(crate) fn build(
     }
 }
 
+/// 횡스크롤 — 흙 블록 (두 톤을 번갈아 결이 보이게).
+const SIDE_DIRT: [[f32; 4]; 2] = [[0.42, 0.29, 0.20, 1.0], [0.38, 0.26, 0.18, 1.0]];
+/// 횡스크롤 — 위가 비어 있는 블록의 윗면 (풀).
+const SIDE_GRASS: [f32; 4] = [0.36, 0.62, 0.30, 1.0];
+const SIDE_GRASS_EDGE: [f32; 4] = [0.24, 0.46, 0.22, 1.0];
+/// 횡스크롤 — 발판 (나무판).
+const SIDE_PLANK: [f32; 4] = [0.72, 0.52, 0.30, 1.0];
+const SIDE_PLANK_EDGE: [f32; 4] = [0.48, 0.32, 0.18, 1.0];
+/// 횡스크롤 — 사다리.
+const SIDE_LADDER: [f32; 4] = [0.80, 0.62, 0.36, 1.0];
+/// 횡스크롤 하늘 — 화면 위·아래 끝 색. 그 사이를 [`SKY_BANDS`] 띠로 나눠 잇는다.
+const SIDE_SKY: [[f32; 4]; 2] = [[0.45, 0.70, 0.92, 1.0], [0.80, 0.90, 0.97, 1.0]];
+const SKY_BANDS: usize = 12;
+
+/// 횡스크롤 하늘 — 보이는 범위 전체를 덮는 바탕. 지면 층의 맨 뒤(`depth_bias`)에 깐다.
+/// 화면에 붙어 있다(카메라를 따라 움직인다) — 먼 하늘은 움직이지 않아 보여야 한다.
+pub(crate) fn build_side_sky(camera: &Camera2d, depth_bias: f32, out: &mut Vec<RenderCommand>) {
+    let (min, max) = camera.visible_bounds();
+    let band = (max.y - min.y) / SKY_BANDS as f32;
+    for i in 0..SKY_BANDS {
+        let t = i as f32 / (SKY_BANDS - 1) as f32;
+        let mut color = [0.0; 4];
+        for (c, (top, bottom)) in color.iter_mut().zip(SIDE_SKY[0].iter().zip(SIDE_SKY[1])) {
+            *c = top + (bottom - top) * t;
+        }
+        out.push(RenderCommand::DrawRect {
+            center: Vec2::new((min.x + max.x) * 0.5, max.y - band * (i as f32 + 0.5)),
+            // 띠 사이가 픽셀 경계에서 벌어지지 않게 조금씩 겹친다.
+            size: Vec2::new(max.x - min.x + 2.0, band * 1.05),
+            rotation: 0.0,
+            z: 0.0,
+            depth_bias,
+            color,
+            uv: UvRect::FULL,
+            texture: TextureId::WHITE,
+        });
+    }
+}
+
+/// 횡스크롤 존의 타일 — 지형 그림 없이도 단면이 읽히게 블록·발판·사다리를 도형으로 그린다
+/// (규칙은 `nexus_sim` 의 `platformer` 모듈 doc). 걸을 수 있는 기본 칸(빈 공간)은 그리지 않는다.
+pub(crate) fn build_side(
+    map: &TileMap,
+    camera: &Camera2d,
+    depth_bias: f32,
+    out: &mut Vec<RenderCommand>,
+) {
+    let (view_min, view_max) = camera.visible_bounds();
+    let lo = map.world_to_tile(view_min);
+    let hi = map.world_to_tile(view_max);
+    let x0 = lo.x.max(0);
+    let y0 = lo.y.max(0);
+    let x1 = hi.x.min(map.width() as i32 - 1);
+    let y1 = hi.y.min(map.height() as i32 - 1);
+    if x1 < x0 || y1 < y0 {
+        return;
+    }
+    let s = map.tile_size();
+    let above_solid = |at: TileCoord| {
+        map.get(TileCoord::new(at.x, at.y + 1))
+            .is_none_or(|t| !t.walkable)
+    };
+    let is_ladder = |at: TileCoord| map.get(at).is_some_and(|t| t.walkable && t.ramp);
+    // 겹치는 장식은 바탕보다 살짝 앞 — 같은 층 안의 순서만 준다.
+    let front = depth_bias + nexus_render::DEPTH_LAYER * 0.1;
+    let mut rect = |center: Vec2, size: Vec2, color: [f32; 4], bias: f32| {
+        out.push(RenderCommand::DrawRect {
+            center,
+            size,
+            rotation: 0.0,
+            z: 0.0,
+            depth_bias: bias,
+            color,
+            uv: UvRect::FULL,
+            texture: TextureId::WHITE,
+        });
+    };
+    let cells: Box<dyn Iterator<Item = (TileCoord, nexus_sim::Tile)>> = if map.fill().walkable {
+        Box::new(map.painted_in(TileCoord::new(x0, y0), TileCoord::new(x1, y1)))
+    } else {
+        Box::new((y0..=y1).flat_map(move |y| {
+            (x0..=x1).filter_map(move |x| {
+                let at = TileCoord::new(x, y);
+                Some((at, map.get(at)?))
+            })
+        }))
+    };
+    let mut drawn = 0usize;
+    for (at, tile) in cells {
+        if drawn >= MAX_TILES_PER_FRAME {
+            return;
+        }
+        let c = map.tile_center(at);
+        if !tile.walkable {
+            drawn += 1;
+            let dirt = SIDE_DIRT[((at.x + at.y) & 1) as usize];
+            rect(c, Vec2::splat(s), dirt, depth_bias);
+            if !above_solid(at) {
+                rect(
+                    Vec2::new(c.x, c.y + s * 0.4),
+                    Vec2::new(s, s * 0.2),
+                    SIDE_GRASS,
+                    front,
+                );
+                rect(
+                    Vec2::new(c.x, c.y + s * 0.28),
+                    Vec2::new(s, s * 0.05),
+                    SIDE_GRASS_EDGE,
+                    front,
+                );
+            }
+        } else if tile.ramp {
+            drawn += 1;
+            for side in [-0.32, 0.32] {
+                rect(
+                    Vec2::new(c.x + s * side, c.y),
+                    Vec2::new(s * 0.08, s),
+                    SIDE_LADDER,
+                    depth_bias,
+                );
+            }
+            for k in 0..3 {
+                let y = c.y - s * 0.5 + s * (k as f32 + 0.5) / 3.0;
+                rect(
+                    Vec2::new(c.x, y),
+                    Vec2::new(s * 0.64, s * 0.06),
+                    SIDE_LADDER,
+                    depth_bias,
+                );
+            }
+            // 맨 윗칸은 발판처럼 밟힌다 — 판을 그려 알린다.
+            if !is_ladder(TileCoord::new(at.x, at.y + 1)) {
+                rect(
+                    Vec2::new(c.x, c.y + s * 0.42),
+                    Vec2::new(s, s * 0.16),
+                    SIDE_PLANK,
+                    front,
+                );
+            }
+        } else if tile.level >= 1 {
+            drawn += 1;
+            rect(
+                Vec2::new(c.x, c.y + s * 0.38),
+                Vec2::new(s, s * 0.24),
+                SIDE_PLANK,
+                depth_bias,
+            );
+            rect(
+                Vec2::new(c.x, c.y + s * 0.25),
+                Vec2::new(s, s * 0.04),
+                SIDE_PLANK_EDGE,
+                front,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use nexus_sim::Tile;
+
+    #[test]
+    fn side_view_draws_blocks_platforms_and_ladders_but_not_air() {
+        let mut map = TileMap::new(16, 16, 1.0, Vec2::ZERO, Tile::default());
+        let cam = Camera2d {
+            center: Vec2::splat(8.0),
+            view_height: 20.0,
+            viewport: (800, 800),
+            pitch: Camera2d::PITCH_TOPDOWN,
+            yaw: 0.0,
+        };
+        let mut out = Vec::new();
+        build_side(&map, &cam, 0.0, &mut out);
+        assert!(out.is_empty(), "빈 공간은 그리지 않는다");
+
+        let block = Tile {
+            walkable: false,
+            ..Tile::default()
+        };
+        map.set(TileCoord::new(2, 2), block);
+        map.set(TileCoord::new(2, 3), block);
+        build_side(&map, &cam, 0.0, &mut out);
+        // 아래 블록은 흙만, 위 블록은 흙 + 풀 두 줄.
+        assert_eq!(out.len(), 4);
+
+        out.clear();
+        map.set(
+            TileCoord::new(5, 5),
+            Tile {
+                level: 1,
+                ..Tile::default()
+            },
+        );
+        map.set(
+            TileCoord::new(7, 5),
+            Tile {
+                ramp: true,
+                ..Tile::default()
+            },
+        );
+        build_side(&map, &cam, 0.0, &mut out);
+        // 블록 4 + 발판 2 + 사다리(기둥 2 + 가로대 3 + 맨 윗칸 판 1).
+        assert_eq!(out.len(), 4 + 2 + 6);
+    }
 
     fn camera(view_height: f32, center: Vec2) -> Camera2d {
         Camera2d {

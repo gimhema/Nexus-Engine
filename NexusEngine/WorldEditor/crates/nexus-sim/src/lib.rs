@@ -19,6 +19,7 @@ mod dungeon;
 mod faction;
 mod item;
 mod loot;
+mod platformer;
 mod portal;
 mod progress;
 mod quest;
@@ -44,6 +45,7 @@ pub use item::{
     ItemId, ItemKind, ItemStack,
 };
 pub use loot::{LootEntry, LootTableId};
+pub use platformer::Platformer;
 pub use portal::PortalDef;
 pub use progress::{Growth, Progress, exp_to_next};
 pub use quest::{Active, Objective, QuestDef, QuestEntry, QuestId, QuestLog, QuestState, Stage};

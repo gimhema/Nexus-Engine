@@ -191,6 +191,8 @@ pub struct Unit {
     pub(crate) quests: crate::quest::QuestLog,
     /// 걸려 있는 버프 (R2b). 걸린 순서대로라 결정적이다.
     pub(crate) buffs: Vec<crate::buff::ActiveBuff>,
+    /// 횡스크롤 상태 (중력·사다리). 쿼터뷰 존에서는 쓰지 않는다.
+    pub(crate) body: crate::platformer::Body,
 }
 
 impl Unit {
@@ -223,6 +225,7 @@ impl Unit {
             storage: crate::item::Bag::default(),
             quests: crate::quest::QuestLog::default(),
             buffs: Vec::new(),
+            body: crate::platformer::Body::default(),
         }
     }
 
@@ -531,7 +534,25 @@ impl Unit {
     /// 이동 중인가.
     #[must_use]
     pub fn is_moving(&self) -> bool {
-        !self.waypoints.is_empty()
+        !self.waypoints.is_empty() || self.body.walked
+    }
+
+    /// 횡스크롤 — 땅·발판을 딛고 있는가. 쿼터뷰 존에서는 늘 `false`.
+    #[must_use]
+    pub fn is_grounded(&self) -> bool {
+        self.body.grounded
+    }
+
+    /// 횡스크롤 — 사다리를 타고 있는가.
+    #[must_use]
+    pub fn is_climbing(&self) -> bool {
+        self.body.climbing
+    }
+
+    /// 횡스크롤 — 키보드 걷기 방향 (-1 · 0 · 1).
+    #[must_use]
+    pub fn walk_dir(&self) -> i8 {
+        self.body.walk
     }
 
     /// 남은 경유점 — 경로 미리보기용.

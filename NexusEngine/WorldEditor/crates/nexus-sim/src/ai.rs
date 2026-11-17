@@ -625,4 +625,111 @@ mod tests {
         assert!(events.is_empty(), "{events:?}");
         assert_eq!(unit(&auth, s).pos(), at);
     }
+
+    // ── 횡스크롤 ─────────────────────────────────────────────────────────────
+
+    /// 40×12 칸 단면 — 바닥(y=0 줄)과 가운데 발판(x 10..20, y=4 줄).
+    fn side_world() -> SimWorld {
+        let mut map = TileMap::new(40, 12, 1.0, Vec2::ZERO, Tile::default());
+        for x in 0..40 {
+            map.set(
+                TileCoord::new(x, 0),
+                Tile {
+                    walkable: false,
+                    ..Tile::default()
+                },
+            );
+        }
+        for x in 10..20 {
+            map.set(
+                TileCoord::new(x, 4),
+                Tile {
+                    level: 1,
+                    ..Tile::default()
+                },
+            );
+        }
+        let mut w = world_with(map);
+        w.set_platformer(Some(crate::Platformer::default()));
+        w
+    }
+
+    #[test]
+    fn side_view_monsters_chase_on_their_platform_but_do_not_jump_off() {
+        let mut w = side_world();
+        // 발판 위 슬라임, 바닥의 플레이어 — 슬라임은 쫓아 오다가 발판 끝에서 멈춘다.
+        let s = w.spawn_unit(Vec2::new(18.5, 5.0), 0.0, slime());
+        let p = w.spawn_unit(Vec2::new(21.0, 1.0), 0.0, player());
+        let mut auth = LocalAuthority::new(w);
+        let events = run(&mut auth, 200);
+        assert!(events.contains(&Event::Engaged { unit: s, target: p }));
+        let su = unit(&auth, s);
+        assert!(
+            (su.pos().y - 5.0).abs() < 1e-3,
+            "발판에 남는다: {:?}",
+            su.pos()
+        );
+        assert!(su.pos().x <= 20.3, "발판 끝: {:?}", su.pos());
+        assert_eq!(unit(&auth, p).hp(), 100, "닿지 않아 물지 못했다");
+
+        // 같은 바닥이면 쫓아 와 문다.
+        let mut w = side_world();
+        w.spawn_unit(Vec2::new(25.5, 1.0), 0.0, slime());
+        let p = w.spawn_unit(Vec2::new(29.5, 1.0), 0.0, player());
+        let mut auth = LocalAuthority::new(w);
+        let events = run(&mut auth, 200);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Damaged { target, .. } if *target == p)),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn side_view_walk_and_jump_intents() {
+        let mut w = side_world();
+        let p = w.spawn_unit(Vec2::new(5.5, 3.0), 0.0, player());
+        let mut auth = LocalAuthority::new(w);
+        // 떨어지는 중에는 뛸 수 없다.
+        auth.submit(Intent::Jump { unit: p });
+        assert!(auth.tick(DT).iter().any(|e| matches!(
+            e,
+            Event::Rejected {
+                reason: Rejection::NotOnGround,
+                ..
+            }
+        )));
+        run(&mut auth, 40);
+        assert!(unit(&auth, p).is_grounded());
+
+        auth.submit(Intent::Walk { unit: p, dir: 1 });
+        run(&mut auth, 20);
+        let after_walk = unit(&auth, p).pos();
+        assert!(
+            after_walk.x > 7.0 && (after_walk.y - 1.0).abs() < 1e-3,
+            "{after_walk:?}"
+        );
+
+        auth.submit(Intent::Jump { unit: p });
+        auth.tick(DT);
+        assert!(unit(&auth, p).pos().y > 1.0, "떠올랐다");
+        auth.submit(Intent::Walk { unit: p, dir: 0 });
+        run(&mut auth, 40);
+        assert!(unit(&auth, p).is_grounded());
+        assert!(!unit(&auth, p).is_moving());
+
+        // 쿼터뷰 존에서는 받지 않는다.
+        let mut w = world_with(flat());
+        let q = w.spawn_unit(Vec2::new(5.5, 5.5), 0.0, player());
+        let mut auth = LocalAuthority::new(w);
+        auth.submit(Intent::Walk { unit: q, dir: 1 });
+        assert!(auth.tick(DT).iter().any(|e| matches!(
+            e,
+            Event::Rejected {
+                reason: Rejection::NotPlatformer,
+                ..
+            }
+        )));
+    }
 }

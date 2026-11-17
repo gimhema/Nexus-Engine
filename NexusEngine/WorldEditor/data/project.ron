@@ -5,4 +5,7 @@
     // 게임을 시작할 때 여는 레벨 (levels/<번호>.level.ron).
     // 에디터에서는 메뉴 플레이 → '시작 레벨부터'(Shift+F5) 가 이 레벨을 연다.
     startup_level: "main",
+    // 캐릭터 컨셉 — 캐릭터 만들기에서 고를 수 있는 체형. Any = 카탈로그 전부,
+    // ObjectHead = 머리가 사물(등불·새장·종·촛대 …)인 오브젝트헤드 템플릿만.
+    characters: ObjectHead,
 )

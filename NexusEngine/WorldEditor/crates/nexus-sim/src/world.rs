@@ -29,6 +29,7 @@ use crate::item::{
     ItemKind, ItemStack,
 };
 use crate::loot::{self, LootEntry, LootTableId, Rng};
+use crate::platformer::Platformer;
 use crate::portal::PortalDef;
 use crate::progress::Progress;
 use crate::quest::{Active, Objective, QuestDef, QuestId, QuestState};
@@ -113,6 +114,8 @@ pub struct SimWorld {
     instance_flags: Flags,
     /// 던전 클리어 정의와 진행 (R6-2). 없으면 클리어가 없는 존.
     clear: Option<(ClearDef, ClearState)>,
+    /// 횡스크롤 물리 ([`crate::platformer`]). `None` 이면 쿼터뷰 존 — 지면을 걷는다.
+    platformer: Option<Platformer>,
 }
 
 impl SimWorld {
@@ -153,6 +156,7 @@ impl SimWorld {
             portals: Vec::new(),
             instance_flags: Flags::default(),
             clear: None,
+            platformer: None,
         }
     }
 
@@ -1711,6 +1715,7 @@ impl SimWorld {
             u.home = pos;
             u.spawn_pos = pos;
             u.waypoints.clear();
+            u.body = crate::platformer::Body::default();
         }
     }
 
@@ -1779,6 +1784,18 @@ impl SimWorld {
         } else {
             0.0
         };
+    }
+
+    /// 횡스크롤 물리를 켜거나 끈다 (설정 작업). 켜면 Y 가 높이가 되고 유닛이 중력을 받는다
+    /// ([`crate::platformer`] 모듈 doc).
+    pub fn set_platformer(&mut self, platformer: Option<Platformer>) {
+        self.platformer = platformer.map(Platformer::sanitized);
+    }
+
+    /// 횡스크롤 물리 수치. 쿼터뷰 존이면 `None`.
+    #[must_use]
+    pub fn platformer(&self) -> Option<Platformer> {
+        self.platformer
     }
 
     /// 땅의 아이템이 사라지기까지의 시간 (설정 작업). `None`·0 이면 영영 남는다 (기본).
@@ -1968,6 +1985,14 @@ impl SimWorld {
             // 경로를 잡아 두면 영원히 "이동 중" 으로 남는다.
             return Err(Rejection::Immobile);
         }
+        if self.platformer.is_some() {
+            // 횡스크롤은 길찾기가 없다 — 목표의 X 로 걸어가고 높이는 중력이 정한다.
+            let unit = self.unit_mut(entity).ok_or(Rejection::UnknownEntity)?;
+            unit.waypoints.clear();
+            unit.waypoints.push_back(target);
+            unit.body.walk = 0;
+            return Ok(());
+        }
         let from = self.tiles.world_to_tile(unit.pos);
         let to = self.tiles.world_to_tile(target);
         let path = self.tiles.find_path(from, to).ok_or(Rejection::NoPath)?;
@@ -1988,7 +2013,80 @@ impl SimWorld {
     pub(crate) fn stop(&mut self, entity: Entity) -> Result<(), Rejection> {
         let unit = self.unit_mut(entity).ok_or(Rejection::UnknownEntity)?;
         unit.waypoints.clear();
+        unit.body.walk = 0;
         Ok(())
+    }
+
+    /// 횡스크롤 Intent 를 받을 수 있는 유닛 — 살아 있고 기절하지 않았다.
+    fn side_unit(&mut self, entity: Entity) -> Result<(Platformer, &mut Unit), Rejection> {
+        let cfg = self.platformer.ok_or(Rejection::NotPlatformer)?;
+        let unit = self.unit_mut(entity).ok_or(Rejection::UnknownEntity)?;
+        if !unit.is_alive() {
+            return Err(Rejection::Dead);
+        }
+        if unit.is_stunned() {
+            return Err(Rejection::Stunned);
+        }
+        Ok((cfg, unit))
+    }
+
+    /// 키보드 걷기 (횡스크롤). `dir` 의 부호만 본다 — 0 이면 멈춘다. 걷던 `MoveTo` 는 취소된다.
+    pub(crate) fn walk(&mut self, entity: Entity, dir: i8) -> Result<(), Rejection> {
+        let (_, unit) = self.side_unit(entity)?;
+        if dir != 0 && unit.def.move_speed <= 0.0 {
+            return Err(Rejection::Immobile);
+        }
+        unit.waypoints.clear();
+        unit.body.walk = dir.signum();
+        Ok(())
+    }
+
+    /// 점프 (횡스크롤) — 땅·발판 위, 또는 사다리에서 뛰어내리기.
+    pub(crate) fn jump(&mut self, entity: Entity) -> Result<(), Rejection> {
+        let (cfg, unit) = self.side_unit(entity)?;
+        let b = &mut unit.body;
+        if b.climbing {
+            b.climbing = false;
+            b.vy = cfg.jump_speed * 0.5;
+        } else if b.grounded {
+            b.vy = cfg.jump_speed;
+            b.grounded = false;
+        } else {
+            return Err(Rejection::NotOnGround);
+        }
+        Ok(())
+    }
+
+    /// 사다리 오르내리기 (횡스크롤). `dir` 1 = 위, -1 = 아래, 0 = 매달려 멈춤.
+    /// 사다리가 없는데 발판 위에서 아래(-1)면 발판에서 내려선다.
+    pub(crate) fn climb(&mut self, entity: Entity, dir: i8) -> Result<(), Rejection> {
+        let (cfg, unit) = self.side_unit(entity)?;
+        let (pos, climbing, grounded) = (unit.pos, unit.body.climbing, unit.body.grounded);
+        let dir = dir.signum();
+        if climbing || dir == 0 {
+            unit.body.climb = if climbing { dir } else { 0 };
+            return Ok(());
+        }
+        if let Some(x) = crate::platformer::grab_ladder(&self.tiles, pos, cfg.body, dir) {
+            let unit = self.unit_mut(entity).ok_or(Rejection::UnknownEntity)?;
+            unit.pos.x = x;
+            unit.waypoints.clear();
+            unit.body.walk = 0;
+            unit.body.vy = 0.0;
+            unit.body.climbing = true;
+            unit.body.climb = dir;
+            return Ok(());
+        }
+        if dir < 0
+            && grounded
+            && let Some(y) = crate::platformer::on_platform(&self.tiles, pos, cfg.body)
+        {
+            let unit = self.unit_mut(entity).ok_or(Rejection::UnknownEntity)?;
+            unit.body.drop_from = Some(y);
+            unit.body.grounded = false;
+            return Ok(());
+        }
+        Err(Rejection::NoLadder)
     }
 
     /// `attacker` 가 `skill` 로 `target` 을 친다. 판정 순서는 서버와 같다 ([`combat`] 모듈).
@@ -2592,6 +2690,7 @@ impl SimWorld {
         u.prev_pos = at;
         u.home = at;
         u.waypoints.clear();
+        u.body = crate::platformer::Body::default();
         u.ai = AiState::default();
         u.cooldowns.clear();
         u.died_at = None;
@@ -2844,10 +2943,15 @@ impl SimWorld {
         let dt = dt.as_secs_f32();
         self.step_projectiles(dt, events);
         let tiles = &self.tiles;
+        let platformer = self.platformer;
         for (entity, unit) in self.units.iter_mut().flatten() {
             unit.prev_pos = unit.pos;
             if unit.is_alive() {
                 unit.regen_mp(tick);
+            }
+            if let Some(cfg) = &platformer {
+                step_side(cfg, tiles, *entity, unit, dt, events);
+                continue;
             }
             if unit.waypoints.is_empty() || !unit.is_alive() {
                 continue;
@@ -2868,6 +2972,50 @@ fn exp_needed(curve: Option<&Formula>, level: u32) -> u32 {
         || crate::progress::exp_to_next(level),
         |f| u32::try_from(f.eval(&[i64::from(level)]).max(1)).unwrap_or(u32::MAX),
     )
+}
+
+/// 횡스크롤 유닛 하나의 tick — 중력은 시체에도 든다 (공중에서 쓰러지면 떨어진다).
+fn step_side(
+    cfg: &Platformer,
+    tiles: &TileMap,
+    entity: Entity,
+    unit: &mut Unit,
+    dt: f32,
+    events: &mut Vec<Event>,
+) {
+    use crate::platformer::Outcome;
+    let alive = unit.is_alive();
+    if !alive || unit.is_stunned() {
+        unit.waypoints.clear();
+        unit.body.walk = 0;
+        unit.body.climb = 0;
+    }
+    let goal = unit.waypoints.front().map(|w| w.x);
+    let speed = if alive { unit.move_speed() } else { 0.0 };
+    // 직업이 없는 유닛(몬스터·NPC)은 자기 발판을 벗어나지 않는다.
+    let ledge_stop = unit.def.class.is_none();
+    let outcome = crate::platformer::step(
+        cfg,
+        tiles,
+        &mut unit.pos,
+        &mut unit.heading,
+        &mut unit.body,
+        goal,
+        speed,
+        ledge_stop,
+        dt,
+    );
+    match outcome {
+        Outcome::Arrived => {
+            unit.waypoints.clear();
+            events.push(Event::Arrived { unit: entity });
+        }
+        Outcome::Blocked => {
+            unit.waypoints.clear();
+            events.push(Event::Blocked { unit: entity });
+        }
+        Outcome::Idle | Outcome::Moving => {}
+    }
 }
 
 enum Step {
